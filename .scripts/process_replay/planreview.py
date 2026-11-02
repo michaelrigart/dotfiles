@@ -28,7 +28,8 @@ CONTEXT = 40                                   # lines either side of a finding'
 EXCERPT_CAP = 60000
 PLAN_DIR = "docs/superpowers/plans/"
 CASES = "plan-cases.json"
-FAR = "9999-12-31T23:59:59.999999Z"
+MEASURED_SAVING = (19, 100)                    # packets 9: about 19% fewer tokens per pre-merge turn
+REGULAR = (b"100644", b"100755")
 
 
 # ------------------------------------------------------------------ small helpers
@@ -93,15 +94,6 @@ def _plan_target(e):
     return None
 
 
-def _plan_blobs(e, target):
-    """{plan path: blob} of a round: as recorded, else derived from git as enriched() does for old receipts."""
-    blobs = target.get("plan_blobs")
-    if not isinstance(blobs, dict):
-        done = XR.enriched([e], FAR, e["thread"])
-        blobs = done[0]["targets"][0].get("plan_blobs") if done and done[0].get("targets") else None
-    return dict((p, b) for p, b in (blobs or {}).items() if isinstance(p, str) and isinstance(b, str))
-
-
 def _norm(path):
     path = path if isinstance(path, str) else ""
     while path.startswith("./"):
@@ -112,14 +104,13 @@ def _norm(path):
 
 
 def _plan_of(finding, plans):
-    """The plan a finding names (its file, any ./ or a/ b/ prefix aside), or None."""
+    """The plan a finding is about: the one its file names (any ./ or a/ b/ prefix aside), else the
+    round's only plan, else None."""
     name = _norm(finding.get("file"))
-    if not name:
-        return None
     for path in sorted(plans):
-        if name == path or path.endswith("/" + name) or name.endswith("/" + path):
+        if name and (name == path or path.endswith("/" + name) or name.endswith("/" + path)):
             return path
-    return None
+    return next(iter(plans)) if len(plans) == 1 else None
 
 
 # ------------------------------------------------------------------ reading git through the view
@@ -152,6 +143,24 @@ class Reader(object):
         except (Failed, ValueError):
             return None
 
+    def plan_blobs(self, base, tip):
+        """{plan path: blob at tip} of the plans base..tip changes and still has (regular files under
+        docs/superpowers/plans/, as the packet builder lists them), or None when the range cannot be read."""
+        if not (self.has_commit(base) and self.has_commit(tip)):
+            return None
+        try:
+            out = C.git(self.view, *(L.DIFF_RAW + [base, tip, "--"]), raw=True)
+        except Failed:
+            return None
+        fields, found, i = out.split(b"\0"), {}, 0
+        while i + 1 < len(fields) and fields[i]:
+            meta = fields[i][1:].split(b" ")
+            path = fields[i + 1].decode("utf-8", "replace")
+            if len(meta) == 5 and path.startswith(PLAN_DIR) and meta[1] in REGULAR:
+                found[path] = meta[3].decode("ascii")
+            i += 2
+        return found
+
     def interdiff(self, tip, next_tip, keep):
         """The change from tip to next tip, with every plan but those in `keep` left out (another
         plan's edits between the two tips are not this round's fix). None when it cannot be read."""
@@ -174,12 +183,12 @@ class Reader(object):
 
 
 # ------------------------------------------------------------------ the rounds
-def collect(state, root, dry=False):
-    """(rounds, saving, skipped) from the ledgers: the October plan-checkpoint rounds, each linked to its
-    next round, the October pre-merge receipts' plans_from sizes, and the count of rounds left out because
-    their commits cannot be read."""
-    rounds, readers = [], {}
-    saving = {"bytes": 0, "receipts": 0, "with_plans": 0, "unresolved": 0}
+def collect(state, root):
+    """(rounds, saving, skips) from the ledgers: the October plan-checkpoint rounds, each linked to its
+    next round; the October pre-merge receipts that omitted a plan (once per nonce): their plans_from
+    blob bytes and the Codex tokens of their turns (the receipt's and every slice_turns entry, once each); and skips, [{kind: round, nonce, reason}]."""
+    rounds, readers, skips, seen = [], {}, [], set()
+    saving = {"bytes": 0, "receipts": 0, "with_plans": 0, "unresolved": 0, "omit_tokens": 0}
     for gitdir, entries in XR.ledgers():
         reader = readers.setdefault(gitdir, Reader(state, gitdir, root))
         chains = collections.defaultdict(list)
@@ -189,15 +198,31 @@ def collect(state, root, dry=False):
                 target = _plan_target(e)
                 if target is None:
                     continue
+                blobs = target.get("plan_blobs")
+                if not isinstance(blobs, dict):
+                    blobs = reader.plan_blobs(target["base"], target["tip"])
+                    if blobs is None:
+                        blobs = {}
+                        if _in_window(at):
+                            skips.append({"kind": "round", "nonce": e["nonce"],
+                                          "reason": "plan blobs not derivable: the range's commits cannot be read"})
                 chains[e["thread"]].append({
                     "nonce": e["nonce"], "at": at, "gitdir": gitdir, "reader": reader, "repo": C.repo_name(gitdir),
                     "thread": e["thread"], "turn": e["turn"], "verdict": e.get("verdict"), "base": target["base"],
-                    "tip": target["tip"], "plans": _plan_blobs(e, target), "counted": _in_window(at), "next": None})
-            elif e.get("v") == 2 and e.get("kind") == "receipt" and e.get("checkpoint") == "pre-merge" and _in_window(at):
+                    "tip": target["tip"], "counted": _in_window(at), "next": None,
+                    "plans": dict((p, b) for p, b in blobs.items() if isinstance(p, str) and isinstance(b, str))})
+            elif (e.get("v") == 2 and e.get("kind") == "receipt" and e.get("checkpoint") == "pre-merge" and _in_window(at)
+                  and isinstance(e.get("nonce"), str) and e["nonce"] not in seen):
+                seen.add(e["nonce"])
                 saving["receipts"] += 1
                 listed = [p for t in e.get("targets") or [] if isinstance(t, dict) for p in t.get("plans_from") or []
                           if isinstance(p, dict)]
-                saving["with_plans"] += 1 if listed else 0
+                if listed:
+                    saving["with_plans"] += 1
+                    turns = [(e.get("thread"), e.get("turn"))] + [(t.get("thread"), t.get("turn")) for t in e.get("slice_turns") or []
+                                                                     if isinstance(t, dict)]
+                    saving["omit_tokens"] += sum(XR.turn_usage(th, tu)["tokens"]
+                                                 for th, tu in sorted(set(x for x in turns if all(isinstance(y, str) and y for y in x))))
                 for p in listed:
                     size = reader.size(p["blob"]) if isinstance(p.get("blob"), str) and p["blob"] else None
                     if size is None:
@@ -218,15 +243,16 @@ def collect(state, root, dry=False):
         r["minutes"] = wall_minutes(r["thread"], r["turn"])
         r["tokens"] = XR.turn_usage(r["thread"], r["turn"])["tokens"]
         r["findings"] = _findings(r["thread"], r["turn"])
-    return rounds, saving
+        r["plan_of"] = dict((f["index"], _plan_of(f, r["plans"])) for f in r["findings"])
+    return rounds, saving, skips
 
 
-def _judge_known_id(r):
-    return "plan-" + r["nonce"]
+def _judge_known_id(nonce):
+    return "plan-" + nonce
 
 
-def _class_id(r, index):
-    return "plan-{}-{}".format(r["nonce"], index)
+def _class_id(nonce, index):
+    return "plan-{}-{}".format(nonce, index)
 
 
 def _excerpt(text, line):
@@ -239,54 +265,56 @@ def _excerpt(text, line):
 def plan_cases(a):
     """cases --plans: write the judge inputs and, unless --dry-run, plan-cases.json. Returns 0."""
     C.write_briefs(a.state)
-    rounds, saving = collect(a.state, a.snapshot_root, a.dry_run)
-    skipped = 0
+    rounds, saving, skips = collect(a.state, a.snapshot_root)
     written = {"judge-known": 0, "judge-class": 0}
+    keys = ("severity", "file", "line", "summary", "failure_scenario")
     for r in rounds:
-        r["known"], r["classes"] = None, {}
-        for f in r["findings"]:
-            f["plan"] = _plan_of(f, r["plans"])
+        r["asked"] = False
         if r["next"] is None or not r["findings"]:
             continue
         reader = r["reader"]
         diff = reader.interdiff(r["tip"], r["next"]["tip"], r["changed"])
         if diff is None:
-            skipped += 1
+            skips.append({"kind": "round", "nonce": r["nonce"],
+                          "reason": "the next round's tip cannot be read, or does not follow this tip"})
             continue
-        C.judge_write(a.state, "judge-known", _judge_known_id(r), {"case": r["nonce"], "findings": r["findings"], "interdiff": diff})
+        C.judge_write(a.state, "judge-known", _judge_known_id(r["nonce"]),
+                      {"case": r["nonce"], "findings": r["findings"], "interdiff": diff})
+        r["asked"] = True
         written["judge-known"] += 1
-        ans = C.judge_answer(a.state, "judge-known", _judge_known_id(r))
+        ans = C.judge_answer(a.state, "judge-known", _judge_known_id(r["nonce"]))
         if not isinstance(ans, dict):
             continue
         yes = set(v.get("index") for v in ans.get("verdicts") or [] if isinstance(v, dict) and v.get("answer") == "yes")
-        r["known"] = [f["index"] for f in r["findings"] if f["index"] in yes]
         for f in r["findings"]:
             if f["index"] not in yes:
                 continue
-            plan = f["plan"]
+            plan = r["plan_of"][f["index"]]
             paths = [plan] if plan else sorted(r["plans"])
             texts = [(p, reader.text(r["plans"][p])) for p in paths]
-            if any(t is None for _p, t in texts):
-                skipped += 1
+            if not texts or any(t is None for _p, t in texts):
+                skips.append({"kind": "finding", "nonce": r["nonce"], "index": f["index"],
+                              "reason": "the plan text cannot be read" if texts else "the round lists no plan"})
                 continue
-            body = _excerpt(texts[0][1], f.get("line")) if plan or len(texts) == 1 else _cap(
+            body = _excerpt(texts[0][1], f.get("line")) if plan else _cap(
                 "".join("== {} ==\n{}\n".format(p, t) for p, t in texts), EXCERPT_CAP)
             fix = reader.interdiff(r["tip"], r["next"]["tip"], [plan] if plan in r["changed"] else r["changed"])
-            keys = ("severity", "file", "line", "summary", "failure_scenario")
-            cid = _class_id(r, f["index"])
-            C.judge_write(a.state, "judge-class", cid, {"finding": dict((k, f.get(k)) for k in keys), "plan_excerpt": body,
-                                                         "fix": fix if fix is not None else ""})
-            r["classes"][str(f["index"])] = cid
+            C.judge_write(a.state, "judge-class", _class_id(r["nonce"], f["index"]),
+                          {"finding": dict((k, f.get(k)) for k in keys), "plan_excerpt": body,
+                           "fix": fix if fix is not None else ""})
             written["judge-class"] += 1
-    C.say("plan rounds: {} in October; judge-known inputs {}, judge-class inputs {}, skipped {}".format(
-        len(rounds), written["judge-known"], written["judge-class"], skipped))
+    by_kind = collections.Counter(s["kind"] for s in skips)
+    C.say("plan rounds: {} in October; judge-known inputs {}, judge-class inputs {}; skipped {} round(s), {} finding(s)".format(
+        len(rounds), written["judge-known"], written["judge-class"], by_kind["round"], by_kind["finding"]))
+    for s in skips:
+        C.say("  skipped {} {}{}: {}".format(s["kind"], s["nonce"], "" if "index" not in s else " #{}".format(s["index"]), s["reason"]))
     if not a.dry_run:
         C.jsave(os.path.join(a.state, CASES), {
-            "window": list(WINDOW), "skipped": skipped, "lost_saving": saving,
+            "window": list(WINDOW), "skips": skips, "lost_saving": saving,
             "rounds": [{"nonce": r["nonce"], "at": r["at"], "repo": r["repo"], "plans": sorted(r["plans"]), "thread": r["thread"],
                         "turn": r["turn"], "verdict": r["verdict"], "minutes": r["minutes"], "tokens": r["tokens"],
-                        "next": r["next"]["nonce"] if r["next"] else None, "findings": r["findings"],
-                        "known": r["known"], "classes": r["classes"]} for r in rounds]})
+                        "next": r["next"]["nonce"] if r["next"] else None, "asked": r["asked"],
+                        "findings": [dict(f, plan=r["plan_of"][f["index"]]) for f in r["findings"]]} for r in rounds]})
     return 0
 
 
@@ -295,70 +323,124 @@ def _fmt(x):
     return "n/a" if x is None else "{:.1f}".format(x)
 
 
+def _blank():
+    return dict((c, dict((s, 0) for s in SEVERITIES)) for c in CLASSES)
+
+
+def _per(total, n):
+    return total / n if n else None
+
+
 def report_section(state):
-    """(lines, data) for the report's plan-checkpoint section; ([], {}) when plan_cases has found no round."""
+    """(lines, data) for the report's plan-checkpoint section; ([], {}) when plan_cases has found no round.
+    Judge answers are read now, not from plan-cases.json, so the section is current whenever the judges
+    have answered; whatever is still missing is counted and makes the recommendation incomplete."""
     doc = C.jload(os.path.join(state, CASES))
     if not isinstance(doc, dict) or not doc.get("rounds"):
         return [], {}
-    rounds = doc["rounds"]
-    classes = dict((c, dict((s, 0) for s in SEVERITIES)) for c in CLASSES)
+    rounds, skips = doc["rounds"], doc.get("skips") or []
+    skipped_findings = set((s["nonce"], s["index"]) for s in skips if s.get("kind") == "finding")
+    skipped_rounds = [s for s in skips if s.get("kind") == "round"]
+    classes = _blank()
     plans = collections.OrderedDict()
 
-    def plan_row(repo, path):
-        return plans.setdefault((repo, path), {"repo": repo, "plan": path, "rounds": 0, "minutes": 0.0, "known": 0, "design_p0p1": 0})
+    def row(repo, path):
+        return plans.setdefault((repo, path), {"repo": repo, "plan": path, "rounds": 0, "minutes": 0.0, "tokens": 0, "known": 0,
+                                               "classes": _blank(), "design_p0p1": 0})
 
-    known = classified = 0
+    known = classified = pending_known = no_input = pending_class = unclassifiable = 0
     for r in rounds:
         for path in r["plans"] or ["(none listed)"]:
-            row = plan_row(r["repo"], path)
-            row["rounds"] += 1
-            row["minutes"] += r["minutes"]
-        by_index = dict((f["index"], f) for f in r["findings"])
-        for idx in r["known"] or []:
-            f = by_index[idx]
+            p = row(r["repo"], path)
+            p["rounds"] += 1
+            p["minutes"] += r["minutes"]
+            p["tokens"] += r["tokens"]
+        if not r.get("asked"):
+            continue
+        ans = C.judge_answer(state, "judge-known", _judge_known_id(r["nonce"]))
+        if not isinstance(ans, dict):
+            pending_known += 1
+            continue
+        yes = set(v.get("index") for v in ans.get("verdicts") or [] if isinstance(v, dict) and v.get("answer") == "yes")
+        for f in r["findings"]:
+            if f["index"] not in yes:
+                continue
             known += 1
-            row = plan_row(r["repo"], f.get("plan") or (r["plans"] or ["(none listed)"])[0])
-            row["known"] += 1
-            cid = r["classes"].get(str(idx))
-            ans = C.judge_answer(state, "judge-class", cid) if cid else None
+            p = row(r["repo"], f.get("plan") or "(unattributed)")
+            p["known"] += 1
+            cid = _class_id(r["nonce"], f["index"])
+            if (r["nonce"], f["index"]) in skipped_findings:
+                unclassifiable += 1
+                continue
+            if not os.path.isfile(os.path.join(state, "judge-class", cid + ".json")):
+                no_input += 1
+                continue
+            ans = C.judge_answer(state, "judge-class", cid)
             klass = ans.get("class") if isinstance(ans, dict) else None
-            if klass in CLASSES:
-                classified += 1
-                classes[klass][f["severity"]] += 1
-                if klass == "design" and f["severity"] in ("P0", "P1"):
-                    row["design_p0p1"] += 1
+            if klass not in CLASSES:
+                pending_class += 1
+                continue
+            classified += 1
+            classes[klass][f["severity"]] += 1
+            p["classes"][klass][f["severity"]] += 1
+            if klass == "design" and f["severity"] in ("P0", "P1"):
+                p["design_p0p1"] += 1
+    for p in plans.values():
+        p["minutes_per_design"], p["tokens_per_design"] = _per(p["minutes"], p["design_p0p1"]), _per(p["tokens"], p["design_p0p1"])
     design = classes["design"]["P0"] + classes["design"]["P1"]
     minutes = sum(r["minutes"] for r in rounds)
     tokens = sum(r["tokens"] for r in rounds)
     saving = doc.get("lost_saving") or {}
-    lost = saving.get("bytes", 0) / XP.BYTES_PER_TOKEN
+    lower = saving.get("bytes", 0) / XP.BYTES_PER_TOKEN
+    measured = saving.get("omit_tokens", 0) * MEASURED_SAVING[0] / MEASURED_SAVING[1]
+    incomplete = bool(pending_known or no_input or pending_class or unclassifiable or skips)
     data = {"rounds": len(rounds), "wall_minutes": minutes, "tokens": tokens, "known": known, "classified": classified,
-            "pending": known - classified, "classes": classes, "design_p0p1": design,
-            "minutes_per_design": minutes / design if design else None, "tokens_per_design": tokens / design if design else None,
-            "lost_saving_tokens": lost, "premerge_receipts": saving.get("receipts", 0),
-            "premerge_with_plans": saving.get("with_plans", 0), "unresolved_blobs": saving.get("unresolved", 0),
-            "skipped": doc.get("skipped", 0), "plans": list(plans.values()),
-            "recommendation": "keep" if design else "inconclusive"}
+            "pending": known - classified - unclassifiable, "pending_known": pending_known, "no_input": no_input,
+            "pending_class": pending_class, "unclassifiable": unclassifiable, "classes": classes, "design_p0p1": design,
+            "minutes_per_design": _per(minutes, design), "tokens_per_design": _per(tokens, design),
+            "lost_saving_tokens": lower, "lost_saving_measured_tokens": measured,
+            "net_tokens_lower": tokens - lower, "net_tokens_measured": tokens - measured,
+            "premerge_receipts": saving.get("receipts", 0), "premerge_with_plans": saving.get("with_plans", 0),
+            "premerge_omit_tokens": saving.get("omit_tokens", 0), "unresolved_blobs": saving.get("unresolved", 0),
+            "skipped_rounds": len(skipped_rounds), "skipped_findings": len(skipped_findings), "skips": skips,
+            "plans": list(plans.values()), "incomplete": incomplete, "recommendation": "keep" if design else "inconclusive"}
     out = ["Plan-review checkpoint (spec 5)",
            "  rounds: {} over {} plan(s); wall minutes {}; Codex tokens {}".format(len(rounds), len(plans), _fmt(minutes), tokens),
-           "  known-real P0-P2 findings: {} ({} classified, {} awaiting a class)".format(known, classified, known - classified),
-           "  {:<14}{:>4}{:>4}{:>4}".format("class", "P0", "P1", "P2")]
+           "  known-real P0-P2 findings: {} ({} classified)".format(known, classified)]
+    if pending_known or no_input or pending_class or unclassifiable:
+        out.append("  pending: {} round(s) awaiting judge-known, {} known-real finding(s) without a judge-class input "
+                   "(run cases --plans again), {} awaiting a class, {} not sent to a judge (see skipped)".format(
+                       pending_known, no_input, pending_class, unclassifiable))
+    out.append("  {:<14}{:>4}{:>4}{:>4}".format("class", "P0", "P1", "P2"))
     out += ["  {:<14}{:>4}{:>4}{:>4}".format(c, *(classes[c][s] for s in SEVERITIES)) for c in CLASSES]
     if design:
         out.append("  design-class P0/P1: {}; per one caught: {} wall minutes, {:.0f} Codex tokens".format(
             design, _fmt(data["minutes_per_design"]), data["tokens_per_design"]))
     else:
         out.append("  design-class P0/P1: none; cost per one caught: n/a")
-    out.append("  lost omit_plans saving: {:.0f} tokens ({} plan bytes / {} per token, over {} October pre-merge receipts, {} listing a plan)".format(
-        lost, saving.get("bytes", 0), XP.BYTES_PER_TOKEN, saving.get("receipts", 0), saving.get("with_plans", 0)))
+    out.append("  lost omit_plans saving, two estimates (October pre-merge receipts, once per nonce: {} receipts, {} omitting a plan):".format(
+        saving.get("receipts", 0), saving.get("with_plans", 0)))
+    out.append("    (a) lower bound, plans_from blob bytes {} / {} per token: {:.0f} tokens; net of plan review: {:.0f} tokens".format(
+        saving.get("bytes", 0), XP.BYTES_PER_TOKEN, lower, tokens - lower))
+    out.append("    (b) packets 9's measure, {}% of the {} Codex tokens of those pre-merge turns: {:.0f} tokens; net of plan review: {:.0f} tokens".format(
+        MEASURED_SAVING[0], saving.get("omit_tokens", 0), measured, tokens - measured))
+    out.append("    net = plan-review Codex tokens ({}) minus the lost saving; plan-review wall minutes {}".format(tokens, _fmt(minutes)))
     if saving.get("unresolved"):
-        out.append("  {} plans_from blob(s) could not be read and are not in that number".format(saving["unresolved"]))
-    if doc.get("skipped"):
-        out.append("  {} round(s)/finding(s) skipped: their commits or plan could not be read".format(doc["skipped"]))
-    out.append("  per plan:")
-    out += ["    {}:{}  rounds {}  wall {} min  known {}  design P0/P1 {}".format(
-        p["repo"], p["plan"], p["rounds"], _fmt(p["minutes"]), p["known"], p["design_p0p1"]) for p in plans.values()]
-    out.append("  recommendation: {}".format(data["recommendation"]) + (
-        " (a design-class P0/P1 occurred: the pre-merge diff cannot show it)" if design else
-        " (no design-class P0/P1; removal needs downstream evidence, never this count)"))
+        out.append("  {} plans_from blob(s) could not be read and are not in (a)".format(saving["unresolved"]))
+    for s in skips:
+        out.append("  skipped {} {}{}: {}".format(s["kind"], s["nonce"], "" if "index" not in s else " #{}".format(s["index"]), s["reason"]))
+    out.append("  per plan (a round is credited to every plan it lists, so rows can sum above the totals):")
+    for p in plans.values():
+        out.append("    {}:{}  rounds {}  wall {} min  tokens {}  known {}  design P0/P1 {}  per one: {} min, {} tokens".format(
+            p["repo"], p["plan"], p["rounds"], _fmt(p["minutes"]), p["tokens"], p["known"], p["design_p0p1"],
+            _fmt(p["minutes_per_design"]), "n/a" if p["tokens_per_design"] is None else "{:.0f}".format(p["tokens_per_design"])))
+        out.append("      " + "; ".join("{} {}".format(c, "/".join(str(p["classes"][c][s]) for s in SEVERITIES)) for c in CLASSES)
+                   + "  (P0/P1/P2)")
+    if design:
+        out.append("  recommendation: keep (a design-class P0/P1 occurred: the pre-merge diff cannot show it)"
+                   + ("; classification incomplete, more may follow" if incomplete else ""))
+    elif incomplete:
+        out.append("  recommendation: inconclusive (classification incomplete)")
+    else:
+        out.append("  recommendation: inconclusive (no design-class P0/P1; removal needs downstream evidence, never this count)")
     return out, data
