@@ -445,7 +445,14 @@ ok("transcript_lookup: a --transcript that is not ID=PATH is refused", "ID=PATH"
 # ================================================================== match_blind_shuffled, oracle_one_commit
 w = World("match", cases=1)
 behave(lambda run, k: ("changes", [F("dB")]) if k == 1 else ("approve", []))
-settle_text = go(w)
+# fixed labels, whose shuffles (random.Random("<label>:0") over the sorted ids, Python 3.9) are known and are not the identity:
+SHUFFLED = {"2c2c2c2c": ["dD", "dB", "dC", "dA"], "3d3d3d3d": ["dB", "dC", "dD", "dA"]}
+real_label, fixed = C.label, iter(sorted(SHUFFLED))
+C.label = lambda taken: next(fixed)
+try:
+    settle_text = go(w)
+finally:
+    C.label = real_label
 drive(w, report=["found dA", "found dC"])
 go(w, rounds=False)
 inputs = []
@@ -457,8 +464,9 @@ ok("match_blind_shuffled: it holds every present defect of both classes, fresh i
    all(sorted(x["index"] for x in d["defects"]) == [0, 1, 2, 3] and sorted(x["summary"] for x in d["defects"]) == ["bug in dA", "bug in dB", "bug in dC", "bug in dD"]
        and all(set(x) == {"index", "summary", "file", "line", "failure_scenario"} for x in d["defects"]) for d in inputs), inputs[0])
 ok("match_blind_shuffled: the report is the final review's answer", all("FINDING: found dA" in d["report"] for d in inputs))
-ok("match_blind_shuffled: the order differs from the defects' own order (by id) in some input",
-   any([x["summary"] for x in d["defects"]] != ["bug in dA", "bug in dB", "bug in dC", "bug in dD"] for d in inputs), inputs)
+is_("match_blind_shuffled: each input lists the defects in its run's own shuffled order, not their order by id",
+    dict((r["label"], [x["summary"] for x in d["defects"]]) for r, d in zip(w.runs(), inputs)),
+    dict((lab, ["bug in " + i for i in order]) for lab, order in SHUFFLED.items()))
 ok("match_blind_shuffled: the judge input carries no class, run, arm, label or purpose key anywhere",
    not re.search(r'"(class|run|arm|label|purpose)"', json.dumps(inputs)))
 drive(w, report=["found dA", "found dC"])

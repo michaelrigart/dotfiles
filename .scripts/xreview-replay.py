@@ -7,12 +7,13 @@ overrides it), so nothing needs deploying. It never calls `xreview dispatch` and
 the pane, the review ledger or the round counter. `run` needs the daemon socket: run it unsandboxed.
 
   cases   [--state DIR]   pick candidate rounds from the ledgers and rollouts, write the blind
-                          judge inputs judge-known/<round>.json, and, once judge-known/<round>.answer.json
-                          exist, select the cases per switch into cases.json
+                          judge inputs judge-known/<round>.json, and, once the judges have answered,
+                          select the cases per switch into cases.json
   run     [--state DIR]   build every arm's packet, run the arms through the daemon (3 turns at
                           once, hard stop at --max-tokens), archive every thread it used
   match   [--state DIR]   write the blind matching inputs judge-match/<case>.json
-  report  [--state DIR]   read judge-match/<case>.answer.json, print the pass bar per switch
+  report  [--state DIR]   read the matching answers, print the pass bar per switch
+  pending [--state DIR]   stage every judge input that waits for an answer and print kind, id and brief (tab-separated), one line each
   cleanup [--state DIR]   archive the threads a crashed run left behind
 
 `cases --switch memories --memwatch DIR` selects the memories switch's cases instead (spec 2026-11-02-replay-set, section 6):
@@ -27,11 +28,14 @@ more (a second leak is an error run).
 --dry-run builds and selects but starts no turn and calls no daemon. The default state directory is
 $XDG_STATE_HOME/xreview/replay/<date>. Raw run files are never committed.
 
-Judge files (the controller dispatches the judges between phases):
-  judge-known/<round>.json         {case, findings:[{index, severity, ...}], interdiff}
-  judge-known/<round>.answer.json  {verdicts:[{index, answer: yes|no|unclear}]}
-  judge-match/<case>.json          {case, known:[...], runs:{label:[findings]}}
-  judge-match/<case>.answer.json   {matches:[{known_index, label, finding_index|null}]}
+Judge files (the controller dispatches the judges between phases). The judge protocol is process_replay.common's: a judge is
+never handed a path in the state. `pending` stages each input in a real directory of its own, $XDG_STATE_HOME/review-work/items/<hex>/,
+holding only input.json and brief.md; the judge writes answer.json there, and `cases`, `match` and `report` collect it:
+  judge-known/<round>.json         {findings:[{index, severity, ...}], interdiff}
+  judge-known answer               {verdicts:[{index, answer: yes|no|unclear}]}
+  judge-match/<case>.json          {known:[...], runs:{label:[findings]}}  (no case id in either: it names the class)
+  judge-match answer               {matches:[{known_index, label, finding_index|null}]}
+(<kind>/<id>.answer.json in the state, once collected, is where the answer lives; an answer put there by hand counts too.)
 A round is named by its review's nonce; a case by <nonce>.<class>: pre (pre-merge, fresh thread),
 inc (incremental: delta), big (round 1, too big for a fresh thread), ctx (a later round whose thread
 would have been full). The class names are neutral on purpose: judges see them.
@@ -89,6 +93,14 @@ LOCK = threading.RLock()
 
 class Failed(Exception):
     pass
+
+
+class Paused(Failed):
+    """The weekly usage is at the pause level (replay-set spec 8): no further turn starts. `hold` is weekly_hold's answer."""
+
+    def __init__(self, hold):
+        Failed.__init__(self, hold["paused"])
+        self.hold = hold
 
 
 def say(msg):
@@ -346,6 +358,39 @@ def judge_input(c):
     return {"case": r["nonce"], "findings": c["findings"], "interdiff": diff}
 
 
+FINDING_KEYS = ("severity", "file", "line", "summary", "failure_scenario")
+
+MATCH_BRIEF = """The input is {"known": [{"index", "severity", "file", "line", "summary", "failure_scenario"}],
+"runs": {"<id>": [{"severity", "file", "line", "summary", "failure_scenario"}]}}. The known findings are defects
+known to be in some code. Each entry of runs is the list of findings from one review of that code, under an id of its own.
+
+For each known finding and for each review, name the position (0, 1, 2, ... in that review's list) of the finding that
+reports it, or null. A finding reports a known defect when it points at the same flaw: the same cause and the same
+failure, though it may word it differently or cite other lines. A finding that is merely near the defect, or in the same
+file, does not. One finding can report several known defects. A review with an empty list reports none.
+
+Answer: {"matches": [{"known_index": 0, "label": "<the review's id>", "finding_index": 2}]}, one entry per known finding
+and review, with null as the finding_index when none reports it.
+"""
+
+
+def judge_briefs():
+    """The kinds whose brief is not process-replay's: its judge-match reads {defects, findings}, this one {known, runs}."""
+    return {"judge-match": MATCH_BRIEF, "judge-known": pkg("common").BRIEFS["judge-known"].replace('{"case", "findings"', '{"findings"')}
+
+
+def judge_put(a, kind, jid, doc):
+    """Write a judge input through the shared protocol (process_replay.common): the judge gets it staged in a directory of its own,
+    by `pending`, never as a file of this state. The input carries no `case`: its id ends in the class (<nonce>.mem, .pre, ...), which names
+    the experiment; the file name in the state is the harness's mapping, and `cases` and `report` look the answer up by it."""
+    return pkg("common").judge_write(a.state, kind, jid, dict((k, v) for k, v in doc.items() if k != "case"))
+
+
+def judge_got(a, kind, jid):
+    """The judge's answer, or None: the file the judge wrote in its staged directory, collected into the state, else an answer already there."""
+    return pkg("common").judge_answer(a.state, kind, jid)
+
+
 def case_of(c, klass, **extra):
     r = c["round"]
     t = r["target"]
@@ -432,13 +477,13 @@ def cases_memories(a):
     pool = [case_of(c, "mem", switches=["memories"], memories=m) for c, m in kept[:MEMORIES_QUOTA + POOL_EXTRA]]
     for case, (c, _m) in zip(pool, kept):
         n = case["round"]
-        jsave(os.path.join(a.state, "judge-known", n + ".json"), judge_input(c))
-        ans = jload(os.path.join(a.state, "judge-known", n + ".answer.json"))
+        judge_put(a, "judge-known", n, judge_input(c))
+        ans = judge_got(a, "judge-known", n)
         yes = set(v.get("index") for v in (ans or {}).get("verdicts", []) if isinstance(v, dict) and v.get("answer") == "yes")
         case["known"] = None if ans is None else [dict(f, index=i) for i, f in enumerate(f for f in case["findings"] if f["index"] in yes)]
     chosen = [c for c in pool if (c["known"] if not a.dry_run else c["known"] != [])][:MEMORIES_QUOTA]
     say("memories: {} case(s); {} dropped; {} on branches that started before the watcher".format(len(chosen), len(dropped), early))
-    say("judge inputs: {} round(s) in {}".format(len(pool), os.path.join(a.state, "judge-known")))
+    say("judge inputs: {} round(s); `pending` lists them with their briefs".format(len(pool)))
     if not a.dry_run:
         jsave(os.path.join(a.state, "cases.json"), {"created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "switch": "memories",
               "memwatch": os.path.abspath(a.memwatch), "cases": chosen, "selected": {"memories": [c["id"] for c in chosen]},
@@ -480,8 +525,8 @@ def cmd_cases(a):
         if n not in judged:
             judged.add(n)
             src = next(x for x in cands if x["round"]["nonce"] == n)
-            jsave(os.path.join(a.state, "judge-known", n + ".json"), judge_input(src))
-        ans = jload(os.path.join(a.state, "judge-known", n + ".answer.json"))
+            judge_put(a, "judge-known", n, judge_input(src))
+        ans = judge_got(a, "judge-known", n)
         yes = set(v.get("index") for v in (ans or {}).get("verdicts", []) if isinstance(v, dict) and v.get("answer") == "yes")
         c["known"] = None if ans is None else [dict(f, index=i) for i, f in enumerate(f for f in c["findings"] if f["index"] in yes)]
 
@@ -496,7 +541,7 @@ def cmd_cases(a):
     chosen = [c for c in pool.values() if c["switches"]]
     for s in SWITCH_ORDER:
         say("{}: {} case(s)".format(s, len(selected[s])))
-    say("judge inputs: {} round(s) in {}".format(len(judged), os.path.join(a.state, "judge-known")))
+    say("judge inputs: {} round(s); `pending` lists them with their briefs".format(len(judged)))
     if not a.dry_run:
         jsave(os.path.join(a.state, "cases.json"), {"created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "cases": chosen, "selected": dict((s, [c["id"] for c in v]) for s, v in selected.items())})
@@ -786,6 +831,9 @@ def review(a, job, dec, clone, schema, res, turns):
     (thread, turn) pairs that ran."""
     flags, shown, approvals, models = [], [], [], []
     for i, pk in enumerate(dec["packets"]):
+        hold = weekly_hold(a)
+        if hold:
+            raise Paused(hold)
         fk = job["fork"] if i == 0 else None
         if fk:
             rc, out, err = hist_call(fk["thread"], "thread-fork", "--thread", fk["thread"], "--last-turn", fk["last_turn"], "--cwd", clone)
@@ -871,7 +919,9 @@ def run_job(a, job):
             build_scratch(a, job, clone, cdir)
     except Failed as e:
         res["error"] = str(e)
-        res["interrupted"] = STOP.is_set()      # a job that finished before it noticed the stop is complete
+        res["interrupted"] = STOP.is_set() or isinstance(e, Paused)      # a job that finished before it noticed the stop is complete; a paused one waits
+        if isinstance(e, Paused):
+            res["paused"] = e.hold
     finally:
         if own:
             shutil.rmtree(own, ignore_errors=True)
@@ -929,6 +979,12 @@ def token_cap(a, cj):
     return a.max_tokens if a.max_tokens is not None else TOKEN_CAPS.get((cj or {}).get("switch"), TOKEN_CAP)
 
 
+def weekly_hold(a, home=None):
+    """{paused, resets_at} when the account's weekly usage is at the pause level, else None (process_replay.codex.weekly_hold). The usage is read from the
+    newest rollouts of `home` (default: the Codex home in force) and of the live home, which the replay homes copy from."""
+    return pkg("codex").weekly_hold(home or codex_home(), os.path.abspath(getattr(a, "codex_source", None) or os.path.expanduser("~/.codex")))
+
+
 def reap():
     """Terminate the children a stop left behind and clear the flag, so the archiving that follows can call rpc."""
     STOP.set()
@@ -940,10 +996,14 @@ def reap():
 def run_pool(a, pending, total, cap, prog):
     """Run `pending` jobs, JOBS at a time, until they are done or the token stop is reached. Returns what is
     left of them and the tokens spent."""
-    running = set()
+    running, hold = set(), None
     with cf.ThreadPoolExecutor(JOBS) as pool:
         while pending or running:
-            while pending and len(running) < JOBS and total < cap:
+            while pending and len(running) < JOBS and total < cap and not hold:
+                hold = weekly_hold(a)       # before each job; review() asks again before each of its turns
+                if hold:
+                    prog["paused"] = hold
+                    break
                 running.add(pool.submit(run_job, a, pending.popleft()))
             if not running:
                 break
@@ -951,6 +1011,8 @@ def run_pool(a, pending, total, cap, prog):
             total = spent(a.state)
             for f in done:
                 res = f.result()
+                if res.get("paused"):
+                    hold = prog["paused"] = res["paused"]
                 if res.get("model") and not prog.get("model"):
                     prog.update(model=res["model"], effort=res["effort"])
     return pending, total
@@ -961,6 +1023,10 @@ def run_home(a, name, jobs, total, cap, prog, source):
     start its daemon, run the jobs with CODEX_HOME aimed at it, archive their threads, stop the daemon. Only
     one replay daemon runs at a time, so the caller takes the homes in turn."""
     cx = pkg("codexhome")
+    hold = weekly_hold(a, cx.home_path(name))       # before the daemon starts and before the probe, which is a turn
+    if hold:
+        prog["paused"] = hold
+        return collections.deque(jobs), total
     snap = next((j["memories"] for j in jobs if j["memories"]), None)
     cx.reclaim(cx.home_path(name))      # a daemon of this home that a crashed run left behind is stopped, not a crash
     home = cx.ensure(a.state, name, snap, bool(snap), source=source)
@@ -1007,6 +1073,7 @@ def cmd_run(a):
             signal.signal(sig, on_signal)
         TH.cleanup()
     prog = jload(os.path.join(a.state, "progress.json"), {})
+    prog.pop("paused", None)
     stopped, interrupted, crash, jobs = None, False, None, []
     try:
         jobs = prepare(a, cj["cases"], live)
@@ -1029,7 +1096,9 @@ def cmd_run(a):
                 pending, total = run_home(a, name, group, total, cap, prog, source)
             if pending:
                 break
-        if pending:
+        if prog.get("paused"):      # nothing started after the pause; the jobs without a finished run file run on the next `run`
+            say("paused: {}; {} job(s) not started (and any a turn was cut from), run again after the reset".format(prog["paused"]["paused"], len(pending)))
+        elif pending:
             stopped = {"case": pending[0]["case"], "arm": pending[0]["arm"], "tokens": total}
             say("stopped at the token cap ({} >= {}) before {} {}".format(total, cap, stopped["case"], stopped["arm"]))
     except KeyboardInterrupt:
@@ -1048,7 +1117,7 @@ def cmd_run(a):
             drop_scratch(jobs)
             shutil.rmtree(os.path.join(a.state, "clones"), ignore_errors=True)
             prog.update(tokens=spent(a.state), stopped_at=stopped, crashed=crash,
-                        finished=not interrupted and stopped is None and crash is None)
+                        finished=not interrupted and stopped is None and crash is None and not prog.get("paused"))
             jsave(os.path.join(a.state, "progress.json"), prog)
             if not ok:
                 say("some threads could not be archived: run `cleanup`")
@@ -1074,14 +1143,23 @@ def cmd_match(a):
     cj, arms = jload(os.path.join(a.state, "cases.json")), jload(os.path.join(a.state, "arms.json"), {})
     for case in (cj or {}).get("cases", []):
         runs = dict((l, (load_run(a.state, case["id"], l) or {}).get("findings")) for l in sorted(arms.get(case["id"], {})))
-        runs = dict((l, f) for l, f in runs.items() if f is not None)
+        runs = dict((l, [dict((k, f.get(k)) for k in FINDING_KEYS) for f in found if isinstance(f, dict)])
+                    for l, found in runs.items() if found is not None)
         if not runs:
             continue
         doc = {"case": case["id"], "known": case["known"], "runs": runs}
-        say("judge-match/{}.json: {} run(s)".format(case["id"], len(runs)))
+        say("judge input {}: {} run(s)".format(case["id"], len(runs)))
         if not a.dry_run:
-            jsave(os.path.join(a.state, "judge-match", case["id"] + ".json"), doc)
+            judge_put(a, "judge-match", case["id"], doc)
+    if not a.dry_run:
+        say("`pending` lists the inputs that wait for a judge, with their briefs")
     return 0
+
+
+def cmd_pending(a):
+    """One line per judge input still waiting, kind, id and brief, tab-separated: the input is staged in a directory of its own (process_replay.common),
+    and the brief names the input and the answer file there. The judge is handed that brief and nothing else."""
+    return pkg("common").cmd_pending(a, judge_briefs())
 
 
 def cmd_report(a):
@@ -1108,7 +1186,7 @@ def cmd_report(a):
         n = known = misses = framed = failed = 0
         for cid in ids:
             amap = dict((v["arm"], l) for l, v in arms.get(cid, {}).items())
-            ans = jload(os.path.join(a.state, "judge-match", cid + ".answer.json"))
+            ans = judge_got(a, "judge-match", cid)
             runs = dict((arm, load_run(a.state, cid, l)) for arm, l in amap.items())
             if not amap or ans is None or not all(runs.values()):
                 continue
@@ -1178,7 +1256,7 @@ def cmd_report(a):
 
 def main(argv):
     ap = argparse.ArgumentParser(prog="xreview-replay")
-    ap.add_argument("command", choices=("cases", "run", "match", "report", "cleanup"))
+    ap.add_argument("command", choices=("cases", "run", "match", "report", "cleanup", "pending"))
     ap.add_argument("--switch", choices=("memories",), help="the memories switch: cases selects its cases (needs --memwatch), and every command "
                     "defaults to its own state directory, $XDG_STATE_HOME/xreview/replay/memories")
     ap.add_argument("--memwatch", metavar="DIR", help="cases --switch memories: the memories watcher's directory (memwatch/)")
@@ -1192,7 +1270,7 @@ def main(argv):
     a.state = os.path.abspath(a.state or os.path.join(L.state_home(), "xreview", "replay", "memories" if a.switch == "memories" else date.today().isoformat()))
     os.makedirs(a.state, exist_ok=True)
     try:
-        return {"cases": cmd_cases, "run": cmd_run, "match": cmd_match, "report": cmd_report, "cleanup": cmd_cleanup}[a.command](a)
+        return {"cases": cmd_cases, "run": cmd_run, "match": cmd_match, "report": cmd_report, "cleanup": cmd_cleanup, "pending": cmd_pending}[a.command](a)
     except (Failed, pkg("common").Failed) as e:
         sys.stderr.write("xreview-replay: {}\n".format(e))
         return 1

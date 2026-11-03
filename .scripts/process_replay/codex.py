@@ -307,6 +307,16 @@ def weekly(home, live=None):
     return best
 
 
+def weekly_hold(home, live=None):
+    """{paused: text, resets_at} when the weekly window (see weekly) is at WEEKLY_PAUSE percent or more and has not reset, else None:
+    nothing more is to be started, and the text says when it may be. A reset time that is not known holds too."""
+    wk = weekly(home, live)
+    if wk and wk[0] >= WEEKLY_PAUSE and (wk[1] is None or wk[1] > time.time()):
+        when = "unknown" if wk[1] is None else "{} ({})".format(wk[1], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(wk[1])))
+        return {"paused": "the weekly window is at {:g}%, resets_at {}".format(wk[0], when), "resets_at": wk[1]}
+    return None
+
+
 # ------------------------------------------------------------------ the leak scan
 # A tool call is reduced to the path-like tokens it names; each is resolved the way the system would (from the call's directory,
 # ~ and known variables expanded, ./.. collapsed, symlinks followed) and judged by containment in a forbidden root, component by
@@ -1099,10 +1109,9 @@ def codex_round(a, run, case, branch, home):
     spent = _spent(a, run)
     if spent >= a.max_tokens:
         return {"stopped": "the Codex token stop: {} tokens spent, stop at {}".format(spent, a.max_tokens)}
-    wk = weekly(home)
-    if wk and wk[0] >= WEEKLY_PAUSE and (wk[1] is None or wk[1] > time.time()):
-        when = "unknown" if wk[1] is None else "{} ({})".format(wk[1], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(wk[1])))
-        return {"paused": "the weekly window is at {:g}%, resets_at {}".format(wk[0], when), "resets_at": wk[1]}
+    hold = weekly_hold(home)
+    if hold:
+        return hold
 
     repo = _repo(a, run)
     scratch = cwd = run["scratch"].rstrip("/")

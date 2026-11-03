@@ -405,13 +405,21 @@ def reclaim(home):
 
 def start(home):
     """Start the replay daemon of `home`. One at a time: a second home is refused while this process runs another.
-    A daemon that answers while no process holds the run lock was left by a crashed run and is stopped first."""
+    A daemon that answers while no process holds the run lock was left by a crashed run and is stopped first. One whose health
+    request times out is neither: start is refused and the marker and the login are left as they are. Only a home confirmed down
+    (no socket, or the socket refuses) is settled and replaced."""
     _record(home)
     os.makedirs(auth_dir(), exist_ok=True)
     cur = jload(_marker())
     last = cur.get("home") if isinstance(cur, dict) else None
     if last and not _same(last, home):
-        if alive(last):
+        health = _health(last)
+        if health == "unknown":
+            # It did not answer in time: it may be busy, not dead. Settling its login and replacing the marker would leave it running
+            # beside the next daemon on one login, so nothing changes until it is stopped or confirmed down.
+            raise Failed("the replay daemon of {} did not answer its health request within {} s: it may still be running. Stop that home first "
+                         "(process-replay home --name {} --stop), then start this one".format(last, HEALTH_TIMEOUT, os.path.basename(last.rstrip("/"))))
+        if health == "up":
             if _same(_HELD["home"], last):
                 raise Failed("the replay daemon of {} is running: stop it first".format(last))
             _acquire(home)

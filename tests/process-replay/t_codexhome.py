@@ -289,7 +289,7 @@ ok("stale_marker: a marker home without its record, whose daemon answers, still 
 ok("stale_marker: and a second daemon was not started", helpers.read_log(LOG)[-1]["codex_home"] == home)
 put(home, H.RECORD, record)
 H.stop(home)
-# a health call that hangs is a daemon that does not answer for start, but one that might be alive for a refresh
+# a health call that hangs is a daemon that might be alive, for a refresh and for another start alike: neither changes anything
 HANG = os.path.join(ROOT, "hang-rpc")
 with open(HANG, "w") as f:
     f.write("#!/bin/sh\nexec sleep 60\n")
@@ -299,13 +299,31 @@ H.start(home)
 H.XR.RPC = HANG
 t0 = time.time()
 ok("stale_marker: a health call that times out blocks a refresh of that home", raises(H.ensure, STATE, "nomem", source=SRC))
-H.start(hm)
+os.unlink(auth)         # the daemon refreshed its token, which only a stop (or a confirmed death) takes back
+put(home, "auth.json", "BUSY-TOKEN")
+os.utime(os.path.join(home, "auth.json"), (time.time() + 300, time.time() + 300))
+shared_before = open(shared).read()
+daemon_starts = lambda: [c for c in helpers.read_log(LOG) if c["argv"][:3] == ["app-server", "daemon", "start"]]
+n_starts = len(daemon_starts())
+try:
+    H.start(hm)
+    refusal = None
+except Failed as e:
+    refusal = str(e)
 # the hung call sleeps 60 s and is cut off at HEALTH_TIMEOUT (1 s here); 30 s is half the sleep, so only a call that is waited out fails the bound,
 # however loaded the machine is
-ok("stale_marker: but does not keep another home from starting", json.load(open(H._marker()))["home"] == hm and time.time() - t0 < 30)
+ok("stale_marker: a marker home whose health request times out refuses another start, naming that home and the stop", refusal is not None
+   and home in refusal and "--stop" in refusal and time.time() - t0 < 30, refusal)
+is_("stale_marker: and starts no second daemon", len(daemon_starts()), n_starts)
+is_("stale_marker: and the marker still names the home that might be running", json.load(open(H._marker()))["home"], home)
+ok("stale_marker: and its login is not settled: the shared login is as it was and the home keeps its own token",
+   open(shared).read() == shared_before and not os.path.islink(auth) and open(auth).read() == "BUSY-TOKEN")
 H.XR.RPC = UP
+H.stop(home)
+is_("stale_marker: once that home is stopped its token is taken back", (open(shared).read(), os.path.islink(auth)), ("BUSY-TOKEN", True))
+H.start(hm)
+ok("stale_marker: and another home starts", json.load(open(H._marker()))["home"] == hm and len(daemon_starts()) == n_starts + 1)
 H.stop(hm)
-os.unlink(os.path.join(home, "app-server-control", "app-server-control.sock"))
 H.HEALTH_TIMEOUT = 15
 
 # ---- refresh_refused_while_running

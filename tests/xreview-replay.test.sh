@@ -28,6 +28,8 @@ printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n
 export T_HARNESS="$HARNESS" T_MODULE="$MODULE" T_LEDGER="$LEDGER" T_CONF="$CONF" T_ROOT="$ROOT"
 
 out="$(/usr/bin/python3 -I - <<'PY'
+import argparse
+import glob
 import importlib.util
 import json
 import os
@@ -210,11 +212,13 @@ def new_id(st, prefix):
 
 
 def rollout(thread, turn, answer, cum):
+    rate = {"rate_limits": {"primary": {"window_minutes": 10080, "used_percent": float(os.environ["FAKE_RATE"]),
+                                        "resets_at": int(os.environ["FAKE_RESET"])}}} if os.environ.get("FAKE_RATE") else {}
     recs = [{"type": "event_msg", "payload": {"type": "task_started", "turn_id": turn, "model_context_window": 200000}},
             {"type": "turn_context", "payload": {"turn_id": turn, "model": "fake-model", "effort": "high"}},
-            {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            {"type": "event_msg", "payload": dict({"type": "token_count", "info": {
                 "total_token_usage": {"total_tokens": cum}, "last_token_usage": {"total_tokens": 1000},
-                "model_context_window": 200000}}},
+                "model_context_window": 200000}}, **rate)},
             {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": turn, "last_agent_message": json.dumps(answer)}}]
     d = os.path.join(CODEX, "sessions", "2026", "10", "25")
     os.makedirs(d, exist_ok=True)
@@ -331,13 +335,52 @@ os.chmod(FAKE_BIN, 0o755)
 
 def env_for(**extra):
     env = dict(os.environ, XDG_STATE_HOME=XDG, CODEX_HOME=CODEX, XREVIEW_REPLAY_RPC=FAKE_BIN, FAKE_STATE=FAKE,
-               FAKE_PROBE=" ".join(PROBE))
+               FAKE_PROBE=" ".join(PROBE), HOME=os.path.join(ROOT, "home"))      # ~/.codex is the live home: never the real one
     env.update(extra)
     return env
 
 
 def harness(state, *args, **extra):
     return subprocess.run([HARNESS] + list(args) + ["--state", state], capture_output=True, text=True, env=env_for(**extra))
+
+
+def waiting(state, *flags, xdg=None):
+    """[(kind, id, brief)] of what `pending` lists: it stages each input and names its brief."""
+    env = env_for(**({"XDG_STATE_HOME": xdg} if xdg else {}))
+    p = subprocess.run([HARNESS, "pending"] + list(flags) + ["--state", state], capture_output=True, text=True, env=env)
+    return [tuple(l.split("\t")) for l in p.stdout.splitlines() if l.count("\t") == 2]
+
+
+def judge_says(state, kind, jid, doc, *flags, xdg=None):
+    """What a judge does: write its answer beside the brief it was handed (answer.json, in the staged directory)."""
+    for k, i, brief in waiting(state, *flags, xdg=xdg):
+        if (k, i) == (kind, jid):
+            return wr(os.path.join(os.path.dirname(brief), "answer.json"), doc)
+    raise AssertionError("nothing pending for {} {}".format(kind, jid))
+
+
+def staged_leaks(state, xdg, items, extra=()):
+    """What a judge could learn from the directory it is handed: the staged item must be a real directory of its own under
+    review-work/items holding only input.json and brief.md, and nothing it shows (the path below the state root, the brief, the input)
+    may name the experiment, the state or the files that map classes and arms."""
+    bad = []
+    banned = ("replay", "memories", "cases.json", "arms.json", state) + tuple(extra)
+    for kind, jid, brief in items:
+        d = os.path.dirname(brief)
+        rel = os.path.relpath(d, xdg)
+        shape = (os.path.isdir(d) and not os.path.islink(d) and os.path.realpath(d) == os.path.join(os.path.realpath(xdg), rel)
+                 and re.fullmatch(r"review-work/items/[0-9a-f]{16}", rel) is not None)
+        if not shape or sorted(os.listdir(d)) != ["brief.md", "input.json"]:
+            bad.append((kind, jid, "layout", rel, sorted(os.listdir(d))))
+            continue
+        shown = open(brief).read() + "\n" + open(os.path.join(d, "input.json")).read()
+        for root in (xdg, os.path.realpath(xdg)):       # the fixture's own temporary directory has "replay" in its name
+            shown = shown.replace(root + "/", "")
+        shown = rel + "\n" + shown
+        if re.search(r'"case"|\.(mem|pre|inc|big|ctx)\b', shown):
+            bad.append((kind, jid, "a case id or its class suffix", re.search(r'"case"|\.(mem|pre|inc|big|ctx)\b', shown).group(0)))
+        bad += [(kind, jid, w, shown[max(0, shown.find(w) - 60):shown.find(w) + 40]) for w in banned if w in shown]
+    return bad
 
 
 def calls(fake=FAKE):
@@ -362,7 +405,7 @@ nonces = ("xr-2-r1", "xr-3-r2")
 for n in nonces:
     ok("RP1 a judge input for {}".format(n), os.path.isfile(os.path.join(S1, "judge-known", n + ".json")), p.stderr)
 ji = jl(os.path.join(S1, "judge-known", "xr-2-r1.json"))
-is_("RP1 the judge input is {case, findings, interdiff}", sorted(ji), ["case", "findings", "interdiff"])
+is_("RP1 the judge input is {findings, interdiff}: no case id", sorted(ji), ["findings", "interdiff"])
 is_("RP1 it lists the P0-P2 findings only", [f["severity"] for f in ji["findings"]], ["P1"])
 want_diff = LD.patch(repo, c1, c2).decode()
 ok("RP1 the interdiff is the change from this round's tip to the next round's", ji["interdiff"] == want_diff, ji["interdiff"][:200])
@@ -370,8 +413,12 @@ ok("RP1 --dry-run writes no cases.json", not os.path.exists(os.path.join(S1, "ca
 ok("RP1 the last round has no judge input (no fixing change follows)", not os.path.exists(os.path.join(S1, "judge-known", "xr-4-r3.json")))
 
 # the judge answers; cases selects
-wr(os.path.join(S1, "judge-known", "xr-2-r1.answer.json"), {"verdicts": [{"index": 0, "answer": "yes"}]})
-wr(os.path.join(S1, "judge-known", "xr-3-r2.answer.json"), {"verdicts": [{"index": 0, "answer": "unclear"}]})
+is_("RP1 pending lists both judge inputs, with the briefs it staged for them",
+    [(k, i) for k, i, _b in waiting(S1)], [("judge-known", "xr-2-r1"), ("judge-known", "xr-3-r2")])
+is_("RP1 staging: each is a directory of its own holding only input.json and brief.md, and shows nothing of the experiment or the state",
+    staged_leaks(S1, XDG, waiting(S1), (os.path.realpath(S1), "judge-known")), [])
+judge_says(S1, "judge-known", "xr-2-r1", {"verdicts": [{"index": 0, "answer": "yes"}]})
+judge_says(S1, "judge-known", "xr-3-r2", {"verdicts": [{"index": 0, "answer": "unclear"}]})
 p = harness(S1, "cases")
 is_("RP1 cases exits 0", p.returncode, 0)
 cj = jl(os.path.join(S1, "cases.json"))
@@ -493,7 +540,7 @@ print("RP3. blind judge inputs")
 p = harness(S1, "match")
 is_("RP3 match exits 0", p.returncode, 0)
 jm = jl(os.path.join(S1, "judge-match", "xr-2-r1.pre.json"))
-is_("RP3 a match input is {case, known, runs}", sorted(jm), ["case", "known", "runs"])
+is_("RP3 a match input is {known, runs}: no case id, whose suffix names the class", sorted(jm), ["known", "runs"])
 is_("RP3 it holds every run's findings under its random label", sorted(jm["runs"]), sorted(arms["xr-2-r1.pre"]))
 blob = ""
 for d in ("judge-known", "judge-match"):
@@ -507,12 +554,22 @@ ok("RP3 no judge input maps a label to an arm", not any(('"{}": "{}"'.format(l, 
 is_("RP3 a label's run is just its findings", list(jm["runs"][labels["A"]][0]), ["severity", "file", "line", "summary", "failure_scenario"])
 
 # canned answers for every case: all arms find the one known finding
+is_("RP3 pending lists a matching input for every case that ran", sorted((k, i) for k, i, _b in waiting(S1)),
+    sorted(("judge-match", cid) for cid in arms))
+items = waiting(S1)
+is_("RP3 staging: a matching input is a staged directory of its own holding only input.json and brief.md, and shows nothing of the experiment or the state",
+    staged_leaks(S1, XDG, items, (os.path.realpath(S1),)), [])
+mb = open([b for k, i, b in items if k == "judge-match"][0]).read()
+ok("RP3 staging: the matching brief is the matching kind's own (known findings, runs), and names the staged input and answer file",
+   "known_index" in mb and "Input: " in mb and "Write your answer to: " in mb and "{\"defects\"" not in mb, mb[:300])
+is_("RP3 staging: two inputs are two directories", len(set(os.path.dirname(b) for _k, _i, b in items)), len(items))
 for cid, m in arms.items():
     k = len(byid[cid]["known"])
-    wr(os.path.join(S1, "judge-match", cid + ".answer.json"),
-       {"matches": [{"known_index": i, "label": l, "finding_index": 0} for l in m for i in range(k)]})
+    judge_says(S1, "judge-match", cid, {"matches": [{"known_index": i, "label": l, "finding_index": 0} for l in m for i in range(k)]})
 p = harness(S1, "report")
 is_("RP3 report exits 0", p.returncode, 0)
+ok("RP3 report collected the answers the judges wrote in their staged directories",
+   all(os.path.isfile(os.path.join(S1, "judge-match", cid + ".answer.json")) for cid in arms) and waiting(S1) == [], waiting(S1))
 rep = jl(os.path.join(S1, "report.json"))
 is_("RP3 every switch passes when every arm finds every known-real finding",
     dict((s, v["status"]) for s, v in rep["switches"].items()), {"framing": "pass", "omit_plans": "pass", "delta": "pass", "fit": "pass"})
@@ -876,6 +933,76 @@ pc = jl(os.path.join(SC, "progress.json"))
 is_("RP17 the run reports failure", rcc, 1)
 ok("RP17 progress.json says it did not finish, and why", pc["finished"] is False and "boom" in (pc["crashed"] or ""), pc)
 
+# ------------------------------------------------------------------ RP18 the weekly pause (replay-set spec 8)
+print("RP18. replay turns pause at 80% weekly usage and resume after the reset")
+
+
+def usage_rollout(home, percent, resets, thread="thLive"):
+    """A rollout of `home` whose newest token_count reports the weekly window at `percent`, resetting at epoch `resets`."""
+    rec = {"type": "event_msg", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+           "payload": {"type": "token_count", "info": None,
+                       "rate_limits": {"primary": {"window_minutes": 10080, "used_percent": percent, "resets_at": resets}}}}
+    return wr(os.path.join(home, "sessions", "2026", "11", "03", "rollout-2026-11-03T00-00-00-{}.jsonl".format(thread)), json.dumps(rec) + "\n")
+
+
+def turn_starts(fake):
+    return len([c for c in calls(fake) if c["cmd"] == "turn-start"])
+
+
+LIVE = os.path.join(ROOT, "home", ".codex")
+RESET = int(time.time()) + 6 * 3600
+usage_rollout(LIVE, 85.0, RESET)
+S18, FAKE18 = fresh("s18")
+p = subprocess.run([HARNESS, "run", "--state", S18], env=env_for(FAKE_STATE=FAKE18), capture_output=True, text=True)
+prog = jl(os.path.join(S18, "progress.json"))
+is_("RP18 the live home at 85% with a future reset: the run exits 0, cleanly", p.returncode, 0)
+is_("RP18 and starts no turn", turn_starts(FAKE18), 0)
+ok("RP18 and says it is paused, when the window resets", "paused" in p.stdout and str(RESET) in p.stdout, p.stdout[-400:])
+ok("RP18 progress records the pause with the reset time, and is not finished",
+   prog.get("paused", {}).get("resets_at") == RESET and prog.get("finished") is False and prog.get("crashed") is None, prog)
+ok("RP18 no job left a run file, so every one is resumable", not os.path.isdir(os.path.join(S18, "runs")) or runfiles(S18) == [], runfiles(S18))
+usage_rollout(LIVE, 79.0, RESET)
+p = subprocess.run([HARNESS, "run", "--state", S18], env=env_for(FAKE_STATE=FAKE18), capture_output=True, text=True)
+arms18 = jl(os.path.join(S18, "arms.json"))
+want = sum(len(m) for m in arms18.values())
+is_("RP18 below 80% the same run goes on and finishes every arm once", (p.returncode, turn_starts(FAKE18), len(runfiles(S18))), (0, want, want))
+ok("RP18 and the pause is gone from progress", "paused" not in jl(os.path.join(S18, "progress.json")) and jl(os.path.join(S18, "progress.json"))["finished"], jl(os.path.join(S18, "progress.json")))
+usage_rollout(LIVE, 95.0, int(time.time()) - 60)
+S18b, FAKE18b = fresh("s18b")
+p = subprocess.run([HARNESS, "run", "--state", S18b], env=env_for(FAKE_STATE=FAKE18b), capture_output=True, text=True)
+is_("RP18 a window whose reset has passed does not pause", (p.returncode, len(runfiles(S18b))), (0, want))
+os.unlink(os.path.join(LIVE, "sessions", "2026", "11", "03", "rollout-2026-11-03T00-00-00-thLive.jsonl"))
+
+# the replay home's own rollouts count too: the first turns push the account over, the jobs still waiting do not start
+S18c, FAKE18c = fresh("s18c")
+p = subprocess.run([HARNESS, "run", "--state", S18c], env=env_for(FAKE_STATE=FAKE18c, FAKE_RATE="85", FAKE_RESET=str(RESET)), capture_output=True, text=True)
+started = turn_starts(FAKE18c)
+prog = jl(os.path.join(S18c, "progress.json"))
+ok("RP18 turns that raise the usage to 85% stop the jobs not yet started", p.returncode == 0 and 0 < started < want and prog.get("paused", {}).get("resets_at") == RESET
+   and "paused" in p.stdout, (p.returncode, started, want, p.stdout[-300:]))
+is_("RP18 every started job has its run file, the others none", len(runfiles(S18c)), started)
+for path in glob.glob(os.path.join(CODEX, "sessions", "2026", "10", "25", "rollout-*.jsonl")):
+    text = open(path).read()
+    if "rate_limits" in text:
+        open(path, "w").write(text.replace('"used_percent": 85.0', '"used_percent": 10.0'))
+p = subprocess.run([HARNESS, "run", "--state", S18c], env=env_for(FAKE_STATE=FAKE18c), capture_output=True, text=True)
+is_("RP18 after the reset the rest runs, each arm once in all", (p.returncode, turn_starts(FAKE18c), len(runfiles(S18c))), (0, want, want))
+
+# a turn inside a job asks too: a job whose later packet would start over the line stops, recorded as interrupted (resumable), not as an error run
+HP = load(HARNESS, "replay_pause")
+hold = {"paused": "the weekly window is at 85%, resets_at 1 (x)", "resets_at": 1}
+calls_made = []
+HP.weekly_hold = lambda a, home=None: hold
+HP.rpc = lambda *args: calls_made.append(args) or (1, "", "no")
+HP.build_scratch = lambda *a, **k: None
+a18 = argparse.Namespace(state=os.path.join(ROOT, "s18d"), budget=5, memwatch=None)
+job18 = {"case": "c.pre", "arm": "A", "switch": None, "framing": False, "repo": common, "tip": c1, "target": target(c1), "fork": None, "error": None,
+         "decision": {"kind": "full", "action": "send", "packets": [{"file": "/nonexistent", "shown": []}], "targets": []}, "home": None,
+         "memories": None, "scratch": None, "label": "lab00001"}
+res18 = HP.run_job(a18, job18)
+ok("RP18 a turn about to start over the line raises no rpc call and leaves the job resumable",
+   calls_made == [] and res18["interrupted"] is True and res18["paused"] == hold and "weekly window" in res18["error"], (calls_made, res18))
+
 # ------------------------------------------------------------------ RP7m the memories switch
 print("RP7m. the memories switch")
 import calendar
@@ -957,9 +1084,17 @@ is_("RP7m memories_cases: judge inputs for the kept first rounds only (not a lat
     asked, ["xr-2-r1.json", "xr-l1.json"])
 ok("RP7m memories_cases: no cases.json while the judge has not answered", not os.path.exists(os.path.join(SM, "cases.json")) or
    jl(os.path.join(SM, "cases.json"))["cases"] == [])
+mem_items = waiting(SM, "--switch", "memories", xdg=XM)
+is_("RP7m judge staging: pending lists the memories switch's judge inputs", sorted(i for _k, i, _b in mem_items), ["xr-2-r1", "xr-l1"])
+is_("RP7m judge staging: each is staged in a directory of its own that shows nothing of the memories experiment, the state or its files",
+    staged_leaks(SM, XM, mem_items, (os.path.realpath(SM), "judge-known")), [])
+ok("RP7m judge staging: the state's own judge-known directory is not what a judge is handed",
+   all(os.path.dirname(b) != os.path.join(SM, "judge-known") for _k, _i, b in mem_items))
 for n in ("xr-2-r1", "xr-l1"):
-    wr(os.path.join(SM, "judge-known", n + ".answer.json"), {"verdicts": [{"index": 0, "answer": "yes"}]})
+    judge_says(SM, "judge-known", n, {"verdicts": [{"index": 0, "answer": "yes"}]}, "--switch", "memories", xdg=XM)
 HM.cmd_cases(ns())
+is_("RP7m judge staging: cases reads the answers the judges wrote in their staged directories", sorted(jl(os.path.join(SM, "cases.json"))["selected"]["memories"]),
+    ["xr-2-r1.mem", "xr-l1.mem"])
 cjm = jl(os.path.join(SM, "cases.json"))
 mc = dict((c["id"], c) for c in cjm["cases"])
 is_("RP7m memories_cases: the cases, oldest first", cjm["selected"], {"memories": ["xr-2-r1.mem", "xr-l1.mem"]})
@@ -1215,6 +1350,19 @@ is_("RP7m memories_arms: a run with CODEX_HOME aimed at a replay home exits 0", 
 ok("RP7m memories_arms: without --codex-source the homes copy ~/.codex, not the inherited CODEX_HOME",
    all('model = "from-home"' in open(os.path.join(XM, "cxh", h, "config.toml")).read() for h in ("nomem", "mem-" + HA[:12], "mem-" + HB[:12])),
    [open(os.path.join(XM, "cxh", h, "config.toml")).read()[:40] for h in ("nomem", "mem-" + HA[:12])])
+# the weekly pause holds the memories switch's homes too, before the daemon starts and before the probe (which is a turn)
+usage_rollout(os.path.join(FH, ".codex"), 90.0, RESET)
+SM3 = os.path.join(ROOT, "statem3")
+for n in ("xr-2-r1", "xr-l1"):
+    wr(os.path.join(SM3, "judge-known", n + ".answer.json"), {"verdicts": [{"index": 0, "answer": "yes"}]})
+HM.cmd_cases(ns(state=SM3))
+rpc_before, cx_before = len(helpers.read_log(os.path.join(RPCD, "rpc.log"))), len(helpers.read_log(os.path.join(CXD, "codex.log")))
+menv3 = dict(menv, HOME=FH, CODEX_HOME=os.path.join(XM, "cxh", "nomem"))
+p = subprocess.run([HARNESS, "run", "--state", SM3], capture_output=True, text=True, env=menv3)
+ok("RP18 memories: at 90% weekly usage the run exits 0 and says it is paused", p.returncode == 0 and "paused" in p.stdout, (p.returncode, p.stdout[-300:], p.stderr[-300:]))
+is_("RP18 memories: and neither a daemon starts nor a probe or turn runs",
+    (len(helpers.read_log(os.path.join(RPCD, "rpc.log"))) - rpc_before, len(helpers.read_log(os.path.join(CXD, "codex.log"))) - cx_before), (0, 0))
+is_("RP18 memories: no run file exists, so the jobs resume", glob.glob(os.path.join(SM3, "runs", "*", "*.json")), [])
 for k, v in saved_env.items():
     if v is None:
         os.environ.pop(k, None)

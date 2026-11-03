@@ -440,10 +440,12 @@ def pending(state):
     return out
 
 
-def write_briefs(state):
-    """<state>/judges/<kind>.md for every kind."""
+def write_briefs(state, briefs=None):
+    """<state>/judges/<kind>.md for every kind; `briefs` replaces the text of the kinds it names (xreview-replay's judge-match
+    has its own input and answer shapes)."""
+    table = dict(BRIEFS, **(briefs or {}))
     for kind in JUDGE_KINDS:
-        jsave(os.path.join(state, "judges", kind + ".md"), COMMON + "\n" + BRIEFS[kind])
+        jsave(os.path.join(state, "judges", kind + ".md"), COMMON + "\n" + table[kind])
 
 
 def brief_for(state, kind, jid):
@@ -476,10 +478,10 @@ def _stage(state, item):
     return agent_brief
 
 
-def cmd_pending(a):
+def cmd_pending(a, briefs=None):
     """Print one line per pending judge, final review and recreation: kind, id, brief. The judges' and final reviews' items are
-    staged first (see the module doc); the brief is the staged one."""
-    write_briefs(a.state)
+    staged first (see the module doc); the brief is the staged one. `briefs` as for write_briefs."""
+    write_briefs(a.state, briefs)
     items = _pending(a.state)
     for item in items:
         say("{}\t{}\t{}".format(item[0], item[1], _stage(a.state, item)))
