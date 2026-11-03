@@ -808,7 +808,7 @@ is "W5b an uncompacted one is allowed" "$(wgate)" allow
 wa w6 "$(tx full)" "$(rxj false true "$SW_FIT")"
 is "W6 a compacted full packet is denied with fit on" "$(wgate)" "$COMPACT"
 wa w7 "$(tx full)" "$(rxj false true "$SW_FRAME")"
-is "W7 and allowed with fit off, as today" "$(wgate)" allow
+is "W7 and allowed with fit off" "$(wgate)" allow
 wa w7b "$(tx full)" "$(rxj false true "$SW_OFF")"
 is "W7b with every switch off too" "$(wgate)" allow
 wa w8 "$(tx delta w-l2 '["U1","U2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
@@ -904,7 +904,7 @@ is "W14b on a delta" "$(wgate)" "$COMPACT"
 wa w14c "$(tx slices)" "$(rxj true null "$SW_FRAME")"
 is "W14c on slices" "$(wgate)" "$COMPACT"
 wa w14d "$(tx full)" "$(rxj false null "$SW_OFF")"
-is "W14d and allowed on a full packet with every switch off, as today" "$(wgate)" allow
+is "W14d and allowed on a full packet with every switch off" "$(wgate)" allow
 wa w14e "$(tx full)" "$(rxj true - "$SW_FIT")"
 is "W14e a missing compacted key on full with fit on is denied" "$(wgate)" "$COMPACT"
 wa w14f "$(tx full)" "$(rxj true '"no"' "$SW_FIT")"
