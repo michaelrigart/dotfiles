@@ -12,6 +12,6 @@ to match its patterns rather than inventing a parallel one.
 - When debugging, find the cause before proposing a fix. If the evidence at hand does
   not identify it, say what you would need rather than guessing.
 - Flag anything that looks like a design decision rather than deciding it yourself.
-- Never start a Bash command with `cd`, and never give a recursive `grep` or `rg` a bare
-  `.`: the path guard denies both. In a subagent a `cd` does not carry over to the next
-  call, so use absolute paths, `git -C <dir>`, and name the directories to search.
+- Never chain commands after a leading `cd`, and never give a recursive `grep` or `rg` a bare
+  `.`: the path guard denies both. In a subagent a lone `cd` does not carry over to the next
+  call either, so use absolute paths, `git -C <dir>`, and name the directories to search.

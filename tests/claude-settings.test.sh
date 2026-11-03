@@ -1058,7 +1058,9 @@ for agent in "$SRC"/dot_claude/agents/*.md; do
   # dispatch. It lives in each body, the subagent's own system prompt; the guard stays the
   # enforcement.
   case "$stem" in sp-*)
-    if grep -qF -- '- Never start a Bash command with `cd`, and never give a recursive `grep` or `rg` a bare' "$agent"; then
+    if grep -qF -- '- Never chain commands after a leading `cd`, and never give a recursive `grep` or `rg` a bare' "$agent" \
+      && grep -qF -- '  `.`: the path guard denies both. In a subagent a lone `cd` does not carry over to the next' "$agent" \
+      && grep -qF -- '  call either, so use absolute paths, `git -C <dir>`, and name the directories to search.' "$agent"; then
       _pass "$stem states the subagent cd/grep rule"
     else
       _fail "$stem states the subagent cd/grep rule" "the bullet is missing"

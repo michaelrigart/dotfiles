@@ -22,6 +22,6 @@ it is large.
 - Judge the change against the Engineering judgement section too: a speculative
   abstraction, a workaround where a refactor belongs, or a test that would still pass with the
   bug back is a finding, with its concrete cost as the failure scenario.
-- Never start a Bash command with `cd`, and never give a recursive `grep` or `rg` a bare
-  `.`: the path guard denies both. In a subagent a `cd` does not carry over to the next
-  call, so use absolute paths, `git -C <dir>`, and name the directories to search.
+- Never chain commands after a leading `cd`, and never give a recursive `grep` or `rg` a bare
+  `.`: the path guard denies both. In a subagent a lone `cd` does not carry over to the next
+  call either, so use absolute paths, `git -C <dir>`, and name the directories to search.
