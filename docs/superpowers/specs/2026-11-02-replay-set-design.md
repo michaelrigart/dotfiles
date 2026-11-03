@@ -385,17 +385,32 @@ methods and bars above are unchanged except where a line says so.
   Judges and final reviewers each get their item staged in its own directory under
   `review-work/items/`, holding only that item's files.
 - The leak scan (§7.1) covers Codex rounds, the final reviewer and its subagents, and §6's arms.
-  It flags any read or command naming the original checkout or a `wt` sibling, the harness's
-  state, another scratch or item, the snapshot, Codex's sessions and memories, Claude's
-  transcripts, the replay homes, or the xreview state. Each path a tool call names is resolved
-  first: the call's working directory and any `cd`, `~` and the home and XDG variables, `..`, and
-  symlinks. It is then tested against those roots by real-path containment. Allowed subtrees are
-  applied after resolving: the run's own scratch or staged item, its own home's skills, plugins
-  and rules, an A/A′ arm's own memories, and a final reviewer's own transcript and the session's
-  `tool-results/`. A recursive search rooted above a forbidden root counts too. A grep pattern is
-  not a path. Running `chezmoi` counts as reading the original dotfiles. A rollout that cannot be
-  read counts as a leak. The remaining limits (unknown variables, paths built at run time, reads
-  spread over separate calls) are listed in `codex.py` (Michael's restructure, 2026-11-03).
+  A run is void when a reviewer reads or runs anything under a forbidden root:
+  - the original checkout and its `wt` siblings;
+  - the harness's state, staged items and scratches;
+  - the snapshot;
+  - the whole of `~/.codex` and `~/.claude` (sessions, memories, transcripts, file history);
+  - the replay homes, the xreview state, and §6's watcher.
+
+  Each path a tool call names is resolved first: the call's working directory, `cd`, `$PWD`, `~`
+  and the home and XDG variables, `..`, and symlinks. It is then tested against those roots by
+  real-path containment.
+
+  Allowed subtrees apply after resolving:
+  - the run's own scratch or staged item;
+  - instruction files: `~/.codex` skills, plugins, rules and `AGENTS.md`, `~/.claude` plugins,
+    skills, agents and `CLAUDE.md`, and the replay home's own copies of them. These are not
+    allowed in dotfiles cases, where the deployed files are the repository's later state;
+  - an A/A′ arm's own memories;
+  - a final reviewer's own transcripts and its session's `tool-results/`, under whichever
+    project directory Claude Code saved them.
+
+  A recursive search rooted above a forbidden root counts as a read. Grep patterns and
+  redirection targets are not paths; command substitutions inside a pattern are still scanned.
+  Running `chezmoi` counts as reading the original dotfiles. A rollout that cannot be read counts
+  as a leak. Dotfiles cases may void more often than others; that verdict is correct. The
+  remaining limits (unknown variables, paths built at run time, reads spread over separate calls,
+  ANSI-C quoting, `env -C`) are listed in `codex.py` (Michael's restructure, 2026-11-03).
 - Merge evidence runs `git merge-tree` in a private view repository whose alternates are the
   snapshot (or the original's objects). Git then refreshes those packs' modification times. The
   content is unchanged.
