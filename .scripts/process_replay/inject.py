@@ -361,6 +361,7 @@ class Fixpoint(object):
         self.mode, self.out, self.left, self.rec, self.tried = {}, {}, {}, {}, set()
         self.passed, self.failed, self.cargo_checks = set(cargo_passed), {}, []
         self.notes, self.undone, self.rounds = [], 0, 0
+        self.env = K.tool_env(a.state)
         self.build_check, self.head, self.located, self.answers, self.waiting = None, None, {}, {}, {}
         for g in self.groups:
             for m in g["members"]:
@@ -406,7 +407,7 @@ class Fixpoint(object):
             if why:
                 bad = ("dropped-revert", "its fix does not revert: " + why)
             else:
-                good, why = K.coherent(work, g["files"], self.notes)
+                good, why = K.coherent(work, g["files"], self.env, self.notes)
                 if good:
                     good, why = K.dangling(work, g["patch"], g["files"])
                 bad = None if good else ("incoherent", why)
@@ -421,7 +422,7 @@ class Fixpoint(object):
             if _apply(work, [self.rec[did][0]], reverse=False):
                 failed[did] = ("unassessable", "the recreation does not apply to the injected tree")
                 continue
-            good, why = K.coherent(work, P.files_of(self.rec[did][0]), self.notes)       # a hand edit is checked as a revert is
+            good, why = K.coherent(work, P.files_of(self.rec[did][0]), self.env, self.notes)       # a hand edit is checked as a revert is
             if not good:
                 C.git(work, "read-tree", "--reset", "-u", before)
                 failed[did] = ("unassessable", "the recreation breaks " + why)

@@ -4,6 +4,7 @@ One classifier, file_kind(name, first line), says what language a file is in: a 
 the extension, else a path convention (a file under a zsh/functions directory is zsh). The syntax checks and the dangling-name
 check both ask it, so a file is the same kind to both.
 
+  tool_env       the environment every check runs in: the parent's, with mise told to ignore the work tree's configuration (spec 14.1).
   coherent       bash -n, zsh -n, Python's ast, ruby -c or a JSON parse on each file a step changed. A file that is gone, a symlink
                  and a file of no known kind pass; so does one whose tool is not installed, but the tool is then named in `notes`.
   removed_names  the names a revert removes: defined by the lines the fix added and not by those it removed, where a line defines a
@@ -61,9 +62,21 @@ def first_line(path):
 
 
 # ------------------------------------------------------------------ syntax
-def _run_check(argv, cwd, notes):
+def tool_env(state):
+    """os.environ plus MISE_IGNORED_CONFIG_PATHS: the state directory, $XDG_STATE_HOME/review-work/scratch, then any inherited entries.
+    A work tree's mise.toml is untrusted, so a mise shim running in it would refuse. os.environ itself is never changed."""
+    paths = [os.path.abspath(state), os.path.join(C.L.state_home(), "review-work", "scratch")]
+    paths += [x for x in os.environ.get("MISE_IGNORED_CONFIG_PATHS", "").split(":") if x]
+    seen = []
+    for x in paths:
+        if x not in seen:
+            seen.append(x)
+    return dict(os.environ, MISE_IGNORED_CONFIG_PATHS=":".join(seen))
+
+
+def _run_check(argv, cwd, notes, env):
     try:
-        p = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, timeout=CHECK_TIMEOUT)
+        p = subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=CHECK_TIMEOUT)
     except FileNotFoundError:
         if notes is not None and "{} not found".format(argv[0]) not in notes:
             notes.append("{} not found".format(argv[0]))
@@ -74,8 +87,9 @@ def _run_check(argv, cwd, notes):
     return p.returncode == 0, lines[-1] if lines else ""
 
 
-def coherent(work, files, notes=None):
-    """(True, "") when every file of `files` (paths below `work`) that has a cheap syntax check passes it, else (False, "<path>: <why>")."""
+def coherent(work, files, env, notes=None):
+    """(True, "") when every file of `files` (paths below `work`) that has a cheap syntax check passes it, run in `env` (tool_env), else
+    (False, "<path>: <why>")."""
     for name in sorted(files):
         path = os.path.join(work, name)
         line = first_line(path)
@@ -83,12 +97,12 @@ def coherent(work, files, notes=None):
             continue
         kind = file_kind(name, line)
         if kind in ("bash", "zsh"):
-            good, why = _run_check([kind, "-n", path], work, notes)
+            good, why = _run_check([kind, "-n", path], work, notes, env)
         elif kind == "python":
-            good, why = _run_check([shutil.which("python3") or sys.executable, "-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())", path],
-                                   work, notes)
+            good, why = _run_check([shutil.which("python3", path=env.get("PATH")) or sys.executable, "-c",
+                                    "import ast,sys; ast.parse(open(sys.argv[1]).read())", path], work, notes, env)
         elif kind == "ruby":
-            good, why = _run_check(["ruby", "-c", path], work, notes)
+            good, why = _run_check(["ruby", "-c", path], work, notes, env)
         elif kind == "json":
             try:
                 with open(path, "rb") as f:
@@ -170,7 +184,7 @@ def dangling(work, patch, files):
 def cargo_check(a, work, repo_name):
     """(passed, why) of `cargo check --offline --all-targets` in `work`: passed is True, False, or None when it did not finish within
     the budget (`a.budget`, 3600 s); None when cargo is not installed."""
-    env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(a.state, "cargo", repo_name))
+    env = dict(tool_env(a.state), CARGO_TARGET_DIR=os.path.join(a.state, "cargo", repo_name))
     budget = getattr(a, "budget", 3600)
     try:
         p = subprocess.run(["cargo", "check", "--offline", "--all-targets"], cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True,

@@ -618,6 +618,43 @@ run(S12b)
 os.environ["PATH"] = old_path
 ok("coherence_undo: a cargo check that passes undoes nothing", all(v["status"] == "reverted" for v in inj(S12b, "bcargo001")["defects"].values()))
 
+# ================================================================ the work tree's mise.toml is untrusted (spec 14.1)
+RM = helpers.make_repo(ROOT, "miserepo")
+BM = cm(RM, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RM, "checkout", "-q", "-b", "feat")
+TM = cm(RM, "2026-10-01T09:00:00Z", {"mise.toml": "[env]\nX = \"1\"\n", "src/m.py": "m = 1  # bug M\n", "src/n.py": "n = 1  # bug N\n", PLAN: "plan\n"}, "task 1")
+FM = cm(RM, "2026-10-01T10:00:00Z", {"src/m.py": "m = 2  # fixed M\n"}, "fix m")
+FNM = cm(RM, "2026-10-01T11:00:00Z", {"src/n.py": "n = 2  # fixed N\n"}, "fix n")
+git(RM, "checkout", "-q", "main")
+DM = [dfx("d00000041", "task", "P1", [(TM, FM)], "src/m.py"), dfx("d00000042", "task", "P2", [(FM, FNM)], "src/n.py")]
+MISE = rec_branch("bmise0001", RM, "feat", BM, FNM, TM)
+MSTUB = os.path.join(ROOT, "mise-stub")
+for tool in ("python3", "ruby", "cargo"):
+    put(MSTUB, tool, """#!/bin/bash
+d=$(pwd -P)
+while [ "$d" != / ] && [ ! -e "$d/mise.toml" ]; do d=$(dirname "$d"); done
+[ -e "$d/mise.toml" ] || exit 0
+IFS=: read -ra P <<< "$MISE_IGNORED_CONFIG_PATHS"
+for p in "${P[@]}"; do
+  [ -n "$p" ] || continue
+  r=$(cd "$p" 2>/dev/null && pwd -P) || r=$p
+  case "$d/" in "$r"/*) exit 0;; esac
+done
+echo "mise ERROR Config files in $d/mise.toml are not trusted." >&2
+exit 1
+""", 0o755)
+S60 = setup_state("w-mise", [MISE], {"bmise0001": DM})
+os.environ["PATH"] = MSTUB + os.pathsep + old_path
+try:
+    run(S60)
+    for n in unanswered(S60, "judge-present"):
+        answer(S60, "judge-present", n, {"answer": "yes"})
+    run(S60)
+finally:
+    os.environ["PATH"] = old_path
+is_("mise_config_ignored: a tree holding a mise.toml is checked past the shim: the defects are present, not incoherent",
+    sorted((k, v["status"]) for k, v in inj(S60, "bmise0001")["defects"].items()), [("d00000041", "present"), ("d00000042", "present")])
+
 # ================================================================ order by position, committer date for a head that is not on the branch
 RO = helpers.make_repo(ROOT, "orderrepo")
 BO = cm(RO, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
