@@ -993,6 +993,43 @@ ok("RP20 run_pool hands a job the stop cut back as the first still to run, and t
 ok("RP20 its run file is an interrupted error, which `run` runs again without --retry-errors",
    jl(os.path.join(unit20c, "runs", "c.pre", "v3v3v3v3.json")).get("interrupted") is True, jl(os.path.join(unit20c, "runs", "c.pre", "v3v3v3v3.json")))
 
+print("RP21. the token stop counts every job's completed turns: a job starts no turn after another job's turn crossed it")
+unit21 = os.path.join(ROOT, "unit21")
+wr(os.path.join(unit21, "packet.txt"), "x")
+four = {"kind": "full", "action": "send", "packets": [{"file": os.path.join(unit21, "packet.txt"), "shown": []}] * 4}
+STARTS21, SEEN21, box21, waits21 = [], {}, {}, []
+Hm.TH = Hm.Threads(unit21)
+a21 = argparse.Namespace(state=unit21, budget=10, cap=2500)
+
+
+def interleaved(*args):
+    # job B's third turn is in progress (started, tokens unknown; its first two are done, 2000, in no run file yet) while job A runs whole
+    if args[0] == "turn-start":
+        STARTS21.append(args[0])
+    if args[0] == "turn-wait":
+        waits21.append(1)
+        if len(waits21) == 3:
+            box21["a"] = Hm.run_job(a21, dict(job, label="w1w1w1w1", decision=four))
+            SEEN21["after_a"] = Hm.spent_now(unit21)
+    return scripted(0, False)(*args)
+
+
+Hm.rpc = interleaved
+res_b = Hm.run_job(a21, dict(job, label="w2w2w2w2", decision=four))
+res_a = box21["a"]
+ok("RP21 job A, run while B's third turn was in progress, saw B's two completed turns (in no run file yet): it ran one turn and was cut by the stop",
+   res_a.get("stopped") and res_a["interrupted"] is True and res_a["tokens"] == 1000 and res_a["slices"] == 1 and "3000 tokens spent" in res_a["error"], res_a)
+ok("RP21 job B's third turn completed after A's run: B starts no fourth turn, is resumable, charged its three",
+   res_b.get("stopped") and res_b["interrupted"] is True and res_b["tokens"] == 3000 and res_b["slices"] == 3 and "4000 tokens spent" in res_b["error"], res_b)
+is_("RP21 four turns started in all (B 3, A 1)", len(STARTS21), 4)
+is_("RP21 with A finished and B's third turn in progress, B's two completed turns and A's one are counted once", SEEN21["after_a"], 3000)
+is_("RP21 both finished: the total is the two jobs' turns once, from the run files, with nothing left in flight", (Hm.spent_now(unit21), Hm.spent(unit21), Hm.FLIGHT), (4000, 4000, {}))
+# the same race through the pool: no job is started once the stop is reached by the jobs in flight
+Hm.FLIGHT[(unit21, "c.pre", "zzzzzzzz")] = 2600
+left21, _total21 = Hm.run_pool(a21, __import__("collections").deque([dict(job, label="w3w3w3w3", decision=four)]), 0, 2500, {})
+ok("RP21 a job in flight counts for the pool's start check: the pool starts nothing and hands the job back", [j["label"] for j in left21] == ["w3w3w3w3"], list(left21))
+Hm.FLIGHT.clear()
+
 print("RP17. N6: a crashed run is not recorded as finished")
 Hc = None
 os.environ.update(XREVIEW_REPLAY_RPC=FAKE_BIN, FAKE_STATE=os.path.join(ROOT, "fake-sc"), XDG_STATE_HOME=XDG, CODEX_HOME=CODEX)
@@ -1351,11 +1388,16 @@ def leak_run(tag, script):
     env = dict(menv, XDG_STATE_HOME=xdg, XREVIEW_REPLAY_RPC=stub, CODEX_REAL_BIN=helpers.stub_codex(cxd))
     p = subprocess.run([HARNESS, "run", "--state", state, "--codex-source", CODEX], capture_output=True, text=True, env=env)
     runs = [jl(f) for f in (os.path.join(state, "runs", cid, l + ".json") for cid, m in jl(os.path.join(state, "arms.json")).items() for l in m) if os.path.exists(f)]
-    return p, state, runs, helpers.read_log(os.path.join(rpcd, "rpc.log"))
+    return p, state, runs, helpers.read_log(os.path.join(rpcd, "rpc.log")), os.path.join(xdg, "review-work", "scratch")      # the scratch root this run used
+
+
+def left_in(scratch):
+    """What a run left in the scratch root it used (None: it never made one)."""
+    return os.listdir(scratch) if os.path.exists(scratch) else None
 
 
 cleanup = []
-p, st1, runs1, log1 = leak_run("leak1", {"turns": [LEAK], "default": CLEAN})
+p, st1, runs1, log1, scr1 = leak_run("leak1", {"turns": [LEAK], "default": CLEAN})
 is_("RP7m memories_leaks: a leaking run exits 0", p.returncode, 0)
 ok("RP7m memories_leaks: exactly one run was voided once and ran again, clean", sorted(len(r.get("voids", [])) for r in runs1) == [0] * 5 + [1]
    and not any(r["error"] for r in runs1), [(r.get("voids"), r["error"]) for r in runs1])
@@ -1364,7 +1406,7 @@ voided = [r for r in runs1 if r.get("voids")][0]
 ok("RP7m memories_leaks: the void names what it read", CHECKOUT in " ".join(voided["voids"][0]), voided["voids"])
 is_("RP7m memories_leaks: the run reports its own attempt's tokens, and the spend counts the voided attempt too", (voided["tokens"], voided["spent"]), (1000, 2000))
 is_("RP7m memories_leaks: the stop counts every attempt", jl(os.path.join(st1, "progress.json"))["tokens"], 7000)
-p, st2, runs2, log2 = leak_run("leak2", {"default": LEAK})
+p, st2, runs2, log2, scr2 = leak_run("leak2", {"default": LEAK})
 is_("RP7m memories_leaks: arms that leak twice end as error runs", sorted(set((r["error"] or "")[:10] for r in runs2)), ["void twice"])
 is_("RP7m memories_leaks: each ran exactly twice (and each home had its probe)", len([c for c in log2 if c["cmd"] == "turn-start"]), 15)
 is_("RP7m memories_leaks: and spent counts each of its two attempts once (2000, not 3000)", sorted(set((r["tokens"], r["spent"]) for r in runs2)), [(1000, 2000)])
@@ -1375,13 +1417,15 @@ rep2 = jl(os.path.join(st2, "report.json"))
 ok("RP7m memories_leaks: the report lists them and no switch passes on them",
    len(rep2["errors"]) == 6 and all("void twice" in e["error"] for e in rep2["errors"]) and rep2["switches"]["memories"]["n"] == 0
    and rep2["switches"]["memories"]["status"] != "pass", rep2["switches"])
-ok("RP7m memories_leaks: the voided attempts' checkouts are gone", not os.path.exists(SCR) or os.listdir(SCR) == [])
+is_("RP7m memories_leaks: the voided attempt's checkout, and the rebuilt one, are gone from the scratch root the leaking run used (one void)", left_in(scr1) in (None, []), True)
+is_("RP7m memories_leaks: ... and so are those of the runs that leaked twice", left_in(scr2) in (None, []), True)
+ok("RP7m memories_leaks: the two scratch roots are the runs' own, not the memories fixture's", len(set([scr1, scr2, SCR])) == 3, (scr1, scr2, SCR))
 # memories_probe: a home whose probe fails stops the run before any arm turn
-p, stp, runsp, logp = leak_run("probeA", {"default": CLEAN, "probe": {"answer": None, "rc": 1}})
+p, stp, runsp, logp, _scr = leak_run("probeA", {"default": CLEAN, "probe": {"answer": None, "rc": 1}})
 ok("RP7m memories_probe: a failing probe stops the run with a clear error", p.returncode == 1 and "isolation probe" in p.stdout and "no arm ran" in p.stdout, (p.returncode, p.stdout[-400:]))
 is_("RP7m memories_probe: no arm turn was started: the probe's is the only one", len([c for c in logp if c["cmd"] == "turn-start"]), 1)
 ok("RP7m memories_probe: no run was recorded, and progress says why", runsp == [] and "isolation probe" in (jl(os.path.join(stp, "progress.json")).get("crashed") or ""), runsp)
-p, stp, runsp, logp = leak_run("probeB", {"default": CLEAN, "probe": dict(PROBE, developer="Nothing is remembered here.")})
+p, stp, runsp, logp, _scr = leak_run("probeB", {"default": CLEAN, "probe": dict(PROBE, developer="Nothing is remembered here.")})
 ok("RP7m memories_probe: a snapshot home whose turn shows none of its memories fails the probe, and no arm of it ran",
    p.returncode == 1 and "memories" in p.stdout and all(r["home"] == "nomem" for r in runsp), (p.returncode, p.stdout[-400:], [r["home"] for r in runsp]))
 
@@ -1389,7 +1433,7 @@ for tag, cmd, what in (("leak3", "cat $XDG_STATE_HOME/review-work/scratch/other0
                        ("leak4", "ls $XDG_STATE_HOME/process-replay/memwatch", "the memories watcher's directory"),
                        ("leak5", "rg -n x ~/.codex/sessions", "October's rollouts")):
     LEAKX = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "name": "exec", "arguments": {"cmd": cmd, "workdir": "/"}}]}
-    p, stx, runsx, logx = leak_run(tag, {"turns": [LEAKX], "default": CLEAN})
+    p, stx, runsx, logx, _scr = leak_run(tag, {"turns": [LEAKX], "default": CLEAN})
     ok("RP7m memories_leaks: a run that read {} is void and runs again, clean".format(what), p.returncode == 0
        and sorted(len(r.get("voids", [])) for r in runsx) == [0] * 5 + [1] and not any(r["error"] for r in runsx),
        [(r.get("voids"), r["error"]) for r in runsx])
@@ -1401,7 +1445,7 @@ for tag, rel, clean, what in (("leak6", "mem-" + HA[:12] + "/memories/memory_sum
                               ("leak8", "nomem/skills/review/SKILL.md", "nomem", "a home's own skills/"),
                               ("leak9", "mem-" + HA[:12] + "/memories/../sessions/2026/x.jsonl", None, "a home's sessions/ by way of its memories/..")):
     READ = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "name": "exec", "arguments": {"cmd": "cat $XDG_STATE_HOME/cxh/" + rel, "workdir": "/"}}]}
-    p, stx, runsx, logx = leak_run(tag, {"default": READ})
+    p, stx, runsx, logx, _scr = leak_run(tag, {"default": READ})
     by_home = {}
     for r in runsx:
         by_home.setdefault(r["home"], []).append((len(r.get("voids", [])), (r["error"] or "")[:10]))

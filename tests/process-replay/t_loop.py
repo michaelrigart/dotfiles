@@ -1127,6 +1127,30 @@ for what, cut in (("pause", {"paused": "the weekly window is at 85%, resets_at 1
     ok("mid-round {}: the next command redoes the round: one review each, ending approved, the 40 tokens kept".format(what),
        all(x["end"] == "approve" and x["tokens"] >= 40 for x in w.runs()) and len(CALLS) == len(w.runs()), (CALLS, [(x["end"], x["tokens"]) for x in w.runs()]))
 
+# a round's turns are counted when they complete (K.flight_add) and charged to the run once, when its outcome is applied
+w = World("charged-once")
+behave(lambda run, k: ("approve", []))
+to_codex(w)
+base = dict((x["label"], x["tokens"]) for x in w.runs())
+def counted(run, k, tokens=100):
+    K.flight_add(w.args(), run, tokens)
+    return ("approve", [])
+behave(counted)
+go(w)
+ok("charged once: a round whose turns were counted in flight is charged what it reports, not that and the flight again",
+   all(x["tokens"] == base[x["label"]] + 100 for x in w.runs()) and all(K.in_flight(w.args(), x) == 0 for x in w.runs()), [(x["label"], x["tokens"], base[x["label"]]) for x in w.runs()])
+w = World("charged-lost")
+behave(lambda run, k: ("approve", []))
+to_codex(w)
+base = dict((x["label"], x["tokens"]) for x in w.runs())
+def broke(run, k):
+    K.flight_add(w.args(), run, 70)
+    return RuntimeError("an unexpected error after one turn")
+behave(broke)
+go(w)
+ok("charged once: an unexpected error that carries no count still charges the turns that completed before it",
+   all(x["tokens"] == base[x["label"]] + 70 and x["failures"] == 1 for x in w.runs()), [(x["label"], x["tokens"], base[x["label"]]) for x in w.runs()])
+
 w = World("fail")
 behave(lambda run, k: ("approve", []))
 to_codex(w)

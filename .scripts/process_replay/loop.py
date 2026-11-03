@@ -634,10 +634,17 @@ def _round(ctx, run, home):
         return e
 
 
+def _charge(ctx, run, out):
+    """Charge the tokens of a round's turns to its run: what the outcome reports, or what the round's completed turns recorded as in flight
+    if that is more (an unexpected error carries no count)."""
+    got = getattr(out, "tokens", 0) if isinstance(out, Exception) else out.get("tokens")
+    run["tokens"] += max(got or 0, K.in_flight(ctx.a, run))
+
+
 def _took(ctx, run, out):
     """Apply one round's outcome to its run (the main thread, one at a time). Whether the run moved."""
     if isinstance(out, Exception):
-        run["tokens"] += getattr(out, "tokens", 0) or 0
+        _charge(ctx, run, out)
         leak = getattr(out, "leak", None)
         if leak:
             _void(ctx, run, leak)
@@ -650,15 +657,15 @@ def _took(ctx, run, out):
             _error(run, str(out))
         return True
     if out.get("paused"):
-        run["tokens"] += out.get("tokens") or 0       # the turns of a round cut short were spent
+        _charge(ctx, run, out)       # the turns of a round cut short were spent
         say("{}: paused: {}".format(run["label"], out["paused"]))
         return False
     if out.get("stopped"):
-        run["tokens"] += out.get("tokens") or 0
+        _charge(ctx, run, out)
         say("{}: stopped: {}".format(run["label"], out["stopped"]))
         return False
     if out.get("leak"):
-        run["tokens"] += out.get("tokens") or 0
+        _charge(ctx, run, out)
         _void(ctx, run, out["leak"])
         say("{}: a round named the original checkout ({}); the run is void".format(run["label"], ", ".join(out["leak"])))
         return True
@@ -666,7 +673,7 @@ def _took(ctx, run, out):
     review["id"] = "{}-{}".format(run["label"], len(run["reviews"]))
     run["reviews"].append(review)
     run["thread"], run["round"], run["failures"] = out["thread"], out["k"], 0
-    run["tokens"] += out["tokens"]
+    _charge(ctx, run, out)
     if review["findings"]:
         _open_match(ctx, run, review)
     else:
@@ -700,8 +707,9 @@ def _rounds(ctx, runs, home):
                 except Exception as e:
                     out = e
                 try:
-                    moved |= _took(ctx, run, out)
-                    ctx.save(run)
+                    with K.settling(ctx.a, run):         # charged and saved in one step the other rounds' token checks cannot see half of
+                        moved |= _took(ctx, run, out)
+                        ctx.save(run)
                 except Exception as e:
                     error = error or e
                 finally:

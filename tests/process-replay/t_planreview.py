@@ -422,3 +422,48 @@ answers(STATE7, "judge-class", "plan-j1-0", {"class": "design"})
 _l, rep7 = P.report_section(STATE7)
 is_("single_plan: the finding is credited to that plan, not to (unattributed)",
     [(p["plan"], p["known"], p["design_p0p1"]) for p in rep7["plans"]], [(PLAN_A, 1, 1)])
+
+# ---------------------------------------------------------------- scenario 8: a two-plan round whose plans were fixed by different later rounds
+STATE8 = world("w8")
+T8 = "th-plan-8"
+timed_rollout(T8, [
+    {"turn": "z1", "start": t0, "end": t0 + 60, "answer": answer("changes", [finding("P1", PLAN_B, 5, "b cannot be satisfied"),
+                                                                              finding("P1", PLAN_A, 50, "a needs the helper first")])},
+    {"turn": "z2", "start": t0 + 120, "end": t0 + 180, "answer": answer("changes", [])},
+    {"turn": "z3", "start": t0 + 240, "end": t0 + 300, "answer": answer("approve", [])}])
+helpers.write_ledger(os.environ["XDG_STATE_HOME"], WT, [
+    plan_receipt("z1", "2026-10-13T10:00:00.000000Z", T8, "z1", WT, BASE, C2, {PLAN_A: A1B, PLAN_B: B1B}),
+    plan_receipt("z2", "2026-10-13T11:00:00.000000Z", T8, "z2", WT, BASE, C3, {PLAN_A: A2B, PLAN_B: B1B}),      # changes plan A only
+    plan_receipt("z3", "2026-10-13T12:00:00.000000Z", T8, "z3", WT, BASE, C4, {PLAN_A: A2B, PLAN_B: B2B}, verdict="approve")])    # then plan B
+P.plan_cases(args(STATE8))
+k8 = C.jload(os.path.join(STATE8, "judge-known", "plan-z1.json"))
+fix_a, _sep, fix_b = k8["interdiff"].partition("== the change to {} after this review ==".format(PLAN_B))
+ok("per_plan_next: round 1's judge-known input lists both findings", [f["index"] for f in k8["findings"]] == [0, 1], k8["findings"])
+ok("per_plan_next: ... and carries each plan's own next change: A's from round 2, B's from round 3",
+   "b-005 +1" in fix_b and "a-050 +1" not in fix_b and "a-050 +1" in fix_a and "b-005 +1" not in fix_a and PLAN_A in fix_a.split("\n")[0], k8["interdiff"])
+answers(STATE8, "judge-known", "plan-z1", {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 1, "answer": "yes"}]})
+P.plan_cases(args(STATE8))
+cb, ca = C.jload(os.path.join(STATE8, "judge-class", "plan-z1-0.json")), C.jload(os.path.join(STATE8, "judge-class", "plan-z1-1.json"))
+ok("per_plan_next: plan B's finding is classified against B's fix (round 3's), not A's change from round 2",
+   "b-005 +1" in cb["fix"] and "a-050" not in cb["fix"], cb["fix"])
+ok("per_plan_next: plan A's finding against A's fix, with none of B's", "a-050 +1" in ca["fix"] and "b-005" not in ca["fix"], ca["fix"])
+
+# ---------------------------------------------------------------- scenario 9: a finding about a plan no later round changed has no fix to judge
+STATE9 = world("w9")
+T9 = "th-plan-9"
+timed_rollout(T9, [
+    {"turn": "y1", "start": t0, "end": t0 + 60, "answer": answer("changes", [finding("P1", PLAN_B, 5, "b cannot be satisfied"),
+                                                                              finding("P1", PLAN_A, 50, "a needs the helper first")])},
+    {"turn": "y2", "start": t0 + 120, "end": t0 + 180, "answer": answer("approve", [])}])
+helpers.write_ledger(os.environ["XDG_STATE_HOME"], WT, [
+    plan_receipt("y1", "2026-10-14T10:00:00.000000Z", T9, "y1", WT, BASE, C2, {PLAN_A: A1B, PLAN_B: B1B}),
+    plan_receipt("y2", "2026-10-14T11:00:00.000000Z", T9, "y2", WT, BASE, C3, {PLAN_A: A2B, PLAN_B: B1B}, verdict="approve")])
+P.plan_cases(args(STATE9))
+k9 = C.jload(os.path.join(STATE9, "judge-known", "plan-y1.json"))
+ok("no_successor: only the finding whose plan a later round changed is put to the judge, under its own index, and the change shown is A's",
+   [f["index"] for f in k9["findings"]] == [1] and "a-050 +1" in k9["interdiff"] and "b-005" not in k9["interdiff"], k9)
+answers(STATE9, "judge-known", "plan-y1", {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 1, "answer": "yes"}]})
+P.plan_cases(args(STATE9))
+_l9, rep9 = P.report_section(STATE9)
+ok("no_successor: a 'yes' for the finding that was never put to the judge is not counted: one known finding, one class input",
+   rep9["known"] == 1 and sorted(os.listdir(os.path.join(STATE9, "judge-class"))) == ["plan-y1-1.json"], (rep9["known"], os.listdir(os.path.join(STATE9, "judge-class"))))

@@ -117,12 +117,22 @@ class World(object):
         if prepare:
             K.prepare_ledger(args(), self.run, self.case, self.branch)
 
+    def peek(self, home, **kw):
+        """A round whose outcome is not applied to the run (and so not charged): it leaves the flight as soon as it returns."""
+        a = args(**kw)
+        out = K.codex_round(a, self.run, self.case, self.branch, home)
+        with K.settling(a, self.run):
+            pass
+        return out
+
     def round(self, home, **kw):
-        out = K.codex_round(args(**kw), self.run, self.case, self.branch, home)
-        if out.get("kind") == "codex":
-            self.run["reviews"].append(out)
-            self.run["thread"] = out["thread"]
-            self.run["tokens"] += out["tokens"]
+        a = args(**kw)
+        out = K.codex_round(a, self.run, self.case, self.branch, home)
+        with K.settling(a, self.run):          # as the loop does: the outcome is charged and the round leaves the flight in one step
+            if out.get("kind") == "codex":
+                self.run["reviews"].append(out)
+                self.run["thread"] = out["thread"]
+                self.run["tokens"] += out["tokens"]
         return out
 
 
@@ -297,9 +307,9 @@ is_("weekly_pause: ... and no call was made to the daemon", log(stub), [])
 home = limits({"used_percent": 95, "window_minutes": 300}, {"used_percent": 10, "window_minutes": 10080}, "wk2")
 is_("weekly_pause: the secondary window is read when it is the weekly one; a 300-minute window is not", K.weekly(home), (10.0, FUTURE))
 home = limits({"used_percent": 79.9, "window_minutes": 10080}, None, "wk3")
-is_("weekly_pause: 79.9% does not pause", "paused" in K.codex_round(args(), w.run, w.case, w.branch, home), False)
+is_("weekly_pause: 79.9% does not pause", "paused" in w.peek(home), False)
 home = limits({"used_percent": 99, "window_minutes": 10080}, None, "wk4", resets=int(time.time()) - 5)
-is_("weekly_pause: a window that has reset does not pause", "paused" in K.codex_round(args(), w.run, w.case, w.branch, home), False)
+is_("weekly_pause: a window that has reset does not pause", "paused" in w.peek(home), False)
 home = limits({"used_percent": 90, "window_minutes": 10080}, None, "wk5", age=500)
 helpers.write_rollout(home, "newer", [{"turn": "n1", "answer": None, "rate_limits": {"primary": {"used_percent": 12, "window_minutes": 10080, "resets_at": FUTURE}}}])
 is_("weekly_pause: the newest rollout's figure is the one that counts", K.weekly(home), (12.0, FUTURE))
@@ -756,10 +766,10 @@ STATE2 = os.path.join(ROOT, "state-stop2")
 XR.jsave(os.path.join(STATE2, "runs", "cstop2", "lab1", "state.json"), {"case": "cstop2", "label": "lab1", "tokens": 99999})
 XR.jsave(os.path.join(STATE2, "runs", "cother2", "labx", "state.json"), {"case": "cother2", "label": "labx", "tokens": 500})
 w.run["tokens"] = 100
-out = K.codex_round(args(state=STATE2, max_tokens=1000), w.run, w.case, w.branch, home)
+out = w.peek(home, state=STATE2, max_tokens=1000)
 ok("token_stop: caller 100 + another run's 500 is below 1000: the run's own file (99999) is not counted", out.get("kind") == "codex", out)
 w.run["reviews"], w.run["thread"] = [], None
-out = K.codex_round(args(state=STATE2, max_tokens=600), w.run, w.case, w.branch, home)
+out = w.peek(home, state=STATE2, max_tokens=600)
 ok("token_stop: ... and 100 + 500 does stop at 600", set(out) == {"stopped"}, out)
 
 # ---- isolation: in-process calls read fixtures, never the account's own ~/.codex
@@ -841,6 +851,68 @@ stub = stub_for("midleak", home, {"turns": [dict(SLICE, rate_limits=HOT, tools=[
 out = w.round(home)
 ok("mid_round: the turns that ran are leak-scanned; a leak voids the round even though it stopped", set(out) == {"leak", "tokens", "thread", "turns"} and out["tokens"] == 1000 and out["leak"]
    and turns_started(stub) == 1, out)
+
+# ---- shared_tally: the token stop counts every job's completed turns, so a round starts no turn after another job's turn crossed it
+STATE_SH = os.path.join(ROOT, "state-shared")
+os.makedirs(STATE_SH)
+
+
+class Tape(object):
+    """Fake turns for two interleaved rounds: every turn completes with 1000 tokens; `during` runs while the first turn of the first round is
+    in progress (after it started, before its tokens are known)."""
+
+    def __init__(self):
+        self.started, self.during, self.fired = [], None, False
+
+    def one_turn(self, thread, packet_file, schema, cwd, budget, box):
+        self.started.append(cwd)
+        box["turn"] = "tu-%d" % len(self.started)
+        if self.during and not self.fired:
+            self.fired = True
+            self.during()
+        return {"verdict": "approve", "findings": [], "reviewed_files": []}, False
+
+
+def interleave(a_name, b_name, max_tokens):
+    """Round A's first turn is in progress while round B runs whole; then A's turn completes. Returns (A's outcome, B's outcome, the tape,
+    the two worlds)."""
+    wa, wb = World(a_name, big=True), World(b_name, big=True)
+    ha = hb = replay_home(a_name, window=110000)            # one replay home: rounds on two homes cannot share a process
+    tape, box = Tape(), {}
+    counter = {"n": 0}
+
+    def start(a, cwd):
+        counter["n"] += 1
+        return "th-%d" % counter["n"]
+    saved = (XR.one_turn, XR.turn_usage, K._start, K.leaks)
+    XR.one_turn, K._start, K.leaks = tape.one_turn, start, lambda *x, **y: []
+    XR.turn_usage = lambda thread, turn: {"tokens": 1000, "model": "m", "effort": "high"}
+    kw = {"state": STATE_SH, "max_tokens": max_tokens}
+    try:
+        tape.during = lambda: box.__setitem__("b", K.codex_round(args(**kw), wb.run, wb.case, wb.branch, hb))
+        box["a"] = K.codex_round(args(**kw), wa.run, wa.case, wa.branch, ha)
+    finally:
+        XR.one_turn, XR.turn_usage, K._start, K.leaks = saved
+    return box["a"], box["b"], tape, (wa, wb)
+
+
+out_a, out_b, tape, (wa, wb) = interleave("shra", "shrb", 2500)
+ok("shared_tally: job B's round, run while A's first turn was in progress, stopped at the line (3 turns of 1000, the 4th not started)",
+   "stopped" in out_b and out_b.get("tokens") == 3000, out_b)
+ok("shared_tally: job A's first turn completed after B's crossed the line: A starts no further packet and says what was spent",
+   "stopped" in out_a and out_a.get("tokens") == 1000 and len(tape.started) == 4 and "4000 tokens spent" in out_a["stopped"], (out_a, len(tape.started)))
+a_sh = args(state=STATE_SH, max_tokens=2500)
+is_("shared_tally: both rounds' turns are counted once while they are uncharged", K.spent_now(a_sh, wa.run), 4000)
+for w_, o_ in ((wa, out_a), (wb, out_b)):
+    with K.settling(a_sh, w_.run):
+        w_.run["tokens"] += o_["tokens"]
+        XR.jsave(os.path.join(STATE_SH, "runs", w_.run["case"], w_.run["label"], "state.json"), w_.run)
+is_("shared_tally: charged to their runs (and saved) the total is the same, not doubled", (K.spent_now(a_sh, wa.run), K.spent_now(a_sh, wb.run)), (4000, 4000))
+is_("shared_tally: a settled round leaves nothing in flight", (K.in_flight(a_sh, wa.run), K.in_flight(a_sh, wb.run)), (0, 0))
+
+out_a, out_b, tape, _ws = interleave("shrc", "shrd", 10 ** 9)
+ok("shared_tally: below the stop both rounds run every packet", out_a.get("kind") == "codex" and out_b.get("kind") == "codex"
+   and len(out_a["turns"]) == len(out_b["turns"]) and len(tape.started) == 2 * len(out_a["turns"]), (len(tape.started), out_a.get("kind"), out_b.get("kind")))
 
 # ---- missing_per_turn
 w = World("permissive", big=True)

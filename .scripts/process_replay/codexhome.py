@@ -674,8 +674,12 @@ def cmd_home(a):
     if a.dry_run:
         say("would use the replay home {} (source {})".format(home, a.codex_source or "its own, else ~/.codex"))
         return 0
-    if a.probe:      # the probe is a turn: at the weekly pause level nothing starts (not even --start), and no probe record is written
+    if a.probe:      # the probe is a turn: at the weekly pause level or the token stop nothing starts (not even --start), and no probe record is written
         from . import codex
+        spent = codex.spent_now(a, {})
+        if spent >= a.max_tokens:      # the token stop blocks every new turn, this one too
+            say("stopped: the Codex token stop: {} tokens spent, stop at {}; the probe was not run".format(spent, a.max_tokens))
+            return 1
         hold = codex.weekly_hold(home, os.path.abspath(os.path.expanduser(a.codex_source or "~/.codex")))
         if hold:
             say("paused: {}; the probe was not run, run it again after the reset".format(hold["paused"]))

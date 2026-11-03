@@ -653,6 +653,7 @@ ap_mod = __import__("argparse")
 ap = ap_mod.ArgumentParser()
 ap.add_argument("--state")
 ap.add_argument("--dry-run", action="store_true")
+ap.add_argument("--max-tokens", type=int, default=100000000)      # as process-replay.py gives every command
 H.add_args(ap)
 a = ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--login-cmd"])
 import io
@@ -707,6 +708,20 @@ try:
         rc = H.cmd_home(ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--name", "p-weekly", "--codex-source", pw_cold, "--probe"]))
     ok("probe_weekly: at 20% the probe runs its turn and records the result", rc == 0 and any(c["cmd"] == "turn-start" for c in rpc_log(pw_stub))
        and os.path.exists(os.path.join(pw_home, H.PROBED)), (rc, buf.getvalue()[-300:]))
+    # the token stop blocks the probe's turn too: charged tokens at the stop, in any run of the state
+    ts_state = os.path.join(ROOT, "ts-state")
+    H.XR.jsave(os.path.join(ts_state, "runs", "cx", "lab1", "state.json"), {"case": "cx", "label": "lab1", "tokens": 500})
+    n = len(rpc_log(pw_stub))
+    os.remove(os.path.join(pw_home, H.PROBED))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = H.cmd_home(ap.parse_args(["--state", ts_state, "--name", "p-weekly", "--codex-source", pw_cold, "--probe", "--max-tokens", "500"]))
+    ok("probe_tokens: at the token stop the probe starts no turn, writes no probe.json, says why and exits non-zero",
+       rc == 1 and len(rpc_log(pw_stub)) == n and not os.path.exists(os.path.join(pw_home, H.PROBED)) and "token stop: 500 tokens spent, stop at 500" in buf.getvalue(),
+       (rc, buf.getvalue(), rpc_log(pw_stub)[n:]))
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = H.cmd_home(ap.parse_args(["--state", ts_state, "--name", "p-weekly", "--codex-source", pw_cold, "--probe", "--max-tokens", "501"]))
+    ok("probe_tokens: one token below the stop the probe runs", rc == 0 and len(rpc_log(pw_stub)) > n, rc)
 finally:
     H.XR.RPC = UP
 

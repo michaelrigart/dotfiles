@@ -89,6 +89,8 @@ STOP = threading.Event()
 CHILDREN = set()
 PROTECTED = set()       # thread-creating calls: an interrupt lets them finish, so their thread is recorded
 LOCK = threading.RLock()
+TALLY = threading.RLock()     # guards FLIGHT and the move of a job's tokens from FLIGHT into its run file
+FLIGHT = {}                   # (state, case, label) -> the tokens the turns of a job in flight have completed (voided attempts too), not yet in its run file
 
 
 class Failed(Exception):
@@ -839,8 +841,10 @@ def review(a, job, dec, clone, schema, res, turns):
         if hold:
             raise Paused(hold)
         cap = getattr(a, "cap", None)
-        if i and cap is not None and spent(a.state) + res["tokens"] >= cap:       # an earlier packet's turn may have crossed the stop
-            raise Stopped("the token stop: {} tokens spent, stop at {}".format(spent(a.state) + res["tokens"], cap))
+        if cap is not None:       # every turn asks: any job's completed turn, in flight or in a run file, may have crossed the stop
+            now = spent_now(a.state)
+            if now >= cap:
+                raise Stopped("the token stop: {} tokens spent, stop at {}".format(now, cap))
         fk = job["fork"] if i == 0 else None
         if fk:
             rc, out, err = hist_call(fk["thread"], "thread-fork", "--thread", fk["thread"], "--last-turn", fk["last_turn"], "--cwd", clone)
@@ -858,6 +862,7 @@ def review(a, job, dec, clone, schema, res, turns):
                 turns.append((thread, box["turn"]))
                 use = turn_usage(thread, box["turn"])
                 res["tokens"] += use["tokens"]
+                flight_add(a.state, job, use["tokens"])
                 models.append((use["model"], use["effort"]))
         res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
         res["reviewed_files"] += [x for x in doc.get("reviewed_files") or [] if isinstance(x, str)]
@@ -942,7 +947,9 @@ def run_job(a, job):
     prior = jload(path) or {}
     # tokens: this attempt's, which report compares per arm; spent: every attempt's, which the stop counts
     res["spent"] = res["tokens"] + wasted + (prior.get("spent", prior.get("tokens")) or 0)
-    jsave(path, res)
+    with TALLY:         # the run file and the end of the flight in one step: spent_now counts the job's tokens once
+        jsave(path, res)
+        FLIGHT.pop((a.state, job["case"], job["label"]), None)
     return res
 
 
@@ -965,6 +972,19 @@ def build_scratch(a, job, clone, cdir):
         raise Failed("scratch checkout failed: {}".format(e))
     finally:
         shutil.rmtree(files, ignore_errors=True)
+
+
+def flight_add(state, job, tokens):
+    with TALLY:
+        key = (state, job["case"], job["label"])
+        FLIGHT[key] = FLIGHT.get(key, 0) + tokens
+
+
+def spent_now(state):
+    """Tokens spent at this moment: the run files (spent) plus every job in flight's completed turns, so one job sees another's turn the moment
+    it completes. The token stop blocks only new turns, so the overshoot is at most one turn per job in flight."""
+    with TALLY:
+        return spent(state) + sum(n for k, n in FLIGHT.items() if k[0] == state)
 
 
 def spent(state):
@@ -1008,7 +1028,10 @@ def run_pool(a, pending, total, cap, prog):
     running, hold, cut = {}, None, False
     with cf.ThreadPoolExecutor(JOBS) as pool:
         while pending or running:
-            while pending and len(running) < JOBS and total < cap and not hold and not cut:
+            while pending and len(running) < JOBS and not hold and not cut:
+                total = spent_now(a.state)       # every job in flight counts, not only the finished ones
+                if total >= cap:
+                    break
                 hold = weekly_hold(a)       # before each job; review() asks again before each of its turns
                 if hold:
                     prog["paused"] = hold
@@ -1019,7 +1042,7 @@ def run_pool(a, pending, total, cap, prog):
                 break
             done, _left = cf.wait(set(running), return_when=cf.FIRST_COMPLETED, timeout=2)
             jobs_done = [(f, running.pop(f)) for f in done]
-            total = spent(a.state)
+            total = spent_now(a.state)
             for f, job in jobs_done:
                 res = f.result()
                 if res.get("stopped"):      # cut between two packets by the token stop: it is the first to run again
@@ -1041,6 +1064,8 @@ def run_home(a, name, jobs, total, cap, prog, source):
     if hold:
         prog["paused"] = hold
         return collections.deque(jobs), total
+    if spent_now(a.state) >= cap:       # the probe is a turn: the token stop blocks it too
+        return collections.deque(jobs), spent_now(a.state)
     snap = next((j["memories"] for j in jobs if j["memories"]), None)
     cx.reclaim(cx.home_path(name))      # a daemon of this home that a crashed run left behind is stopped, not a crash
     home = cx.ensure(a.state, name, snap, bool(snap), source=source)

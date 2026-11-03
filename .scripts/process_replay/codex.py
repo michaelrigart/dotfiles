@@ -22,10 +22,14 @@ run["reviews"] and whose `thread` it makes the run's thread:
   {kind: "codex", k, findings, verdict, tokens, turns: [[thread, turn]], model, effort, missing, decision, thread}
 or one of
   {paused: str, resets_at: int, tokens?}  the weekly window is at WEEKLY_PAUSE percent or more; no further turn was started (every packet's turn asks)
-  {stopped: str, tokens?}               the token stop was reached (this round's own tokens count); no further turn was started
+  {stopped: str, tokens?}               the token stop was reached (spent_now: every completed turn of every run, in flight or charged, counts); no further turn was started
                                         With `tokens`, packets before the stop ran: they are charged to the run, the leak scan covered them (a leak
                                         returns {leak} as usual), and the round is no review, so the next command redoes it whole.
   {leak: [str], tokens, thread, turns}  a turn read or ran something that could give it the answers (forbidden()): the round is void
+The token stop blocks only new turns, so the overshoot is bounded by one turn per job in flight. That holds because every completed turn is counted
+at once in a tally shared by all rounds of the process (flight_add), and every turn start asks spent_now: the charged tokens of every run plus the
+tally of the rounds in flight. The caller charges a round's outcome to its run inside settling(), which drops the round from the tally in the same
+step, so no turn is counted twice or missed in between.
 A round that fails raises RoundFailed (a Failed that carries the tokens its turns used, the thread, and `.leak`:
 what the scan of whatever turns it ran found). The caller adds `tokens` of every outcome to the run's.
 
@@ -1083,15 +1087,47 @@ def leaks(home, turns, bounds, cwd=None):
 
 
 # ------------------------------------------------------------------ the round
-def _spent(a, run):
-    """Codex tokens of every run under the state, this run's as the caller holds it."""
-    total = run.get("tokens") or 0
-    for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "state.json")):
-        other = jload(path) or {}
-        if (other.get("case"), other.get("label")) != (run.get("case"), run.get("label")):
-            total += other.get("tokens") or 0
-    return total
+_TALLY = threading.RLock()       # guards _FLIGHT and, with it, every read of the runs' charged tokens
+_FLIGHT = {}                     # (state, case, label) -> the tokens of the turns the run's round in flight has completed, not yet charged to the run
 
+
+def _key(a, run):
+    return (a.state, run.get("case"), run.get("label"))
+
+
+def spent_now(a, run):
+    """Codex tokens spent under the state at this moment: every run's charged tokens (this run's as the caller holds it) plus the tokens of
+    every round in flight, this one's included. A turn that completes is counted at once (flight_add), and a round's outcome is charged to its
+    run under settling(), which drops the round from the flight in the same step, so a turn is counted exactly once."""
+    with _TALLY:
+        total = (run.get("tokens") or 0) + sum(n for k, n in _FLIGHT.items() if k[0] == a.state)
+        for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "state.json")):
+            other = jload(path) or {}
+            if (other.get("case"), other.get("label")) != (run.get("case"), run.get("label")):
+                total += other.get("tokens") or 0
+        return total
+
+
+def flight_add(a, run, tokens):
+    with _TALLY:
+        key = _key(a, run)
+        _FLIGHT[key] = _FLIGHT.get(key, 0) + tokens
+
+
+def in_flight(a, run):
+    """The tokens of the turns this run's round has completed and the run has not been charged."""
+    with _TALLY:
+        return _FLIGHT.get(_key(a, run), 0)
+
+
+@contextlib.contextmanager
+def settling(a, run):
+    """Hold the tally while the caller charges the round's outcome to `run` and saves it; the round leaves the flight when the block ends."""
+    with _TALLY:
+        try:
+            yield
+        finally:
+            _FLIGHT.pop(_key(a, run), None)
 
 
 def _start(a, cwd):
@@ -1103,12 +1139,12 @@ def _start(a, cwd):
     return thread
 
 
-def _halt(a, home, spent, mine):
-    """The reason no Codex turn may start now, as codex_round returns it: the token stop ({stopped}) when `spent` (every other run's tokens
-    and this run's recorded ones) and `mine` (the tokens of the round's own turns so far) reach a.max_tokens, else the weekly pause
-    (weekly_hold), else None."""
-    if spent + mine >= a.max_tokens:
-        return {"stopped": "the Codex token stop: {} tokens spent, stop at {}".format(spent + mine, a.max_tokens)}
+def _halt(a, home, run):
+    """The reason no Codex turn may start now, as codex_round returns it: the token stop ({stopped}) when spent_now (every completed turn of
+    every run, whichever job ran it) reaches a.max_tokens, else the weekly pause (weekly_hold), else None. Asked before every turn."""
+    spent = spent_now(a, run)
+    if spent >= a.max_tokens:
+        return {"stopped": "the Codex token stop: {} tokens spent, stop at {}".format(spent, a.max_tokens)}
     return weekly_hold(home)
 
 
@@ -1117,8 +1153,9 @@ def codex_round(a, run, case, branch, home):
     if not ledger_home or not os.path.isdir(ledger_home):
         raise Failed("the run has no prepared ledger (prepare_ledger runs at setup)")
     k = 1 + sum(1 for r in run.get("reviews") or [] if r.get("kind") == "codex")
-    spent = _spent(a, run)
-    halt = _halt(a, home, spent, 0)
+    with _TALLY:
+        _FLIGHT[_key(a, run)] = 0            # a round begins with nothing in flight; what an earlier one left was charged or is lost
+    halt = _halt(a, home, run)
     if halt:
         return halt
 
@@ -1154,7 +1191,7 @@ def codex_round(a, run, case, branch, home):
     halt = None
     with homed(home):
         for i, pk in enumerate(dec["packets"]):
-            halt = _halt(a, home, spent, res["tokens"]) if i else None      # every turn asks again: an earlier one may have crossed a limit
+            halt = _halt(a, home, run)      # every turn asks again: an earlier one, of this round or another job's, may have crossed a limit
             if halt:
                 break
             try:
@@ -1166,6 +1203,7 @@ def codex_round(a, run, case, branch, home):
                     if box.get("turn"):
                         use = XR.turn_usage(thread, box["turn"])
                         res["tokens"] += use["tokens"]
+                        flight_add(a, run, use["tokens"])
                         res["models"].append((use["model"], use["effort"]))
                         res["turns"].append([thread, box["turn"]])
             except Failed as e:

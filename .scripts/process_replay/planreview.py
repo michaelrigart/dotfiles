@@ -183,7 +183,7 @@ def collect(state, root):
                 chains[e["thread"]].append({
                     "nonce": e["nonce"], "at": at, "gitdir": gitdir, "reader": reader, "repo": C.repo_name(gitdir),
                     "thread": e["thread"], "turn": e["turn"], "verdict": e.get("verdict"), "base": target["base"],
-                    "tip": target["tip"], "counted": _in_window(at), "next": None,
+                    "tip": target["tip"], "counted": _in_window(at), "next": None, "nexts": {},
                     "plans": dict((p, b) for p, b in blobs.items() if isinstance(p, str) and isinstance(b, str))})
             elif (e.get("v") == 2 and e.get("kind") == "receipt" and e.get("checkpoint") == "pre-merge" and _in_window(at)
                   and isinstance(e.get("nonce"), str) and e["nonce"] not in seen):
@@ -206,11 +206,13 @@ def collect(state, root):
         for chain in chains.values():
             chain.sort(key=lambda r: r["at"])
             for i, r in enumerate(chain):
+                r["nexts"] = {}         # plan -> the first later round that changes that plan: its fix, whichever round fixed the others
                 for later in chain[i + 1:]:
                     changed = sorted(p for p, b in r["plans"].items() if p in later["plans"] and later["plans"][p] != b)
-                    if changed:
+                    if changed and r["next"] is None:
                         r["next"], r["changed"] = later, changed
-                        break
+                    for p in changed:
+                        r["nexts"].setdefault(p, later)
             rounds += [r for r in chain if r["counted"]]
     rounds.sort(key=lambda r: r["at"])
     for r in rounds:
@@ -219,6 +221,24 @@ def collect(state, root):
         r["findings"] = _findings(r["thread"], r["turn"])
         r["plan_of"] = dict((f["index"], _plan_of(f, r["plans"])) for f in r["findings"])
     return rounds, saving, skips
+
+
+def _fixes(r, findings):
+    """The changes that followed this round's review, as the findings need them: [(later round, [plans it changed that a finding is about])] in
+    the order the rounds came. A finding about a plan is judged against that plan's own next change, so a round that fixed another plan (or
+    only some of the round's plans) is not its fix; a finding about no plan sees every plan's next change. A finding about a plan no later
+    round changed has no fix and is left out (the second item: the findings that have one)."""
+    wanted, judged = {}, []
+    for f in findings:
+        plan = r["plan_of"][f["index"]]
+        paths = [plan] if plan else sorted(r["plans"])
+        paths = [p for p in paths if p in r["nexts"]]
+        if not paths:
+            continue
+        judged.append(f)
+        for p in paths:
+            wanted.setdefault(r["nexts"][p]["nonce"], (r["nexts"][p], set()))[1].add(p)
+    return sorted(((later, sorted(ps)) for later, ps in wanted.values()), key=lambda x: x[0]["at"]), judged
 
 
 def _judge_known_id(nonce):
@@ -243,25 +263,30 @@ def plan_cases(a):
     written = {"judge-known": 0, "judge-class": 0}
     keys = ("severity", "file", "line", "summary", "failure_scenario")
     for r in rounds:
-        r["asked"] = False
+        r["asked"], r["judged"] = False, set()
         if r["next"] is None or not r["findings"]:
             continue
         reader = r["reader"]
-        diff = reader.interdiff(r["tip"], r["next"]["tip"], r["changed"])
-        if diff is None:
+        fixes, judged = _fixes(r, r["findings"])
+        if not judged:
+            continue
+        diffs = [reader.interdiff(r["tip"], later["tip"], keep) for later, keep in fixes]
+        if any(d is None for d in diffs):
             skips.append({"kind": "round", "nonce": r["nonce"],
                           "reason": "the next round's tip cannot be read, or does not follow this tip"})
             continue
+        diff = diffs[0] if len(diffs) == 1 else "".join(
+            "== the change to {} after this review ==\n{}\n".format(", ".join(keep), d) for (later, keep), d in zip(fixes, diffs))
         C.judge_write(a.state, "judge-known", _judge_known_id(r["nonce"]),
-                      {"case": r["nonce"], "findings": r["findings"], "interdiff": diff})
-        r["asked"] = True
+                      {"case": r["nonce"], "findings": judged, "interdiff": diff})
+        r["asked"], r["judged"] = True, set(f["index"] for f in judged)
         written["judge-known"] += 1
         ans = C.judge_answer(a.state, "judge-known", _judge_known_id(r["nonce"]))
         if not isinstance(ans, dict):
             continue
         yes = set(v.get("index") for v in ans.get("verdicts") or [] if isinstance(v, dict) and v.get("answer") == "yes")
         for f in r["findings"]:
-            if f["index"] not in yes:
+            if f["index"] not in yes or f["index"] not in r["judged"]:
                 continue
             plan = r["plan_of"][f["index"]]
             paths = [plan] if plan else sorted(r["plans"])
@@ -272,7 +297,7 @@ def plan_cases(a):
                 continue
             body = _excerpt(texts[0][1], f.get("line")) if plan else _cap(
                 "".join("== {} ==\n{}\n".format(p, t) for p, t in texts), EXCERPT_CAP)
-            fix = reader.interdiff(r["tip"], r["next"]["tip"], [plan] if plan in r["changed"] else r["changed"])
+            fix = reader.interdiff(r["tip"], r["nexts"][plan]["tip"], [plan]) if plan in r["nexts"] else reader.interdiff(r["tip"], r["next"]["tip"], r["changed"])
             C.judge_write(a.state, "judge-class", _class_id(r["nonce"], f["index"]),
                           {"finding": dict((k, f.get(k)) for k in keys), "plan_excerpt": body,
                            "fix": fix if fix is not None else ""})
@@ -288,7 +313,7 @@ def plan_cases(a):
             "rounds": [{"nonce": r["nonce"], "at": r["at"], "repo": r["repo"], "plans": sorted(r["plans"]), "thread": r["thread"],
                         "turn": r["turn"], "verdict": r["verdict"], "minutes": r["minutes"], "tokens": r["tokens"],
                         "next": r["next"]["nonce"] if r["next"] else None, "asked": r["asked"],
-                        "findings": [dict(f, plan=r["plan_of"][f["index"]]) for f in r["findings"]]} for r in rounds]})
+                        "findings": [dict(f, plan=r["plan_of"][f["index"]], judged=f["index"] in r["judged"]) for f in r["findings"]]} for r in rounds]})
     return 0
 
 
@@ -337,7 +362,7 @@ def report_section(state):
             continue
         yes = set(v.get("index") for v in ans.get("verdicts") or [] if isinstance(v, dict) and v.get("answer") == "yes")
         for f in r["findings"]:
-            if f["index"] not in yes:
+            if f["index"] not in yes or not f.get("judged", True):       # a finding with no later change to its plan was not put to the judge
                 continue
             known += 1
             p = row(r["repo"], f.get("plan") or "(unattributed)")
