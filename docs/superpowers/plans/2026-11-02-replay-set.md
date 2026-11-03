@@ -814,7 +814,9 @@ changed nothing: run it again when the other command has finished. While §4's `
    every run has ended. The driver saves each final reviewer's last message, verbatim, to
    `answer.md` beside the staged `brief.md` that `pending` names. If `match` cannot find a final reviewer's transcript, point
    it there with `match --transcript <id>=<path>`. A weekly-usage pause: run `run` again after its
-   `resets_at`. A round that fails twice ends its run as `error`.
+   `resets_at`. A round that fails twice ends its run as `error`. If `cases` or `inject` has to run again once
+   runs exist, `run` sets aside every run whose case inputs changed (kept, marked superseded, no longer
+   listed by `pending`) and starts fresh ones; `report` counts only current runs and says how many it set aside.
 6. `report`. Then §5: `cases --plans`, its judge-known answers, `cases --plans` again (it writes the
    judge-class inputs), their answers, and `report` again.
 7. In the dotfiles checkout on `replay-set`: §11 of the spec gets the results (tables from
