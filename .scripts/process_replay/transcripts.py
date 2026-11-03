@@ -317,7 +317,7 @@ def _copy(src, dest):
     except OSError:
         pass
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    tmp = dest + ".tmp{}".format(os.getpid())
+    tmp = C.XR.tmp_name(dest)
     try:
         shutil.copy2(src, tmp)
         os.replace(tmp, dest)

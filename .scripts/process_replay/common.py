@@ -14,6 +14,10 @@ directory of its own, $XDG_STATE_HOME/review-work/items/<random hex>/ (item_dir;
 holding only that item's files: a judge's input.json and brief.md, and the answer.json it writes; a final review's
 brief.md and package.diff, and the answer.md the driver writes. judge_answer and collect_final copy an answer back into
 the state when they read it. Recreations keep their aliased paths (alias, aliased).
+A judge's directory serves one version of its input: <state>/staged.json records the sha256 of the input it was staged from.
+An answer written there is collected only while that is still the input; once the input has changed it is set aside as
+<id>.stale-<n>.answer.json, and the item is staged again in a new directory, whatever the order in which the input, the
+staging and the answer were written (item_dir, _collected).
 
 An answer counts only when it matches its kind's schema (ANSWERS, checked by answer_problem against the input it answers): every key
 the brief asks for, a value of an allowed type for each, an allowed value for every item the input asks about and nothing it was not
@@ -29,6 +33,7 @@ and every take is non-blocking: a lock another process holds is a refusal at onc
 import contextlib
 import fcntl
 import functools
+import hashlib
 import importlib.util
 import json
 import os
@@ -297,13 +302,14 @@ def judge_write(state, kind, jid, doc):
     path = os.path.join(state, kind, jid + ".json")
     old = jload(path)
     if old != doc:
-        # an answer is for the input it saw: the collected one is set aside (kept, as <id>.stale-<n>.answer.json) and the staged
-        # one removed, so the item is pending again. An answer with no input before it (put by hand) stays.
+        # an answer is for the input it saw: the collected one is set aside (kept, as <id>.stale-<n>.answer.json), and so is one
+        # written in the staged directory, which is retired, so the item is pending again. An answer with no input before it (put by hand)
+        # stays.
         if old is not None:
             set_aside(state, kind, jid, "stale")
-        staged = _staged(state, kind, jid)
-        if staged:
-            _unlink(os.path.join(staged, "answer.json"))
+        if _staged(state, kind, jid):
+            with _items(state) as (rec, _dirs):
+                _retire(state, kind, jid, rec)
     jsave(path, doc)
     return path
 
@@ -329,23 +335,28 @@ def _parsed(path):
 
 def _collected(state, kind, jid):
     """The judge's answer, or NOTHING. One written in the staged item's directory is copied into the state (and removed from the item)
-    when it parses."""
+    when it parses and the directory was staged from the input as it is now; one written against an earlier input is set aside as stale
+    (_retire) and the item is pending again, to be staged anew. The staged answer is read under items.lock, so no staging or retirement
+    goes on between the check and the move."""
     path = os.path.join(state, kind, jid + ".answer.json")
     got = _parsed(path)
     if got is not NOTHING:
         return got
     staged = _staged(state, kind, jid)
-    if staged:
-        theirs = os.path.join(staged, "answer.json")
-        got = _parsed(theirs)
-        if got is not NOTHING:
-            with open(theirs, "rb") as f:
-                data = f.read()
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path + ".tmp{}".format(os.getpid()), "wb") as f:
-                f.write(data)
-            os.replace(path + ".tmp{}".format(os.getpid()), path)
-            _unlink(theirs)
+    if not staged or not os.path.exists(os.path.join(staged, "answer.json")):
+        return NOTHING
+    with _items(state) as (rec, dirs):
+        name = rec.get(kind + "/" + jid)
+        theirs = os.path.join(items_root(), name, "answer.json") if isinstance(name, str) else None
+        got = _parsed(theirs) if theirs else NOTHING
+        if got is NOTHING:
+            return NOTHING
+        if not _staged_from(dirs, name, _input_digest(state, kind, jid)):
+            _retire(state, kind, jid, rec)
+            return NOTHING
+        with open(theirs, "rb") as f:
+            XR.write_whole(path, f.read())
+        _unlink(theirs)
     return got
 
 
@@ -366,15 +377,25 @@ def set_aside(state, kind, jid, why):
     path = os.path.join(state, kind, jid + ".answer.json")
     if not os.path.exists(path):
         return None
-    n = 1
-    while os.path.exists(os.path.join(state, kind, "{}.{}-{}.answer.json".format(jid, why, n))):
-        n += 1
-    aside = os.path.join(state, kind, "{}.{}-{}.answer.json".format(jid, why, n))
+    aside = _aside_name(state, kind, jid, why)
     try:
         os.replace(path, aside)
     except FileNotFoundError:       # a command beside this one (both sharing the state) set it aside first
+        _unlink(aside)
         return None
     return aside
+
+
+def _aside_name(state, kind, jid, why):
+    """A new <id>.<why>-<n>.answer.json, reserved (made, empty, only if it did not exist) so two set-asides never take one name."""
+    n = 1
+    while True:
+        aside = os.path.join(state, kind, "{}.{}-{}.answer.json".format(jid, why, n))
+        try:
+            os.close(os.open(aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+            return aside
+        except FileExistsError:
+            n += 1
 
 
 # ------------------------------------------------------------------ answer schemas
@@ -633,7 +654,10 @@ def _answer_file(state, kind, jid):
     got = _parsed(os.path.join(state, kind, jid + ".answer.json"))
     if got is NOTHING:
         staged = _staged(state, kind, jid)
-        got = _parsed(os.path.join(staged, "answer.json")) if staged else NOTHING
+        theirs = os.path.join(staged, "answer.json") if staged else None
+        if theirs and os.path.exists(theirs) and _staged_from(jload(os.path.join(state, STAGED)), os.path.basename(staged),
+                                                                _input_digest(state, kind, jid)):
+            got = _parsed(theirs)
     return got
 
 
@@ -679,9 +703,7 @@ def collect_final(state, jid):
     if theirs and _final_text(theirs):
         with open(theirs, "rb") as f:
             data = f.read()
-        with open(path + ".tmp{}".format(os.getpid()), "wb") as f:
-            f.write(data)
-        os.replace(path + ".tmp{}".format(os.getpid()), path)
+        XR.write_whole(path, data)
         _unlink(theirs)
         return path
     return None
@@ -756,22 +778,78 @@ def _staged(state, kind, jid):
     return os.path.join(items_root(), name) if isinstance(name, str) else None
 
 
-def item_dir(state, kind, jid):
-    """The staged directory of an item, allocated (a random 16-hex name, recorded in <state>/items.json) and made on first use."""
+STAGED = "staged.json"      # <state>/staged.json: {staged directory name: {"item": "<kind>/<id>", "input": sha256 of the input it serves}}
+
+
+def _input_digest(state, kind, jid, data=None):
+    """The sha256 of a judge input's bytes (`data`, else the file as it is now), or None without one."""
+    if data is None:
+        try:
+            with open(os.path.join(state, kind, jid + ".json"), "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+    return hashlib.sha256(data).hexdigest()
+
+
+def _staged_from(dirs, name, digest):
+    """Whether staged directory `name` serves the input whose digest is `digest` (staged.json's record `dirs`)."""
+    rec = dirs.get(name) if isinstance(dirs, dict) else None
+    return isinstance(rec, dict) and digest is not None and rec.get("input") == digest
+
+
+@contextlib.contextmanager
+def _items(state):
+    """items.json ({<kind>/<id>: its current staged directory}) and staged.json, held under <state>/items.lock and given to the block to
+    change in place; each is written back when it changed. Every change to either goes through here."""
     os.makedirs(state, exist_ok=True)
-    path = os.path.join(state, "items.json")
     with open(os.path.join(state, "items.lock"), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        rec = jload(path)
-        rec = rec if isinstance(rec, dict) else {}
-        key = kind + "/" + jid
+        rec, dirs = jload(os.path.join(state, "items.json")), jload(os.path.join(state, STAGED))
+        rec, dirs = (rec if isinstance(rec, dict) else {}), (dirs if isinstance(dirs, dict) else {})
+        before = json.dumps(rec, sort_keys=True), json.dumps(dirs, sort_keys=True)
+        yield rec, dirs
+        if json.dumps(rec, sort_keys=True) != before[0]:
+            jsave(os.path.join(state, "items.json"), rec)
+        if json.dumps(dirs, sort_keys=True) != before[1]:
+            jsave(os.path.join(state, STAGED), dirs)
+
+
+def _retire(state, kind, jid, rec):
+    """(Inside _items.) The item's current staged directory no longer serves it: an answer in it is set aside as stale (moved into the
+    state, content kept, said so), and the item has no directory until it is staged again, in a new one. The old directory stays, listed
+    in staged.json for cleanup; an answer written there later is never read."""
+    name = rec.pop(kind + "/" + jid, None)
+    theirs = os.path.join(items_root(), name, "answer.json") if isinstance(name, str) else None
+    if not theirs or not os.path.exists(theirs):
+        return
+    aside = _aside_name(state, kind, jid, "stale")
+    with open(theirs, "rb") as f:
+        XR.write_whole(aside, f.read())
+    _unlink(theirs)
+    say("{} {}: the judge answered an earlier version of its input (it changed after it was staged): the answer is not used; it is set "
+        "aside as {} and the item is pending again with the current input".format(kind, jid, os.path.basename(aside)))
+
+
+def item_dir(state, kind, jid, digest=None):
+    """The staged directory of an item, allocated (a random 16-hex name, recorded in <state>/items.json) and made on first use. A judge's
+    directory serves one version of its input: staged.json records the digest it was allocated for (`digest`, else the input's as it is
+    now), and once the input differs the old directory is retired (_retire) and the item gets a new one."""
+    judge = kind in JUDGE_KINDS
+    if judge and digest is None:
+        digest = _input_digest(state, kind, jid)
+    key = kind + "/" + jid
+    with _items(state) as (rec, dirs):
+        if judge and key in rec and not _staged_from(dirs, rec[key], digest):
+            _retire(state, kind, jid, rec)
         if key not in rec:
             while True:
                 name = os.urandom(8).hex()
-                if name not in rec.values() and not os.path.exists(os.path.join(items_root(), name)):
+                if name not in rec.values() and name not in dirs and not os.path.exists(os.path.join(items_root(), name)):
                     break
             rec[key] = name
-            jsave(path, rec)
+            if judge:
+                dirs[name] = {"item": key, "input": digest}
         d = os.path.join(items_root(), rec[key])
     os.makedirs(d, exist_ok=True)
     return d
@@ -785,9 +863,7 @@ def _write_if_changed(path, data):
                 return
     except OSError:
         pass
-    with open(path + ".tmp{}".format(os.getpid()), "wb") as f:
-        f.write(data)
-    os.replace(path + ".tmp{}".format(os.getpid()), path)
+    XR.write_whole(path, data)
 
 
 def _pending(state):
@@ -867,18 +943,21 @@ def brief_for(state, kind, jid):
 
 def _stage(state, item):
     kind, jid, inp, _ans, brief = item
-    ans, agent_brief = _agent_paths(state, item)
     if kind in JUDGE_KINDS:
-        d = os.path.dirname(agent_brief)
         kind_brief = os.path.join(state, "judges", kind + ".md")
         if not os.path.isfile(kind_brief):
             write_briefs(state)
         with open(kind_brief, encoding="utf-8") as f:
             text = f.read()
         with open(inp, "rb") as f:
-            _write_if_changed(os.path.join(d, "input.json"), f.read())
+            data = f.read()
+        d = item_dir(state, kind, jid, _input_digest(state, kind, jid, data))      # the directory of exactly the bytes staged into it
+        ans, agent_brief = os.path.join(d, "answer.json"), os.path.join(d, "brief.md")
+        _write_if_changed(os.path.join(d, "input.json"), data)
         _write_if_changed(agent_brief, text.rstrip("\n") + "\n\nInput: {}\nWrite your answer to: {}\n".format(os.path.join(d, "input.json"), ans))
-    elif kind == "final":
+        return agent_brief
+    _ans, agent_brief = _agent_paths(state, item)
+    if kind == "final":
         with open(brief, "rb") as f:
             _write_if_changed(agent_brief, f.read())
     return agent_brief

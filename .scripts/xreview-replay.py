@@ -57,6 +57,7 @@ import copy
 import functools
 import glob
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -164,12 +165,33 @@ def jload(path, default=None):
         return default
 
 
-def jsave(path, data):
+_WRITES = itertools.count()       # one number per write in this process (next() on it is atomic under the GIL)
+
+
+def tmp_name(path):
+    """A temporary name beside `path` that no other write uses: this process, this thread and a number of its own. Two writes of one path,
+    from two threads or two processes, never share a temporary file, so each os.replace puts a whole file in place."""
+    return "{}.tmp{}.{}.{}".format(path, os.getpid(), threading.get_ident(), next(_WRITES))
+
+
+def write_whole(path, data):
+    """Write `data` (bytes or text) to `path` atomically, through a temporary file of this write's own (tmp_name)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp{}".format(os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(data if isinstance(data, str) else json.dumps(data, indent=2))
-    os.replace(tmp, path)
+    tmp = tmp_name(path)
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data if isinstance(data, bytes) else data.encode("utf-8"))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def jsave(path, data):
+    write_whole(path, data if isinstance(data, str) else json.dumps(data, indent=2))
 
 
 def sh(argv, timeout=None, protect=False):

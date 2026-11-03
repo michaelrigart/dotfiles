@@ -114,6 +114,125 @@ jfile(os.path.join(state, "judge-match", "h2.answer.json"), {"matches": ["by han
 ok("answers_complete: but without an input its matches must still be objects, or it is set aside, unused",
    C.accepted_answer(state, "judge-match", "h2") is None and C.jload(os.path.join(state, "judge-match", "h2.rejected-1.answer.json")) == {"matches": ["by hand"]})
 
+# ---- staged_version: an input rewritten while `pending` stages it (a `run` or `match` beside it): an answer the judge writes to the copy it
+# was handed is never taken for the new input, whatever the order of the rewrite, the staging and the answer; the item is pending again,
+# staged with the input as it is now
+V_OLD, V_NEW = {"finding": "old"}, {"finding": "new"}
+
+
+def staged_input(state, kind, jid):
+    """The input.json beside the brief the `pending` command stages and hands out now for the item."""
+    return C.jload(os.path.join(os.path.dirname(C.brief_for(state, kind, jid)), "input.json"))
+
+
+def rewrite_during(name, target):
+    """Stage judge-present v1 while its input is rewritten at `target` (a common function _stage calls after it has read the input):
+    the judge then answers the copy it was handed. What comes of that answer."""
+    state = os.path.join(ROOT, "st-version-" + name)
+    C.judge_write(state, "judge-present", "v1", V_OLD)
+    real = getattr(C, target)
+    fired = []
+
+    def hooked(*args, **kw):
+        if not fired:
+            fired.append(1)
+            C.judge_write(state, "judge-present", "v1", V_NEW)       # a `run` beside `pending` rewrites the input now
+        return real(*args, **kw)
+    setattr(C, target, hooked)
+    try:
+        brief = C.brief_for(state, "judge-present", "v1")
+    finally:
+        setattr(C, target, real)
+    handed = C.jload(os.path.join(os.path.dirname(brief), "input.json"))
+    jfile(os.path.join(os.path.dirname(brief), "answer.json"), {"answer": "yes"})        # the judge answers what it was handed
+    listed = [p[1] for p in C.pending(state)]
+    return state, fired, handed, listed, C.accepted_answer(state, "judge-present", "v1"), [p[1] for p in C.pending(state)]
+
+
+for name, target, where in (("copy", "_write_if_changed", "after pending read the input and chose its directory, before it wrote the copy"),
+                            ("record", "item_dir", "after pending read the input, before it chose and recorded the directory")):
+    state, fired, handed, listed, got, after = rewrite_during(name, target)
+    ok("staged_version: the input rewritten {}: the judge was handed the old copy (control)".format(where), fired and handed == V_OLD, (fired, handed))
+    ok("staged_version: ... its answer to it is not taken, by pending or by the reader, and the item is pending again".format(where),
+       listed == ["v1"] and got is None and after == ["v1"], (listed, got, after))
+    is_("staged_version: ... staged anew with the input as it is now ({})".format(name), staged_input(state, "judge-present", "v1"), V_NEW)
+# staged again before any answer: the directory handed out for the old copy is not handed out again for the new input, so the new
+# judge's answer is taken, and a late answer of the old judge is not
+state = os.path.join(ROOT, "st-version-again")
+C.judge_write(state, "judge-present", "v1", V_OLD)
+real_item_dir, fired = C.item_dir, []
+
+
+def rewrite_first(*args, **kw):
+    if not fired:
+        fired.append(1)
+        C.judge_write(state, "judge-present", "v1", V_NEW)
+    return real_item_dir(*args, **kw)
+
+
+C.item_dir = rewrite_first
+try:
+    old_dir = os.path.dirname(C.brief_for(state, "judge-present", "v1"))
+finally:
+    C.item_dir = real_item_dir
+new_dir = os.path.dirname(C.brief_for(state, "judge-present", "v1"))
+jfile(os.path.join(new_dir, "answer.json"), {"answer": "no"})
+jfile(os.path.join(old_dir, "answer.json"), {"answer": "yes"})
+ok("staged_version: staged again before any answer, the new input gets a directory of its own, holding it (control: the old copy was handed out)",
+   old_dir != new_dir and C.jload(os.path.join(old_dir, "input.json")) == V_OLD and C.jload(os.path.join(new_dir, "input.json")) == V_NEW, (old_dir, new_dir))
+ok("staged_version: ... and the new judge's answer is taken, not the old judge's", C.accepted_answer(state, "judge-present", "v1") == {"answer": "no"}
+   and C.pending(state) == [])
+# a judge that answers late, into the directory of an input that has changed and been staged anew since
+state = os.path.join(ROOT, "st-version-late")
+C.judge_write(state, "judge-present", "v1", V_OLD)
+first = os.path.dirname(C.brief_for(state, "judge-present", "v1"))
+C.judge_write(state, "judge-present", "v1", V_NEW)
+second = os.path.dirname(C.brief_for(state, "judge-present", "v1"))
+jfile(os.path.join(first, "answer.json"), {"answer": "yes"})
+ok("staged_version: a late answer into the old input's directory, after the new input is staged, is not taken: the item is pending in the new one",
+   first != second and C.accepted_answer(state, "judge-present", "v1") is None and [p[1] for p in C.pending(state)] == ["v1"]
+   and C.jload(os.path.join(second, "input.json")) == V_NEW, (first, second))
+jfile(os.path.join(second, "answer.json"), {"answer": "no"})
+ok("staged_version: the answer in the new input's directory is taken", C.accepted_answer(state, "judge-present", "v1") == {"answer": "no"}
+   and C.pending(state) == [])
+# the directory record itself: an input changed with no retirement at all (written past judge_write) still makes the staged answer stale
+state = os.path.join(ROOT, "st-version-record")
+C.judge_write(state, "judge-present", "v1", V_OLD)
+d = os.path.dirname(C.brief_for(state, "judge-present", "v1"))
+C.jsave(os.path.join(state, "judge-present", "v1.json"), V_NEW)
+jfile(os.path.join(d, "answer.json"), {"answer": "yes"})
+ok("staged_version: a staged answer whose directory's recorded input is not the current one is set aside as stale, kept, and pending again",
+   C.accepted_answer(state, "judge-present", "v1") is None and C.jload(os.path.join(state, "judge-present", "v1.stale-1.answer.json")) == {"answer": "yes"}
+   and not os.path.exists(os.path.join(d, "answer.json")) and staged_input(state, "judge-present", "v1") == V_NEW)
+
+# ---- one_write_one_temp: two threads writing one path, again and again, never share a temporary file: no write fails, the file is
+# always one whole write, and no temporary file is left
+import threading
+path = os.path.join(ROOT, "st-threads", "same.json")
+payloads = [{"who": w, "pad": w * 200000} for w in ("a", "b")]
+errors, seen = [], []
+
+
+def writer(doc):
+    for _ in range(150):
+        try:
+            C.jsave(path, doc)
+            got = C.jload(path)
+            if got not in payloads:
+                seen.append(got if got is None else str(got)[:40])
+        except Exception as e:
+            errors.append("{}: {}".format(type(e).__name__, e))
+
+
+threads = [threading.Thread(target=writer, args=(doc,)) for doc in payloads]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+ok("one_write_one_temp: two threads writing one path 300 times: no write fails", not errors, errors[:3])
+ok("one_write_one_temp: every read finds one whole write", not seen and C.jload(path) in payloads, seen[:3])
+is_("one_write_one_temp: no temporary file is left beside it", sorted(os.listdir(os.path.dirname(path))), ["same.json"])
+
 # ---- answers_schema: for every judge kind (each form of judge-match), malformed variants generated from a valid answer -- each key missing,
 # each value replaced by a value of every JSON type, indices out of range, items dropped, repeated or added -- are each refused without an
 # exception (by `pending` and by the reader), set aside unchanged, and the item is pending again. The variants a schema must accept (a null
@@ -267,24 +386,30 @@ os.unlink(os.path.join(d2, "answer.json"))
 ok("staged: with no answer there, the item is pending again", [p[1] for p in C.pending(state)] == ["s2"])
 jfile(os.path.join(d2, "answer.json"), {"matches": ["old"]})
 C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}]})
-ok("staged: a changed input drops an uncollected answer to the old one", not os.path.exists(os.path.join(d2, "answer.json")) and C.judge_answer(state, "judge-match", "s2") is None)
-# a changed input also sets aside the answer already collected into the state (its content kept), not only a staged one
-jfile(os.path.join(d2, "answer.json"), {"matches": ["old"]})
-is_("stale: the judge answers the input as it stands, and the answer is collected", C.judge_answer(state, "judge-match", "s2"), {"matches": ["old"]})
-jfile(os.path.join(d2, "answer.json"), {"matches": ["staged-too"]})
-C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}, {"index": 1}]})
 mdir = os.path.join(state, "judge-match")
+ok("staged: a changed input sets aside an uncollected answer to the old one (kept, as stale), and the item is pending again",
+   not os.path.exists(os.path.join(d2, "answer.json")) and C.judge_answer(state, "judge-match", "s2") is None
+   and C.jload(os.path.join(mdir, "s2.stale-1.answer.json")) == {"matches": ["old"]} and [p[1] for p in C.pending(state)] == ["s2"])
+d2b = os.path.dirname(C.brief_for(state, "judge-match", "s2"))
+ok("staged: the changed input is staged in a directory of its own", d2b != d2 and C.jload(os.path.join(d2b, "input.json")) == {"defects": [{"index": 0}]}
+   and sorted(os.listdir(d2b)) == ["brief.md", "input.json"], (d2, d2b))
+# a changed input also sets aside the answer already collected into the state (its content kept), and the staged one
+jfile(os.path.join(d2b, "answer.json"), {"matches": ["first"]})
+is_("stale: the judge answers the input as it stands, and the answer is collected", C.judge_answer(state, "judge-match", "s2"), {"matches": ["first"]})
+jfile(os.path.join(d2b, "answer.json"), {"matches": ["staged-too"]})
+C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}, {"index": 1}]})
 ok("stale: a collected answer to the old input is not the answer to the new one", C.judge_answer(state, "judge-match", "s2") is None
-   and not os.path.exists(os.path.join(mdir, "s2.answer.json")) and not os.path.exists(os.path.join(d2, "answer.json")))
-is_("stale: the collected answer is kept aside, unchanged", C.jload(os.path.join(mdir, "s2.stale-1.answer.json")), {"matches": ["old"]})
+   and not os.path.exists(os.path.join(mdir, "s2.answer.json")) and not os.path.exists(os.path.join(d2b, "answer.json")))
+is_("stale: the collected answer is kept aside, unchanged, and so is the staged one", (C.jload(os.path.join(mdir, "s2.stale-2.answer.json")),
+    C.jload(os.path.join(mdir, "s2.stale-3.answer.json"))), ({"matches": ["first"]}, {"matches": ["staged-too"]}))
 ok("stale: the item is pending again, and the set-aside answer is not an input", [p[1] for p in C.pending(state) if p[0] == "judge-match"] == ["s2"]
-   and "s2.stale-1" not in C._inputs(state, "judge-match"))
+   and "s2.stale-2" not in C._inputs(state, "judge-match"))
 jfile(os.path.join(mdir, "s2.answer.json"), {"matches": ["new"]})
 C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}, {"index": 1}]})
 is_("stale: writing the same input again keeps its answer", C.judge_answer(state, "judge-match", "s2"), {"matches": ["new"]})
 C.judge_write(state, "judge-match", "s2", {"defects": []})
-is_("stale: a second change sets aside under a name of its own", (sorted(n for n in os.listdir(mdir) if ".stale-" in n), C.jload(os.path.join(mdir, "s2.stale-2.answer.json"))),
-    (["s2.stale-1.answer.json", "s2.stale-2.answer.json"], {"matches": ["new"]}))
+is_("stale: a further change sets aside under a name of its own", (sorted(n for n in os.listdir(mdir) if ".stale-" in n), C.jload(os.path.join(mdir, "s2.stale-4.answer.json"))),
+    (["s2.stale-1.answer.json", "s2.stale-2.answer.json", "s2.stale-3.answer.json", "s2.stale-4.answer.json"], {"matches": ["new"]}))
 jfile(os.path.join(mdir, "s3.answer.json"), {"matches": ["by hand"]})
 C.judge_write(state, "judge-match", "s3", {"defects": []})
 is_("stale: an answer put in the state before the input ever existed still counts", C.judge_answer(state, "judge-match", "s3"), {"matches": ["by hand"]})

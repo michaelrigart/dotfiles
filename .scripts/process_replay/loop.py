@@ -765,8 +765,9 @@ def cmd_cleanup(a):
     for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "scratch.json")):
         recorded.append((jload(path) or {}).get("scratch"))
     gone += [p for p in dict.fromkeys(recorded) if isinstance(p, str) and os.path.dirname(os.path.abspath(p)) == os.path.abspath(scratch_root())]
-    items = jload(os.path.join(a.state, "items.json"))
-    gone += [os.path.join(C.items_root(), n) for n in (items.values() if isinstance(items, dict) else []) if isinstance(n, str) and n and "/" not in n]
+    items, dirs = jload(os.path.join(a.state, "items.json")), jload(os.path.join(a.state, C.STAGED))       # dirs: retired ones too
+    names = list(items.values() if isinstance(items, dict) else []) + list(dirs if isinstance(dirs, dict) else [])
+    gone += [os.path.join(C.items_root(), n) for n in dict.fromkeys(names) if isinstance(n, str) and n and "/" not in n]
     home = codexhome.home_path(HOME)
     if a.dry_run:
         say("would archive the threads of {} and stop its daemon".format(home))

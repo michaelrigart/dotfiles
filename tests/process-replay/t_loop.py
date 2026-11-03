@@ -1412,7 +1412,12 @@ helpers.put(os.path.join(w.state, "recreate", "dY"), "done", "")
 other = os.path.join(want_root, "not-ours")
 os.makedirs(other)
 XR.Threads(w.state).add("th-clean", "new")
+C.judge_write(w.state, "judge-present", "zz-retired", {"finding": "a"})        # staged, then its input changed: its first directory is retired
+retired = os.path.dirname(C.brief_for(w.state, "judge-present", "zz-retired"))
+C.judge_write(w.state, "judge-present", "zz-retired", {"finding": "b"})
+C.brief_for(w.state, "judge-present", "zz-retired")
 items = [os.path.join(C.items_root(), n) for n in C.jload(os.path.join(w.state, "items.json")).values()]
+ok("cleanup: control: a retired staged directory is no current item's", os.path.isdir(retired) and retired not in items, retired)
 ok("cleanup: control: this state has staged item directories", items and all(os.path.isdir(i) for i in items), items)
 for who, locks in (("a run", (("run.lock", fcntl.LOCK_SH), ("runner.lock", fcntl.LOCK_EX))), ("a match or pending", (("run.lock", fcntl.LOCK_SH),))):
     fds = []
@@ -1466,6 +1471,7 @@ ok("cleanup: a recreation's working copy (recreate/<d>/tree) is removed, its spe
 ok("cleanup: but a working copy whose recreated/<d>.patch is not yet made stays, for inject to read", os.path.isfile(os.path.join(rdir, "dY", "tree", "src", "a.py")))
 ok("cleanup: another state's scratch directory stays", os.path.isdir(other))
 ok("cleanup: this state's staged item directories are removed, and items.json stays", not any(os.path.exists(i) for i in items) and os.path.isfile(os.path.join(w.state, "items.json")))
+ok("cleanup: and so are the directories of an input since changed (listed in staged.json only)", not os.path.exists(retired))
 after = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/" and "/tree/" not in d + "/")
 ok("cleanup: every JSON file stays", jsons == after and "cases.json" in after and any(p.endswith("state.json") for p in after), set(jsons) ^ set(after))
 log = helpers.read_log(os.path.join(os.path.dirname(stub), "rpc.log"))
