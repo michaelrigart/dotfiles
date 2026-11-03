@@ -101,6 +101,81 @@ jfile(os.path.join(state, "recreate", "needed.json"), {"owned": ["rold", "rnow"]
 is_("needed: recreations too: one its writer no longer needs is not pending, and the manifest is not a recreation",
     sorted(p[1] for p in C.pending(state) if p[0] == "recreate"), ["rnow"])
 
+# ---- answers_complete: an answer gives an allowed value for everything the input asks about; anything else is set aside and asked again
+TASK_IN = {"reports": [{"index": 0, "text": "t"}], "changes": [{"index": 0, "note": "n", "diff": "d"}]}
+TASK_OK = {"index": 0, "report": 0, "summary": "s", "file": "f", "line": 1, "failure_scenario": "x", "severity": "P1", "introduced_by": None,
+           "fixed_by": [0], "answer": "yes"}
+MATCH_IN = {"defects": [{"index": 0}, {"index": 1}], "findings": [{"index": 0}, {"index": 1}]}
+CASES = [
+    ("judge-task", TASK_IN, {"findings": [TASK_OK]},
+     [{}, {"findings": None}, {"findings": ["x"]}, {"findings": [dict(TASK_OK, answer="maybe")]}, {"findings": [dict(TASK_OK, severity=None)]},
+      {"findings": [dict(TASK_OK, report=3)]}, {"findings": [dict(TASK_OK, fixed_by=[4])]}, {"findings": [dict(TASK_OK, fixed_by=None)]},
+      {"findings": [dict(TASK_OK, introduced_by=9)]}, {"findings": [dict(TASK_OK, summary="")]}]),
+    ("judge-known", {"findings": [{"index": 0}, {"index": 2}], "interdiff": ""}, {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 2, "answer": "unclear"}]},
+     [{}, {"verdicts": None}, {"verdicts": [{"index": 0, "answer": "yes"}]}, {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 1, "answer": "no"}]},
+      {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 2, "answer": "maybe"}]},
+      {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 0, "answer": "yes"}, {"index": 2, "answer": "no"}]}]),
+    ("judge-present", {"finding": 1}, {"answer": "no"}, [{}, {"answer": "maybe"}, {"answer": None}, []]),
+    ("judge-split", {"defects": [{"index": 0}, {"index": 1}], "hunks": [{"index": 0}, {"index": 1}]},
+     {"hunks": [{"index": 0, "defect": 1}, {"index": 1, "defect": "unsure"}]},
+     [{}, {"hunks": None}, {"hunks": [{"index": 0, "defect": 1}]}, {"hunks": [{"index": 0, "defect": 5}, {"index": 1, "defect": None}]},
+      {"hunks": [{"index": 0}, {"index": 1, "defect": None}]}, {"hunks": [{"index": 0, "defect": 0}, {"index": 0, "defect": 0}]},
+      {"hunks": [{"index": 0, "defect": "maybe"}, {"index": 1, "defect": 0}]}]),
+    ("judge-dedup", {"defects": [{"index": 0}, {"index": 1}, {"index": 2}]}, {"groups": [[0, 2], [1]]},
+     [{}, {"groups": None}, {"groups": [[0], [1]]}, {"groups": [[0, 1, 2, 2]]}, {"groups": [[0], [1], [2], []]}, {"groups": [[0, 1], [2, "x"]]}]),
+    ("judge-same", {"original": 1}, {"answer": "unclear"}, [{}, {"answer": "perhaps"}]),
+    ("judge-class", {"finding": 1}, {"class": "design"}, [{}, {"class": "other"}, {"class": None}]),
+    ("judge-match", MATCH_IN, {"matches": [{"defect": 0, "finding": 1}, {"defect": 1, "finding": None}], "unmatched": [{"finding": 0, "ruling": "real"}]},
+     [{}, {"matches": None, "unmatched": []}, {"matches": [{"defect": 0, "finding": 1}], "unmatched": [{"finding": 0, "ruling": "real"}]},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 1, "finding": None}], "unmatched": []},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 1, "finding": None}]},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 1, "finding": None}], "unmatched": [{"finding": 0, "ruling": "maybe"}]},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 1, "finding": 5}], "unmatched": [{"finding": 0, "ruling": "real"}]},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 1}], "unmatched": [{"finding": 0, "ruling": "real"}]},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 0, "finding": None}], "unmatched": [{"finding": 0, "ruling": "real"}]},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 7, "finding": None}], "unmatched": [{"finding": 0, "ruling": "real"}]},
+      {"matches": [{"defect": 0, "finding": 1}, {"defect": 1, "finding": None}], "unmatched": [{"finding": 0, "ruling": "real"}, {"finding": 0, "ruling": "real"}]}]),
+    ("judge-match", {"defects": [{"index": 0}], "report": "r"},
+     {"findings": [{"index": 0, "summary": "a"}], "matches": [{"defect": 0, "finding": None}], "unmatched": [{"finding": 0, "ruling": "false_positive"}]},
+     [{"matches": [{"defect": 0, "finding": None}], "unmatched": []}, {"findings": None, "matches": [{"defect": 0, "finding": None}]},
+      {"findings": [{"index": 3, "summary": "a"}], "matches": [{"defect": 0, "finding": None}], "unmatched": []},
+      {"findings": [{"index": 0, "summary": "a"}], "matches": [{"defect": 0, "finding": 4}], "unmatched": []},
+      {"findings": [{"index": 0, "summary": "a"}], "matches": [{"defect": 0, "finding": None}], "unmatched": []}]),
+    ("judge-match", {"known": [{"index": 0}, {"index": 1}], "runs": {"x": [{"summary": "a"}], "y": []}},
+     {"matches": [{"known_index": 0, "label": "x", "finding_index": 0}, {"known_index": 1, "label": "x", "finding_index": None},
+                  {"known_index": 0, "label": "y", "finding_index": None}, {"known_index": 1, "label": "y", "finding_index": None}]},
+     [{}, {"matches": None}, {"matches": [{"known_index": 0, "label": "x", "finding_index": 0}]},
+      {"matches": [{"known_index": 0, "label": "x", "finding_index": 3}, {"known_index": 1, "label": "x", "finding_index": None},
+                   {"known_index": 0, "label": "y", "finding_index": None}, {"known_index": 1, "label": "y", "finding_index": None}]},
+      {"matches": [{"known_index": 0, "label": "z", "finding_index": None}, {"known_index": 1, "label": "x", "finding_index": None},
+                   {"known_index": 0, "label": "y", "finding_index": None}, {"known_index": 1, "label": "y", "finding_index": None}]},
+      {"matches": [{"known_index": 0, "label": "x"}, {"known_index": 1, "label": "x", "finding_index": None},
+                   {"known_index": 0, "label": "y", "finding_index": None}, {"known_index": 1, "label": "y", "finding_index": None}]}]),
+]
+for n, (kind, inp, good, bads) in enumerate(CASES):
+    state = os.path.join(ROOT, "st-complete-{}".format(n))
+    C.judge_write(state, kind, "c1", inp)
+    ans = os.path.join(state, kind, "c1.answer.json")
+    for i, bad in enumerate(bads):
+        jfile(ans, bad)
+        listed = [p[1] for p in C.pending(state)] == ["c1"]
+        got = C.accepted_answer(state, kind, "c1")
+        aside = os.path.join(state, kind, "c1.rejected-{}.answer.json".format(i + 1))
+        ok("answers_complete: {} #{} {}: refused, set aside unchanged, and the item is pending again".format(kind, n, i),
+           listed and got is None and not os.path.exists(ans) and C.jload(aside) == bad and [p[1] for p in C.pending(state)] == ["c1"], (listed, got, bad))
+    jfile(ans, good)
+    ok("answers_complete: {} #{}: the complete answer is accepted and the item is not pending".format(kind, n),
+       C.accepted_answer(state, kind, "c1") == good and C.pending(state) == [])
+ok("answers_complete: an answer that is not a JSON object is refused too", (jfile(os.path.join(ROOT, "st-obj", "judge-present", "c1.answer.json"), ["yes"]),
+   C.judge_write(os.path.join(ROOT, "st-obj"), "judge-present", "c1", {"finding": 1}), C.accepted_answer(os.path.join(ROOT, "st-obj"), "judge-present", "c1"))[2] is None)
+state = os.path.join(ROOT, "st-byhand")
+BYHAND = {"matches": [{"known_index": 0, "label": "x", "finding_index": None}]}
+jfile(os.path.join(state, "judge-match", "h1.answer.json"), BYHAND)
+is_("answers_complete: an answer put by hand before its input exists has no input to be checked against, and counts", C.accepted_answer(state, "judge-match", "h1"), BYHAND)
+jfile(os.path.join(state, "judge-match", "h2.answer.json"), {"matches": ["by hand"]})
+ok("answers_complete: but without an input its matches must still be objects, or it is set aside, unused",
+   C.accepted_answer(state, "judge-match", "h2") is None and C.jload(os.path.join(state, "judge-match", "h2.rejected-1.answer.json")) == {"matches": ["by hand"]})
+
 # ---- staged items: one real directory per item, outside the state, holding only that item's files
 state = os.path.join(ROOT, "st-staged")
 x1 = C.judge_write(state, "judge-present", "s1", {"finding": "one"})
@@ -128,7 +203,11 @@ jfile(os.path.join(d2, "answer.json"), {"matches": []})
 ok("staged: an answer written but not yet collected takes the item off the pending list", [p[1] for p in C.pending(state)] == [])
 open(os.path.join(d2, "answer.json"), "w").write("{half")
 ok("staged: an answer that does not parse yet is not collected, and the item stays pending", C.judge_answer(state, "judge-match", "s2") is None
-   and [p[1] for p in C.pending(state)] == [])
+   and [p[1] for p in C.pending(state)] == ["s2"])
+open(os.path.join(state, "judge-match", "s2.answer.json"), "w").write("{half")
+ok("staged: nor is a half-written answer already in the state an answer", C.judge_answer(state, "judge-match", "s2") is None
+   and [p[1] for p in C.pending(state)] == ["s2"])
+os.unlink(os.path.join(state, "judge-match", "s2.answer.json"))
 os.unlink(os.path.join(d2, "answer.json"))
 ok("staged: with no answer there, the item is pending again", [p[1] for p in C.pending(state)] == ["s2"])
 jfile(os.path.join(d2, "answer.json"), {"matches": ["old"]})
@@ -161,6 +240,11 @@ bf = C.brief_for(state, "final", "sf")
 is_("staged: a final review's directory holds its brief and package", (bf, sorted(os.listdir(df))), (os.path.join(df, "brief.md"), ["brief.md", "package.diff"]))
 is_("staged: its brief is a copy of the harness's", open(bf).read(), "review it\nReview id: sf\n")
 ok("staged: a final review with no answer is pending, and collect_final finds none", [p[1] for p in C.pending(state) if p[0] == "final"] == ["sf"] and C.collect_final(state, "sf") is None)
+put(df, "answer.md", "")
+put(state, "final/sf/answer.md", " \n")
+ok("staged: an empty answer.md (a write not yet begun), staged or in the state, is no answer: the final review stays pending",
+   [p[1] for p in C.pending(state) if p[0] == "final"] == ["sf"] and C.collect_final(state, "sf") is None)
+os.unlink(os.path.join(state, "final", "sf", "answer.md"))
 put(df, "answer.md", "### Issues\n")
 got = C.collect_final(state, "sf")
 is_("staged: an answer.md written in the item's directory is moved into the state", (got, open(got).read(), os.path.exists(os.path.join(df, "answer.md"))),

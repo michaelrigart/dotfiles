@@ -101,10 +101,6 @@ class Order(object):
 
 
 # ------------------------------------------------------------------ fix groups
-def _is_int(x):
-    return isinstance(x, int) and not isinstance(x, bool)
-
-
 def merge_ranges(view, keys):
     """{range: the range it stands for}. Ranges that share a commit are one change: they become the range from the earliest base to the
     latest head, so no commit is reverted twice. Ranges whose bases or heads are not in one line stay as they were."""
@@ -197,19 +193,16 @@ def make_plan(a, view, br, defects, counted, counts, questions):
         I._put(a.state, "judge-split", jid, {
             "defects": [{"index": n, "summary": by_id[i].get("summary"), "file": by_id[i].get("file"), "line": by_id[i].get("line")}
                         for n, i in enumerate(ids)], "hunks": hunks}, counts)
-        ans = C.judge_answer(a.state, "judge-split", jid)
+        ans = C.accepted_answer(a.state, "judge-split", jid)
         questions.note("judge-split", jid, isinstance(ans, dict))
         if not isinstance(ans, dict):
             pending.append(jid)
             continue
-        given = {}
-        for e in ans.get("hunks") or []:
-            if isinstance(e, dict) and _is_int(e.get("index")) and 0 <= e["index"] < len(hunks):
-                given[e["index"]] = e.get("defect")
+        given = dict((e["index"], e["defect"]) for e in ans["hunks"])        # an accepted answer rules on every hunk
         owner = []
         for n in range(len(hunks)):
-            v = given.get(n, "unsure")
-            owner.append(None if v is None else ids[v] if _is_int(v) and 0 <= v < len(ids) else "*")
+            v = given[n]
+            owner.append(None if v is None else "*" if v == "unsure" else ids[v])
         if "*" in owner:
             for i in ids[1:]:
                 parent[find(i)] = find(ids[0])

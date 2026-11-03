@@ -449,6 +449,12 @@ is_("RP1 pending lists both judge inputs, with the briefs it staged for them",
     [(k, i) for k, i, _b in waiting(S1)], [("judge-known", "xr-2-r1"), ("judge-known", "xr-3-r2")])
 is_("RP1 staging: each is a directory of its own holding only input.json and brief.md, and shows nothing of the experiment or the state",
     staged_leaks(S1, XDG, waiting(S1), (os.path.realpath(S1), "judge-known")), [])
+judge_says(S1, "judge-known", "xr-2-r1", {"verdicts": [{"index": 0, "answer": "maybe"}]})
+p = harness(S1, "cases")
+ok("RP1 judge_known_incomplete: a verdict that is not yes, no or unclear is not read as 'not yes': the answer is set aside, unused",
+   "not used" in p.stdout and os.path.isfile(os.path.join(S1, "judge-known", "xr-2-r1.rejected-1.answer.json"))
+   and not os.path.exists(os.path.join(S1, "judge-known", "xr-2-r1.answer.json")), p.stdout[-300:])
+ok("RP1 judge_known_incomplete: and the judge-known is pending again", ("judge-known", "xr-2-r1") in [(k, i) for k, i, _b in waiting(S1)], waiting(S1))
 judge_says(S1, "judge-known", "xr-2-r1", {"verdicts": [{"index": 0, "answer": "yes"}]})
 judge_says(S1, "judge-known", "xr-3-r2", {"verdicts": [{"index": 0, "answer": "unclear"}]})
 p = harness(S1, "cases")
@@ -1077,6 +1083,15 @@ harness(S19, "report")
 rep19b = jl(os.path.join(S19, "report.json"))["switches"]
 ok("RP19 answered anew, the case is judged: n grows by one in every switch that selects it",
    all(rep19b[sw]["n"] == rep19[sw]["n"] + 1 for sw in rep19 if cid19 in jl(os.path.join(S19, "cases.json"))["selected"][sw]), (rep19, rep19b))
+# match_incomplete: an answer that leaves a known finding/review pair out is not read as "not found there"
+short19 = {"matches": [{"known_index": 0, "label": l, "finding_index": 0} for l in arms19[cid19]][:-1]}
+wr(os.path.join(S19, "judge-match", cid19 + ".answer.json"), short19)
+p = harness(S19, "report")
+rep19c = jl(os.path.join(S19, "report.json"))["switches"]
+ok("RP19 match_incomplete: an answer missing a known finding/review pair is set aside, unused, and the case is not judged",
+   "not used" in p.stdout and jl(os.path.join(S19, "judge-match", cid19 + ".rejected-1.answer.json")) == short19
+   and all(rep19c[sw]["n"] == rep19[sw]["n"] for sw in rep19 if cid19 in jl(os.path.join(S19, "cases.json"))["selected"][sw]), (p.stdout[-300:], rep19c))
+ok("RP19 match_incomplete: and the judge-match is pending again", ("judge-match", cid19) in [(k, i) for k, i, _b in waiting(S19)], waiting(S19))
 
 # ------------------------------------------------------------------ RP18 the weekly pause (replay-set spec 8)
 print("RP18. replay turns pause at 80% weekly usage and resume after the reset")
@@ -1507,6 +1522,82 @@ ok("RP18 memories: at 90% weekly usage the run exits 0 and says it is paused", p
 is_("RP18 memories: and neither a daemon starts nor a probe or turn runs",
     (len(helpers.read_log(os.path.join(RPCD, "rpc.log"))) - rpc_before, len(helpers.read_log(os.path.join(CXD, "codex.log"))) - cx_before), (0, 0))
 is_("RP18 memories: no run file exists, so the jobs resume", glob.glob(os.path.join(SM3, "runs", "*", "*.json")), [])
+# cleanup_shared_lock: while another process holds the replay daemons' lock (a `run` of either harness uses a daemon), cleanup starts,
+# stops and archives nothing; once it is free, cleanup archives on the home's daemon, started and stopped for the purpose
+import fcntl
+SCL = os.path.join(ROOT, "state-cleanup-lock")
+NOMEM_HOME = os.path.join(XM, "cxh", "nomem")
+wr(os.path.join(SCL, "threads.json"), {"threads": [{"thread": "th-left", "kind": "new", "done": False, "home": NOMEM_HOME}]})
+lockp = os.path.join(XM, "process-replay", "codex-auth", "run.lock")
+rpc_before, cx_before = len(helpers.read_log(os.path.join(RPCD, "rpc.log"))), len(helpers.read_log(os.path.join(CXD, "codex.log")))
+other_run = os.open(lockp, os.O_RDWR | os.O_CREAT)
+fcntl.flock(other_run, fcntl.LOCK_EX)
+wr(os.path.join(NOMEM_HOME, "app-server-control", "app-server-control.sock"), "")       # the other process's daemon answers
+p = subprocess.run([HARNESS, "cleanup", "--state", SCL], capture_output=True, text=True, env=menv)
+fcntl.flock(other_run, fcntl.LOCK_UN)
+os.close(other_run)
+ok("cleanup_shared_lock: while another process holds the replay lock and uses the daemon, cleanup exits 1 and says why",
+   p.returncode == 1 and "replay run holds" in p.stdout, (p.returncode, p.stdout[-300:], p.stderr[-300:]))
+is_("cleanup_shared_lock: ... with no daemon started or stopped, no thread archived on it, and the thread still to archive",
+    ([e["argv"] for e in helpers.read_log(os.path.join(CXD, "codex.log"))[cx_before:]],
+     [e["cmd"] for e in helpers.read_log(os.path.join(RPCD, "rpc.log"))[rpc_before:] if e["cmd"] != "health"],
+     jl(os.path.join(SCL, "threads.json"))["threads"][0]["done"]), ([], [], False))
+os.unlink(os.path.join(NOMEM_HOME, "app-server-control", "app-server-control.sock"))
+p = subprocess.run([HARNESS, "cleanup", "--state", SCL], capture_output=True, text=True, env=menv)
+verbs = [e["argv"][-1] for e in helpers.read_log(os.path.join(CXD, "codex.log"))[cx_before:] if e["argv"][-3:-1] == ["app-server", "daemon"]]
+ok("cleanup_shared_lock: once the lock is free, cleanup archives the thread on the home's daemon, which it starts and stops",
+   p.returncode == 0 and jl(os.path.join(SCL, "threads.json"))["threads"][0]["done"] is True and verbs == ["start", "stop"],
+   (p.returncode, verbs, p.stdout[-300:]))
+# handover: the per-home loop moves to the next replay home only once the previous home's daemon is confirmed down
+XH = os.path.join(ROOT, "h")
+if len(os.path.join(XH, SOCK_TAIL)) > 100:
+    XH = tempfile.mkdtemp(prefix="xh.", dir="/tmp")
+    cleanup_xm_h = XH
+else:
+    cleanup_xm_h = None
+shutil.copytree(os.path.join(XM, "xreview"), os.path.join(XH, "xreview"))
+SH = os.path.join(ROOT, "state-handover")
+os.makedirs(SH)
+shutil.copy(os.path.join(SM, "cases.json"), os.path.join(SH, "cases.json"))
+HCX = os.path.join(ROOT, "handover-codex")
+inner = helpers.stub_codex(HCX)
+stuck = os.path.join(ROOT, "handover-codex", "stuck")
+wrapper = wr(os.path.join(ROOT, "handover-codex", "codex-stop-fails"),
+             "#!/bin/sh\n# the first home started never stops: its daemon stop fails and its socket stays\n"
+             "if [ \"$1 $2 $3\" = \"app-server daemon start\" ] && [ ! -f {s} ]; then echo \"$CODEX_HOME\" > {s}; fi\n"
+             "if [ \"$1 $2 $3\" = \"app-server daemon stop\" ] && [ \"$CODEX_HOME\" = \"$(cat {s} 2>/dev/null)\" ]; then\n"
+             "  echo '{{\"argv\": [\"app-server\", \"daemon\", \"stop-failed\"], \"codex_home\": \"'\"$CODEX_HOME\"'\"}}' >> {log}; exit 1\nfi\n"
+             "exec {inner} \"$@\"\n".format(s=stuck, inner=inner, log=os.path.join(HCX, "codex.log")))
+os.chmod(wrapper, 0o755)
+hstub = helpers.stub_rpc(os.path.join(ROOT, "handover-rpc"), CODEX, {"default": {"answer": MALL, "tokens": 1000}, "probe": PROBE})
+p = subprocess.run([HARNESS, "run", "--state", SH, "--codex-source", CODEX], capture_output=True, text=True,
+                   env=dict(menv, XDG_STATE_HOME=XH, XREVIEW_REPLAY_RPC=hstub, CODEX_REAL_BIN=wrapper))
+hlog = [(e["argv"][-1], e["codex_home"]) for e in helpers.read_log(os.path.join(HCX, "codex.log")) if e["argv"][:2] == ["app-server", "daemon"]]
+first_home = open(stuck).read().strip() if os.path.exists(stuck) else None
+ok("handover: control: the first home's daemon stop failed", ("stop-failed", first_home) in hlog, hlog)
+ok("handover: so the run did not start another home's daemon, and says to stop the first home first",
+   [h for v, h in hlog if v == "start"] == [first_home] and "stop that home first" in p.stdout, (hlog, p.stdout[-400:]))
+is_("handover: nor made the next home (whose refresh would settle the shared login under the first daemon)",
+    sorted(os.listdir(os.path.join(XH, "cxh"))), [os.path.basename(first_home or "")])
+ok("handover: the marker still names the first home",jl(os.path.join(XH, "process-replay", "codex-auth", "daemon.json"))["home"] == first_home)
+os.unlink(stuck)        # the daemon stop works again: the next run moves on, home by home
+wr(stuck, "/nowhere\n")
+p = subprocess.run([HARNESS, "run", "--state", SH, "--codex-source", CODEX], capture_output=True, text=True,
+                   env=dict(menv, XDG_STATE_HOME=XH, XREVIEW_REPLAY_RPC=hstub, CODEX_REAL_BIN=wrapper))
+hlog2 = [(e["argv"][-1], e["codex_home"]) for e in helpers.read_log(os.path.join(HCX, "codex.log")) if e["argv"][:2] == ["app-server", "daemon"]][len(hlog):]
+running, overlap = {first_home}, False      # the first home's daemon was left up by the run that could not stop it
+for verb, h in hlog2:
+    if verb == "start":
+        overlap |= bool(running)
+        running.add(h)
+    elif verb == "stop":
+        running.discard(h)
+others = set(os.path.join(XH, "cxh", n) for n in HOMES) - {first_home}
+ok("handover: with stops that work again, the next run stops the first home's daemon, then runs the other homes, one daemon at a time",
+   p.returncode == 0 and ("stop", first_home) in hlog2 and others <= set(h for v, h in hlog2 if v == "start") and not overlap and not running,
+   (p.returncode, hlog2, p.stdout[-300:]))
+if cleanup_xm_h:
+    shutil.rmtree(cleanup_xm_h, ignore_errors=True)
 for k, v in saved_env.items():
     if v is None:
         os.environ.pop(k, None)

@@ -504,6 +504,8 @@ os.unlink(os.path.join(GS, "inventory", BID + ".json"))
 run_cases(GS, RGROUPS)
 ok("inventory_after_answers: a dedup answer that is not a partition of the defects leaves the inventory unwritten",
    not os.path.exists(os.path.join(GS, "inventory", BID + ".json")))
+ok("inventory_after_answers: and it is set aside, so the judge-dedup is pending again rather than stuck on an answer that is never used",
+   os.path.isfile(os.path.join(GS, "judge-dedup", BID + ".rejected-1.answer.json")) and ("judge-dedup", BID) in [p[:2] for p in C.pending(GS)])
 
 # ---- judges_blind
 bad = []

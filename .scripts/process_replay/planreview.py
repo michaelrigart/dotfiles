@@ -281,7 +281,7 @@ def plan_cases(a):
                       {"case": r["nonce"], "findings": judged, "interdiff": diff})
         r["asked"], r["judged"] = True, set(f["index"] for f in judged)
         written["judge-known"] += 1
-        ans = C.judge_answer(a.state, "judge-known", _judge_known_id(r["nonce"]))
+        ans = C.accepted_answer(a.state, "judge-known", _judge_known_id(r["nonce"]))
         if not isinstance(ans, dict):
             continue
         yes = set(v.get("index") for v in ans.get("verdicts") or [] if isinstance(v, dict) and v.get("answer") == "yes")
@@ -356,7 +356,7 @@ def report_section(state):
             p["tokens"] += r["tokens"]
         if not r.get("asked"):
             continue
-        ans = C.judge_answer(state, "judge-known", _judge_known_id(r["nonce"]))
+        ans = C.accepted_answer(state, "judge-known", _judge_known_id(r["nonce"]))
         if not isinstance(ans, dict):
             pending_known += 1
             continue
@@ -374,7 +374,7 @@ def report_section(state):
             if not os.path.isfile(os.path.join(state, "judge-class", cid + ".json")):
                 no_input += 1
                 continue
-            ans = C.judge_answer(state, "judge-class", cid)
+            ans = C.accepted_answer(state, "judge-class", cid)
             klass = ans.get("class") if isinstance(ans, dict) else None
             if klass not in CLASSES:
                 pending_class += 1

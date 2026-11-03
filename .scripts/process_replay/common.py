@@ -14,6 +14,10 @@ directory of its own, $XDG_STATE_HOME/review-work/items/<random hex>/ (item_dir;
 holding only that item's files: a judge's input.json and brief.md, and the answer.json it writes; a final review's
 brief.md and package.diff, and the answer.md the driver writes. judge_answer and collect_final copy an answer back into
 the state when they read it. Recreations keep their aliased paths (alias, aliased).
+
+An answer counts only when complete (accepted_answer, answer_problem): it parses and gives an allowed value for every item its
+input asks about. One that is not is set aside as <id>.rejected-<n>.answer.json and the item is pending again; `pending` lists
+every item without such an answer, whatever files exist. An empty answer.md is not a final review's answer.
 """
 import fcntl
 import importlib.util
@@ -271,15 +275,248 @@ def set_aside(state, kind, jid, why):
     return aside
 
 
+# ------------------------------------------------------------------ answer validation
+VERDICTS = ("yes", "no", "unclear")
+SEVERITY_VALUES = ("P0", "P1", "P2", "P3")
+CLASS_VALUES = ("diff-visible", "design", "plan-only")
+RULINGS = ("real", "false_positive")
+
+
+def _int(v, n=None):
+    """Whether `v` is an int (never a bool), and below `n` and not negative when `n` is given."""
+    return isinstance(v, int) and not isinstance(v, bool) and (n is None or 0 <= v < n)
+
+
+def _listed(doc, key):
+    v = doc.get(key) if isinstance(doc, dict) else None
+    return v if isinstance(v, list) else []
+
+
+def _entries(ans, key, what):
+    """(list of dict entries, problem): ans[key] must be a list of objects."""
+    got = ans.get(key)
+    if not isinstance(got, list):
+        return None, "{} is missing or not a list".format(key)
+    for n, e in enumerate(got):
+        if not isinstance(e, dict):
+            return None, "{} {} is not an object".format(what, n)
+    return got, None
+
+
+def _check_verdict(_doc, ans):
+    return None if ans.get("answer") in VERDICTS else "answer is {!r}, not one of {}".format(ans.get("answer"), "/".join(VERDICTS))
+
+
+def _check_class(_doc, ans):
+    return None if ans.get("class") in CLASS_VALUES else "class is {!r}, not one of {}".format(ans.get("class"), "/".join(CLASS_VALUES))
+
+
+def _check_task(doc, ans):
+    found, bad = _entries(ans, "findings", "finding")
+    if bad or doc is None:
+        return bad
+    reports, changes = len(_listed(doc, "reports")), len(_listed(doc, "changes"))
+    for n, f in enumerate(found):
+        if not _int(f.get("report"), reports):
+            return "finding {} names report {!r}, and there are {}".format(n, f.get("report"), reports)
+        if not isinstance(f.get("summary"), str) or not f["summary"].strip():
+            return "finding {} has no summary".format(n)
+        if f.get("answer") not in VERDICTS:
+            return "finding {} answers {!r}, not one of {}".format(n, f.get("answer"), "/".join(VERDICTS))
+        if f.get("introduced_by") is not None and not _int(f["introduced_by"], changes):
+            return "finding {} is introduced_by {!r}, and there are {} change(s)".format(n, f["introduced_by"], changes)
+        fixed = f.get("fixed_by")
+        if not isinstance(fixed, list) or not all(_int(i, changes) for i in fixed):
+            return "finding {} has fixed_by {!r}: a list of indices below {} is wanted".format(n, fixed, changes)
+        if f["answer"] == "yes" and f.get("severity") not in SEVERITY_VALUES:
+            return "finding {} is real but has severity {!r}".format(n, f.get("severity"))
+    return None
+
+
+def _check_known(doc, ans):
+    got, bad = _entries(ans, "verdicts", "verdict")
+    if bad or doc is None:
+        return bad
+    want = [f.get("index") for f in _listed(doc, "findings") if isinstance(f, dict)]
+    seen = set()
+    for v in got:
+        i = v.get("index")
+        if i not in want or not _int(i) or i in seen:
+            return "verdict index {!r} is not a finding asked about, or is repeated".format(i)
+        if v.get("answer") not in VERDICTS:
+            return "the verdict for finding {} is {!r}, not one of {}".format(i, v.get("answer"), "/".join(VERDICTS))
+        seen.add(i)
+    left = [i for i in want if i not in seen]
+    return "no verdict for finding(s) {}".format(", ".join(str(i) for i in left)) if left else None
+
+
+def _check_split(doc, ans):
+    got, bad = _entries(ans, "hunks", "hunk")
+    if bad or doc is None:
+        return bad
+    hunks, defects = len(_listed(doc, "hunks")), len(_listed(doc, "defects"))
+    seen = set()
+    for h in got:
+        i = h.get("index")
+        if not _int(i, hunks) or i in seen:
+            return "hunk index {!r} is not a hunk asked about, or is repeated".format(i)
+        d = h.get("defect")
+        if "defect" not in h or not (d is None or d == "unsure" or _int(d, defects)):
+            return "the defect of hunk {} is {!r}: a defect index below {}, null or \"unsure\" is wanted".format(i, d, defects)
+        seen.add(i)
+    return "no entry for hunk(s) {}".format(", ".join(str(i) for i in range(hunks) if i not in seen)) if len(seen) < hunks else None
+
+
+def _check_dedup(doc, ans):
+    groups = ans.get("groups")
+    if not isinstance(groups, list) or not all(isinstance(g, list) and g and all(_int(i) for i in g) for g in groups):
+        return "groups is missing, or not a list of non-empty lists of indices"
+    if doc is None:
+        return None
+    n = len(_listed(doc, "defects"))
+    if sorted(i for g in groups for i in g) != list(range(n)):
+        return "the groups do not hold each of the {} defect indices exactly once".format(n)
+    return None
+
+
+def _check_rulings(unmatched, claimed, count):
+    """The `unmatched` rulings must cover every finding below `count` that no defect claimed, each once with an allowed ruling."""
+    if unmatched is None:
+        unmatched = []
+    if not isinstance(unmatched, list) or not all(isinstance(u, dict) for u in unmatched):
+        return "unmatched is not a list of objects"
+    ruled = {}
+    for u in unmatched:
+        f = u.get("finding")
+        if not _int(f, count) or f in ruled:
+            return "unmatched names finding {!r}, which is not one of the {} asked about, or is ruled twice".format(f, count)
+        if u.get("ruling") not in RULINGS:
+            return "the ruling for finding {} is {!r}, not one of {}".format(f, u.get("ruling"), "/".join(RULINGS))
+        ruled[f] = u["ruling"]
+    left = [i for i in range(count) if i not in claimed and i not in ruled]
+    return "finding(s) {} match no defect and have no ruling".format(", ".join(str(i) for i in left)) if left else None
+
+
+def _check_match_known(doc, ans):
+    """xreview-replay's judge-match: one {known_index, label, finding_index|null} per known finding and review."""
+    got, bad = _entries(ans, "matches", "match")
+    if bad:
+        return bad
+    runs = doc.get("runs") if isinstance(doc.get("runs"), dict) else {}
+    known = [k.get("index") for k in _listed(doc, "known") if isinstance(k, dict)]
+    seen = set()
+    for m in got:
+        key = (m.get("known_index"), m.get("label"))
+        if key[0] not in known or not _int(key[0]) or key[1] not in runs or key in seen:
+            return "a match names known finding {!r} of review {!r}, which was not asked about, or twice".format(*key)
+        n = len(runs[key[1]]) if isinstance(runs[key[1]], list) else 0
+        if "finding_index" not in m or (m["finding_index"] is not None and not _int(m["finding_index"], n)):
+            return "a match names finding {!r} of review {!r}, which has {}: an index or null is wanted".format(m.get("finding_index"), key[1], n)
+        seen.add(key)
+    left = [(k, l) for k in known for l in sorted(runs) if (k, l) not in seen]
+    return "no match for {} known finding/review pair(s), the first {}".format(len(left), left[0]) if left else None
+
+
+def _check_match(doc, ans):
+    if doc is None:     # either form: the lists must still hold objects, for a reader that takes their fields
+        _got, bad = _entries(ans, "matches", "match")
+        if bad is None and ans.get("unmatched") is not None:
+            _got, bad = _entries(ans, "unmatched", "unmatched entry")
+        return bad
+    if "known" in doc and "runs" in doc:
+        return _check_match_known(doc, ans)
+    defects = len(_listed(doc, "defects"))
+    if "report" in doc:     # the judge lists the report's claims first, numbered 0..n-1
+        claims, bad = _entries(ans, "findings", "finding")
+        if bad:
+            return bad
+        if sorted(c.get("index") if _int(c.get("index")) else -1 for c in claims) != list(range(len(claims))):
+            return "the findings of the report are not numbered 0..{}".format(len(claims) - 1)
+        count = len(claims)
+    else:
+        count = len(_listed(doc, "findings"))
+    matches = ans.get("matches")
+    if matches is None and not defects:
+        matches = []
+    got, bad = _entries(dict(ans, matches=matches), "matches", "match")
+    if bad:
+        return bad
+    seen, claimed = set(), set()
+    for m in got:
+        d, f = m.get("defect"), m.get("finding")
+        if not _int(d, defects) or d in seen:
+            return "a match names defect {!r}, which is not one of the {} asked about, or twice".format(d, defects)
+        if "finding" not in m or not (f is None or _int(f, count)):
+            return "defect {} is matched to finding {!r}: an index below {} or null is wanted".format(d, f, count)
+        seen.add(d)
+        if f is not None:
+            claimed.add(f)
+    if len(seen) < defects:
+        return "no match for defect(s) {}".format(", ".join(str(i) for i in range(defects) if i not in seen))
+    return _check_rulings(ans.get("unmatched"), claimed, count)
+
+
+_CHECKS = {"judge-task": _check_task, "judge-known": _check_known, "judge-present": _check_verdict, "judge-split": _check_split,
+           "judge-dedup": _check_dedup, "judge-same": _check_verdict, "judge-match": _check_match, "judge-class": _check_class}
+
+
+def answer_problem(kind, doc, ans):
+    """None when `ans` is a complete answer to the judge input `doc` (an allowed value for every item asked about, nothing named that was
+    not asked), else why not. Without an input to check against (`doc` None: an answer put by hand first) only what needs none is checked."""
+    if not isinstance(ans, dict):
+        return "the answer is not a JSON object"
+    return _CHECKS[kind](doc if isinstance(doc, dict) else None, ans)
+
+
+def _answer_file(state, kind, jid):
+    """The answer as a reader finds it, without moving anything: the state's, else the one written in the staged item."""
+    got = jload(os.path.join(state, kind, jid + ".answer.json"))
+    if got is None:
+        staged = _staged(state, kind, jid)
+        got = jload(os.path.join(staged, "answer.json")) if staged else None
+    return got
+
+
+def _answered(state, kind, jid):
+    """Whether the item has an answer that parses and is complete for its input: the test `pending` and `accepted_answer` share."""
+    got = _answer_file(state, kind, jid)
+    return got is not None and answer_problem(kind, jload(os.path.join(state, kind, jid + ".json")), got) is None
+
+
+def accepted_answer(state, kind, jid):
+    """The judge's answer when it parses and is complete for its input, else None. A complete answer gives an allowed value for every item
+    the input asks about (answer_problem); one that is not is set aside (reject_answer, content kept) and said so, and the item is pending
+    again. No consumer reads a judge's answer by any other way: a missing item is never taken as a default."""
+    got = judge_answer(state, kind, jid)
+    if got is None:
+        return None
+    why = answer_problem(kind, jload(os.path.join(state, kind, jid + ".json")), got)
+    if why is None:
+        return got
+    aside = reject_answer(state, kind, jid)
+    say("{} {}: the judge's answer is not used: {}; it is set aside as {} and the item is pending again".format(
+        kind, jid, why, os.path.basename(aside) if aside else "(none)"))
+    return None
+
+
+def _final_text(path):
+    """Whether a final review's answer.md says anything: an empty file is a write that has not begun, not an answer."""
+    try:
+        with open(path, "rb") as f:
+            return bool(f.read().strip())
+    except OSError:
+        return False
+
+
 def collect_final(state, jid):
     """The path of final review `jid`'s answer.md in the state, or None. An answer.md the driver wrote in the staged
     item's directory is moved into the state first."""
     path = os.path.join(state, "final", jid, "answer.md")
-    if os.path.isfile(path):
+    if _final_text(path):
         return path
     staged = _staged(state, "final", jid)
     theirs = os.path.join(staged, "answer.md") if staged else None
-    if theirs and os.path.isfile(theirs):
+    if theirs and _final_text(theirs):
         with open(theirs, "rb") as f:
             data = f.read()
         with open(path + ".tmp{}".format(os.getpid()), "wb") as f:
@@ -403,15 +640,14 @@ def _pending(state):
             if jid in obsolete:
                 continue
             base = os.path.join(state, kind, jid)
-            staged = _staged(state, kind, jid)
-            if not os.path.exists(base + ".answer.json") and not (staged and os.path.exists(os.path.join(staged, "answer.json"))):
+            if not _answered(state, kind, jid):
                 out.append((kind, jid, base + ".json", base + ".answer.json", base + ".brief.md"))
     fdir = os.path.join(state, "final")
     for jid in sorted(os.listdir(fdir)) if os.path.isdir(fdir) else []:
         brief = os.path.join(fdir, jid, "brief.md")
         staged = _staged(state, "final", jid)
-        if os.path.isfile(brief) and not os.path.exists(os.path.join(fdir, jid, "answer.md")) \
-                and not (staged and os.path.exists(os.path.join(staged, "answer.md"))):
+        if os.path.isfile(brief) and not _final_text(os.path.join(fdir, jid, "answer.md")) \
+                and not (staged and _final_text(os.path.join(staged, "answer.md"))):
             out.append(("final", jid, brief, os.path.join(fdir, jid, "answer.md"), brief))
     obsolete = _not_needed(state, "recreate")
     for jid in _inputs(state, "recreate"):

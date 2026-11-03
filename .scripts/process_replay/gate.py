@@ -78,13 +78,11 @@ def ask(state, kind, prefix, doc, counts):
     if not os.path.exists(os.path.join(state, kind, jid + ".json")):
         C.judge_write(state, kind, jid, doc)
         counts[kind] += 1
-    return jid, C.judge_answer(state, kind, jid)
+    return jid, C.accepted_answer(state, kind, jid)
 
 
 def _verdict(ans):
-    if not isinstance(ans, dict):
-        return None
-    return ans.get("answer") if ans.get("answer") in ("yes", "no", "unclear") else "unclear"
+    return ans.get("answer") if isinstance(ans, dict) else None       # an accepted answer holds yes, no or unclear
 
 
 def validate(state, work, rev, d, counts):
@@ -137,9 +135,8 @@ def recreation(a, work, final, d, fix_text, counts):
     if not os.path.exists(mine + ".patch"):
         patch, reverse = tree_patches(work, final, tree)
         os.makedirs(os.path.dirname(mine), exist_ok=True)
-        for suffix, body in ((".repair.patch", reverse), (".patch", patch)):
-            with open(mine + suffix, "wb") as f:
-                f.write(P.to_bytes(body))
+        for suffix, body in ((".repair.patch", reverse), (".patch", patch)):     # each whole or absent: .patch existing means both are made
+            C._write_if_changed(mine + suffix, P.to_bytes(body))
     with open(mine + ".patch", "rb") as f:
         patch = f.read().decode("utf-8", "surrogateescape")
     with open(mine + ".repair.patch", "rb") as f:

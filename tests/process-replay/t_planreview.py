@@ -464,6 +464,11 @@ ok("no_successor: only the finding whose plan a later round changed is put to th
    [f["index"] for f in k9["findings"]] == [1] and "a-050 +1" in k9["interdiff"] and "b-005" not in k9["interdiff"], k9)
 answers(STATE9, "judge-known", "plan-y1", {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 1, "answer": "yes"}]})
 P.plan_cases(args(STATE9))
+ok("no_successor: a verdict for the finding that was never put to the judge is not an answer to the input: it is set aside, and the round is pending again",
+   os.path.isfile(os.path.join(STATE9, "judge-known", "plan-y1.rejected-1.answer.json")) and not os.path.exists(os.path.join(STATE9, "judge-known", "plan-y1.answer.json"))
+   and ("judge-known", "plan-y1") in [(p[0], p[1]) for p in C.pending(STATE9)])
+answers(STATE9, "judge-known", "plan-y1", {"verdicts": [{"index": 1, "answer": "yes"}]})
+P.plan_cases(args(STATE9))
 _l9, rep9 = P.report_section(STATE9)
-ok("no_successor: a 'yes' for the finding that was never put to the judge is not counted: one known finding, one class input",
+ok("no_successor: the finding that was put to the judge is counted: one known finding, one class input",
    rep9["known"] == 1 and sorted(os.listdir(os.path.join(STATE9, "judge-class"))) == ["plan-y1-1.json"], (rep9["known"], os.listdir(os.path.join(STATE9, "judge-class"))))

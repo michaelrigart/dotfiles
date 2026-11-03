@@ -301,6 +301,19 @@ def drive(w, report=(), real=(), valid="yes", transcripts=True, commands=()):
     return n
 
 
+def complete(inp, hits=None, ruling="false_positive", claims=None):
+    """A complete judge-match answer to `inp`: the defects whose summary is a key of `hits` match that finding, the others null; every finding
+    nobody claims gets `ruling`. `claims`: the report's claims, for a report-form input."""
+    hits = hits or {}
+    matches = [{"defect": d["index"], "finding": hits.get(d["summary"])} for d in inp["defects"]]
+    count = len(claims) if claims is not None else len(inp["findings"])
+    taken = set(m["finding"] for m in matches if m["finding"] is not None)
+    out = {"matches": matches, "unmatched": [{"finding": i, "ruling": ruling} for i in range(count) if i not in taken]}
+    if claims is not None:
+        out["findings"] = claims
+    return out
+
+
 def go(w, rounds=True, **kw):
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -737,7 +750,7 @@ before = snap(w.state)
 go(w, rounds=False)
 ok("bad_answer: and waiting for the new answer changes no state file", before == snap(w.state))
 inp = C.jload(os.path.join(w.state, "judge-match", jid + ".json"))
-C.jsave(os.path.join(staged, "answer.json"), {"matches": [{"defect": [d["index"] for d in inp["defects"] if d["summary"] == "bug in dA"][0], "finding": 0}], "unmatched": []})
+C.jsave(os.path.join(staged, "answer.json"), complete(inp, {"bug in dA": 0}))
 go(w, rounds=False)
 st = dict((x["label"], x) for x in w.runs())
 ok("bad_answer: the judge's second answer, written in the staged directory, is applied", st[r["label"]]["defects"]["dA"] == "recovered" and st[r["label"]]["step"] == "codex",
@@ -748,6 +761,32 @@ text = go(w, rounds=False)
 ok("bad_answer: an answer put straight into the state is set aside the same way, naming the defect it got wrong", "names defect 9" in text and
    os.path.exists(os.path.join(w.state, "judge-match", "%s-1.rejected-1.answer.json" % other["label"])), text)
 
+# an incomplete judge-match answer (no matches, or an unmatched finding with no ruling) is not read as "nothing matched, nothing ruled": that would
+# skip the stall rule and start another Codex round. It is set aside and the judge-match is pending again, whatever the run does meanwhile.
+w = World("incomplete")
+behave(lambda run, k: ("approve", []))
+to_codex(w)
+behave(lambda run, k: ("changes", [F("dA")]))
+go(w)
+runs = sorted(w.runs(), key=lambda x: x["label"])
+for r, bad in zip(runs, ({"matches": None, "unmatched": []}, None)):
+    jid = "%s-1" % r["label"]
+    inp = C.jload(os.path.join(w.state, "judge-match", jid + ".json"))
+    # run two: every defect null, but its one finding is neither matched nor ruled on
+    bad = bad if bad is not None else {"matches": [{"defect": d["index"], "finding": None} for d in inp["defects"]], "unmatched": []}
+    C.jsave(os.path.join(w.state, "judge-match", jid + ".answer.json"), bad)
+rounds_before = dict((r["label"], (r["round"], len(r["reviews"]))) for r in runs)
+text = go(w, rounds=False)
+after = dict((x["label"], x) for x in w.runs())
+ok("incomplete_answer: neither answer is used, and each is said to be set aside", text.count("not used") == 2 and text.count("pending again") == 2, text)
+ok("incomplete_answer: both runs still wait at match with their defects present: no stall verdict, no new round",
+   all(x["step"] == "match" and x["end"] is None and x["round"] == rounds_before[l][0] and len(x["reviews"]) == rounds_before[l][1]
+       and set(x["defects"].values()) == {"present"} for l, x in after.items()), [(x["step"], x["end"], x["defects"]) for x in after.values()])
+ok("incomplete_answer: and both judge-matches are pending again",
+   sorted(p[1] for p in C.pending(w.state) if p[0] == "judge-match") == sorted("%s-1" % l for l in after))
+ok("incomplete_answer: a full round of `run` on top starts no Codex round either",
+   (go(w), all(x["step"] == "match" and len(x["reviews"]) == rounds_before[l][1] for l, x in dict((x["label"], x) for x in w.runs()).items()))[1])
+
 # a final review's findings are taken by their own index; one out of range spoils that review only
 w = World("badindex")
 behave(lambda run, k: ("approve", []))
@@ -756,14 +795,15 @@ drive(w, report=["found dA", "found dB"])
 go(w, rounds=False)
 runs = sorted(w.runs(), key=lambda x: x["label"])
 for r, idx in zip(runs, ([1, 0], [0, 7])):
+    inp = C.jload(os.path.join(w.state, "judge-match", "%s-0.json" % r["label"]))
     C.jsave(os.path.join(w.state, "judge-match", "%s-0.answer.json" % r["label"]),
-            {"findings": [{"index": idx[0], "summary": "second claim"}, {"index": idx[1], "summary": "first claim"}], "matches": [], "unmatched": []})
+            complete(inp, claims=[{"index": idx[0], "summary": "second claim"}, {"index": idx[1], "summary": "first claim"}]))
 text = go(w, rounds=False)
 st = dict((x["label"], x) for x in w.runs())
 ok("final_findings: the judge's own indices order the findings (not their position in the list)",
    [f["summary"] for f in st[runs[0]["label"]]["reviews"][0]["findings"]] == ["first claim", "second claim"], st[runs[0]["label"]]["reviews"])
 ok("final_findings: an index out of range spoils that review only, is reported, and halts nothing",
-   st[runs[1]["label"]]["step"] == "match" and st[runs[1]["label"]]["reviews"][0]["findings"] == [] and "not used" in text and "out of range" in text, text)
+   st[runs[1]["label"]]["step"] == "match" and st[runs[1]["label"]]["reviews"][0]["findings"] == [] and "not used" in text and "not numbered" in text, text)
 
 # a finding a match uses is not also an outside defect
 w = World("usedreal")
@@ -773,8 +813,8 @@ drive(w)
 go(w, rounds=False)
 for r in w.runs():
     inp = C.jload(os.path.join(w.state, "judge-match", "%s-0.json" % r["label"]))
-    C.jsave(os.path.join(w.state, "judge-match", "%s-0.answer.json" % r["label"]), {"findings": [{"index": 0, "summary": "claim"}],
-            "matches": [{"defect": d["index"], "finding": 0} for d in inp["defects"] if d["summary"] == "bug in dA"], "unmatched": [{"finding": 0, "ruling": "real"}]})
+    C.jsave(os.path.join(w.state, "judge-match", "%s-0.answer.json" % r["label"]), dict(complete(inp, {"bug in dA": 0}, claims=[{"index": 0, "summary": "claim"}]),
+            unmatched=[{"finding": 0, "ruling": "real"}]))
 go(w)
 ok("used_finding_not_outside: a finding some match uses is neither outside nor rejected, whatever the judge also ruled on it",
    all(x["outside"] == [] and x["rejected"] == [] and x["defects"]["dA"] == "recovered" for x in w.runs()), [(x["outside"], x["rejected"]) for x in w.runs()])
@@ -1337,7 +1377,23 @@ XR.RPC = stub
 stops = []
 P.codexhome.stop = lambda home: stops.append(home)
 runs = w.runs()
-jsons = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/" and "/tree/" not in d + "/")
+# the shared replay lock (codex-auth/run.lock) held elsewhere: a `run` of either harness uses the daemon, so cleanup neither archives nor stops
+os.makedirs(os.path.dirname(P.codexhome._lock_path()), exist_ok=True)
+other_run = os.open(P.codexhome._lock_path(), os.O_RDWR | os.O_CREAT)
+fcntl.flock(other_run, fcntl.LOCK_EX)
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.cmd_cleanup(w.args())
+    got = "no error"
+except Failed as e:
+    got = str(e)
+ok("cleanup_shared_lock: while another process holds the replay daemon's lock, cleanup refuses: no thread archived, no daemon stopped, nothing removed",
+   "replay run holds" in got and stops == [] and not [e for e in helpers.read_log(os.path.join(os.path.dirname(stub), "rpc.log")) if e["cmd"] == "thread-archive"]
+   and all(os.path.isdir(r["scratch"]) for r in runs) and os.path.isdir(os.path.join(w.state, "work")), (got, stops))
+fcntl.flock(other_run, fcntl.LOCK_UN)
+os.close(other_run)
+ok("cleanup_shared_lock: and this process holds no lock afterwards", P.codexhome._HELD["fd"] is None, P.codexhome._HELD)
+jsons =sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/" and "/tree/" not in d + "/")
 dry = io.StringIO()
 with contextlib.redirect_stdout(dry):
     P.cmd_cleanup(w.args(dry_run=True))

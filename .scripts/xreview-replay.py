@@ -36,6 +36,8 @@ holding only input.json and brief.md; the judge writes answer.json there, and `c
   judge-match/<case>.json          {known:[...], runs:{label:[findings]}}  (no case id in either: it names the class)
   judge-match answer               {matches:[{known_index, label, finding_index|null}]}
 (<kind>/<id>.answer.json in the state, once collected, is where the answer lives; an answer put there by hand counts too.)
+An answer is used only when complete for its input: a verdict for every finding, a match for every known finding and review. One
+that is not is set aside (<id>.rejected-<n>.answer.json) and the input is pending again.
 A round is named by its review's nonce; a case by <nonce>.<class>: pre (pre-merge, fresh thread),
 inc (incremental: delta), big (round 1, too big for a fresh thread), ctx (a later round whose thread
 would have been full). The class names are neutral on purpose: judges see them.
@@ -394,7 +396,7 @@ def judge_put(a, kind, jid, doc):
 
 def judge_got(a, kind, jid):
     """The judge's answer, or None: the file the judge wrote in its staged directory, collected into the state, else an answer already there."""
-    return pkg("common").judge_answer(a.state, kind, jid)
+    return pkg("common").accepted_answer(a.state, kind, jid)
 
 
 def case_of(c, klass, **extra):
@@ -624,7 +626,7 @@ def with_daemon(home, fn):
     """fn() with the replay daemon of `home` answering: the running one, else one started for the call."""
     cx = pkg("codexhome")
     try:
-        with codex_env(home):
+        with cx.hold(home), codex_env(home):        # the run lock: a daemon another process is using is not touched
             started = not cx.alive(home)
             if started:
                 cx.start(home)

@@ -218,6 +218,13 @@ is_("split_groups: its defects are the two that share the range", sorted(x["summ
 is_("split_groups: input keys", (sorted(d0), sorted(d0["defects"][0])), (["defects", "hunks"], ["file", "index", "line", "summary"]))
 ok("split_groups: nothing is built while the split judge has not answered", not os.path.exists(os.path.join(S1, "work")) and not os.path.exists(os.path.join(S1, "injected")))
 ok("split_groups: and the branch is waiting in cases.json", examined(S1, "bmain0001")["qualified"] is False and cases(S1)["cases"] == [])
+by0 = dict((x["summary"], x["index"]) for x in d0["defects"])
+answer(S1, "judge-split", names[0], {"hunks": [{"index": h["index"], "defect": by0["defect d0000000b"]} for h in d0["hunks"][:-1]]})
+rc, out = run(S1)
+ok("split_incomplete: an answer that leaves a hunk out is not read as 'unsure' for it: nothing is built, and it is set aside",
+   not os.path.exists(os.path.join(S1, "work")) and not os.path.exists(os.path.join(S1, "injected"))
+   and os.path.isfile(os.path.join(S1, "judge-split", names[0] + ".rejected-1.answer.json")) and "no entry for hunk(s) 3" in out, out[-400:])
+ok("split_incomplete: and the judge-split is pending again", ("judge-split", names[0]) in [p[:2] for p in C.pending(S1)])
 split_answer(S1, lambda m: m["defect d0000000b"], lambda m: m["defect d0000000c"])
 rc, out = run(S1)
 r1 = inj(S1, "bmain0001")

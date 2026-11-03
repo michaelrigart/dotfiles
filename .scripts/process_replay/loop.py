@@ -491,54 +491,29 @@ def _final(ctx, run):
 
 
 def _report_findings(answer):
-    """The claims of a report-form judge-match answer, by their own `index`; ValueError when the indices are not 0..n-1."""
-    listed = [f for f in answer.get("findings") or [] if isinstance(f, dict)]
-    out = {}
-    for f in listed:
-        i = f.get("index")
-        if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(listed) or i in out:
-            raise ValueError("finding index {!r} is out of range or repeated for {} finding(s)".format(i, len(listed)))
-        out[i] = {"summary": str(f.get("summary"))}
-    return [out[i] for i in range(len(listed))]
+    """The claims of a report-form judge-match answer (C.answer_problem has checked their numbering), in order of their own `index`."""
+    return [{"summary": str(f.get("summary"))} for f in sorted(answer["findings"], key=lambda f: f["index"])]
 
 
-def _rulings(answer, count):
-    """({defect index: finding index}, {finding index: ruling}) of a judge-match answer; ValueError when it does not fit the input."""
-    matches, rulings = {}, {}
-    for m in answer.get("matches") or []:
-        if not isinstance(m, dict) or not isinstance(m.get("defect"), int) or isinstance(m.get("defect"), bool):
-            raise ValueError("a match has no defect index: {!r}".format(m))
-        f = m.get("finding")
-        if f is None:
-            continue
-        if not isinstance(f, int) or isinstance(f, bool) or not 0 <= f < count:
-            raise ValueError("a match names finding {!r}, and there are {} finding(s)".format(f, count))
-        matches[m["defect"]] = f
-    for u in answer.get("unmatched") or []:
-        if isinstance(u, dict) and isinstance(u.get("finding"), int) and 0 <= u["finding"] < count and u.get("ruling") in ("real", "false_positive"):
-            rulings[u["finding"]] = u["ruling"]
+def _rulings(answer):
+    """({defect index: finding index}, {finding index: ruling}) of a judge-match answer C.answer_problem has passed: every defect is
+    matched to a finding or to null, and every finding no defect claims has its ruling."""
+    matches = dict((m["defect"], m["finding"]) for m in answer.get("matches") or [] if m["finding"] is not None)
+    rulings = dict((u["finding"], u["ruling"]) for u in answer.get("unmatched") or [])
     return matches, rulings
 
 
 def _matched(ctx, run):
-    """Apply the run's judge-match answer. An answer that does not fit its input is reported and not used: the run keeps waiting."""
+    """Apply the run's judge-match answer. An incomplete or malformed one is set aside by C.accepted_answer: the judge-match is pending
+    again and the run keeps waiting, never moving on to another Codex round on what it did not say."""
     a = ctx.a
     j = run["judging"]
-    answer = C.judge_answer(a.state, "judge-match", j["id"])
+    answer = C.accepted_answer(a.state, "judge-match", j["id"])
     if not isinstance(answer, dict):
         return False
     review = run["reviews"][j["review"]]
-    try:
-        findings = _report_findings(answer) if review["kind"] == "final" else review["findings"]
-        matches, rulings = _rulings(answer, len(findings))
-        for index in matches:
-            if not 0 <= index < len(j["order"]):
-                raise ValueError("a match names defect {}, and the input has {}".format(index, len(j["order"])))
-    except ValueError as e:
-        aside = C.reject_answer(a.state, "judge-match", j["id"])
-        say("{}: the judge's answer is not used: {}; it is set aside as {} and the judge-match is pending again".format(
-            j["id"], e, os.path.basename(aside) if aside else "(none)"))
-        return False
+    findings = _report_findings(answer) if review["kind"] == "final" else review["findings"]
+    matches, rulings = _rulings(answer)
     review["findings"] = findings
     _apply(ctx, run, review, dict((j["order"][i], f) for i, f in matches.items()), rulings)
     return True
@@ -590,7 +565,7 @@ def _apply(ctx, run, review, matches, rulings):
 
 def _validated(ctx, run):
     a = ctx.a
-    answers = dict((did, C.judge_answer(a.state, "judge-present", jid)) for did, jid in run["judging"]["ids"].items())
+    answers = dict((did, C.accepted_answer(a.state, "judge-present", jid)) for did, jid in run["judging"]["ids"].items())
     if not all(isinstance(x, dict) for x in answers.values()):
         return False
     for did, x in sorted(answers.items()):
@@ -816,13 +791,14 @@ def cmd_cleanup(a):
             held.append(fd)
         ok = True
         if os.path.isfile(os.path.join(home, codexhome.RECORD)):
-            with K.homed(home):
-                ok = XR.Threads(a.state).cleanup()
-            try:
-                codexhome.stop(home)
-            except Failed as e:
-                say("could not stop the daemon of {}: {}".format(home, e))
-                ok = False
+            with codexhome.hold(home):      # Failed, with nothing archived or stopped, while another process (a `run`, either harness) uses the daemon
+                with K.homed(home):
+                    ok = XR.Threads(a.state).cleanup()
+                try:
+                    codexhome.stop(home)
+                except Failed as e:
+                    say("could not stop the daemon of {}: {}".format(home, e))
+                    ok = False
         for p in gone:
             if os.path.exists(p):
                 shutil.rmtree(p, ignore_errors=True)

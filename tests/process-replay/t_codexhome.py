@@ -452,6 +452,85 @@ with H.hold(home):
 ok("hold: a lock this process holds for the home (it started the daemon) stays held after the block", H._same(H._HELD["home"], home))
 H.stop(home)
 
+# ---- every_change_locked: a stop, a refresh, a probe or the login setup is refused while another process holds the run lock
+CHILD3 = r"""
+import argparse, os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from process_replay import codexhome as H
+from process_replay.common import Failed
+home, other, state, src = sys.argv[2:6]
+def ns(**kw):
+    base = dict(state=state, dry_run=False, name="nomem", memories=None, use_memories=False, start=False, stop=False, probe=False,
+                login_cmd=False, codex_source=src, max_tokens=10**9)
+    return argparse.Namespace(**dict(base, **kw))
+tries = (("stop", lambda: H.stop(home)),
+         ("ensure", lambda: H.ensure(state, "other", source=src)),
+         ("probe", lambda: H.probe(home, False)),
+         ("home --stop", lambda: H.cmd_home(ns(stop=True))),
+         ("home --probe", lambda: H.cmd_home(ns(probe=True))),
+         ("home --login-cmd", lambda: H.cmd_home(ns(login_cmd=True))),
+         ("reclaim", lambda: H.reclaim(home)))
+for label, fn in tries:
+    try:
+        fn()
+        print(label, "went ahead", flush=True)
+    except Failed as e:
+        print(label, "refused", flush=True)
+"""
+H.start(home)
+n_calls, shared_before = len(stops()), (os.path.islink(auth), os.path.exists(os.path.join(H.auth_dir(), "auth.json")))
+got = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD3, helpers.SCRIPTS, home, hm, STATE, SRC], capture_output=True, text=True,
+                     env=dict(os.environ, XREVIEW_REPLAY_RPC=UP)).stdout.split("\n")[:-1]
+is_("every_change_locked: while a process holds the daemon, another's stop, refresh, probe, --stop, --probe, --login-cmd and reclaim refuse", got,
+    ["stop refused", "ensure refused", "probe refused", "home --stop refused", "home --probe refused", "home --login-cmd refused", "reclaim refused"])
+ok("every_change_locked: and none stopped the daemon or touched the login", os.path.exists(SOCK) and len(stops()) == n_calls
+   and (os.path.islink(auth), os.path.exists(os.path.join(H.auth_dir(), "auth.json"))) == shared_before, stops()[n_calls:])
+H.stop(home)
+ok("every_change_locked: the process that holds it can still stop the daemon", not os.path.exists(SOCK) and stops()[-1] == ("stop", home))
+ok("every_change_locked: stop took the lock only for itself, so the lock is free again",
+   subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD3, helpers.SCRIPTS, home, hm, STATE, SRC], capture_output=True, text=True,
+                  env=dict(os.environ, XREVIEW_REPLAY_RPC=UP)).stdout.split("\n")[0] == "stop went ahead")
+
+# ---- handover: this process moves the lock to another home only once the previous home's daemon is confirmed down
+def login_state():
+    d = H.auth_dir()
+    return sorted((n, os.lstat(os.path.join(d, n)).st_mtime_ns) for n in os.listdir(d)), os.path.islink(os.path.join(hm, "auth.json"))
+
+
+def _HELD_HOME():
+    return H._HELD["home"] or ""
+
+
+def switch_to(target):
+    """What xreview-replay's with_daemon (and run_home's next home) does: hold the next home, start its daemon."""
+    try:
+        with H.hold(target):
+            H.start(target)
+            return "started, lock " + os.path.basename(_HELD_HOME())
+    except Failed as e:
+        return str(e)
+
+
+os.environ["CODEX_REAL_BIN"] = failing
+H.start(hm)
+ok("handover: control: the stop of home A fails and its socket stays", raises(H.stop, hm) and os.path.exists(os.path.join(hm, H.SOCKET)))
+login = login_state()
+got = switch_to(home)
+ok("handover: so switching to home B refuses and says to stop A first", "stop that home first" in got and "--name {} --stop".format(os.path.basename(hm)) in got, got)
+ok("handover: ... with no daemon start for B, the marker still naming A, the lock still A's, and the shared login as it was",
+   not os.path.exists(SOCK) and json.load(open(H._marker()))["home"] == hm and H._same(H._HELD["home"], hm) and login_state() == login,
+   (os.path.exists(SOCK), H.jload(H._marker()), H._HELD["home"], login_state() == login))
+ok("handover: making or refreshing B refuses too (run_home's next home), and changes nothing in it",
+   raises(H.ensure, STATE, os.path.basename(home), source=SRC) and login_state() == login)
+os.environ["CODEX_REAL_BIN"] = good_bin
+H.stop(hm)
+ok("handover: once A's stop succeeds the lock is let go", H._HELD["fd"] is None)
+got = switch_to(home)
+ok("handover: and B starts: its daemon, the marker and (while it is used) the lock are B's",
+   got == "started, lock " + os.path.basename(home) and os.path.exists(SOCK) and json.load(open(H._marker()))["home"] == home, got)
+H.stop(home)
+
 # ---- probe_record: a probe proves the daemon it ran against, not the next one
 put(home, H.PROBED, json.dumps({"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True}, "expect_memories": False}))
 is_("probe_record: a passing record is a pass", H.probed(home), (True, ""))

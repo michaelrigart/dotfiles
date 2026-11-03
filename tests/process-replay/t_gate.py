@@ -49,9 +49,15 @@ doc = C.jload(os.path.join(STATE, "judge-present", jid + ".json"))
 is_("validate: the input is the finding and the files, as a list", (sorted(doc), [f["path"] for f in doc["files"]]), (["files", "finding"], ["src/e.py", "src/big.py"]))
 is_("validate: the id is the digest of exactly that input", jid, G.question_id("d00000001", doc))
 is_("validate: asking again is the same question, written once", (G.validate(STATE, WORK, F, D, counts)[0], counts["judge-present"]), (jid, 1))
-for given, want in (("yes", "yes"), ("no", "no"), ("unclear", "unclear"), ("maybe", "unclear")):
+for given, want in (("yes", "yes"), ("no", "no")):
     C.jsave(os.path.join(STATE, "judge-present", jid + ".answer.json"), {"answer": given})
     is_("validate: the answer {!r} is {!r}".format(given, want), G.validate(STATE, WORK, F, D, counts)[1], want)
+C.jsave(os.path.join(STATE, "judge-present", jid + ".answer.json"), {"answer": "maybe"})
+is_("validate: an answer that is not yes, no or unclear is not taken for 'unclear': there is none, and it is set aside",
+    (G.validate(STATE, WORK, F, D, counts)[1], os.path.exists(os.path.join(STATE, "judge-present", jid + ".answer.json")),
+     C.jload(os.path.join(STATE, "judge-present", jid + ".rejected-1.answer.json"))), (None, False, {"answer": "maybe"}))
+C.jsave(os.path.join(STATE, "judge-present", jid + ".answer.json"), {"answer": "unclear"})
+is_("validate: the answer 'unclear' is 'unclear'", G.validate(STATE, WORK, F, D, counts)[1], "unclear")
 put(R, "src/e.py", "line1\nline2 changed\nline3\n")
 OTHER = helpers.commit(R, "other")
 git(WORK, "fetch", "-q", R, OTHER)
@@ -59,7 +65,7 @@ jid2, ans2 = G.validate(STATE, WORK, OTHER, D, counts)
 ok("validate: another tree is another question, with its own id, unanswered", jid2 != jid and ans2 is None, (jid, jid2))
 is_("validate: and the first question keeps its input and its answer: nothing is set aside",
     (C.jload(os.path.join(STATE, "judge-present", jid + ".json")) == doc, C.jload(os.path.join(STATE, "judge-present", jid + ".answer.json")),
-     sorted(n for n in os.listdir(os.path.join(STATE, "judge-present")) if "stale" in n)), (True, {"answer": "maybe"}, []))
+     sorted(n for n in os.listdir(os.path.join(STATE, "judge-present")) if "stale" in n)), (True, {"answer": "unclear"}, []))
 is_("validate: back on the first tree, the first answer serves", G.validate(STATE, WORK, F, D, counts), (jid, "unclear"))
 
 # ---- tree_patches, recreation
@@ -82,6 +88,24 @@ is_("recreation: finished with nothing edited, it changed nothing", (got["kind"]
 put(TREE_DIR, "src/e.py", "line1\nline2 BROKEN\nline3\n")
 put(TREE_DIR, "docs/superpowers/plans/p.md", "an edit of the docs\n")
 os.unlink(os.path.join(STATE, "recreated", "d00000001.patch"))
+real_to_bytes, made = G.P.to_bytes, []
+
+
+def crash_on_patch(body):
+    made.append(body)
+    if len(made) == 2:      # the repair patch is written; the process dies while the patch is
+        raise KeyboardInterrupt("killed")
+    return real_to_bytes(body)
+
+
+G.P.to_bytes = crash_on_patch
+try:
+    G.recreation(a_, WORK, F, D, "FIX TEXT", counts)
+except KeyboardInterrupt:
+    pass
+G.P.to_bytes = real_to_bytes
+ok("recreation_atomic: a process killed while recreated/<d>.patch is written leaves no patch file: it is never read half-made (as 'changed nothing') "
+   "and cleanup, which keys on it, keeps the tree", not os.path.exists(os.path.join(STATE, "recreated", "d00000001.patch")))
 got = G.recreation(a_, WORK, F, D, "FIX TEXT", counts)
 same = got["wait"]
 ok("recreation: an edit waits for judge-same, a question keyed by its input", got["kind"] == "judge" and same == G.question_id("d00000001", C.jload(os.path.join(STATE, "judge-same", same + ".json"))), got)

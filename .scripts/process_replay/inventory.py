@@ -523,7 +523,7 @@ def judge_branch(a, br, scope, counts):
         _put(state, "judge-task", j["id"], {
             "reports": [{"index": i, "text": C.cap(r["report"], REPORT_CAP)} for i, r in enumerate(reports)],
             "changes": [{"index": i, "note": c["note"], "diff": repo.patch(*c["range"])} for i, c in enumerate(j["changes"])]}, counts)
-        ans = C.judge_answer(state, "judge-task", j["id"])
+        ans = C.accepted_answer(state, "judge-task", j["id"])
         if not isinstance(ans, dict):
             pending += 1
             continue
@@ -541,7 +541,7 @@ def judge_branch(a, br, scope, counts):
             dropped += [{"summary": f["summary"], "why": why} for f in found]
             continue
         _put(state, "judge-known", r["nonce"], {"case": r["nonce"], "findings": found, "interdiff": repo.patch(r["tip"], nxt["tip"])}, counts)
-        ans = C.judge_answer(state, "judge-known", r["nonce"])
+        ans = C.accepted_answer(state, "judge-known", r["nonce"])
         if not isinstance(ans, dict):
             pending += 1
             continue
@@ -553,7 +553,7 @@ def judge_branch(a, br, scope, counts):
                 jid = "{}-{}".format(r["nonce"], f["index"])
                 _put(state, "judge-present", jid, {"finding": dict((k, f[k]) for k in KEYS),
                                                   "files": _files_input(repo, chain[0]["tip"], f.get("file"))}, counts)
-                present = C.judge_answer(state, "judge-present", jid)
+                present = C.accepted_answer(state, "judge-present", jid)
                 if not isinstance(present, dict):
                     pending += 1
                     continue
@@ -568,7 +568,7 @@ def judge_branch(a, br, scope, counts):
     if len(items) >= 2:
         _put(state, "judge-dedup", br["id"], {"defects": [dict([(k, it[k]) for k in ("summary", "file", "line", "failure_scenario")], index=n)
                                                          for n, it in enumerate(items)]}, counts)
-        ans = C.judge_answer(state, "judge-dedup", br["id"])
+        ans = C.accepted_answer(state, "judge-dedup", br["id"])
         groups = _partition(ans, len(items))
         if groups is None:
             return None, 1
