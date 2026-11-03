@@ -655,6 +655,27 @@ finally:
 is_("mise_config_ignored: a tree holding a mise.toml is checked past the shim: the defects are present, not incoherent",
     sorted((k, v["status"]) for k, v in inj(S60, "bmise0001")["defects"].items()), [("d00000041", "present"), ("d00000042", "present")])
 
+S61 = setup_state("w-mise-rec", [MISE], {"bmise0001": DM})
+os.environ["PATH"] = MSTUB + os.pathsep + old_path
+try:
+    run(S61)
+    say(S61, "d00000041", "yes")
+    say(S61, "d00000042", "no")
+    for n in unanswered(S61, "judge-present"):
+        answer(S61, "judge-present", n, {"answer": "yes"})
+    run(S61)
+    put(os.path.join(S61, "recreate", "d00000042", "tree"), "src/n.py", "n = 0  # bug N, by hand\n")
+    put(os.path.join(S61, "recreate", "d00000042"), "done", "")
+    run(S61)
+    say(S61, "d00000042", "yes", "judge-same")
+    run(S61)
+    say(S61, "d00000042", "yes")
+    run(S61)
+finally:
+    os.environ["PATH"] = old_path
+is_("mise_config_ignored: a recreation in a tree holding a mise.toml is checked past the shim too: recreated, not unassessable",
+    sorted((k, v["status"]) for k, v in inj(S61, "bmise0001")["defects"].items()), [("d00000041", "present"), ("d00000042", "recreated")])
+
 # ================================================================ order by position, committer date for a head that is not on the branch
 RO = helpers.make_repo(ROOT, "orderrepo")
 BO = cm(RO, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
