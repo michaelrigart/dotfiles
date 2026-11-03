@@ -146,6 +146,33 @@ is() { # is <jq filter> <expected> <label>
   local got; got="$(printf '%s' "$OUT" | jq -r "$1" 2>&1)"
   if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
 }
+
+# A wt line names its checkout with -C <dir> between xreview and the verb; those calls still
+# count (kept in a tree of its own so the stretch metrics above stay put).
+PROJ2="$ROOT/projects2/-Users-x-Code-demo"
+mkdir -p "$PROJ2"
+/usr/bin/python3 - "$PROJ2" <<'PY'
+import datetime, json, os, sys, time
+t0 = time.time() - 3600
+def ts(m): return datetime.datetime.fromtimestamp(t0 + m * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def tu(i, c): return {"type": "tool_use", "id": i, "name": "Bash", "input": {"command": c}}
+def res(i): return {"type": "tool_result", "tool_use_id": i, "is_error": False, "content": "ok"}
+entries = [
+    {"type": "user", "timestamp": ts(0), "origin": {"kind": "human"}, "message": {"role": "user", "content": "go"}},
+    {"type": "assistant", "timestamp": ts(1), "message": {"role": "assistant", "content": [
+        tu("c1", "xreview -C /Users/x/Code/O/r-feat dispatch --checkpoint plan b.md"),
+        tu("c2", 'xreview -C "/a b/c" collect xr-9 60'),
+        tu("c3", "xreview -C /x round --reset")]}},
+    {"type": "user", "timestamp": ts(2), "message": {"role": "user", "content": [res("c1"), res("c2"), res("c3")]}},
+]
+with open(os.path.join(sys.argv[1], "sess-c.jsonl"), "w") as fh:
+    for e in entries: fh.write(json.dumps(e) + "\n")
+PY
+OUT2="$(/usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$ROOT/projects2" 2>&1)"
+is2() { local got; got="$(printf '%s' "$OUT2" | jq -r "$1" 2>&1)"; if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi; }
+is2 '.xreview.dispatches' 1 "xreview -C <dir> dispatch counts; a wt line's reviews stay in the metric"
+is2 '.xreview.collects'   1 "xreview -C \"<dir with spaces>\" collect counts, and -C <dir> round is neither verb"
+
 [ "$rc" -eq 0 ] && _pass "runs on the system python and exits 0" || _fail "runs on the system python and exits 0" "rc=$rc: $OUT"
 is '.sessions'                        1   "only sessions active in the window count"
 is '.human_turns.total'               3   "human turns: typed, queued and typed again"
