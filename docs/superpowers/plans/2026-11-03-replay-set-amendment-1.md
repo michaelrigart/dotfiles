@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (plan review pending).
+**Status:** In progress (Codex plan review approved round 3, xr-1793746153-36c07813).
 
 **Goal:** Fix the harness defects and change the two limits that §11.4 found, so a rerun of §4 on the kept
 state can pass the coverage gate and its leak scan voids only runs that read something forbidden; then
