@@ -434,16 +434,34 @@ for label, text in (("the original checkout", "cat ~/Code/Org/repo/src/a.py"), (
                     ("October's archived codex sessions", "ls $HOME/.codex/archived_sessions"), ("October's memories", "cat ~/.codex/memories/MEMORY.md"),
                     ("the Claude transcripts", "ls ~/.claude/projects"), ("the xreview ledgers", "cat $XDG_STATE_HOME/xreview/ledgers/k/reviews.jsonl"),
                     ("the xreview ledgers by path", "cat {}/xreview/ledgers/k/reviews.jsonl".format(XSH)),
+                    ("the replay homes", "ls $XDG_STATE_HOME/cxh/nomem/sessions"), ("a replay home by path", "cat {}/cxh/mem-a1/sessions/r.jsonl".format(XSH)),
                     ("another scratch", "cat ../other000/x"), ("a staged item", "cat ../../items/0123456789abcdef/input.json"),
                     ("an alias link", "cat ../../deadbeef/inventory/b.json"), ("review-work itself", "ls ../.."), ("a stray ../..", "cat ../../../xreview/x")):
     ok("forbidden: reading {} is a leak".format(label), forbid(text) != [], forbid(text))
 for label, text in (("a file in its own scratch", "cat src/a.py"), ("its own scratch by path", "git -C {} log".format(OWN)), ("a relative path inside it", "cat ./x/../src/a.py"),
-                    ("a code path named like the roots", "rg -n sessions memories projects xreview src")):
+                    ("a code path named like the roots", "rg -n sessions memories projects xreview src"),
+                    ("a search for a root's name in its own scratch, by absolute path", "rg -n xreview {}/dot_claude".format(OWN)),
+                    ("git -C its own scratch by absolute path with a root's name in the pattern", "git -C {} log --grep xreview".format(OWN)),
+                    ("a search for cxh in its own scratch", "rg -n cxh {}".format(OWN))):
     is_("forbidden: {} is not a leak".format(label), forbid(text), [])
 MW = "cat $XDG_STATE_HOME/process-replay/memwatch/polls.jsonl"
 is_("forbidden: the memories watcher's directory is open to an ordinary run", forbid(MW), [])
 ok("forbidden: ... and forbidden to a memories run", forbid(MW, memwatch=True) != [], forbid(MW, memwatch=True))
 ok("forbidden: ... by its path too", forbid("ls {}/process-replay/memwatch".format(XSH), memwatch=True) != [])
+HOME_A = os.path.join(XSH, "cxh", "mem-a1")
+
+
+def forbid_exempt(text):
+    n_fb[0] += 1
+    thread = "fbx{}".format(n_fb[0])
+    rollout(thread, [{"turn": "t1", "answer": None, "tools": [tool("function_call", text)]}])
+    return K.leaks(lhome, [(thread, "t1")], list(fpaths), OWN, fwalled, exempt=[os.path.join(HOME_A, "memories")])
+
+
+is_("exempt: a path inside an exempt directory is not a read of the root above it (absolute, $XDG_STATE_HOME)",
+    (forbid_exempt("cat {}/memories/MEMORY.md".format(HOME_A)), forbid_exempt("cat $XDG_STATE_HOME/cxh/mem-a1/memories/MEMORY.md")), ([], []))
+ok("exempt: another home's memories, the same home's sessions, and a directory that merely starts like the exempt one are leaks",
+   all(forbid_exempt(t) for t in ("cat {}/cxh/mem-b2/memories/MEMORY.md".format(XSH), "cat {}/sessions/x.jsonl".format(HOME_A), "cat {}/memories-old/x".format(HOME_A))))
 wp, ww = K.forbidden(FSTATE, BRANCH, [OWN, "/items/own"], snapshot_root="/elsewhere/snap")
 ok("forbidden: a snapshot root given by the caller is forbidden too, and every own directory is allowed", "/elsewhere/snap" in wp and ww[1] == [OWN, "/items/own"], (wp, ww))
 

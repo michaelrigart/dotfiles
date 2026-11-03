@@ -21,7 +21,8 @@ surrounding polls show one hash. Arms A and A2 run on a replay Codex home holdin
 memories; the replay daemons run one at a time (process_replay.codexhome), so `run` takes the homes in turn. The
 switch has its own state directory ($XDG_STATE_HOME/xreview/replay/memories; pass --switch memories to every command
 or the same --state), each arm's packet is built against its own checkout under $XDG_STATE_HOME/review-work/scratch,
-and a turn whose rollout names the original checkout is void and runs once more (a second leak is an error run).
+and a turn whose rollout shows a leak (a path the reviewer must not read: see process_replay.codex.forbidden) is void and runs once
+more (a second leak is an error run).
 
 --dry-run builds and selects but starts no turn and calls no daemon. The default state directory is
 $XDG_STATE_HOME/xreview/replay/<date>. Raw run files are never committed.
@@ -826,7 +827,10 @@ def leak_scan(a, job, turns, clone):
     watch = getattr(a, "memwatch", None) or (jload(os.path.join(a.state, "cases.json"), {}) or {}).get("memwatch") or True
     paths, walled = cx.forbidden(a.state, {"repo": job["repo"]}, [clone], memwatch=watch)
     try:
-        return cx.leaks(job.get("home_path") or codex_home(), turns, paths, cwd=clone, walled=walled)
+        # an A/A2 arm may read the memories of its own replay home (they are what is under test); B's home has none
+        home = job.get("home_path") or codex_home()
+        own = [os.path.join(home, "memories")] if job.get("memories") and job.get("home_path") else []
+        return cx.leaks(home, turns, paths, cwd=clone, walled=walled, exempt=own)
     except pkg("common").Failed as e:
         raise Failed("cannot scan the rollout for leaks: {}".format(e))
 
@@ -856,10 +860,10 @@ def run_job(a, job):
             found = leak_scan(a, job, turns, clone) if job.get("scratch") else []
             if not found:
                 break
-            # a run that read the original checkout learned the future: it is void, and runs once more
+            # a run that leaked (codex.forbidden) may have learned the future: it is void, and runs once more
             voids.append(found)
             if attempt == 2:       # this attempt's tokens are the run's own: spent counts them once, below
-                raise Failed("void twice: the reviewer read the original checkout ({})".format("; ".join(found)))
+                raise Failed("void twice: the reviewer leaked, see codex.forbidden ({})".format("; ".join(found)))
             wasted += res["tokens"]
             res.update(findings=[], reviewed_files=[], tokens=0, compacted=False, slices=0, verdict=None, missing=None)
             shutil.rmtree(clone, ignore_errors=True)

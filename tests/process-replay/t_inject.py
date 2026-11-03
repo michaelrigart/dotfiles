@@ -65,10 +65,12 @@ def rec_branch(bid, repo, name, base, tip, plan, at="2026-10-20T10:00:00.000000Z
             "merged": {"how": "ancestry", "commit": tip, "at": merged}, "unresolved_ranges": 0, "off_branch_ranges": 0, "skipped_rounds": []}
 
 
-def setup_state(name, branches, inventories):
+def setup_state(name, branches, inventories, pre=True):
     state = world(name)
     C.jsave(os.path.join(state, "branches.json"), {"branches": branches})
     for bid, defects in inventories.items():
+        if pre and not any(d["class"] != "task" for d in defects):
+            defects = defects + [dfx("dnopre" + bid[-4:], "pre", "P2", [], "README.md")]       # a case needs a pre-merge defect to be built at all
         C.jsave(os.path.join(state, "inventory", bid + ".json"), {"branch": bid, "defects": defects, "dropped": []})
     return state
 
@@ -89,7 +91,11 @@ def answer(state, kind, jid, doc):
 
 
 def inj(state, bid):
-    return C.jload(os.path.join(state, "injected", bid + ".json"))
+    """The injected record, less the stand-in pre-merge defect setup_state adds to a branch with none."""
+    rec = C.jload(os.path.join(state, "injected", bid + ".json"))
+    if rec:
+        rec["defects"] = dict((k, v) for k, v in rec["defects"].items() if not k.startswith("dnopre"))
+    return rec
 
 
 def cases(state):
@@ -364,6 +370,13 @@ run(S3d)
 ok("docs_pinned: a branch with no plan commit cannot be pinned and does not qualify", examined(S3d, "bmain0001")["qualified"] is False
    and "plan" in examined(S3d, "bmain0001")["why"] and not os.path.exists(os.path.join(S3d, "work")), examined(S3d, "bmain0001"))
 
+# ---- no counted pre-merge defect at all: disqualified before anything is built or asked
+S3f = setup_state("w-nopre", [MAIN], {"bmain0001": [DA, DB, DC, dict(DD, severity="P3", counted=False)]}, pre=False)
+run(S3f)
+ok("qualify: a branch with no counted pre-merge defect is disqualified at once, before a work repository, a judge-split or a judge-present is made",
+   examined(S3f, "bmain0001")["qualified"] is False and examined(S3f, "bmain0001")["why"] == "no pre-merge defect to calibrate against"
+   and not os.path.exists(os.path.join(S3f, "work")) and inputs(S3f, "judge-split") == [] and inputs(S3f, "judge-present") == [], examined(S3f, "bmain0001"))
+
 # ---- dry run writes judge inputs and briefs only
 S4 = main_state("w-dry")
 rc, out = run(S4, dry=True)
@@ -525,7 +538,8 @@ is_("coverage_gate: a P2 is listed too", cases(S9)["coverage"], {"unassessable_t
 
 # a group whose second piece does not revert leaves the tree as it found it
 DX = dfx("d00000011", "task", "P1", [(TC, FE), (FE, FF)], "src/f.py", files=["src/e.txt", "src/f.py"])
-S10b = setup_state("w-partial", [CONF], {"bconf0001": [DX, dfx("d00000012", "task", "P2", [(BC, TC)], "src/f.py")]})
+S10b = setup_state("w-partial", [CONF], {"bconf0001": [DX, dfx("d00000012", "task", "P2", [(BC, TC)], "src/f.py"),
+                                                    dfx("d00000013", "pre", "P2", [], "src/f.py")]})
 run(S10b)
 r = inj(S10b, "bconf0001")
 ok("revert_conflict_dropped: a defect with two fix ranges, one of which does not revert, is dropped whole and the tree is as the final one",
@@ -931,9 +945,7 @@ ok("coverage_gate: a branch that cannot qualify (its pre-merge P1 fails) and wai
    examined(S20, "bconf0002")["qualified"] is False and "recreation" in examined(S20, "bconf0002")["why"] and os.path.exists(os.path.join(S20, "work", "bqh1")),
    (examined(S20, "bconf0002"), os.listdir(os.path.join(S20, "work"))))
 # a branch that can no longer have two assessable per-task defects holds no place while it waits either
-S20b = setup_state("w-place-few", [rec_branch("bconf0003", RC, "feat", BC, LC, TC, at="2026-10-31T10:00:00.000000Z"), QH], {"bconf0003": [DE2, DF], "bqh1": dq})
-run(S20b)
-say(S20b, "d0000000e", "no")
+S20b = setup_state("w-place-few", [rec_branch("bconf0003", RC, "feat", BC, LC, TC, at="2026-10-31T10:00:00.000000Z"), QH], {"bconf0003": [DE2, DF, dfx("d00000073", "pre", "P2", [], "src/e.txt")], "bqh1": dq})
 run(S20b)
 ok("place: control: while its recreation may still succeed, the branch holds the one place", not os.path.exists(os.path.join(S20b, "work", "bqh1")))
 put(os.path.join(S20b, "recreate", "d0000000e"), "done", "")
@@ -1433,7 +1445,7 @@ C.judge_write(S53, "judge-present", OTHER, {"finding": {"summary": "a question a
 pend = lambda: sorted(p[1] for p in C.pending(S53) if p[0] == "judge-present")
 first = judged(S53, "judge-present", "d0000000f")
 is_("needed: the question the fixpoint waits on is pending, beside another module's", pend(), sorted(first + [OTHER]))
-C.jsave(os.path.join(S53, "inventory", "bconf0001.json"), {"branch": "bconf0001", "defects": [DE, dict(DF, summary="defect d0000000f, reworded")], "dropped": []})
+C.jsave(os.path.join(S53, "inventory", "bconf0001.json"), {"branch": "bconf0001", "defects": [DE, dict(DF, summary="defect d0000000f, reworded"), dfx("dnoprecon", "pre", "P2", [], "README.md")], "dropped": []})
 run(S53)
 now = [n for n in judged(S53, "judge-present", "d0000000f") if n not in first]
 is_("needed: once the inventory changes the finding, the old question is no longer pending; the new one and the other module's are",

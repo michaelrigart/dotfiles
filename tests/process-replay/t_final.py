@@ -240,6 +240,37 @@ for n, (label, cmd) in enumerate((("the snapshot root", "ls ~/Code/.replay/snaps
                                  ("the xreview ledgers", "cat $XDG_STATE_HOME/xreview/ledgers/k/reviews.jsonl"))):
     ok("leak_scan: a final reviewer reading {} is a leak".format(label), leaks_of([cmd], name="root{}".format(n)) != [], cmd)
 
+ok("leak_scan: a Grep for a root's name in its own scratch, by absolute path, is not a leak",
+   leaks_of(calls=[("Grep", {"pattern": "xreview", "path": run["scratch"]}), ("Read", {"file_path": run["scratch"] + "/dot_claude/xreview-packet.py"})], name="grepown") == [])
+ok("leak_scan: a final reviewer reading the replay homes is a leak", leaks_of(["ls $XDG_STATE_HOME/cxh/nomem/sessions"], name="cxh") != [])
+ok("leak_scan: reading $XDG_STATE_HOME/xreview/ledgers is still a leak", leaks_of(calls=[("Read", {"file_path": os.path.join(os.environ["XDG_STATE_HOME"], "xreview", "ledgers", "x")})], name="xrv") != [])
+
+# ---- a reviewer's own saved tool results (Claude Code keeps them in the session's tool-results/) are its to read; another session's are not
+CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
+
+
+def own_session(session, commands=(), calls=None, agent=None):
+    entries = [{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "You are a Senior Code Reviewer.\n\nReview id: {}\n".format(jid)}]}}]
+    for c in commands:
+        entries.append({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": c}}]}})
+    for name, inp in calls or []:
+        entries.append({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": name, "input": inp}]}})
+    return helpers.write_transcript(CLAUDE_PROJECTS, "proj", session, [{"type": "user", "message": {"role": "user", "content": "drive"}}],
+                                    subagents=[{"id": agent or "rev", "meta": {"agentType": "sp-architect"}, "entries": entries}])
+
+
+mine_dir = os.path.join(CLAUDE_PROJECTS, "proj", "s-mine")
+top = own_session("s-mine", calls=[("Read", {"file_path": mine_dir + "/tool-results/x.txt"}), ("Grep", {"pattern": "y", "path": mine_dir + "/tool-results"})],
+                  commands=["cat ~/.claude/projects/proj/s-mine/tool-results/x.txt", "head {}/subagents/agent-rev.jsonl".format(mine_dir)])
+sub = os.path.join(mine_dir, "subagents", "agent-rev.jsonl")
+is_("leak_scan: a reviewer reading its own session's tool-results (absolute or ~ spelling) is clean, whether its transcript is the subagent's or the session's",
+    (F.leaks(a, run, branch, sub), F.leaks(a, run, branch, top)), ([], []))
+own_session("s-mine2", calls=[("Read", {"file_path": CLAUDE_PROJECTS + "/proj/s-other/tool-results/x.txt"})])
+ok("leak_scan: ... but another session's files are a leak", F.leaks(a, run, branch, os.path.join(CLAUDE_PROJECTS, "proj", "s-mine2", "subagents", "agent-rev.jsonl")) != [])
+own_session("s-mine3", commands=["ls ~/.claude/projects", "cat {}-evil/tool-results/x".format(CLAUDE_PROJECTS + "/proj/s-mine3")])
+ok("leak_scan: ... the projects root itself, and a sibling that merely starts like the session's, are leaks",
+   len(F.leaks(a, run, branch, os.path.join(CLAUDE_PROJECTS, "proj", "s-mine3", "subagents", "agent-rev.jsonl"))) >= 1)
+
 # ---- the reviewer's own subagents are scanned too, through the parentAgentId chain
 ses = "s-sub"
 head = transcript(jid, session=ses)

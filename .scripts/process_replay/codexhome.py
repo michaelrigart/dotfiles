@@ -37,6 +37,7 @@ from . import common
 from .common import Failed, XR, jload, jsave, say
 
 RECORD = "replay-home.json"
+PROBED = "probe.json"       # the result of the last probe of a home; start() removes it
 COPIED = ("skills", "rules", "plugins")
 CLONED = ("plugins",)      # copied as an APFS clone when possible: it is large
 SOCKET = os.path.join("app-server-control", "app-server-control.sock")
@@ -422,6 +423,8 @@ def start(home):
             os.unlink(_marker())
     _leftover(home, True)
     _acquire(home)
+    if os.path.exists(os.path.join(home, PROBED)):
+        os.unlink(os.path.join(home, PROBED))        # a probe proved the daemon before this start, not this one
     _daemon(home, "start")
     jsave(_marker(), {"home": home})
 
@@ -529,6 +532,17 @@ def _memory_lines(summary):
     return sorted(lines, key=lambda l: (-len(l), l))[:MEMORY_LINES]
 
 
+def probed(home):
+    """(True, "") when the last probe of `home`, since its daemon was last started, passed, else (False, why)."""
+    rec = jload(os.path.join(home, PROBED))
+    if not isinstance(rec, dict):
+        return False, "it has not been probed since it was started"
+    if rec.get("ok") is not True:
+        failed = ", ".join(k for k, v in sorted((rec.get("checks") or {}).items()) if not v)
+        return False, "its last probe ({}) failed{}".format(rec.get("at"), ": " + failed if failed else "")
+    return True, ""
+
+
 def probe(home, expect_memories, rpc=None):
     """Prove the isolation before any replay turn runs: one turn on the replay daemon, which must
     answer, leave its rollout under `home` and none under the source home, leave the source home's own
@@ -539,6 +553,11 @@ def probe(home, expect_memories, rpc=None):
 
     def done():
         res.update(ok=bool(checks) and all(checks.values()), checks=checks, notes=notes)
+        try:
+            jsave(os.path.join(home, PROBED), {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "ok": res["ok"], "checks": checks,
+                                              "expect_memories": bool(expect_memories)})
+        except OSError:
+            pass
         return res
 
     rc, _out, err = _call(rpc, home, "health")

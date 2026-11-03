@@ -43,7 +43,8 @@ Known limits of a lexical scan, which are not chased further: a path assembled a
 `git -c key.x=../...` and other options that glue a path to a key are not resolved; a workdir held in a variable;
 aliases, functions or variables defined earlier in the session; a command assembled from a substitution's output
 (`$(which chezmoi) diff`); a heredoc fed to a shell (`sh <<'EOF' ... EOF`, `cat <<EOF | sh`); a backtick inside a
-quoted string; `find -exec chezmoi`; and a long xargs option with a separate value (`--max-args 1`).
+quoted string; a grep pattern that names a forbidden root's path (`rg -n '.claude/projects' dot_claude`) counts as a read, though
+it reads nothing there; `find -exec chezmoi`; and a long xargs option with a separate value (`--max-args 1`).
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
 rollout reads of a round, and drops an inherited XREVIEW_RPC_SOCK or XREVIEW_RPC_STDIO, which would aim a call
@@ -306,13 +307,16 @@ WITH_ARG = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-T",
 WRAPPERS = ("exec", "time", "nohup", "stdbuf", "ionice", "setsid", "builtin", "noglob", "nocorrect")
 
 
-def forbidden_paths(paths):
+def forbidden_paths(paths, allowed=()):
     """[(path, [regex naming it], [regex naming its parent directory as a path], regex naming its last component)]
     for the original checkouts: a git directory stands for its work tree. Under $HOME a path is also matched by its
     HOME-relative tail wherever a command spells the prefix (~/, $HOME/, ${HOME}/, ../../, /Users/x/). A parent
     directory counts only when spelled as a path (absolute, or ~/, $HOME/, ${HOME}/ + its tail), never as a bare
-    tail (Code, .local/share), and not at all when it is $HOME or /."""
+    tail (Code, .local/share), and not at all when it is $HOME or /, or contains one of `allowed` (the run's own directories:
+    the parent of a forbidden path under $XDG_STATE_HOME also holds the run's scratch, and a word of the forbidden path beside the
+    scratch's path is a search for it, not a read)."""
     house = os.path.expanduser("~").rstrip("/")
+    mine = [x.rstrip("/") for a in allowed for x in (os.path.abspath(a), os.path.realpath(a))]
     out, seen = [], set()
     for path in paths:
         if not (isinstance(path, str) and path):
@@ -326,14 +330,15 @@ def forbidden_paths(paths):
         names = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(path) + _NOT_WORD)]
         parent = os.path.dirname(path)
         parents = []
-        if parent not in ("", "/", house):
+        holds = any(x == parent or x.startswith(parent + "/") for x in mine)
+        if parent not in ("", "/", house) and not holds:
             parents.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(parent) + _NOT_WORD))
         if house and path.startswith(house + "/"):
             tail = path[len(house) + 1:]
             # a tail of one component is a bare word (foo for ~/foo): it names the checkout only behind ~/ or $HOME/
             lead = r"(?<![A-Za-z0-9_.-])" if "/" in tail else r"(?:~|\$HOME|\$\{HOME\})/"
             names.append(re.compile(lead + re.escape(tail) + _NOT_WORD))
-            if os.path.dirname(tail):
+            if os.path.dirname(tail) and not holds:
                 parents.append(re.compile(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(os.path.dirname(tail)) + _NOT_WORD))
             for spelling in TOOLS.get(tail, {}).get("spellings", ()):
                 names.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(spelling) + _NOT_WORD))
@@ -566,11 +571,26 @@ def _calls(p, cwd):
     return [(json.dumps(p, ensure_ascii=False), wd, cmds)]
 
 
-def leaks(home, turns, paths, cwd=None, walled=None):
+def unspell(text, exempt):
+    """`text` without the directories of `exempt`, in the spellings a call uses (absolute, ~/, $HOME/, ${HOME}/, $XDG_STATE_HOME/,
+    ${XDG_STATE_HOME}/): a path inside one is not read for a forbidden root."""
+    house, state_home = os.path.expanduser("~").rstrip("/"), L.state_home().rstrip("/")
+    for d in exempt:
+        d = d.rstrip("/")
+        spellings = [d]
+        for root, names in ((house, ("~", "$HOME", "${HOME}")), (state_home, ("$XDG_STATE_HOME", "${XDG_STATE_HOME}"))):
+            if root and d.startswith(root + "/"):
+                spellings += [x + d[len(root):] for x in names]
+        for spelling in spellings:
+            text = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(spelling) + r"(?![A-Za-z0-9_.-])", "<own>", text)
+    return text
+
+
+def leaks(home, turns, paths, cwd=None, walled=None, exempt=()):
     """The tool calls of `turns` ([(thread, turn)]) in `home`'s rollouts that name one of `paths` (forbidden(): the original
     checkouts, a wt sibling <path>-<branch> continuing the name, the state, the snapshot and where October's answers live):
     ["<path> in <turn>"]. With `walled` = (the review-work directory, [allowed directories]), also any path under review-work that
-    is not inside an allowed directory (walled_leaks). `cwd`, the scratch repository,
+    is not inside an allowed directory (walled_leaks). A path inside a directory of `exempt` is not read for `paths` (unspell). `cwd`, the scratch repository,
     is where a relative path of a call without its own workdir starts. Only the reviewer's own calls
     (custom_tool_call, function_call, local_shell_call) are read, never a user or developer message, which may carry
     the paths legitimately. A scanned turn whose rollout is missing, unreadable or does not hold the turn counts as a
@@ -578,7 +598,7 @@ def leaks(home, turns, paths, cwd=None, walled=None):
     wanted = {}
     for thread, turn in turns:
         wanted.setdefault(thread, set()).add(turn)
-    forbidden = forbidden_paths(paths)
+    forbidden = forbidden_paths(paths, list(walled[1] if walled else ()) + list(exempt))
     found = set()
     with homed(home):
         for thread, ours in wanted.items():
@@ -606,7 +626,7 @@ def leaks(home, turns, paths, cwd=None, walled=None):
                     inside = False
                 elif inside and rec.get("type") == "response_item" and p.get("type") in ("custom_tool_call", "function_call", "local_shell_call"):
                     for text, where, commands in _calls(p, cwd):
-                        names = set(named(text, where, forbidden, commands))
+                        names = set(named(unspell(text, exempt) if exempt else text, where, forbidden, commands))
                         if walled:
                             names |= walled_leaks(text, where, walled[0], walled[1])
                         for name in names:
@@ -640,7 +660,7 @@ def forbidden(state, branch, own, snapshot_root=None, memwatch=None):
     """(paths, walled): everything a replayed reviewer (Codex, or the final reviewer) must not read, for leaks() and
     final.transcript_leaks(). `paths` go to forbidden_paths: the original checkout, its objects and view (and the wt siblings the
     scan matches beside them), the state directory (as given, resolved and by its alias), the snapshot root, October's answers
-    (ANSWERS and $XDG_STATE_HOME/xreview), and, for a memories run (`memwatch` is the watcher's directory, or True for the usual
+    (ANSWERS, $XDG_STATE_HOME/xreview and the replay homes, $XDG_STATE_HOME/cxh, whose rollouts are other runs' work), and, for a memories run (`memwatch` is the watcher's directory, or True for the usual
     one), the watcher's directory. `walled` = (the review-work directory, `own`): everything under it is forbidden but the run's own
     directories `own` (its scratch, for a final reviewer its staged item directory too): the other runs' scratch, the staged items
     and the state's alias links."""
@@ -660,7 +680,7 @@ def forbidden(state, branch, own, snapshot_root=None, memwatch=None):
     paths.append(os.path.expanduser(SNAPSHOT))
     if snapshot_root:
         paths.append(os.path.abspath(os.path.expanduser(snapshot_root)))
-    paths += [os.path.join(house, x[2:]) for x in ANSWERS] + [os.path.join(state_home, "xreview")]
+    paths += [os.path.join(house, x[2:]) for x in ANSWERS] + [os.path.join(state_home, "xreview"), os.path.join(state_home, "cxh")]
     if memwatch:
         paths.append(os.path.join(state_home, "process-replay", "memwatch"))
         if isinstance(memwatch, str):

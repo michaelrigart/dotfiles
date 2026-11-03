@@ -434,6 +434,15 @@ with H.hold(home):
 ok("hold: a lock this process holds for the home (it started the daemon) stays held after the block", H._same(H._HELD["home"], home))
 H.stop(home)
 
+# ---- probe_record: a probe proves the daemon it ran against, not the next one
+put(home, H.PROBED, json.dumps({"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True}, "expect_memories": False}))
+is_("probe_record: a passing record is a pass", H.probed(home), (True, ""))
+H.start(home)
+good, why = H.probed(home)
+ok("probe_record: starting the daemon removes it: the home has not been probed since it was started", good is False and "since it was started" in why
+   and not os.path.exists(os.path.join(home, H.PROBED)), (good, why))
+H.stop(home)
+
 # ---- outside_cxh: a recorded home that is not under $XDG_STATE_HOME/cxh is never stopped
 outside = os.path.join(ROOT, "elsewhere", "home")
 put(outside, H.RECORD, json.dumps({"source": SRC, "use_memories": False}))
@@ -493,6 +502,8 @@ ok("probe_checks: ok when answered, in the home, source untouched, daemon up, no
    res["ok"] is True and all(res["checks"].values()) and set(res["checks"]) == {"daemon", "answered", "rollout_in_home", "source_untouched",
                                                                               "memories", "source_daemon"}, res)
 is_("probe_checks: the model and effort come from the rollout", (res["model"], res["effort"]), ("m-9", "low"))
+is_("probe_record: a passing probe is recorded in the home, with the time and the checks, and probed() says so", (H.probed(phome), sorted(json.load(open(os.path.join(phome, H.PROBED)))),
+    json.load(open(os.path.join(phome, H.PROBED)))["checks"] == res["checks"]), ((True, ""), ["at", "checks", "expect_memories", "ok"], True))
 calls = rpc_log(stub)
 ok("probe_checks: the replay calls carry CODEX_HOME=<home>; the source health call carries the source",
    [c["codex_home"] for c in calls if c["cmd"] != "health"] == [phome] * 3 + [phome]
@@ -519,6 +530,8 @@ ok("probe_checks: a missing memory line fails the memories check only", res["ok"
 stub = rpc_for("d", phome, "Memory:\n" + "\n".join(lines3))
 res = probe_fresh(phome, False, rpc=stub)
 ok("probe_checks: memory text in a nomem home fails", res["ok"] is False and res["checks"]["memories"] is False, res)
+good, why = H.probed(phome)
+ok("probe_record: a failing probe is recorded as failing, naming the check", good is False and "memories" in why, (good, why))
 stub = rpc_for("e", phome, "Memory:\n" + lines3[0])
 res = probe_fresh(phome, False, rpc=stub)
 ok("probe_checks: even one memory line in a nomem home fails", res["checks"]["memories"] is False, res)
@@ -680,7 +693,8 @@ nm = os.path.join(ROOT, "xdg", "cxh", "nomem")
 os.utime(os.path.join(nm, "plugins", "f.txt"), (1000, 1000))
 files = files_of(nm)
 run_cmd("--name", "nomem", "--probe", state="cmd-state2")
-is_("cmd_home: --probe leaves the home's files as they were", files_of(nm), files)
+is_("cmd_home: --probe leaves the home's files as they were, but for its own record", [f for f in files_of(nm) if f[0] != H.PROBED], [f for f in files if f[0] != H.PROBED])
+ok("cmd_home: ... which it writes", os.path.exists(os.path.join(nm, H.PROBED)))
 is_("cmd_home: and registers the home in this state's codex-homes.json", H_json(os.path.join(ROOT, "cmd-state2", "codex-homes.json")), {"nomem": nm})
 n_stop = len(helpers.read_log(LOG))
 os.unlink(os.path.join(nm, "config.toml"))

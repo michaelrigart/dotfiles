@@ -1158,6 +1158,20 @@ for tag, cmd, what in (("leak3", "cat $XDG_STATE_HOME/review-work/scratch/other0
     ok("RP7m memories_leaks: a run that read {} is void and runs again, clean".format(what), p.returncode == 0
        and sorted(len(r.get("voids", [])) for r in runsx) == [0] * 5 + [1] and not any(r["error"] for r in runsx),
        [(r.get("voids"), r["error"]) for r in runsx])
+# an A/A2 arm may read its own home's memories; nothing else under cxh, and not B's (nomem) or another home's
+for tag, rel, own_ok, what in (("leak6", "mem-" + HA[:12] + "/memories/memory_summary.md", True, "a memories home's own memories/"),
+                                ("leak7", "mem-" + HA[:12] + "/sessions/2026/x.jsonl", False, "a home's sessions/")):
+    READ = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "name": "exec", "arguments": {"cmd": "cat $XDG_STATE_HOME/cxh/" + rel, "workdir": "/"}}]}
+    p, stx, runsx, logx = leak_run(tag, {"default": READ})
+    by_home = {}
+    for r in runsx:
+        by_home.setdefault(r["home"], []).append((len(r.get("voids", [])), (r["error"] or "")[:10]))
+    if own_ok:
+        want = {"mem-" + HA[:12]: [(0, "")] * 2, "mem-" + HB[:12]: [(2, "void twice")] * 2, "nomem": [(2, "void twice")] * 2}
+    else:
+        want = {h: [(2, "void twice")] * 2 for h in ("mem-" + HA[:12], "mem-" + HB[:12], "nomem")}
+    is_("RP7m memories_leaks: reading {}: only the arms of that memories home may read its memories/ (A, A2), never another home's, B's or sessions/".format(what),
+        dict((h, sorted(v)) for h, v in by_home.items()), dict((h, sorted(v)) for h, v in want.items()))
 for d in cleanup:
     shutil.rmtree(d, ignore_errors=True)
 

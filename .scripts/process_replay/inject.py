@@ -694,6 +694,8 @@ def process(a, br, counts, questions):
     task = [d for d in defects if d.get("class") == "task"]
     if len(task) < MIN_TASK:
         return done("disqualified", "fewer than two per-task defects (P0-P2)")
+    if not any(d.get("class") != "task" for d in defects):
+        return done("disqualified", NO_PRE)
     if not br.get("plan_commit"):
         return done("disqualified", "no plan commit to pin docs/superpowers to")
     view = C.view(state, br["repo"], a.snapshot_root)

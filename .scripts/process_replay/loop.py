@@ -202,6 +202,9 @@ def _home(a):
         raise Failed("there is no replay Codex home {}: make it with `process-replay.py home --name {} --start --probe`".format(home, HOME))
     if not codexhome.alive(home):
         raise Failed("the daemon of the replay home {} is not running: `process-replay.py home --name {} --start`".format(home, HOME))
+    good, why = codexhome.probed(home)
+    if not good:
+        raise Failed("the replay home {} has not passed its probe: {}; `process-replay.py home --name {} --probe`".format(home, why, HOME))
     return home
 
 

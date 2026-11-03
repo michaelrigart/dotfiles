@@ -214,9 +214,21 @@ def descendants(path):
 walled_leaks = K.walled_leaks
 
 
-def transcript_leaks(path, forbidden, cwd, walled=None):
+def session_dir(path):
+    """The directory Claude Code keeps a transcript's session in: <project>/<session>/ holds its subagents/ and the tool-results/ it
+    saves large tool outputs to, which the agent reads back."""
+    if os.path.basename(os.path.dirname(path)) == "subagents":
+        return os.path.dirname(os.path.dirname(path))
+    return path[:-len(".jsonl")] if path.endswith(".jsonl") else path
+
+
+_unspell = K.unspell
+
+
+def transcript_leaks(path, forbidden, cwd, walled=None, exempt=()):
     """The forbidden paths a transcript's tool calls name (Bash commands, Read/Grep/Glob paths), by codex.py's matcher, and, with
-    `walled` = (review-work directory, [allowed directories]), anything under review-work that is not allowed."""
+    `walled` = (review-work directory, [allowed directories]), anything under review-work that is not allowed. A path inside a
+    directory of `exempt` (the reviewer's own session) is not read for the first."""
     found = set()
     with open(path, "rb") as f:
         for line in f:
@@ -235,7 +247,7 @@ def transcript_leaks(path, forbidden, cwd, walled=None):
                 if item.get("name") == "Glob" and isinstance(inp.get("pattern"), str):
                     parts.append(inp["pattern"])
                 commands = [inp["command"]] if isinstance(inp.get("command"), str) else []
-                for name in K.named("\n".join(parts), rec.get("cwd") or cwd, forbidden, commands):
+                for name in K.named(_unspell("\n".join(parts), exempt), rec.get("cwd") or cwd, forbidden, commands):
                     found.add(name)
                 if walled:
                     found |= walled_leaks("\n".join(parts), rec.get("cwd") or cwd, walled[0], walled[1])
@@ -245,5 +257,7 @@ def transcript_leaks(path, forbidden, cwd, walled=None):
 def leaks(a, run, branch, path):
     """What the reviewer's transcript `path` and its subagents' name that they must not (codex.forbidden)."""
     paths, walled = K.forbidden(a.state, branch, [C.item_dir(a.state, "final", run["label"]), run["scratch"]], getattr(a, "snapshot_root", None))
-    forbidden = K.forbidden_paths(paths)
-    return sorted(set(x for p in [path] + descendants(path) for x in transcript_leaks(p, forbidden, run["scratch"], walled)))
+    forbidden = K.forbidden_paths(paths, walled[1])
+    mine = [path] + descendants(path)
+    exempt = sorted(set(session_dir(p) for p in mine))      # its own saved tool results; another session's files stay forbidden
+    return sorted(set(x for p in mine for x in transcript_leaks(p, forbidden, run["scratch"], walled, exempt)))

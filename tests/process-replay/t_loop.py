@@ -30,6 +30,7 @@ PLAN = "docs/superpowers/plans/2026-10-20-x.md"
 KEY = re.sub(r"[^A-Za-z0-9]", "-", os.path.expanduser("~/Code/.replay"))
 NOMEM = os.path.join(os.environ["XDG_STATE_HOME"], "cxh", "nomem")
 helpers.put(NOMEM, "replay-home.json", json.dumps({"source": "x"}))
+helpers.put(NOMEM, "probe.json", json.dumps({"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True}, "expect_memories": False}))
 os.makedirs(PROJECTS)
 
 # ---- a superpowers fixture (PROCESS_REPLAY_SUPERPOWERS), shaped like the real 7.x skills directory
@@ -1152,6 +1153,21 @@ except Failed as e:
     got = str(e)
 ok("home: without the replay home, run says to make it and starts no round", "home" in got and not CALLS, got)
 helpers.put(NOMEM, "replay-home.json", json.dumps({"source": "x"}))
+P.codexhome.alive = lambda home: True
+for label, record in (("never probed", None), ("last probe failed", {"at": "2026-11-03T00:00:00Z", "ok": False, "checks": {"memories": False}})):
+    if record is None:
+        PROBE_FILE = os.path.join(NOMEM, "probe.json")
+        if os.path.exists(PROBE_FILE):
+            os.unlink(PROBE_FILE)
+    else:
+        helpers.put(NOMEM, "probe.json", json.dumps(record))
+    try:
+        go(w)
+        got = "no error"
+    except Failed as e:
+        got = str(e)
+    ok("probe: a home that was {} is refused, naming the probe, and starts no round".format(label), "probe" in got and not CALLS, got)
+helpers.put(NOMEM, "probe.json", json.dumps({"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True}, "expect_memories": False}))
 P.codexhome.alive = lambda home: False
 try:
     go(w)
