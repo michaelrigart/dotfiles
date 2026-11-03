@@ -3,12 +3,14 @@
 #
 # settings.json mixes Michael's stable config with keys Claude Code writes at runtime
 # (`enabledPlugins`, `extraKnownMarketplaces`, `autoMode`, `modelSettings`, the /config
-# toggles, and whatever a future release adds). This receives the CURRENT file on stdin,
+# toggles, and whatever a future release adds). modelSettings is carried whole except the
+# Opus 5.5 effortLevel, which is seeded when absent. This receives the CURRENT file on stdin,
 # starts from it, and overlays only the keys chezmoi owns; every other key survives an
 # apply untouched. Owned keys are replaced wholesale, so a stale rule or hook never lingers
 # in them. Keys chezmoi no longer wants are deleted by name (the retired list at the end),
 # because starting from the live file would otherwise keep them forever. model,
-# effortLevel, permissions.defaultMode and outputStyle are seeded only when absent. The
+# effortLevel, modelSettings["claude-opus-5-5"].effortLevel, permissions.defaultMode and
+# outputStyle are seeded only when absent. The
 # plugin/marketplace *intent* is declared in .scripts/reconcile-agents.sh +
 # dot_config/agents/plugins.conf. autoMode is owned only in part (see its entry): what
 # /auto-mode-setup writes there records repo and org names and where secrets live, and this
@@ -606,8 +608,11 @@ printf '%s' "$input" | jq \
   | .effortLevel = ($live.effortLevel // "xhigh")
   # Opus 5.5 and later ignore effortLevel in user settings and read effort only from
   # modelSettings.<model id>. Re-check the id at each Opus release.
+  # A non-object value at either level is replaced by an object, like the other guarded maps.
+  | .modelSettings = ((.modelSettings | objects) // {})
+  | .modelSettings["claude-opus-5-5"] = ((.modelSettings["claude-opus-5-5"] | objects) // {})
   | .modelSettings["claude-opus-5-5"].effortLevel =
-      ($live.modelSettings["claude-opus-5-5"].effortLevel // "xhigh")
+      (.modelSettings["claude-opus-5-5"].effortLevel // "xhigh")
   | .permissions.defaultMode = ($perm.defaultMode // "auto")
   | .outputStyle = ($live.outputStyle // "Concise")
 '
