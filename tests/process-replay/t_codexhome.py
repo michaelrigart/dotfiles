@@ -681,6 +681,35 @@ def run_cmd(*argv, state="cmd-state"):
         return H.cmd_home(ap.parse_args(["--state", os.path.join(ROOT, state)] + list(argv)))
 
 
+# ---- probe_weekly: the probe is a turn, so the weekly pause holds it like any other
+pw_home = H.ensure(STATE, "p-weekly", source=SRC)
+pw_stub = rpc_for("weekly", pw_home, "You are Codex. Nothing about the project is remembered.")
+pw_reset = int(time.time()) + 7200
+pw_hot = os.path.join(ROOT, "pw-hot-live")
+helpers.write_rollout(pw_hot, "pw-hot", [{"turn": "h1", "answer": None, "rate_limits": {"primary": {"used_percent": 85, "window_minutes": 10080, "resets_at": pw_reset}}}])
+pw_cold = os.path.join(ROOT, "pw-cold-live")
+helpers.write_rollout(pw_cold, "pw-cold", [{"turn": "c1", "answer": None, "rate_limits": {"primary": {"used_percent": 20, "window_minutes": 10080, "resets_at": pw_reset}}}])
+for d in ("sessions", "archived_sessions"):
+    shutil.rmtree(os.path.join(pw_home, d), ignore_errors=True)
+H.XR.RPC = pw_stub
+try:
+    for flag in ((), ("--start",)):
+        n = len(rpc_log(pw_stub))
+        nd = len(helpers.read_log(LOG))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = H.cmd_home(ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--name", "p-weekly", "--codex-source", pw_hot, "--probe"] + list(flag)))
+        ok("probe_weekly: at 85% with a future reset {}the probe starts no turn, no daemon, writes no probe.json, prints the reset and exits non-zero".format("(and --start) " if flag else ""),
+           rc == 1 and len(rpc_log(pw_stub)) == n and len(helpers.read_log(LOG)) == nd and not os.path.exists(os.path.join(pw_home, H.PROBED))
+           and str(pw_reset) in buf.getvalue() and "paused" in buf.getvalue(), (rc, buf.getvalue(), rpc_log(pw_stub)[n:]))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = H.cmd_home(ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--name", "p-weekly", "--codex-source", pw_cold, "--probe"]))
+    ok("probe_weekly: at 20% the probe runs its turn and records the result", rc == 0 and any(c["cmd"] == "turn-start" for c in rpc_log(pw_stub))
+       and os.path.exists(os.path.join(pw_home, H.PROBED)), (rc, buf.getvalue()[-300:]))
+finally:
+    H.XR.RPC = UP
+
 SNAP2 = os.path.join(ROOT, "snap2")
 put(SNAP2, "memory_summary.md", "second\n")
 cfg_of = lambda h: open(os.path.join(h, "config.toml")).read()

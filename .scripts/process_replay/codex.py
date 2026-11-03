@@ -21,8 +21,10 @@ and from `a`: state, max_tokens, budget. It returns the review, which the caller
 run["reviews"] and whose `thread` it makes the run's thread:
   {kind: "codex", k, findings, verdict, tokens, turns: [[thread, turn]], model, effort, missing, decision, thread}
 or one of
-  {paused: str, resets_at: int}         the weekly window is at WEEKLY_PAUSE percent or more; no turn was started
-  {stopped: str}                        the token stop was reached; no turn was started
+  {paused: str, resets_at: int, tokens?}  the weekly window is at WEEKLY_PAUSE percent or more; no further turn was started (every packet's turn asks)
+  {stopped: str, tokens?}               the token stop was reached (this round's own tokens count); no further turn was started
+                                        With `tokens`, packets before the stop ran: they are charged to the run, the leak scan covered them (a leak
+                                        returns {leak} as usual), and the round is no review, so the next command redoes it whole.
   {leak: [str], tokens, thread, turns}  a turn read or ran something that could give it the answers (forbidden()): the round is void
 A round that fails raises RoundFailed (a Failed that carries the tokens its turns used, the thread, and `.leak`:
 what the scan of whatever turns it ran found). The caller adds `tokens` of every outcome to the run's.
@@ -1101,17 +1103,24 @@ def _start(a, cwd):
     return thread
 
 
+def _halt(a, home, spent, mine):
+    """The reason no Codex turn may start now, as codex_round returns it: the token stop ({stopped}) when `spent` (every other run's tokens
+    and this run's recorded ones) and `mine` (the tokens of the round's own turns so far) reach a.max_tokens, else the weekly pause
+    (weekly_hold), else None."""
+    if spent + mine >= a.max_tokens:
+        return {"stopped": "the Codex token stop: {} tokens spent, stop at {}".format(spent + mine, a.max_tokens)}
+    return weekly_hold(home)
+
+
 def codex_round(a, run, case, branch, home):
     ledger_home = run.get("ledger")
     if not ledger_home or not os.path.isdir(ledger_home):
         raise Failed("the run has no prepared ledger (prepare_ledger runs at setup)")
     k = 1 + sum(1 for r in run.get("reviews") or [] if r.get("kind") == "codex")
     spent = _spent(a, run)
-    if spent >= a.max_tokens:
-        return {"stopped": "the Codex token stop: {} tokens spent, stop at {}".format(spent, a.max_tokens)}
-    hold = weekly_hold(home)
-    if hold:
-        return hold
+    halt = _halt(a, home, spent, 0)
+    if halt:
+        return halt
 
     repo = _repo(a, run)
     scratch = cwd = run["scratch"].rstrip("/")
@@ -1142,8 +1151,12 @@ def codex_round(a, run, case, branch, home):
     res = {"findings": [], "judged": [], "tokens": 0, "turns": [], "models": [], "approvals": []}
     thread = None
     bounds = forbidden(a.state, branch, [scratch], getattr(a, "snapshot_root", None), home=home)
+    halt = None
     with homed(home):
         for i, pk in enumerate(dec["packets"]):
+            halt = _halt(a, home, spent, res["tokens"]) if i else None      # every turn asks again: an earlier one may have crossed a limit
+            if halt:
+                break
             try:
                 thread = thread_in if (dec["action"] == "send" and thread_in and i == 0) else _start(a, cwd)
                 box = {}
@@ -1168,6 +1181,8 @@ def codex_round(a, run, case, branch, home):
     found = leaks(home, res["turns"], bounds, cwd)
     if found:
         return {"leak": found, "tokens": res["tokens"], "thread": thread, "turns": res["turns"]}
+    if halt:       # no packet after the one that crossed the line started; the turns that ran are charged and the round is not a review, so it is redone whole
+        return dict(halt, tokens=res["tokens"])
     missing = None
     if framed:
         # as xreview's _collect_record: a label is covered only when the turn that showed it lists it (compared

@@ -42,6 +42,12 @@ import time
 HARNESS, MODULE, LEDGER, CONF, ROOT = (os.environ[k] for k in
                                        ("T_HARNESS", "T_MODULE", "T_LEDGER", "T_CONF", "T_ROOT"))
 os.environ["XREVIEW_LEDGER"] = LEDGER
+# This process itself never reaches the account's home, state or Codex home: the in-process calls (run_job, cmd_run, weekly_hold)
+# read ~/.codex, so HOME is a fixture before any module is loaded. The subprocesses get the same (env_for).
+HOME_FIX, XDG_FIX, CODEX_FIX = (os.path.join(ROOT, d) for d in ("home", "xdg", "codex"))
+for d in (HOME_FIX, XDG_FIX, CODEX_FIX):
+    os.makedirs(d, exist_ok=True)
+os.environ.update(HOME=HOME_FIX, XDG_STATE_HOME=XDG_FIX, CODEX_HOME=CODEX_FIX)
 
 
 def ok(name, cond, got=""):
@@ -391,10 +397,36 @@ def calls(fake=FAKE):
         return []
 
 
+def usage_rollout(home, percent, resets, thread="thLive"):
+    """A rollout of `home` whose newest token_count reports the weekly window at `percent`, resetting at epoch `resets`."""
+    rec = {"type": "event_msg", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+           "payload": {"type": "token_count", "info": None,
+                       "rate_limits": {"primary": {"window_minutes": 10080, "used_percent": percent, "resets_at": resets}}}}
+    return wr(os.path.join(home, "sessions", "2026", "11", "03", "rollout-2026-11-03T00-00-00-{}.jsonl".format(thread)), json.dumps(rec) + "\n")
+
+
 ok("the harness is executable", os.access(HARNESS, os.X_OK))
 with open(HARNESS) as f:
     first = f.readline().strip()
 is_("it runs under the system python", first, "#!/usr/bin/python3")
+
+# ------------------------------------------------------------------ RP0 the test process is isolated
+print("RP0. in-process calls read fixtures, never the account's ~/.codex")
+import pwd
+real_home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+is_("RP0 ~ is the fixture home", os.path.expanduser("~"), HOME_FIX)
+ok("RP0 ... not the account's, and CODEX_HOME is not its ~/.codex", os.path.realpath(HOME_FIX) != real_home
+   and os.path.realpath(os.environ["CODEX_HOME"]) != os.path.join(real_home, ".codex"), (HOME_FIX, os.environ["CODEX_HOME"]))
+Hg = load(HARNESS, "replay_guard")
+iso_home = os.path.join(ROOT, "iso-replay-home")
+os.makedirs(iso_home)
+is_("RP0 weekly_hold in this process, every fixture empty: none", Hg.weekly_hold(argparse.Namespace(), iso_home), None)
+GUARD_RESET = int(time.time()) + 3600
+hot = usage_rollout(os.path.join(HOME_FIX, ".codex"), 85.0, GUARD_RESET, thread="thGuard")
+ok("RP0 ... a fixture ~/.codex at 85% holds, so it is the fixture that is read",
+   (Hg.weekly_hold(argparse.Namespace(), iso_home) or {}).get("resets_at") == GUARD_RESET, Hg.weekly_hold(argparse.Namespace(), iso_home))
+os.unlink(hot)
+is_("RP0 ... and with it gone, none again", Hg.weekly_hold(argparse.Namespace(), iso_home), None)
 
 # ------------------------------------------------------------------ RP1 cases
 print("RP1. cases")
@@ -919,6 +951,48 @@ Hm.rpc = scripted(0, False)
 res2 = Hm.run_job(na, job)
 is_("RP16 a retry reports its own tokens and spends both attempts'", (res1["tokens"], res2["tokens"], res2["spent"]), (1000, 1000, 2000))
 
+print("RP20. the token stop is asked before every packet's turn, and a job it cuts is resumable")
+unit20 = os.path.join(ROOT, "unit20")
+wr(os.path.join(unit20, "packet.txt"), "x")
+two = {"kind": "full", "action": "send", "packets": [{"file": os.path.join(unit20, "packet.txt"), "shown": []}] * 2}
+STARTS = []
+
+
+def counting(wait_rc=0):
+    inner = scripted(wait_rc, False)
+
+    def fake(*args):
+        STARTS.append(args[0])
+        return inner(*args)
+    return fake
+
+
+def job20(label):
+    return dict(job, label=label, decision=two)
+
+
+Hm.TH = Hm.Threads(unit20)
+Hm.rpc = counting()
+res = Hm.run_job(argparse.Namespace(state=unit20, budget=10, cap=1000), job20("v1v1v1v1"))
+is_("RP20 packet 1's turn reaches the stop: packet 2 starts no turn", STARTS.count("turn-start"), 1)
+ok("RP20 the job is interrupted (resumable), says why, and is charged the turn that ran",
+   res["interrupted"] is True and "token stop" in res["error"] and res["stopped"] and res["tokens"] == 1000 and res["spent"] == 1000 and res["slices"] == 1, res)
+del STARTS[:]
+res = Hm.run_job(argparse.Namespace(state=os.path.join(ROOT, "unit20b"), budget=10, cap=5000), job20("v2v2v2v2"))
+ok("RP20 below the stop both packets run", STARTS.count("turn-start") == 2 and res["error"] is None and res["slices"] == 2 and "stopped" not in res, (STARTS, res))
+del STARTS[:]
+unit20c = os.path.join(ROOT, "unit20c")
+wr(os.path.join(unit20c, "packet.txt"), "x")
+cut_job = job20("v3v3v3v3")
+cut_job["decision"] = dict(two, packets=[{"file": os.path.join(unit20c, "packet.txt"), "shown": []}] * 2)
+Hm.TH = Hm.Threads(unit20c)
+prog20 = {}
+left, total20 = Hm.run_pool(argparse.Namespace(state=unit20c, budget=10, cap=1000), __import__("collections").deque([cut_job]), 0, 1000, prog20)
+ok("RP20 run_pool hands a job the stop cut back as the first still to run, and the total includes its turn",
+   [j["label"] for j in left] == ["v3v3v3v3"] and total20 >= 1000 and STARTS.count("turn-start") == 1, (list(left), total20, STARTS))
+ok("RP20 its run file is an interrupted error, which `run` runs again without --retry-errors",
+   jl(os.path.join(unit20c, "runs", "c.pre", "v3v3v3v3.json")).get("interrupted") is True, jl(os.path.join(unit20c, "runs", "c.pre", "v3v3v3v3.json")))
+
 print("RP17. N6: a crashed run is not recorded as finished")
 Hc = None
 os.environ.update(XREVIEW_REPLAY_RPC=FAKE_BIN, FAKE_STATE=os.path.join(ROOT, "fake-sc"), XDG_STATE_HOME=XDG, CODEX_HOME=CODEX)
@@ -933,16 +1007,42 @@ pc = jl(os.path.join(SC, "progress.json"))
 is_("RP17 the run reports failure", rcc, 1)
 ok("RP17 progress.json says it did not finish, and why", pc["finished"] is False and "boom" in (pc["crashed"] or ""), pc)
 
+# ------------------------------------------------------------------ RP19 an answer is for the input it saw
+print("RP19. a judge-match whose input grew is pending again, and its old answer is not used")
+S19, F19 = fresh("s19")
+subprocess.run([HARNESS, "run", "--state", S19, "--max-tokens", "3500"], env=env_for(FAKE_STATE=F19), capture_output=True, text=True)
+arms19 = jl(os.path.join(S19, "arms.json"))
+have19 = dict((cid, [l for l in m if os.path.isfile(os.path.join(S19, "runs", cid, l + ".json"))]) for cid, m in arms19.items())
+part = sorted(cid for cid, ls in have19.items() if 0 < len(ls) < len(arms19[cid]))
+ok("RP19 the fixture cut a case with some arms done and some not", bool(part), have19)
+cid19 = part[0] if part else sorted(arms19)[0]
+harness(S19, "match")
+judge_says(S19, "judge-match", cid19, {"matches": [{"known_index": 0, "label": l, "finding_index": 0} for l in have19[cid19]]})
+p = harness(S19, "report")        # collects the answer into the state
+old19 = os.path.join(S19, "judge-match", cid19 + ".answer.json")
+ok("RP19 the judge's answer to the unfinished arms is collected", os.path.isfile(old19), p.stderr)
+subprocess.run([HARNESS, "run", "--state", S19], env=env_for(FAKE_STATE=F19), capture_output=True, text=True)
+ok("RP19 the arms have all finished now", all(os.path.isfile(os.path.join(S19, "runs", c, l + ".json")) for c, m in arms19.items() for l in m))
+p = harness(S19, "report")
+ok("RP19 report, before `match` is run again, does not use the answer to fewer runs, and says so",
+   "answered for other runs" in p.stdout and cid19 in p.stdout.split("answered for other runs")[1], p.stdout[-500:])
+rep19 = jl(os.path.join(S19, "report.json"))["switches"]
+ok("RP19 ... so the case counts as not yet judged", any(v["n"] < v["selected"] for sw, v in rep19.items() if cid19 in jl(os.path.join(S19, "cases.json"))["selected"][sw]), rep19)
+harness(S19, "match")
+ok("RP19 match again: the input holds every arm now", len(jl(os.path.join(S19, "judge-match", cid19 + ".json"))["runs"]) == len(arms19[cid19]))
+ok("RP19 pending lists it again", ("judge-match", cid19) in [(k, i) for k, i, _b in waiting(S19)], waiting(S19))
+ok("RP19 the old answer is no longer in place but kept aside, unchanged",
+   not os.path.exists(old19) and jl(os.path.join(S19, "judge-match", cid19 + ".stale-1.answer.json"))["matches"][0]["label"] in have19[cid19])
+p = harness(S19, "report")
+ok("RP19 report does not use it: the case is not judged", "answered for other runs" not in p.stdout and not os.path.exists(old19), p.stdout[-300:])
+judge_says(S19, "judge-match", cid19, {"matches": [{"known_index": 0, "label": l, "finding_index": 0} for l in arms19[cid19]]})
+harness(S19, "report")
+rep19b = jl(os.path.join(S19, "report.json"))["switches"]
+ok("RP19 answered anew, the case is judged: n grows by one in every switch that selects it",
+   all(rep19b[sw]["n"] == rep19[sw]["n"] + 1 for sw in rep19 if cid19 in jl(os.path.join(S19, "cases.json"))["selected"][sw]), (rep19, rep19b))
+
 # ------------------------------------------------------------------ RP18 the weekly pause (replay-set spec 8)
 print("RP18. replay turns pause at 80% weekly usage and resume after the reset")
-
-
-def usage_rollout(home, percent, resets, thread="thLive"):
-    """A rollout of `home` whose newest token_count reports the weekly window at `percent`, resetting at epoch `resets`."""
-    rec = {"type": "event_msg", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
-           "payload": {"type": "token_count", "info": None,
-                       "rate_limits": {"primary": {"window_minutes": 10080, "used_percent": percent, "resets_at": resets}}}}
-    return wr(os.path.join(home, "sessions", "2026", "11", "03", "rollout-2026-11-03T00-00-00-{}.jsonl".format(thread)), json.dumps(rec) + "\n")
 
 
 def turn_starts(fake):

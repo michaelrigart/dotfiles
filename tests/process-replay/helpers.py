@@ -8,6 +8,7 @@ configuration (unless the wrapper already did) and puts .scripts on sys.path.
 import atexit
 import json
 import os
+import pwd
 import shutil
 import stat
 import subprocess
@@ -41,6 +42,9 @@ def setup():
         os.makedirs(path, exist_ok=True)
         os.environ[var] = path
         _REDIRECTED.add(var)
+    real = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+    if os.path.realpath(os.path.expanduser("~")) == real or os.path.realpath(os.environ.get("CODEX_HOME", "")) == os.path.join(real, ".codex"):
+        raise SystemExit("helpers.setup: this process still reaches the account's own home or ~/.codex: {}".format(os.environ.get("HOME")))
     if SCRIPTS not in sys.path:
         sys.path.insert(0, SCRIPTS)
 

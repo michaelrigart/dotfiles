@@ -674,6 +674,12 @@ def cmd_home(a):
     if a.dry_run:
         say("would use the replay home {} (source {})".format(home, a.codex_source or "its own, else ~/.codex"))
         return 0
+    if a.probe:      # the probe is a turn: at the weekly pause level nothing starts (not even --start), and no probe record is written
+        from . import codex
+        hold = codex.weekly_hold(home, os.path.abspath(os.path.expanduser(a.codex_source or "~/.codex")))
+        if hold:
+            say("paused: {}; the probe was not run, run it again after the reset".format(hold["paused"]))
+            return 1
     status, stopped = 0, False
     if a.start or a.memories or a.use_memories or not (a.stop or a.probe):
         if _may_run(home):

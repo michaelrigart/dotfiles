@@ -134,6 +134,26 @@ ok("staged: with no answer there, the item is pending again", [p[1] for p in C.p
 jfile(os.path.join(d2, "answer.json"), {"matches": ["old"]})
 C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}]})
 ok("staged: a changed input drops an uncollected answer to the old one", not os.path.exists(os.path.join(d2, "answer.json")) and C.judge_answer(state, "judge-match", "s2") is None)
+# a changed input also sets aside the answer already collected into the state (its content kept), not only a staged one
+jfile(os.path.join(d2, "answer.json"), {"matches": ["old"]})
+is_("stale: the judge answers the input as it stands, and the answer is collected", C.judge_answer(state, "judge-match", "s2"), {"matches": ["old"]})
+jfile(os.path.join(d2, "answer.json"), {"matches": ["staged-too"]})
+C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}, {"index": 1}]})
+mdir = os.path.join(state, "judge-match")
+ok("stale: a collected answer to the old input is not the answer to the new one", C.judge_answer(state, "judge-match", "s2") is None
+   and not os.path.exists(os.path.join(mdir, "s2.answer.json")) and not os.path.exists(os.path.join(d2, "answer.json")))
+is_("stale: the collected answer is kept aside, unchanged", C.jload(os.path.join(mdir, "s2.stale-1.answer.json")), {"matches": ["old"]})
+ok("stale: the item is pending again, and the set-aside answer is not an input", [p[1] for p in C.pending(state) if p[0] == "judge-match"] == ["s2"]
+   and "s2.stale-1" not in C._inputs(state, "judge-match"))
+jfile(os.path.join(mdir, "s2.answer.json"), {"matches": ["new"]})
+C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}, {"index": 1}]})
+is_("stale: writing the same input again keeps its answer", C.judge_answer(state, "judge-match", "s2"), {"matches": ["new"]})
+C.judge_write(state, "judge-match", "s2", {"defects": []})
+is_("stale: a second change sets aside under a name of its own", (sorted(n for n in os.listdir(mdir) if ".stale-" in n), C.jload(os.path.join(mdir, "s2.stale-2.answer.json"))),
+    (["s2.stale-1.answer.json", "s2.stale-2.answer.json"], {"matches": ["new"]}))
+jfile(os.path.join(mdir, "s3.answer.json"), {"matches": ["by hand"]})
+C.judge_write(state, "judge-match", "s3", {"defects": []})
+is_("stale: an answer put in the state before the input ever existed still counts", C.judge_answer(state, "judge-match", "s3"), {"matches": ["by hand"]})
 put(state, "final/sf/brief.md", "review it\nReview id: sf\n")
 df = C.item_dir(state, "final", "sf")
 put(df, "package.diff", "diff\n")

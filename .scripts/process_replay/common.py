@@ -210,10 +210,15 @@ def judge_write(state, kind, jid, doc):
     _check_id(jid)
     _blind(doc)
     path = os.path.join(state, kind, jid + ".json")
-    if jload(path) != doc:
+    old = jload(path)
+    if old != doc:
+        # an answer is for the input it saw: the collected one is set aside (kept, as <id>.stale-<n>.answer.json) and the staged
+        # one removed, so the item is pending again. An answer with no input before it (put by hand) stays.
+        if old is not None:
+            set_aside(state, kind, jid, "stale")
         staged = _staged(state, kind, jid)
         if staged:
-            _unlink(os.path.join(staged, "answer.json"))        # an answer to the old input is not an answer to this one
+            _unlink(os.path.join(staged, "answer.json"))
     jsave(path, doc)
     return path
 
@@ -250,13 +255,18 @@ def judge_answer(state, kind, jid):
 def reject_answer(state, kind, jid):
     """Set a judge's answer aside as <id>.rejected-<n>.answer.json (its content is kept), so the item is pending again in its
     staged directory and the judge can answer anew. The name it was set aside under, or None when there was no answer."""
+    return set_aside(state, kind, jid, "rejected")
+
+
+def set_aside(state, kind, jid, why):
+    """Move a collected answer to <id>.<why>-<n>.answer.json (its content is kept). The name it went to, or None without an answer."""
     path = os.path.join(state, kind, jid + ".answer.json")
     if not os.path.exists(path):
         return None
     n = 1
-    while os.path.exists(os.path.join(state, kind, "{}.rejected-{}.answer.json".format(jid, n))):
+    while os.path.exists(os.path.join(state, kind, "{}.{}-{}.answer.json".format(jid, why, n))):
         n += 1
-    aside = os.path.join(state, kind, "{}.rejected-{}.answer.json".format(jid, n))
+    aside = os.path.join(state, kind, "{}.{}-{}.answer.json".format(jid, why, n))
     os.replace(path, aside)
     return aside
 

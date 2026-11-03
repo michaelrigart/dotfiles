@@ -1110,6 +1110,23 @@ behave(lambda run, k: {"stopped": "the Codex token stop: 5 tokens spent, stop at
 text = go(w)
 ok("stop: a token stop changes no state file either, and is reported", before == snap(w.state) and "token stop" in text, text)
 
+# a round cut short between two packets has run turns: they are charged, nothing else changes, and the round is redone whole
+for what, cut in (("pause", {"paused": "the weekly window is at 85%, resets_at 1893456000", "resets_at": 1893456000, "tokens": 40}),
+                  ("stop", {"stopped": "the Codex token stop: 40 tokens spent, stop at 40", "tokens": 40})):
+    w = World("midround-" + what)
+    behave(lambda run, k: ("approve", []))
+    to_codex(w)
+    was = [(x["tokens"], x["step"], len(x["reviews"])) for x in w.runs()]
+    behave(lambda run, k, cut=cut: cut)
+    text = go(w)
+    now = [(x["tokens"], x["step"], len(x["reviews"]), x["end"]) for x in w.runs()]
+    ok("mid-round {}: the turns that ran are charged to each run, which stays at the Codex step with no new review".format(what),
+       now == [(t + 40, st, n, None) for t, st, n in was] and what in text, (was, now, text))
+    behave(lambda run, k: ("approve", []))
+    go(w)
+    ok("mid-round {}: the next command redoes the round: one review each, ending approved, the 40 tokens kept".format(what),
+       all(x["end"] == "approve" and x["tokens"] >= 40 for x in w.runs()) and len(CALLS) == len(w.runs()), (CALLS, [(x["end"], x["tokens"]) for x in w.runs()]))
+
 w = World("fail")
 behave(lambda run, k: ("approve", []))
 to_codex(w)

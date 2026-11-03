@@ -762,6 +762,86 @@ w.run["reviews"], w.run["thread"] = [], None
 out = K.codex_round(args(state=STATE2, max_tokens=600), w.run, w.case, w.branch, home)
 ok("token_stop: ... and 100 + 500 does stop at 600", set(out) == {"stopped"}, out)
 
+# ---- isolation: in-process calls read fixtures, never the account's own ~/.codex
+import pwd  # noqa: E402
+real_home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+fixture_home = os.path.realpath(os.path.expanduser("~"))
+ok("isolation: ~ is a fixture, not the account's home, and CODEX_HOME is not the account's ~/.codex",
+   fixture_home != real_home and os.path.realpath(os.environ["CODEX_HOME"]) != os.path.join(real_home, ".codex")
+   and fixture_home.startswith(os.path.realpath(ROOT).rsplit("/", 1)[0]), (fixture_home, os.environ["CODEX_HOME"]))
+iso_empty = os.path.join(ROOT, "cxh", "iso-empty")
+os.makedirs(iso_empty, exist_ok=True)
+HOT_ISO = {"primary": {"used_percent": 85, "window_minutes": 10080, "resets_at": FUTURE}}
+live_env = os.environ["CODEX_HOME"]
+is_("isolation: with fixtures only, in-process weekly() and weekly_hold() find nothing", (K.weekly(iso_empty), K.weekly_hold(iso_empty)), (None, None))
+hot = helpers.write_rollout(live_env, "iso-hot-env", [{"turn": "h1", "answer": None, "rate_limits": HOT_ISO}])
+ok("isolation: a fixture live home (CODEX_HOME) at 85% makes weekly_hold hold", (K.weekly_hold(iso_empty) or {}).get("resets_at") == FUTURE, K.weekly_hold(iso_empty))
+os.unlink(hot)
+del os.environ["CODEX_HOME"]
+try:
+    is_("isolation: without CODEX_HOME the live home is the fixture's ~/.codex, which is empty", K.weekly_hold(iso_empty), None)
+    hot = helpers.write_rollout(os.path.join(fixture_home, ".codex"), "iso-hot-home", [{"turn": "h1", "answer": None, "rate_limits": HOT_ISO}])
+    ok("isolation: ... and a rollout there at 85% makes it hold (so ~/.codex is read through the fixture HOME)", (K.weekly_hold(iso_empty) or {}).get("resets_at") == FUTURE, K.weekly_hold(iso_empty))
+    os.unlink(hot)
+finally:
+    os.environ["CODEX_HOME"] = live_env
+
+# ---- mid_round: a limit crossed by one packet's turn stops the round before the next packet's
+def turns_started(stub):
+    return len([e for e in log(stub) if e["cmd"] == "turn-start"])
+
+
+HOT = {"primary": {"used_percent": 85, "window_minutes": 10080, "resets_at": FUTURE}}
+SLICE = {"answer": ans("approve", ()), "tokens": 1000, "window": 110000}      # the window of the home's newest rollout decides the packets
+w = World("midpause", big=True)
+home = replay_home("midpause", window=110000)
+stub = stub_for("midpause", home, {"turns": [dict(SLICE, rate_limits=HOT)], "default": SLICE})
+out = w.round(home)
+n_packets = len(XR.jload(os.path.join(STATE, "runs", "cmidpause", "lab1", "codex-1", "decision.json"))["packets"])
+ok("mid_round: the decision has several packets (the test means something)", n_packets >= 2, n_packets)
+ok("mid_round: a pause that appears after packet 1 stops the round, naming the reset", "paused" in out and out["resets_at"] == FUTURE and str(FUTURE) in out["paused"], out)
+is_("mid_round: ... no packet after it started (one turn, one thread)", (turns_started(stub), sum(1 for e in log(stub) if e["cmd"] == "thread-start")), (1, 1))
+is_("mid_round: ... the turn that ran is charged", out.get("tokens"), 1000)
+ok("mid_round: ... and the round is no review: the run has none", w.run["reviews"] == [] and "kind" not in out, (w.run["reviews"], out))
+stub = stub_for("midpause2", replay_home("midpause2", window=110000), {"default": SLICE})
+redo = w.round(replay_home("midpause2", window=110000))
+is_("mid_round: after the reset the whole round is redone, from packet 1", (redo.get("kind"), redo.get("k"), len(redo["turns"])), ("codex", 1, n_packets))
+
+w = World("midstop", big=True)
+home = replay_home("midstop", window=110000)
+stub = stub_for("midstop", home, {"default": SLICE})
+STATE_MID = os.path.join(ROOT, "state-mid")        # no other run's tokens
+out = w.round(home, max_tokens=1000, state=STATE_MID)
+ok("mid_round: the round's own tokens count against the token stop: packet 1 reaches 1000, packet 2 does not start",
+   "stopped" in out and "paused" not in out and out.get("tokens") == 1000 and turns_started(stub) == 1 and "1000 tokens spent" in out["stopped"], (out, turns_started(stub)))
+ok("mid_round: ... the round is no review", w.run["reviews"] == [], w.run["reviews"])
+w.run["tokens"] += out["tokens"]
+out = w.round(home, max_tokens=1000, state=STATE_MID)
+ok("mid_round: charged to the run, the stop holds before any turn of the next attempt", set(out) == {"stopped"} and turns_started(stub) == 1, (out, turns_started(stub)))
+w.run["tokens"] = 0
+redo = w.round(home, max_tokens=10 ** 9, state=STATE_MID)
+is_("mid_round: with the stop raised the round is redone whole", (redo.get("kind"), redo.get("k"), len(redo["turns"])), ("codex", 1, n_packets))
+w = World("midnone", big=True)
+home = replay_home("midnone", window=110000)
+stub = stub_for("midnone", home, {"default": SLICE})
+out = w.round(home, max_tokens=n_packets * 1000 + 1, state=STATE_MID)
+ok("mid_round: below the stop every packet runs", out.get("kind") == "codex" and len(out["turns"]) == n_packets, out)
+
+# a limit crossed by the last packet changes nothing: the round is complete, and its review is kept
+w = World("midlast", big=True)
+home = replay_home("midlast", window=110000)
+stub = stub_for("midlast", home, {"turns": [SLICE] * (n_packets - 1) + [dict(SLICE, rate_limits=HOT)], "default": SLICE})
+out = w.round(home)
+ok("mid_round: a limit crossed by the last packet is a finished round", out.get("kind") == "codex" and len(out["turns"]) == n_packets, out)
+
+# a partial round is still leak-scanned: a leak voids it, as ever
+w = World("midleak", big=True)
+home = replay_home("midleak", window=110000)
+stub = stub_for("midleak", home, {"turns": [dict(SLICE, rate_limits=HOT, tools=[tool("custom_tool_call", "cat {}/src/a.py".format(w.workdir))])], "default": SLICE})
+out = w.round(home)
+ok("mid_round: the turns that ran are leak-scanned; a leak voids the round even though it stopped", set(out) == {"leak", "tokens", "thread", "turns"} and out["tokens"] == 1000 and out["leak"]
+   and turns_started(stub) == 1, out)
+
 # ---- missing_per_turn
 w = World("permissive", big=True)
 home = replay_home("permissive", window=110000)

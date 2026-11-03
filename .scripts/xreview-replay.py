@@ -103,6 +103,10 @@ class Paused(Failed):
         self.hold = hold
 
 
+class Stopped(Failed):
+    """The token stop is reached (spec 8): no further turn starts. The turns that ran are charged to the job, which stays resumable."""
+
+
 def say(msg):
     print(msg, flush=True)
 
@@ -834,6 +838,9 @@ def review(a, job, dec, clone, schema, res, turns):
         hold = weekly_hold(a)
         if hold:
             raise Paused(hold)
+        cap = getattr(a, "cap", None)
+        if i and cap is not None and spent(a.state) + res["tokens"] >= cap:       # an earlier packet's turn may have crossed the stop
+            raise Stopped("the token stop: {} tokens spent, stop at {}".format(spent(a.state) + res["tokens"], cap))
         fk = job["fork"] if i == 0 else None
         if fk:
             rc, out, err = hist_call(fk["thread"], "thread-fork", "--thread", fk["thread"], "--last-turn", fk["last_turn"], "--cwd", clone)
@@ -919,9 +926,11 @@ def run_job(a, job):
             build_scratch(a, job, clone, cdir)
     except Failed as e:
         res["error"] = str(e)
-        res["interrupted"] = STOP.is_set() or isinstance(e, Paused)      # a job that finished before it noticed the stop is complete; a paused one waits
+        res["interrupted"] = STOP.is_set() or isinstance(e, (Paused, Stopped))      # a job that finished before it noticed the stop is complete; a paused or stopped one waits
         if isinstance(e, Paused):
             res["paused"] = e.hold
+        if isinstance(e, Stopped):
+            res["stopped"] = str(e)
     finally:
         if own:
             shutil.rmtree(own, ignore_errors=True)
@@ -996,21 +1005,26 @@ def reap():
 def run_pool(a, pending, total, cap, prog):
     """Run `pending` jobs, JOBS at a time, until they are done or the token stop is reached. Returns what is
     left of them and the tokens spent."""
-    running, hold = set(), None
+    running, hold, cut = {}, None, False
     with cf.ThreadPoolExecutor(JOBS) as pool:
         while pending or running:
-            while pending and len(running) < JOBS and total < cap and not hold:
+            while pending and len(running) < JOBS and total < cap and not hold and not cut:
                 hold = weekly_hold(a)       # before each job; review() asks again before each of its turns
                 if hold:
                     prog["paused"] = hold
                     break
-                running.add(pool.submit(run_job, a, pending.popleft()))
+                job = pending.popleft()
+                running[pool.submit(run_job, a, job)] = job
             if not running:
                 break
-            done, running = cf.wait(running, return_when=cf.FIRST_COMPLETED, timeout=2)
+            done, _left = cf.wait(set(running), return_when=cf.FIRST_COMPLETED, timeout=2)
+            jobs_done = [(f, running.pop(f)) for f in done]
             total = spent(a.state)
-            for f in done:
+            for f, job in jobs_done:
                 res = f.result()
+                if res.get("stopped"):      # cut between two packets by the token stop: it is the first to run again
+                    cut = True
+                    pending.appendleft(job)
                 if res.get("paused"):
                     hold = prog["paused"] = res["paused"]
                 if res.get("model") and not prog.get("model"):
@@ -1068,6 +1082,7 @@ def cmd_run(a):
     TH = Threads(a.state)
     live = not a.dry_run
     cap, source = token_cap(a, cj), getattr(a, "codex_source", None)      # None: codexhome's default, ~/.codex
+    a.cap = cap     # review() asks it before each packet's turn
     if live:
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, on_signal)
@@ -1139,16 +1154,30 @@ def load_run(state, cid, label):
     return run if run and not run.get("error") else None
 
 
+def match_doc(a, case, arms):
+    """The judge-match input of `case` as the finished runs stand now, or None while no run has findings. `match` writes it and
+    `report` compares it with what the judge was given: an answer counts only for the input it saw."""
+    runs = dict((l, (load_run(a.state, case["id"], l) or {}).get("findings")) for l in sorted(arms.get(case["id"], {})))
+    runs = dict((l, [dict((k, f.get(k)) for k in FINDING_KEYS) for f in found if isinstance(f, dict)])
+                for l, found in runs.items() if found is not None)
+    return {"case": case["id"], "known": case["known"], "runs": runs} if runs else None
+
+
+def match_current(a, case, arms):
+    """Whether an answer to the judge-match of `case` is for the runs and known findings as they stand: false when the input the judge was
+    given differs from what `match` would write now. An answer put in the state by hand, with no input beside it, counts."""
+    held = jload(os.path.join(a.state, "judge-match", case["id"] + ".json"))
+    doc = match_doc(a, case, arms)
+    return held is None or (doc is not None and held == dict((k, v) for k, v in doc.items() if k != "case"))
+
+
 def cmd_match(a):
     cj, arms = jload(os.path.join(a.state, "cases.json")), jload(os.path.join(a.state, "arms.json"), {})
     for case in (cj or {}).get("cases", []):
-        runs = dict((l, (load_run(a.state, case["id"], l) or {}).get("findings")) for l in sorted(arms.get(case["id"], {})))
-        runs = dict((l, [dict((k, f.get(k)) for k in FINDING_KEYS) for f in found if isinstance(f, dict)])
-                    for l, found in runs.items() if found is not None)
-        if not runs:
+        doc = match_doc(a, case, arms)
+        if doc is None:
             continue
-        doc = {"case": case["id"], "known": case["known"], "runs": runs}
-        say("judge input {}: {} run(s)".format(case["id"], len(runs)))
+        say("judge input {}: {} run(s)".format(case["id"], len(doc["runs"])))
         if not a.dry_run:
             judge_put(a, "judge-match", case["id"], doc)
     if not a.dry_run:
@@ -1166,7 +1195,7 @@ def cmd_report(a):
     cj, arms = jload(os.path.join(a.state, "cases.json"), {}), jload(os.path.join(a.state, "arms.json"), {})
     prog = jload(os.path.join(a.state, "progress.json"), {})
     byid = dict((c["id"], c) for c in cj.get("cases", []))
-    out, errors, mixed = {}, [], []
+    out, errors, mixed, outdated = {}, [], [], []
     for cid in sorted(set(i for v in (cj.get("selected") or {}).values() for i in v)):
         models = set()
         for label, v in sorted(arms.get(cid, {}).items()):
@@ -1187,6 +1216,9 @@ def cmd_report(a):
         for cid in ids:
             amap = dict((v["arm"], l) for l, v in arms.get(cid, {}).items())
             ans = judge_got(a, "judge-match", cid)
+            if ans is not None and not match_current(a, byid[cid], arms):
+                outdated.append(cid)        # its runs or known findings changed since the judge saw them: only `match` and a new answer make it current
+                ans = None
             runs = dict((arm, load_run(a.state, cid, l)) for arm, l in amap.items())
             if not amap or ans is None or not all(runs.values()):
                 continue
@@ -1241,6 +1273,8 @@ def cmd_report(a):
     for sw, v in out.items():
         if v.get("note"):
             lines.append("{}: {}".format(sw, v["note"]))
+    if outdated:
+        lines.append("The judge-match of these cases was answered for other runs than are there now, so it is not used (run `match`, then `pending`): " + ", ".join(sorted(set(outdated))))
     if mixed:
         lines.append("Arms of these cases ran at different models or efforts, so compare them with care: " + ", ".join(mixed))
     if errors:

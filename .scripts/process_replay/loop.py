@@ -650,9 +650,11 @@ def _took(ctx, run, out):
             _error(run, str(out))
         return True
     if out.get("paused"):
+        run["tokens"] += out.get("tokens") or 0       # the turns of a round cut short were spent
         say("{}: paused: {}".format(run["label"], out["paused"]))
         return False
     if out.get("stopped"):
+        run["tokens"] += out.get("tokens") or 0
         say("{}: stopped: {}".format(run["label"], out["stopped"]))
         return False
     if out.get("leak"):
