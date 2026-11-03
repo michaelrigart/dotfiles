@@ -1053,15 +1053,17 @@ for agent in "$SRC"/dot_claude/agents/*.md; do
   else
     _fail "$stem's declared name matches its filename" "declared '$declared'"
   fi
-  # The cd/grep bullet is deliberately NOT restated here any more (spec 2026-09-30,
-  # section 3.3): the Bash tool description carries the cd rule, ~/.claude/CLAUDE.md the
-  # recursive-grep trap, and path-resolution-guard.sh enforces both. A copy here is one
-  # more place to keep in step.
-  if grep -q 'Never open a Bash command with `cd`' "$agent"; then
-    _fail "$stem does not restate the cd/grep rule" "the bullet is back"
-  else
-    _pass "$stem does not restate the cd/grep rule"
-  fi
+  # The sp-* bodies restate the cd/grep rule. It was dropped on 2026-09-30 (spec 2026-09-30
+  # section 3.3), and sp-* subagents then went from 0.03 to 0.67-0.84 guard denials per
+  # dispatch. It lives in each body, the subagent's own system prompt; the guard stays the
+  # enforcement.
+  case "$stem" in sp-*)
+    if grep -qF -- '- Never start a Bash command with `cd`, and never give a recursive `grep` or `rg` a bare' "$agent"; then
+      _pass "$stem states the subagent cd/grep rule"
+    else
+      _fail "$stem states the subagent cd/grep rule" "the bullet is missing"
+    fi ;;
+  esac
 done
 
 echo; echo "RESULT: $pass passed, $fail failed"

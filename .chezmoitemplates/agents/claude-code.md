@@ -1,7 +1,6 @@
 ## Claude Code only
 
-- **Sandbox escapes.** Leave the sandbox only after a command has failed with sandbox
-  evidence.
+- **Sandbox escapes.** Leave the sandbox only after a command has failed with sandbox evidence.
   - Needs the escape: `op`, and git configuration writes in any repository: `init`,
     `clone`, `config`, `remote add`, `branch -u`, `submodule`, `worktree add`,
     `switch --track`, or a new branch started from a remote ref (`switch -c b origin/x`).
@@ -29,6 +28,7 @@
   | `web-researcher` | all web research, a skill's researchers included: it holds only WebFetch and WebSearch, so the dispatcher passes it any reference text and saves its notes |
 
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
+  Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
 - **Parallel tasks.** A plan runs entirely in its own worktree; never create a worktree for
   one of its tasks. Plans give each task a `Depends on:` line. A batch is tasks with no
   pending dependency, disjoint files (neither one's tests load the other's), and no shared

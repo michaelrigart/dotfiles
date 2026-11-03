@@ -264,6 +264,8 @@ need claude-code.md '- **Subagents.** Use the named types in `~/.claude/agents/`
   "claude-code.md opens the subagent rule without the Agent tool remark"
 need claude-code.md '  | `web-researcher` | all web research, a skill'"'"'s researchers included: it holds only WebFetch and WebSearch, so the dispatcher passes it any reference text and saves its notes |' \
   "the subagent table routes web research to web-researcher"
+need claude-code.md '  Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.' \
+  "claude-code.md keeps reviews off forks"
 if grep -qF -- 'which the Agent tool cannot set per call' "$FRAG/claude-code.md"; then
   _fail "the stale Agent tool remark is gone" "still present"
 else
@@ -274,6 +276,9 @@ for line in 'name: web-researcher' 'tools: WebFetch, WebSearch' 'model: opus' 'e
   if [ -f "$WR" ] && awk '/^---$/{n++; next} n==1' "$WR" | grep -qx -- "$line"; then _pass "web-researcher frontmatter has $line"
   else _fail "web-researcher frontmatter has $line" "missing"; fi
 done
+SR="$SRC/dot_claude/agents/sp-reviewer.md"
+if [ -f "$SR" ] && awk '/^---$/{n++; next} n==1' "$SR" | grep -qx -- 'disallowedTools: Edit, Write, NotebookEdit'; then _pass "sp-reviewer frontmatter denies Edit, Write and NotebookEdit"
+else _fail "sp-reviewer frontmatter denies Edit, Write and NotebookEdit" "missing"; fi
 # The design-records skill (spec 2026-11-01-instruction-layer, section 2) holds the record procedures.
 DR=dot_claude/skills/design-records/SKILL.md
 for line in 'name: design-records' 'description: Use when creating, updating, completing or abandoning a spec or plan under `docs/superpowers/`, or setting its Status.'; do
