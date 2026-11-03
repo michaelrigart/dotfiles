@@ -1157,3 +1157,46 @@ is_("tool_words: a command inside a comment's line is not run", leaked(fc("ls # 
 is_("tool_words: a here-string is not a heredoc: the next line is a command again", leaked(fc("cat <<< x\nchezmoi diff"), CHZ), CHZN)
 is_("tool_words: a backtick inside a quoted string runs (N-3)", leaked(fc('echo "`chezmoi diff`"'), CHZ), CHZN)
 is_("tool_words: a heredoc body is not run, but a path in it is read", leaked(fc("sh <<'EOF'\ncat ~/.local/share/chezmoi/AGENTS.md\nEOF"), CHZ), CHZN)
+
+# ---- assignments: a literal assignment adds a value for later uses in the same call (spec 14.3 c)
+for label, cmd in (("a bare assignment", "D=~/.local/share; cat $D/chezmoi/AGENTS.md"), ("export", "export D=~/.local/share; cat $D/chezmoi/AGENTS.md"),
+                   ("a prefix assignment", "D=~/.local/share sh -c 'cat $D/chezmoi/x'"), ("env NAME=value", "env D=~/.local/share sh -c 'cat $D/chezmoi/x'"),
+                   ("inside a substitution", "echo $(D=~/.local/share; cat $D/chezmoi/x)"),
+                   ("a later command of the call", "D=~/.local/share; ls; cd /tmp && cat ${D}/chezmoi/x"),
+                   ("a heredoc body, scanned last", "sh <<'EOF'\ncat $D/chezmoi/x\nEOF\nD=~/.local/share"),
+                   ("a second assignment of the same name", "D=/a; D=~/.local/share; cat $D/chezmoi/x")):
+    is_("assignment_within_call: {} gives the variable its value".format(label), leaked(fc(cmd), CHZ), CHZN)
+is_("assignment_within_call: a value with $ is not literal and adds nothing", leaked(fc("D='$HOME/.local/share'; cat $D/chezmoi/x"), CHZ), [])
+is_("assignment_within_call: a use before its assignment is not affected", leaked(fc("cat $D/chezmoi/x; D=~/.local/share"), CHZ), [])
+is_("assignment_within_call: a known variable keeps its values and gains the literal",
+    leaked(fc("HOME=/tmp; cat $HOME/.local/share/chezmoi/x"), CHZ), CHZN)
+is_("assignment_within_call: ... a literal that is the dangerous one is found too", leaked(fc("HOME=~/.local; cat $HOME/share/chezmoi/x"), CHZ), CHZN)
+is_("assignment_within_call: PWD gains the literal as well", leaked(fc("PWD=~/.local/share; cat $PWD/chezmoi/x"), CHZ), CHZN)
+is_("assignment_within_call: a cd to an assigned variable is followed", leaked(fc("D=~/.local/share; cd $D && cat chezmoi/x"), CHZ), CHZN)
+
+n_lk[0] += 1
+rollout("lx{}".format(n_lk[0]), [{"turn": "t1", "answer": None, "tools": [tool("function_call", fc("D=~/.local/share")), tool("function_call", fc("cat $D/chezmoi/AGENTS.md"))]}])
+is_("assignment_not_across_calls: an assignment in one call gives nothing to the next call of the turn",
+    K.leaks(lhome, [("lx{}".format(n_lk[0]), "t1")], K.wall(list(CHZ)), SCR), [])
+
+is_("assignment_never_hides: an assignment that may not run still leaves the real value", leaked(fc('false && HOME=/tmp; cat "$HOME/.codex/x"'), CHZ + [house + "/.codex"]),
+    [house + "/.codex in t1"])
+FW = lambda cmd: forbid(fc(cmd))
+is_("assignment_never_hides: a subshell's assignment does not hide HOME", FW("(HOME=/tmp); cat $HOME/.codex/x"), [house + "/.codex in t1"])
+is_("assignment_never_hides: ... nor XDG_STATE_HOME", FW("XDG_STATE_HOME=/tmp; cat $XDG_STATE_HOME/xreview/x"), [os.path.join(XSH, "xreview") + " in t1"])
+is_("assignment_never_hides: ... nor a prefix assignment's", FW("HOME=/tmp sh -c 'cat $HOME/.codex/x'"), [house + "/.codex in t1"])
+is_("assignment_never_hides: ... nor export", FW("export HOME=/tmp; cat $HOME/.codex/x"), [house + "/.codex in t1"])
+is_("assignment_never_hides: the assigned literal is found too", FW("HOME=/tmp; D=~/.codex; cat $D/x"), [house + "/.codex in t1"])
+
+is_("unknown_keeps_spelling: an unknown variable that gained a value keeps its spelling", (lambda r: (sorted(r[0]), r[1]))(K._expand("$D/x", {"D": [K.LITERAL, "/a"]})),
+    (["$D/x", "/a/x"], True))
+is_("unknown_keeps_spelling: ... in any position", sorted(K._expand("$D/$E", {"D": [K.LITERAL, "/a"], "E": [K.LITERAL, "b"]})[0]),
+    sorted(["$D/$E", "$D/b", "/a/$E", "/a/b"]))
+is_("unknown_keeps_spelling: _expand without a literal is as it was, and complete", K._expand("$HOME/x", {"HOME": ["/h"]}), (["/h/x"], True))
+is_("unknown_keeps_spelling: ... and reports a use that exceeds the expansions", K._expand("$D/x", {"D": ["/a%d" % i for i in range(17)]})[1], False)
+
+many = "; ".join("A=/a{}".format(i) for i in range(1, 18))
+is_("too_many_values: a use with more values than the scan expands is a leak", leaked(fc(many + "; cat $A/x"), CHZ), ["$A/x (more values than the scan expands) in t1"])
+is_("too_many_values: sixteen values are expanded, none is lost", leaked(fc("; ".join("A=/a{}".format(i) for i in range(1, 16)) + "; cat $A/x"), CHZ), [])
+is_("too_many_values: a cd to more directories than the scan follows is a leak",
+    leaked(fc("D=/d1; D=/d2; D=/d3; D=/d4; D=/d5; cd $D && ls"), CHZ), ["$D (more values than the scan expands) in t1"])

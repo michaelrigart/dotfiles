@@ -54,9 +54,9 @@ the checkout without naming it (TOOLS: chezmoi for the chezmoi source) is a leak
 after a newline, && || ; | & ( ) { ! then do else, in $( ) and backticks, under env, sudo, command, xargs, timeout, nice and
 `mise exec --`; command -v, which, type and hash only look it up).
 Known limits, not chased further. Missed: an unknown variable ($DIR/x stays literal, and so does a cd to it), a path built at run
-time (string concatenation in a script, a variable set earlier), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
+time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
 command's directory is not moved), reads spread over separate calls (a cd in one call does not carry to the next), aliases or
-functions defined earlier, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
+functions defined earlier, a loop body that runs a use again after a later assignment, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
 glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it starts from /), a walk by any other command (cp -r,
 rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working directory; it is taken to read the
 pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff), a heredoc fed to a shell
@@ -370,6 +370,8 @@ PATH_MAX = 4096
 MAX_DEPTH = 4           # nested sh -c, $( ) and heredocs followed
 MAX_CWDS = 4            # directories one cd may lead to (a variable with several values)
 MAX_EXPANSIONS = 16
+LITERAL = object()      # in a variable's values: it may also hold what the scan does not know, so its spelling stays
+TOO_MANY = "{} (more values than the scan expands)"
 _PIECE = re.compile(r"[^\s\"'`;|&<>()\\:,={}]+")
 _GLOB = re.compile(r"[*?\[]")
 _SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
@@ -512,17 +514,18 @@ def judge(parts, bounds):
 
 
 def _expand(token, values):
-    """`token` with a leading ~ and the variables of `values` expanded, one result per value; an unknown variable stays as written."""
+    """(results, complete): `token` with a leading ~ and the variables of `values` expanded, one result per value; an unknown variable
+    stays as written, and so does one whose values hold LITERAL. complete is False when expanding would exceed MAX_EXPANSIONS."""
     token = _PWD.sub("${PWD}", token)
-    todo, done = [os.path.expanduser(token) if token.startswith("~") else token], []
+    todo, done = [(os.path.expanduser(token) if token.startswith("~") else token, 0)], []
     while todo and len(done) + len(todo) <= MAX_EXPANSIONS:
-        t = todo.pop()
-        m = next((m for m in _VAR.finditer(t) if (m.group(1) or m.group(2)) in values), None)
+        t, at = todo.pop()
+        m = next((m for m in _VAR.finditer(t, at) if (m.group(1) or m.group(2)) in values), None)
         if m is None:
             done.append(t)
         else:
-            todo += [t[:m.start()] + v + t[m.end():] for v in values[m.group(1) or m.group(2)]]
-    return done + todo
+            todo += [(t, m.end()) if v is LITERAL else (t[:m.start()] + v + t[m.end():], m.start()) for v in values[m.group(1) or m.group(2)]]
+    return done + [t for t, _at in todo], not todo
 
 
 def _pieces(word):
@@ -811,7 +814,27 @@ class _Scan(object):
     """What one tool call names behind `bounds` (a Wall): the labels of the roots its paths fall in, in `found`."""
 
     def __init__(self, bounds, values):
-        self.bounds, self.values, self.found, self._seen = bounds, values, set(), {}
+        self.bounds, self.found, self._seen = bounds, set(), {}
+        self.values = dict((k, list(v)) for k, v in values.items())
+
+    def assign(self, words):
+        """The literal assignments among `words` (NAME=value, no $ in the value once its quotes are removed): each adds its value to the
+        variable for what the call does next, never removes one. A variable the scan knows keeps its values; an unknown one also keeps
+        its spelling (LITERAL)."""
+        for w in words:
+            m = ASSIGNMENT.match(w)
+            if not m or "$" in w[m.end():]:
+                continue
+            name, value = w[:m.end() - 1], w[m.end():]
+            if name not in self.values:
+                self.values[name] = [] if name == "PWD" else [LITERAL]
+            value = os.path.expanduser(value) if value.startswith("~") else value
+            if value not in self.values[name]:
+                self.values[name].append(value)
+
+    def variables(self, cwds):
+        """The variables a path may spell from `cwds`: $PWD is the directories the cd tracker holds, and any value assigned to it."""
+        return dict(self.values, PWD=list(dict.fromkeys(list(cwds) + self.values.get("PWD", []))))
 
     def resolved(self, token, cwds):
         """The real paths (as components) a path-like token names from each directory of `cwds`: expanded, joined, then read both ways,
@@ -819,7 +842,10 @@ class _Scan(object):
         out = set()
         if not token or "\0" in token or len(token) > PATH_MAX:
             return out
-        for t in _expand(token, dict(self.values, PWD=list(cwds))):
+        expanded, whole = _expand(token, self.variables(cwds))
+        if not whole:
+            self.found.add(TOO_MANY.format(token))
+        for t in expanded:
             for joined in ([t] if t.startswith("/") else [c + "/" + t for c in cwds]):
                 for p in (os.path.normpath(joined), joined):
                     if p not in self._seen:
@@ -846,9 +872,13 @@ class _Scan(object):
     def dirs(self, target, cwds):
         """The directories `cd target` leads to from `cwds` (logical: ./.. collapsed as cd does)."""
         out = []
-        for t in _expand(target, dict(self.values, PWD=list(cwds))):
+        expanded, whole = _expand(target, self.variables(cwds))
+        for t in expanded:
             out += [os.path.normpath(j) for j in ([t] if t.startswith("/") else [c + "/" + t for c in cwds])]
-        return list(dict.fromkeys(out))[:MAX_CWDS]
+        out = list(dict.fromkeys(out))
+        if not whole or len(out) > MAX_CWDS:
+            self.found.add(TOO_MANY.format(target))
+        return out[:MAX_CWDS]
 
     def text(self, text, cwds):
         """Free text (a call's other arguments, the JavaScript around its commands): every piece of every word is a path-like token."""
@@ -869,6 +899,7 @@ class _Scan(object):
         recursive search, from `cwds`; the directories it leaves the cd tracker in."""
         eff = _effective(words)
         at = len(words) - len(eff)
+        self.assign(words[:at] + (eff[1:] if eff and os.path.basename(eff[0]) == "export" else []))
         keep = _plain(eff)
         plain = [eff[k] for k in keep]
         skip = set(at + keep[i] for i in _patterns(plain))
