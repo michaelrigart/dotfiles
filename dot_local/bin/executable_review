@@ -214,10 +214,15 @@ while [ "$status" != interrupted ] && { IFS= read -r line || [ -n "$line" ]; }; 
       fi
       # --bare (the future default for -p) skips CLAUDE.md, hooks, skills and subagents, and init lists
       # neither CLAUDE.md nor hooks, so the global skill and agent it does list stand in for them.
-      missing=$(printf '%s\n' "$line" | jq -r --arg s "$bare_skill" --arg a "$bare_agent" '[
-        (if ((.skills // []) | index($s)) then empty else "skill " + $s end),
-        (if ((.agents // []) | index($a)) then empty else "agent " + $a end)
-      ] | join(", ")')
+      if ! missing=$(printf '%s\n' "$line" | jq -r --arg s "$bare_skill" --arg a "$bare_agent" '
+        def listed($n): type == "array" and any(.[]; . == $n);
+        [
+          (if (.skills | listed($s)) then empty else "skill " + $s end),
+          (if (.agents | listed($a)) then empty else "agent " + $a end)
+        ] | join(", ")'); then
+        status="aborted: the init event could not be read, so the run cannot be checked for the global skills and agents"
+        stop_claude; break
+      fi
       if [ -n "$missing" ]; then
         status="aborted: the run looks bare (missing $missing): the global instructions, hooks and skills were probably not loaded"
         stop_claude; break
