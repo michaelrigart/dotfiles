@@ -406,7 +406,7 @@ methods and bars above are unchanged except where a line says so.
     project directory Claude Code saved them.
 
   A recursive search rooted above a forbidden root counts as a read. Grep patterns and
-  redirection targets are not paths; command substitutions inside a pattern are still scanned.
+  redirection targets are not search roots (a redirection target is still checked as a path); command substitutions inside a pattern are still scanned.
   Running `chezmoi` counts as reading the original dotfiles. A rollout that cannot be read counts
   as a leak. Dotfiles cases may void more often than others; that verdict is correct. The
   remaining limits (unknown variables, paths built at run time, reads spread over separate calls,
