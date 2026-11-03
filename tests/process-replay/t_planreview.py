@@ -528,3 +528,75 @@ P.plan_cases(args(STATE9))
 _l9, rep9 = P.report_section(STATE9)
 ok("no_successor: the finding that was put to the judge is counted: one known finding, one class input",
    rep9["known"] == 1 and sorted(os.listdir(os.path.join(STATE9, "judge-class"))) == ["plan-y1-1.json"], (rep9["known"], os.listdir(os.path.join(STATE9, "judge-class"))))
+
+# ---------------------------------------------------------------- scenario 10: a receipt is one round however many times a ledger holds it
+CLONE = os.path.join(ROOT, "planrepo-clone")
+git(ROOT, "clone", "--quiet", WT, CLONE)
+T10 = "th-plan-10"
+
+
+def rollouts10():
+    timed_rollout(T10, [
+        {"turn": "d1", "start": t0, "end": t0 + 300, "tokens": 4000, "answer": answer("changes", [finding("P1", PLAN_A, 50, "a needs the helper first")])},
+        {"turn": "d2", "start": t0 + 600, "end": t0 + 660, "tokens": 900, "answer": answer("approve", [])}])
+    timed_rollout("th-pre10", [
+        {"turn": "e1", "start": t0, "end": t0 + 60, "tokens": 20000, "answer": answer("approve", [])},
+        {"turn": "e2", "start": t0 + 120, "end": t0 + 180, "tokens": 6000, "answer": answer("approve", [])}])
+
+
+D1 = plan_receipt("d1", "2026-10-14T10:00:00.000000Z", T10, "d1", WT, BASE, C1, {PLAN_A: A1B})
+D2 = plan_receipt("d2", "2026-10-14T11:00:00.000000Z", T10, "d2", WT, BASE, C3, {PLAN_A: A2B}, verdict="approve")
+E1 = pre_receipt("e1", "2026-10-15T10:00:00.000000Z", WT, BASE, C4, [{"path": PLAN_A, "nonce": "d2", "blob": A2B}], "th-pre10", "e1")
+E2 = pre_receipt("e2", "2026-10-15T11:00:00.000000Z", WT, BASE, C4, [{"path": PLAN_A, "nonce": "d2", "blob": A2B}], "th-pre10", "e1")   # lists e1's turn again
+
+
+def counted(state, ledgers_of_wt, ledgers_of_clone=None):
+    """The plan-review report of a world whose ledgers hold these entries; the judge answers are the same in every world."""
+    rollouts10()
+    helpers.write_ledger(os.environ["XDG_STATE_HOME"], WT, ledgers_of_wt)
+    if ledgers_of_clone is not None:
+        helpers.write_ledger(os.environ["XDG_STATE_HOME"], CLONE, ledgers_of_clone)
+    P.plan_cases(args(state))
+    answers(state, "judge-known", "plan-d1", {"verdicts": [{"index": 0, "answer": "yes"}]})
+    P.plan_cases(args(state))
+    answers(state, "judge-class", "plan-d1-0", {"class": "design"})
+    P.plan_cases(args(state))
+    return P.report_section(state)
+
+
+STATE10 = world("w10once")
+_l, once = counted(STATE10, [D1, D2, E1])
+SHAPE = ("rounds", "wall_minutes", "tokens", "known", "classified", "design_p0p1", "premerge_receipts", "premerge_omit_tokens", "lost_saving_tokens")
+want = tuple(once[k] for k in SHAPE)
+is_("duplicates: control: one copy of each receipt gives 2 rounds, 4900 tokens, the 20000 tokens of the pre-merge turn, no skips",
+    (once["rounds"], once["tokens"], once["known"], once["premerge_omit_tokens"], once["skipped_rounds"], once["incomplete"]), (2, 4900, 1, 20000, 0, False))
+
+STATE10b = world("w10dup")
+_l, dup = counted(STATE10b, [D1, dict(D1), D2, D2, dict(D2), E1, dict(E1)])
+is_("duplicates: a plan receipt written twice in a ledger is one round: same rounds, tokens, minutes, findings, saving as once",
+    tuple(dup[k] for k in SHAPE), want)
+
+STATE10c = world("w10across")
+_l, across = counted(STATE10c, [D1, D2, E1], [dict(D1), dict(D2), dict(E1)])
+is_("duplicates: the same receipts in a second ledger (another checkout of the repository) count once too",
+    tuple(across[k] for k in SHAPE), want)
+is_("duplicates: ... and nothing is skipped or marked incomplete for a copy", (across["skipped_rounds"], across["incomplete"]), (0, False))
+
+STATE10d = world("w10turn")
+_l, twice = counted(STATE10d, [D1, D2, E1, E2])
+is_("duplicates: two pre-merge receipts that list one turn spend its tokens once (the turn is the identity of its usage)",
+    (twice["premerge_receipts"], twice["premerge_omit_tokens"]), (2, 20000))
+
+STATE10e = world("w10clash")
+CLASH = dict(D2, verdict="changes")
+_l, clash = counted(STATE10e, [D1, D2, E1], [CLASH])
+is_("duplicates: two receipts with one nonce that differ are neither picked: neither is a round",
+    (clash["rounds"], clash["tokens"]), (1, 4000))
+ok("duplicates: and the conflict is reported as a skipped round naming the nonce, which makes the section incomplete",
+   clash["skipped_rounds"] == 1 and clash["incomplete"] and any(s["nonce"] == "d2" and "differ" in s["reason"] for s in clash["skips"]), clash["skips"])
+ok("duplicates: and the report text says so", any("skipped round" in l and "d2" in l for l in _l), _l)
+
+STATE10f = world("w10clash-out")
+OUT_A = plan_receipt("old", "2026-09-01T10:00:00.000000Z", T10, "d1", WT, BASE, C1, {PLAN_A: A1B})
+_l, outside = counted(STATE10f, [D1, D2, E1, OUT_A], [dict(OUT_A, verdict="approve")])
+is_("duplicates: a conflict between receipts dated outside the window concerns no round of the report", (outside["skipped_rounds"], outside["incomplete"]), (0, False))

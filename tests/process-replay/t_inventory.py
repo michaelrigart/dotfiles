@@ -845,3 +845,41 @@ ok("stale_inventory: opened again it is back, and one for a branch that is no lo
    os.path.exists(RBINV) and not os.path.exists(os.path.join(XSTATE, "inventory", "bdeadbeef.json")))
 run_cases(XSTATE, edited2, dry=True, open=0)
 ok("stale_inventory: a dry run removes nothing", os.path.exists(RBINV))
+
+# ---- collect_once: a receipt is one round however many ledgers hold it; two that differ under one nonce are neither's
+DR = helpers.make_repo(ROOT, "dupcollect")
+put(DR, "f.txt", "x\n")
+DC0 = helpers.commit(DR, "base")
+put(DR, "f.txt", "y\n")
+DC1 = helpers.commit(DR, "one")
+put(DR, "f.txt", "z\n")
+DC2 = helpers.commit(DR, "two")
+DRC = os.path.join(ROOT, "dupcollect-clone")
+git(ROOT, "clone", "--quiet", DR, DRC)
+DGIT, DCGIT = C.L.common_dir(DR), C.L.common_dir(DRC)
+R1 = receipt("c1", "2026-09-20T10:00:00.000000Z", "th", "u1", DGIT, "feat", DC0, DC1)
+R2 = receipt("c2", "2026-09-21T10:00:00.000000Z", "th", "u2", DGIT, "feat", DC0, DC2)
+
+
+def collected(name, mine, theirs):
+    state = world(name)
+    helpers.write_ledger(os.environ["XDG_STATE_HOME"], DR, mine)
+    helpers.write_ledger(os.environ["XDG_STATE_HOME"], DRC, theirs)
+    said, old = [], C.say
+    C.say = said.append
+    try:
+        found = I.collect(args(state))
+    finally:
+        C.say = old
+    return found, said
+
+
+found, said = collected("w-once", [R1, R2, dict(R2)], [dict(R1), dict(R2)])
+is_("collect_once: a receipt in two ledgers, one of them twice, is one entry: each nonce once across the repositories",
+    sorted(e["nonce"] for _repo, entries, _chains in found for e in entries), ["c1", "c2"])
+is_("collect_once: and one chain of two rounds (k 1, 2), nothing said",
+    ([[(r["nonce"], r["k"]) for r in c] for _repo, _e, cs_ in found for c in cs_], said), ([[("c1", 1), ("c2", 2)]], []))
+found, said = collected("w-clash", [R1, R2], [dict(R2, verdict="changes")])
+is_("collect_once: two receipts with one nonce that differ are neither used: c1 is a chain of one, c2 is in none",
+    [[(r["nonce"], r["k"]) for r in c] for _repo, _e, cs_ in found for c in cs_], [[("c1", 1)]])
+ok("collect_once: and the conflict is said, naming the nonce", any("c2" in s and "differ" in s for s in said), said)

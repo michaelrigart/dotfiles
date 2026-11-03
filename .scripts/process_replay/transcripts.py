@@ -172,9 +172,15 @@ def _message(e):
 
 def cost(path):
     """{tokens, start, end} of one transcript. A message streamed as several entries shares one
-    message.id and counts once, by its last usage; tokens are input + output + cache creation +
+    message.id (else uuid) and counts once, by its last usage; tokens are input + output + cache creation +
     cache read; start and end are the first and last timestamps."""
     return _cost(read_entries(path))
+
+
+def _identity(e, i):
+    """What names an assistant entry: its message id (a streamed message is several entries), else the entry's own uuid (a resumed
+    session replays what it had), else its position."""
+    return _message(e).get("id") or e.get("uuid") or ("entry", i)
 
 
 def _cost(entries):
@@ -184,7 +190,7 @@ def _cost(entries):
         m = _message(e)
         if e.get("type") != "assistant" or not isinstance(m.get("usage"), dict):
             continue
-        usage[m.get("id") or ("entry", i)] = m["usage"]
+        usage[_identity(e, i)] = m["usage"]
     total = 0
     for u in usage.values():
         for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
@@ -228,7 +234,7 @@ def _report(entries):
         if e.get("type") != "assistant":
             continue
         m = _message(e)
-        by_id.setdefault(m.get("id") or ("entry", i), []).extend(_texts(m.get("content")))
+        by_id.setdefault(_identity(e, i), []).extend(_texts(m.get("content")))
     for parts in reversed(list(by_id.values())):
         if parts:
             return "\n".join(parts)

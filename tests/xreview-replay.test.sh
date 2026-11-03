@@ -1147,6 +1147,89 @@ ok("RP20 run_pool hands a job the stop cut back as the first still to run, and t
 ok("RP20 its run file is an interrupted error, which `run` runs again without --retry-errors",
    jl(os.path.join(unit20c, "runs", "c.pre", "v3v3v3v3.json")).get("interrupted") is True, jl(os.path.join(unit20c, "runs", "c.pre", "v3v3v3v3.json")))
 
+print("RP24. a turn is charged whatever stops its job, and a replay home is checked against what it is set up for")
+import collections
+import shutil
+unit24 = os.path.join(ROOT, "unit24")
+wr(os.path.join(unit24, "packet.txt"), "x")
+one24 = {"kind": "full", "action": "send", "packets": [{"file": os.path.join(unit24, "packet.txt"), "shown": []}]}
+Hm.TH = Hm.Threads(unit24)
+Hm.rpc = scripted(0, False)
+real_review = Hm.review
+
+
+def review_then_bug(a, j, dec, clone, schema, res, turns):
+    real_review(a, j, dec, clone, schema, res, turns)
+    raise RuntimeError("a bug after the turn")
+
+
+Hm.review = review_then_bug
+try:
+    Hm.run_job(argparse.Namespace(state=unit24, budget=10, cap=None), dict(job, label="w1w1w1w1", decision=one24))
+    crashed = None
+except RuntimeError as e:
+    crashed = str(e)
+finally:
+    Hm.review = real_review
+f24 = os.path.join(unit24, "runs", "c.pre", "w1w1w1w1.json")
+is_("RP24 a job that crashes after its turn raises, so the run stops, and the crash is not swallowed", crashed, "a bug after the turn")
+ok("RP24 ... but its turn was spent: the run file is written with the tokens, the error and interrupted (the next run does it again)",
+   os.path.isfile(f24) and jl(f24)["tokens"] == 1000 and jl(f24)["spent"] == 1000 and jl(f24)["interrupted"] is True and jl(f24)["error"].startswith("crashed: RuntimeError"),
+   jl(f24) if os.path.isfile(f24) else None)
+is_("RP24 ... and the state's tally counts it once, with nothing left in flight", Hm.spent_now(unit24), 1000)
+
+# a replay home is checked against what it is set up for before any job runs on it, not by its probe's pass alone
+cxm = Hm.pkg("codexhome")
+fake24 = os.path.join(ROOT, "fake-home24")
+POOL = []
+saved24 = dict((n, getattr(cxm, n)) for n in ("reclaim", "ensure", "start", "probe", "stop"))
+saved_pool, saved_reap = Hm.run_pool, Hm.reap
+
+
+def mk_home(use_memories, with_dir, expect):
+    shutil.rmtree(fake24, ignore_errors=True)
+    wr(os.path.join(fake24, "replay-home.json"), {"source": "x", "use_memories": use_memories})
+    wr(os.path.join(fake24, "config.toml"), "[memories]\nuse_memories = {}\n".format("true" if use_memories else "false"))
+    if with_dir:
+        wr(os.path.join(fake24, "memories", "memory_summary.md"), "a memory line long enough to be one\n")
+    wr(os.path.join(fake24, "probe.json"), {"at": "x", "ok": True, "checks": {"daemon": True, "memories": True}, "expect_memories": expect})
+
+
+def run_on(name, snap):
+    del POOL[:]
+    Hm.run_pool = lambda a, pending, total, cap, prog: POOL.append(list(pending)) or (collections.deque(), total)
+    Hm.reap = lambda: None
+    cxm.reclaim, cxm.ensure = lambda h: None, lambda *a, **k: fake24
+    cxm.start, cxm.stop = lambda h: None, lambda h: None
+    cxm.probe = lambda state, h, expect, rpc=None: {"ok": True, "checks": {"memories": True}, "notes": []}
+    try:
+        Hm.run_home(argparse.Namespace(state=unit24, budget=10), name, [dict(job, label="x1x1x1x1", home=name, memories=snap)], 0, 10 ** 9, {}, None)
+        return None
+    except Hm.Failed as e:
+        return str(e)
+    finally:
+        Hm.run_pool = saved_pool
+        Hm.reap = saved_reap
+        for n, fn in saved24.items():
+            setattr(cxm, n, fn)
+
+
+mk_home(False, False, False)
+got = run_on("nomem", None)
+ok("RP24 a memories-off home that is set up and probed with memories off runs its jobs", got is None and len(POOL) == 1, (got, POOL))
+mk_home(True, True, True)
+got = run_on("nomem", None)
+ok("RP24 a B arm's home made with memories on (record, config, directory and a passing probe) is refused before any job", got and "memories off" in got and "record" in got and not POOL, (got, POOL))
+mk_home(False, False, False)
+got = run_on("mem-abc", "/snapshot")
+ok("RP24 an A arm's home that has no memories is refused: its snapshot is not there", got and "snapshot" in got and not POOL, (got, POOL))
+mk_home(True, True, True)
+got = run_on("mem-abc", "/snapshot")
+ok("RP24 an A arm's home with its snapshot, probed with memories on, runs", got is None and len(POOL) == 1, (got, POOL))
+mk_home(False, False, True)
+got = run_on("nomem", None)
+ok("RP24 a probe that expected memories on a home that has none is refused for it", got and "expected memories" in got and not POOL, (got, POOL))
+
 print("RP21. the token stop counts every job's completed turns: a job starts no turn after another job's turn crossed it")
 unit21 = os.path.join(ROOT, "unit21")
 wr(os.path.join(unit21, "packet.txt"), "x")
@@ -1539,7 +1622,7 @@ ok("RP7m memories_arms: a rerun redoes nothing and starts no daemon", p.returnco
 ok("RP7m memories_arms: --codex-source names the home the replay homes copy their config from", 'model = "m-1"' in open(os.path.join(hm_a, "config.toml")).read())
 ok("RP7m memories_packets: a run removes its checkouts", not os.path.exists(SCR) or os.listdir(SCR) == [])
 prog = jl(os.path.join(SM, "progress.json"))
-ok("RP7m memories_arms: progress records the run and its tokens", prog["finished"] is True and prog["tokens"] == 6000, prog)
+ok("RP7m memories_arms: progress records the run and its tokens: six arms of 1000 and the three homes' probes of 10", prog["finished"] is True and prog["tokens"] == 6030, prog)
 
 # memories_leaks: a rollout that names the original checkout voids the run; a second leak ends it as an error run
 print("RP7m. memories_leaks")
@@ -1548,19 +1631,19 @@ LEAK = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "nam
 CLEAN = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "name": "exec", "arguments": {"cmd": "git log -1", "workdir": "/"}}]}
 
 
-def leak_run(tag, script):
+def leak_run(tag, script, extra=(), state_of=None):
     """A fresh xdg (so fresh homes and thread ids) holding the same ledger, and a run of the memories cases against a stub rpc."""
     xdg = os.path.join(ROOT, tag[-1])
     if len(os.path.join(xdg, SOCK_TAIL)) > 100:
         xdg = tempfile.mkdtemp(prefix="xl.", dir="/tmp")
         cleanup.append(xdg)
     shutil.copytree(os.path.join(XM, "xreview"), os.path.join(xdg, "xreview"))
-    state = os.path.join(ROOT, "state-" + tag)
+    state = os.path.join(ROOT, "state-" + (state_of or tag))
     shutil.copy(os.path.join(SM, "cases.json"), os.path.join(state, "cases.json")) if os.path.isdir(state) else (os.makedirs(state), shutil.copy(os.path.join(SM, "cases.json"), os.path.join(state, "cases.json")))
     rpcd, cxd = os.path.join(ROOT, tag + "-rpc"), os.path.join(ROOT, tag + "-codex")
     stub = helpers.stub_rpc(rpcd, CODEX, dict({"probe": PROBE}, **script))
     env = dict(menv, XDG_STATE_HOME=xdg, XREVIEW_REPLAY_RPC=stub, CODEX_REAL_BIN=helpers.stub_codex(cxd))
-    p = subprocess.run([HARNESS, "run", "--state", state, "--codex-source", CODEX], capture_output=True, text=True, env=env)
+    p = subprocess.run([HARNESS, "run", "--state", state, "--codex-source", CODEX] + list(extra), capture_output=True, text=True, env=env)
     runs = [jl(f) for f in (os.path.join(state, "runs", cid, l + ".json") for cid, m in jl(os.path.join(state, "arms.json")).items() for l in m) if os.path.exists(f)]
     return p, state, runs, helpers.read_log(os.path.join(rpcd, "rpc.log")), os.path.join(xdg, "review-work", "scratch")      # the scratch root this run used
 
@@ -1579,12 +1662,12 @@ is_("RP7m memories_leaks: the sixth arm took a second turn (and each home had it
 voided = [r for r in runs1 if r.get("voids")][0]
 ok("RP7m memories_leaks: the void names what it read", CHECKOUT in " ".join(voided["voids"][0]), voided["voids"])
 is_("RP7m memories_leaks: the run reports its own attempt's tokens, and the spend counts the voided attempt too", (voided["tokens"], voided["spent"]), (1000, 2000))
-is_("RP7m memories_leaks: the stop counts every attempt", jl(os.path.join(st1, "progress.json"))["tokens"], 7000)
+is_("RP7m memories_leaks: the stop counts every attempt, and the three probes", jl(os.path.join(st1, "progress.json"))["tokens"], 7030)
 p, st2, runs2, log2, scr2 = leak_run("leak2", {"default": LEAK})
 is_("RP7m memories_leaks: arms that leak twice end as error runs", sorted(set((r["error"] or "")[:10] for r in runs2)), ["void twice"])
 is_("RP7m memories_leaks: each ran exactly twice (and each home had its probe)", len([c for c in log2 if c["cmd"] == "turn-start"]), 15)
 is_("RP7m memories_leaks: and spent counts each of its two attempts once (2000, not 3000)", sorted(set((r["tokens"], r["spent"]) for r in runs2)), [(1000, 2000)])
-is_("RP7m memories_leaks: the stop counts all twelve turns once", jl(os.path.join(st2, "progress.json"))["tokens"], 12000)
+is_("RP7m memories_leaks: the stop counts all twelve turns once, and the three probes", jl(os.path.join(st2, "progress.json"))["tokens"], 12030)
 ok("RP7m memories_leaks: and records both voids", all(len(r["voids"]) == 2 for r in runs2), [r.get("voids") for r in runs2][:1])
 subprocess.run([HARNESS, "report", "--state", st2], capture_output=True, text=True, env=menv)
 rep2 = jl(os.path.join(st2, "report.json"))
@@ -1599,6 +1682,18 @@ p, stp, runsp, logp, _scr = leak_run("probeA", {"default": CLEAN, "probe": {"ans
 ok("RP7m memories_probe: a failing probe stops the run with a clear error", p.returncode == 1 and "isolation probe" in p.stdout and "no arm ran" in p.stdout, (p.returncode, p.stdout[-400:]))
 is_("RP7m memories_probe: no arm turn was started: the probe's is the only one", len([c for c in logp if c["cmd"] == "turn-start"]), 1)
 ok("RP7m memories_probe: no run was recorded, and progress says why", runsp == [] and "isolation probe" in (jl(os.path.join(stp, "progress.json")).get("crashed") or ""), runsp)
+is_("RP7m memories_probe: the failed probe's turn was spent all the same: the tally holds its 1000 tokens", jl(os.path.join(stp, "progress.json"))["tokens"], 1000)
+for n in ("repP", "repQ", "repR"):
+    p, strep, runsrep, _l, _scr = leak_run(n, {"default": CLEAN, "probe": {"answer": None, "rc": 1}}, state_of="rep")
+is_("RP7m memories_probe: three starts of a run whose probe fails leave three probes in the state's tally (3000), none lost between starts",
+    (jl(os.path.join(strep, "progress.json"))["tokens"], runsrep), (3000, []))
+# a probe that crosses the token stop is the last turn: no job is scheduled after it
+p, stc, runsc, logc, _scr = leak_run("capS", {"default": CLEAN, "probe": dict(PROBE, tokens=10)}, extra=["--max-tokens", "5"])
+progc = jl(os.path.join(stc, "progress.json"))
+is_("RP7m memories_probe: a probe (10 tokens) that crosses the stop (5) is charged: the tally holds it", progc["tokens"], 10)
+is_("RP7m memories_probe: ... so no review is scheduled after it: the probe's is the only turn, and no run was recorded",
+    (len([c for c in logc if c["cmd"] == "turn-start"]), runsc), (1, []))
+ok("RP7m memories_probe: ... and the run says it stopped at the cap, before the first arm", progc["stopped_at"] and progc["finished"] is False and "stopped at the token cap" in p.stdout, (progc, p.stdout[-300:]))
 p, stp, runsp, logp, _scr = leak_run("probeB", {"default": CLEAN, "probe": dict(PROBE, developer="Nothing is remembered here.")})
 ok("RP7m memories_probe: a snapshot home whose turn shows none of its memories fails the probe, and no arm of it ran",
    p.returncode == 1 and "memories" in p.stdout and all(r["home"] == "nomem" for r in runsp), (p.returncode, p.stdout[-400:], [r["home"] for r in runsp]))
@@ -1868,6 +1963,57 @@ try:
 finally:
     Hz.subprocess.run = real_run
 is_("RP7b zstd gets -- before the rollout's path", argvs, [["zstd", "-dc", "--", zpath]])
+
+# ------------------------------------------------------------------ RP23 a record is one record, however many times it is on disk
+print("RP23. ledger receipts and rollout records are counted by their identity")
+Hd = load(HARNESS, "replay_dup")
+XDG23 = os.path.join(ROOT, "xdg23")
+
+
+def ledger23(files):
+    """A fresh ledger home holding these ledger files (each: a list of receipts), all of them naming the fixture repository."""
+    import shutil
+    shutil.rmtree(XDG23, ignore_errors=True)
+    for n, entries in enumerate(files):
+        d = os.path.join(XDG23, "xreview", "ledgers", "ledger{}".format(n))
+        wr(os.path.join(d, "reviews.jsonl"), "".join(json.dumps(e) + "\n" for e in entries))
+        wr(os.path.join(d, "repo"), common + "\n")
+    os.environ["XDG_STATE_HOME"] = XDG23
+
+
+def chain23(conflicts=None):
+    return sorted((r["nonce"], r["k"], r["prev"] and r["prev"]["nonce"], r["next"] and r["next"]["nonce"]) for r in Hd.load_rounds(conflicts))
+
+
+ledger23([R])
+once = chain23()
+is_("RP23 control: the fixture's three pre-merge receipts are one chain k 1..3",
+    once, [("xr-2-r1", 1, None, "xr-3-r2"), ("xr-3-r2", 2, "xr-2-r1", "xr-4-r3"), ("xr-4-r3", 3, "xr-3-r2", None)])
+ledger23([R + [dict(R[2]), dict(R[1])], [dict(e) for e in R]])
+bad = []
+is_("RP23 a receipt written twice in a ledger and again in another ledger of the repository is one round: the chain's k, prev and next are unchanged",
+    chain23(bad), once)
+is_("RP23 ... and identical copies are no conflict", bad, [])
+ledger23([R, [dict(R[2], verdict="approve")]])
+bad = []
+got = chain23(bad)
+is_("RP23 two receipts of one nonce that differ are neither used: the chain is r1 and r3 (xr-3-r2 is in none)",
+    got, [("xr-2-r1", 1, None, "xr-4-r3"), ("xr-4-r3", 2, "xr-2-r1", None)])
+is_("RP23 ... and the conflict is returned for the caller to say", [(c["nonce"], c["copies"]) for c in bad], [("xr-3-r2", 2)])
+ledger23([R, [dict(R[2], verdict="approve")]])
+S23 = os.path.join(ROOT, "state23")
+p = harness(S23, "cases", "--dry-run", XDG_STATE_HOME=XDG23)
+ok("RP23 `cases` says the conflict", "xr-3-r2" in p.stdout and "differ" in p.stdout, (p.stdout + p.stderr)[-400:])
+
+# a rollout record repeated (a file appended twice, a log replayed) is one record in a turn's usage
+dup_home = os.path.join(ROOT, "codex23")
+os.environ["CODEX_HOME"] = dup_home
+rollout(dup_home, "thDup", [("tuD", None, APPROVE, False)])
+path23 = glob.glob(os.path.join(dup_home, "sessions", "*", "*", "*", "rollout-*thDup.jsonl"))[0]
+lines23 = open(path23).read().splitlines(True)
+twice = lines23[:3] + lines23[2:3] + lines23[3:]       # the token_count of the turn, twice
+open(path23, "w").write("".join(twice))
+is_("RP23 a token_count record on disk twice is one record: the turn used 1000 tokens, not 2000", Hd.turn_usage("thDup", "tuD")["tokens"], 1000)
 
 PY
 )"

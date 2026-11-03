@@ -564,19 +564,14 @@ def judge_branch(a, br, scope, counts):
 
 # ------------------------------------------------------------------ the command
 def collect(a):
-    """[(Repo, ledger entries, chains)] per repository: its ledgers' entries together, a nonce counted once
-    (across ledgers too)."""
-    seen, repos, entries_of = set(), collections.OrderedDict(), collections.OrderedDict()
-    for gitdir, entries in XR.ledgers():
+    """[(Repo, ledger entries, chains)] per repository: its ledgers' entries together, a receipt once by its nonce (XR.ledgers: across
+    ledgers too; receipts that share a nonce but differ are said and left out)."""
+    repos, entries_of, clashes = collections.OrderedDict(), collections.OrderedDict(), []
+    for gitdir, entries in XR.ledgers(clashes):
         repos.setdefault(gitdir, Repo(a.state, gitdir, a.snapshot_root))
-        fresh = entries_of.setdefault(gitdir, [])
-        for e in entries:
-            n = e.get("nonce")
-            if e.get("kind") == "receipt" and isinstance(n, str):
-                if n in seen:
-                    continue
-                seen.add(n)
-            fresh.append(e)
+        entries_of.setdefault(gitdir, []).extend(entries)
+    for c in clashes:
+        C.say("ledger conflict: {} receipts share the nonce {} and differ; none is used".format(c["copies"], c["nonce"]))
     return [(repos[g], entries_of[g], chains(entries_of[g], g)) for g in repos]
 
 

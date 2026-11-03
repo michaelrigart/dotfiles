@@ -172,6 +172,35 @@ is_("prepare_ledger: the plan receipt is rebound to the scratch repository", [t[
 is_("prepare_ledger: its plan_blobs are the original's", plan["targets"][0]["plan_blobs"], L.plan_blobs(w.common, w.base, w.tip))
 ok("prepare_ledger: it lies beside the scratch repository, not inside it", not led.startswith(w.scratch + "/"), led)
 
+# ---- ledger_receipts_once: the run's ledger holds each receipt once, and none whose nonce two receipts share with different content
+def second_ledger(w, entries):
+    """Another ledger file that names the world's repository (a ledger copied, as the harness meets them)."""
+    d = os.path.join(os.environ["XDG_STATE_HOME"], "xreview", "ledgers", "second-" + w.name)
+    os.makedirs(d)
+    with open(os.path.join(d, "reviews.jsonl"), "w") as f:
+        f.write("".join(json.dumps(e) + "\n" for e in entries))
+    with open(os.path.join(d, "repo"), "w") as f:
+        f.write(w.common + "\n")
+
+
+def prepared_nonces(w):
+    led = K.prepare_ledger(args(), w.run, w.case, w.branch)
+    return [e["nonce"] for e in L.read_entries(os.path.join(led, "xreview", "ledgers", L.ledger_key(w.scratch + "/.git"), "reviews.jsonl"))]
+
+
+def plan_entry_of(w):
+    return next(e for e in L.read_entries(os.path.join(os.environ["XDG_STATE_HOME"], "xreview", "ledgers", L.ledger_key(w.common), "reviews.jsonl"))
+                if e["checkpoint"] == "plan")
+
+
+w = World("ledgerdup", prepare=False)
+second_ledger(w, [plan_entry_of(w), plan_entry_of(w)])
+is_("ledger_receipts_once: a plan receipt held by two ledgers of the repository (one of them twice) is in the run's ledger once",
+    prepared_nonces(w), ["pn-ledgerdup"])
+w = World("ledgerclash", prepare=False)
+second_ledger(w, [dict(plan_entry_of(w), verdict="changes")])
+is_("ledger_receipts_once: two plan receipts of one nonce that differ are neither in the run's ledger (neither is picked)", prepared_nonces(w), [])
+
 # ---- ledger_prepared_once
 w = World("noledger", prepare=False)
 home = replay_home("noledger")

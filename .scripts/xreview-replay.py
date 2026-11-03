@@ -323,8 +323,7 @@ def turns_of(thread):
 
 
 # ------------------------------------------------------------------ rounds and candidates
-def ledgers():
-    """(repo, entries) of every ledger whose repository still exists."""
+def _ledgers():
     base = os.path.join(L.state_home(), "xreview", "ledgers")
     for d in sorted(glob.glob(os.path.join(glob.escape(base), "*"))):
         try:
@@ -336,11 +335,51 @@ def ledgers():
             continue
 
 
-def load_rounds():
+def receipt_nonce(e):
+    """The nonce that identifies a receipt, else None (not a receipt, or no usable nonce)."""
+    return e["nonce"] if e.get("kind") == "receipt" and isinstance(e.get("nonce"), str) and e["nonce"] else None
+
+
+def ledgers(conflicts=None, only=None):
+    """(repo, entries) of every ledger whose repository still exists (with `only`, those of that repository), each receipt once by its nonce across all the ledgers (the first
+    copy wins when the copies are identical: a ledger copied or appended twice). Receipts that share a nonce but differ are an
+    ambiguity nobody should resolve silently: none of their copies is yielded, and each nonce is appended to `conflicts` (a list the
+    caller reports) as {"nonce", "copies": n, "at": the copies' dispatched_at values}."""
+    found = [x for x in _ledgers() if only is None or os.path.realpath(x[0]) == os.path.realpath(only)]
+    copies = collections.OrderedDict()
+    for _repo, entries in found:
+        for e in entries:
+            n = receipt_nonce(e)
+            if n is not None:
+                copies.setdefault(n, []).append(e)
+    clash = set(n for n, es in copies.items() if any(x != es[0] for x in es[1:]))
+    if conflicts is not None:
+        conflicts.extend({"nonce": n, "copies": len(copies[n]), "at": [x.get("dispatched_at") for x in copies[n]]}
+                         for n in copies if n in clash)
+    seen = set()
+    for repo, entries in found:
+        keep = []
+        for e in entries:
+            n = receipt_nonce(e)
+            if n is not None:
+                if n in clash or n in seen:
+                    continue
+                seen.add(n)
+            keep.append(e)
+        yield repo, keep
+
+
+def say_conflicts(conflicts):
+    for c in conflicts:
+        say("ledger conflict: {} receipts share the nonce {} and differ; none is used".format(c["copies"], c["nonce"]))
+
+
+def load_rounds(conflicts=None):
     """Every pre-merge round on record as a dict, most recent first: its target, thread, turn, its
-    place k in the thread's chain, and the rounds before and after it on that thread."""
+    place k in the thread's chain, and the rounds before and after it on that thread. A receipt is
+    one round however many ledgers hold it (ledgers())."""
     rounds = []
-    for repo, entries in ledgers():
+    for repo, entries in ledgers(conflicts):
         chains = collections.defaultdict(list)
         for e in entries:
             ts = [t for t in (e.get("targets") or []) if isinstance(t, dict)]
@@ -519,7 +558,10 @@ def cases_memories(a):
         say("the watcher has not polled yet: no case can have a snapshot")
         return 0
     started, early, kept, dropped = mw.parse_at(first), 0, [], []
-    for r in sorted(load_rounds(), key=lambda r: r["at"]):
+    clashes = []
+    rounds = load_rounds(clashes)
+    say_conflicts(clashes)
+    for r in sorted(rounds, key=lambda r: r["at"]):
         try:
             if not first_pre_merge(r):
                 continue
@@ -561,7 +603,10 @@ def cmd_cases(a):
     if getattr(a, "switch", None) == "memories":
         return cases_memories(a)
     guard_cases(a, None)
-    cands = [c for c in (candidate(r) for r in load_rounds()) if c]
+    clashes = []
+    rounds = load_rounds(clashes)
+    say_conflicts(clashes)
+    cands = [c for c in (candidate(r) for r in rounds) if c]
     pool, plans, other, delta, big, fresh = {}, [], [], [], [], []
     for c in cands:
         r = c["round"]
@@ -996,7 +1041,7 @@ def leak_scan(a, job, turns, clone):
 def run_job(a, job):
     res = {"verdict": None, "findings": [], "reviewed_files": [], "tokens": 0, "compacted": False, "slices": 0,
            "kind": None, "missing": None, "error": None, "home": job.get("home"), "input": job.get("input")}
-    clone, own, wasted, voids = None, None, 0, []
+    clone, own, wasted, voids, crash = None, None, 0, [], None
     try:
         if job["error"]:
             raise Failed(job["error"])
@@ -1033,6 +1078,10 @@ def run_job(a, job):
             res["paused"] = e.hold
         if isinstance(e, Stopped):
             res["stopped"] = str(e)
+    except Exception as e:      # a bug of ours: the turns it ran were spent all the same, so the run file is written before the run stops
+        crash = e
+        res["error"] = "crashed: " + "".join(traceback.format_exception_only(type(e), e)).strip()
+        res["interrupted"] = True       # not a finished job: the next run does it again
     finally:
         if own:
             shutil.rmtree(own, ignore_errors=True)
@@ -1047,6 +1096,8 @@ def run_job(a, job):
     with TALLY:         # the run file and the end of the flight in one step: spent_now counts the job's tokens once
         jsave(path, res)
         FLIGHT.pop((a.state, job["case"], job["label"]), None)
+    if crash is not None:
+        raise crash
     return res
 
 
@@ -1085,7 +1136,9 @@ def spent_now(state):
 
 
 def spent(state):
-    return sum((lambda r: r.get("spent", r.get("tokens", 0)))(jload(p) or {}) for p in glob.glob(os.path.join(glob.escape(state), "runs", "*", "*.json")))
+    """The tokens the state has spent: every run file's (spent, else tokens), and the isolation probes' (process_replay.common.charge_probe)."""
+    return pkg("common").probe_tokens(state) + sum(
+        (lambda r: r.get("spent", r.get("tokens", 0)))(jload(p) or {}) for p in glob.glob(os.path.join(glob.escape(state), "runs", "*", "*.json")))
 
 
 def on_signal(signum, _frame):
@@ -1169,10 +1222,13 @@ def run_home(a, name, jobs, total, cap, prog, source):
     cx.start(home)
     try:
         # the arms differ only by this home: prove the daemon serves it (the snapshot's memories reach a turn of A and A2, none reaches B's)
-        res = cx.probe(home, bool(snap), rpc=RPC)
+        res = cx.probe(a.state, home, bool(snap), rpc=RPC)
         if not res["ok"]:
             raise Failed("the isolation probe of the replay home {} failed ({}); no arm ran: {}".format(
                 home, ", ".join(k for k, v in sorted(res["checks"].items()) if not v) or "no check", "; ".join(res["notes"]) or "no note"))
+        good, why = cx.configured(home, bool(snap))       # the home itself, not only its probe's pass: a B arm's has no memories, an A arm's has its snapshot
+        if not good:
+            raise Failed("the replay home {} is not set up for {}: {}; no arm ran".format(home, "its memories snapshot" if snap else "memories off", why))
         for j in jobs:
             j["home_path"] = home
         with codex_env(home):

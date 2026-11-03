@@ -184,18 +184,8 @@ def body(branch, k, addressed, rejected):
 
 # ------------------------------------------------------------------ the scratch ledger
 def _entries(branch):
-    """The receipts of the branch's repository, a nonce once, from every ledger that names it."""
-    want = os.path.realpath(branch["repo"])
-    out, seen = [], set()
-    for repo, entries in XR.ledgers():
-        if os.path.realpath(repo) != want:
-            continue
-        for e in entries:
-            if e.get("nonce") in seen:
-                continue
-            seen.add(e.get("nonce"))
-            out.append(e)
-    return out
+    """The receipts of the branch's repository, a nonce once (XR.ledgers: across its ledgers too), from every ledger that names it."""
+    return [e for _repo, entries in XR.ledgers(only=branch["repo"]) for e in entries]
 
 
 def _repo(a, run):
@@ -1096,11 +1086,11 @@ def _key(a, run):
 
 
 def spent_now(a, run):
-    """Codex tokens spent under the state at this moment: every run's charged tokens (this run's as the caller holds it) plus the tokens of
-    every round in flight, this one's included. A turn that completes is counted at once (flight_add), and a round's outcome is charged to its
+    """Codex tokens spent under the state at this moment: every run's charged tokens (this run's as the caller holds it), the state's isolation
+    probes (common.charge_probe) and the tokens of every round in flight, this one's included. A turn that completes is counted at once (flight_add), and a round's outcome is charged to its
     run under settling(), which drops the round from the flight in the same step, so a turn is counted exactly once."""
     with _TALLY:
-        total = (run.get("tokens") or 0) + sum(n for k, n in _FLIGHT.items() if k[0] == a.state)
+        total = (run.get("tokens") or 0) + sum(n for k, n in _FLIGHT.items() if k[0] == a.state) + C.probe_tokens(a.state)
         for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "state.json")):
             other = jload(path) or {}
             if (other.get("case"), other.get("label")) != (run.get("case"), run.get("label")):

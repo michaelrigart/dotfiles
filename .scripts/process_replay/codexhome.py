@@ -593,31 +593,95 @@ def _memory_lines(summary):
     return sorted(lines, key=lambda l: (-len(l), l))[:MEMORY_LINES]
 
 
-def probed(home):
-    """(True, "") when the last probe of `home`, since its daemon was last started, passed, else (False, why)."""
+def _config_memories(home):
+    """What config.toml's [memories] table says about use_memories: True, False, or None when it says nothing a daemon would read
+    (no file, no table, no such key, or a value that is not a bool)."""
+    try:
+        with open(os.path.join(home, "config.toml"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    inside = False
+    for line in lines:
+        if re.match(r"\s*\[", line):
+            inside = bool(re.match(r"\s*\[memories\]\s*(#.*)?$", line))
+        elif inside:
+            m = re.match(r"\s*use_memories\s*=\s*(true|false)\s*(#.*)?$", line)
+            if m:
+                return m.group(1) == "true"
+    return None
+
+
+def set_up(home, memories):
+    """(True, "") when `home` is configured for memories being `memories` (a bool) in every place a turn's memories come from: its record
+    (use_memories), its config.toml ([memories] use_memories) and its memories/ directory (present exactly when they are on), else
+    (False, why). A probe says what happened once; this says what the home is."""
+    rec = jload(os.path.join(home, RECORD))
+    if not isinstance(rec, dict):
+        return False, "it has no record ({})".format(RECORD)
+    if rec.get("use_memories") is not memories:
+        return False, "its record says use_memories {}, not {}".format(rec.get("use_memories"), memories)
+    conf = _config_memories(home)
+    if conf is not memories:
+        return False, "its config.toml says use_memories {}, not {}".format("nothing" if conf is None else conf, memories)
+    has = os.path.lexists(os.path.join(home, "memories"))
+    if has is not memories:
+        return False, "it {} a memories/ directory".format("holds" if has else "has no")
+    return True, ""
+
+
+def probed(home, expect_memories=None):
+    """(True, "") when the last probe of `home`, since its daemon was last started, passed, else (False, why). With `expect_memories` (a bool) the
+    probe must also have been run expecting exactly that, with its memories check among the passed ones: a probe of a home that reads memories
+    proves nothing about one that does not."""
     rec = jload(os.path.join(home, PROBED))
     if not isinstance(rec, dict):
         return False, "it has not been probed since it was started"
     if rec.get("ok") is not True:
         failed = ", ".join(k for k, v in sorted((rec.get("checks") or {}).items()) if not v)
         return False, "its last probe ({}) failed{}".format(rec.get("at"), ": " + failed if failed else "")
+    if expect_memories is not None:
+        if rec.get("expect_memories") is not expect_memories:
+            return False, "its last probe ({}) expected memories {}, not {}".format(rec.get("at"), rec.get("expect_memories"), expect_memories)
+        if (rec.get("checks") or {}).get("memories") is not True:
+            return False, "its last probe ({}) did not pass a memories check".format(rec.get("at"))
     return True, ""
 
 
-def probe(home, expect_memories, rpc=None):
+def configured(home, memories):
+    """(True, "") when `home` is set up for memories being `memories` (set_up) and its last probe passed expecting that (probed), else
+    (False, why): the one test a run applies to a home before it starts a turn on it."""
+    good, why = set_up(home, memories)
+    return (good, why) if not good else probed(home, memories)
+
+
+def probe(state, home, expect_memories, rpc=None):
     """Prove the isolation before any replay turn runs: one turn on the replay daemon, which must
     answer, leave its rollout under `home` and none under the source home, leave the source home's own
     daemon answering, and show the memory text in its developer message exactly when `expect_memories`.
-    `rpc` is an xreview-rpc to use (default: the replay's). Returns {ok, checks, model, effort, notes}.
-    It uses the daemon, so it needs the command's session (Failed without one)."""
+    `rpc` is an xreview-rpc to use (default: the replay's). Returns {ok, checks, model, effort, tokens, notes}.
+    The turn is a turn like any other: whatever it used, a failed probe's too, is charged to `state`'s token tally
+    (common.charge_probe) before this returns. It uses the daemon, so it needs the command's session (Failed without one)."""
     _record(home)
     _need(home)
-    return _probe(home, expect_memories, rpc)
+    return _probe(state, home, expect_memories, rpc)
 
 
-def _probe(home, expect_memories, rpc):
+def _charge(state, home, thread, turn):
+    """What the probe's turn used, read from its rollout under `home`, charged to `state`. 0 when it never got a turn."""
+    if thread is None or turn is None:
+        return 0
+    from . import codex
+    with codex.homed(home):
+        used = common.XR.turn_usage(thread, turn)["tokens"]
+    if used:
+        common.charge_probe(state, home, thread, turn, used)
+    return used
+
+
+def _probe(state, home, expect_memories, rpc):
     source = _record(home)["source"]
-    checks, notes, res = {}, [], {"model": None, "effort": None}
+    checks, notes, res = {}, [], {"model": None, "effort": None, "tokens": 0}
 
     def done():
         res.update(ok=bool(checks) and all(checks.values()), checks=checks, notes=notes)
@@ -634,7 +698,7 @@ def _probe(home, expect_memories, rpc):
         notes.append("the replay daemon does not answer health ({}): {}".format(rc, err.strip()))
         return done()
     work = tempfile.mkdtemp(prefix="probe.")
-    thread = None
+    thread = turn = None
     try:
         rc, out, err = _call(rpc, home, "thread-start", "--cwd", work)
         thread = out.strip().splitlines()[-1] if rc == 0 and out.strip() else None
@@ -690,9 +754,12 @@ def _probe(home, expect_memories, rpc):
         if src_rc != 0:
             notes.append("health on the source home's socket failed ({})".format(src_rc))
     finally:
-        if thread is not None:
-            _call(rpc, home, "thread-archive", "--thread", thread)
-        shutil.rmtree(work, ignore_errors=True)
+        try:
+            res["tokens"] = _charge(state, home, thread, turn)       # whatever happened to the probe, its turn was spent
+        finally:
+            if thread is not None:
+                _call(rpc, home, "thread-archive", "--thread", thread)
+            shutil.rmtree(work, ignore_errors=True)
     return done()
 
 
@@ -765,7 +832,7 @@ def cmd_home(a):
         start(home)
         say("started: " + home)
     if a.probe:
-        res = probe(home, bool(_record(home).get("use_memories")))
+        res = probe(a.state, home, bool(_record(home).get("use_memories")))
         say(json.dumps(res, indent=2))
         status = 0 if res["ok"] else 1
     if a.stop and (a.start or not stopped):

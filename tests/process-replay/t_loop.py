@@ -5,6 +5,7 @@ import contextlib
 import fcntl
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -29,8 +30,28 @@ PROJECTS = os.path.join(ROOT, "projects")
 PLAN = "docs/superpowers/plans/2026-10-20-x.md"
 KEY = re.sub(r"[^A-Za-z0-9]", "-", os.path.expanduser("~/Code/.replay"))
 NOMEM = os.path.join(os.environ["XDG_STATE_HOME"], "cxh", "nomem")
-helpers.put(NOMEM, "replay-home.json", json.dumps({"source": "x"}))
-helpers.put(NOMEM, "probe.json", json.dumps({"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True}, "expect_memories": False}))
+
+
+def nomem_probe(**over):
+    """The probe record of a replay home that passed with memories off: the daemon answered and no memory text reached the turn."""
+    rec = {"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True, "memories": True}, "expect_memories": False}
+    rec.update(over)
+    helpers.put(NOMEM, "probe.json", json.dumps(rec))
+
+
+def nomem_home(use=False, memories_dir=False, config=None, **record):
+    """The replay home `nomem` as `home --name nomem` leaves it: its record, its config.toml's [memories] table, and no memories/ directory
+    (unless asked for)."""
+    shutil.rmtree(NOMEM, ignore_errors=True)
+    helpers.put(NOMEM, "replay-home.json", json.dumps(dict({"source": "x", "use_memories": use}, **record)))
+    helpers.put(NOMEM, "config.toml", config if config is not None else 'model = "m"\n\n[memories]\nuse_memories = {}\ngenerate_memories = false\n'.format(
+        "true" if use else "false"))
+    if memories_dir:
+        helpers.put(NOMEM, "memories/memory_summary.md", "a memory line that is long enough to look for\n")
+    nomem_probe(expect_memories=use)
+
+
+nomem_home()
 os.makedirs(PROJECTS)
 
 # ---- a superpowers fixture (PROCESS_REPLAY_SUPERPOWERS), shaped like the real 7.x skills directory
@@ -1312,7 +1333,7 @@ try:
 except Failed as e:
     got = str(e)
 ok("home: without the replay home, run says to make it and starts no round", "home" in got and not CALLS, got)
-helpers.put(NOMEM, "replay-home.json", json.dumps({"source": "x"}))
+nomem_home()
 P.codexhome.alive = lambda home: True
 for label, record in (("never probed", None), ("last probe failed", {"at": "2026-11-03T00:00:00Z", "ok": False, "checks": {"memories": False}})):
     if record is None:
@@ -1327,7 +1348,39 @@ for label, record in (("never probed", None), ("last probe failed", {"at": "2026
     except Failed as e:
         got = str(e)
     ok("probe: a home that was {} is refused, naming the probe, and starts no round".format(label), "probe" in got and not CALLS, got)
-helpers.put(NOMEM, "probe.json", json.dumps({"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True}, "expect_memories": False}))
+
+# a home that is not the memories-off one is refused whatever its probe says: the record, the config, the directory and the probe must all agree
+def refused_home(label, setup, *needles):
+    setup()
+    try:
+        go(w)
+        got = "no error"
+    except Failed as e:
+        got = str(e)
+    ok("memories_off: {} is refused before any round, with what to do".format(label),
+       all(n in got for n in needles) and "home --name nomem" in got and not CALLS, got)
+    nomem_home()
+
+
+refused_home("a home made with --memories DIR --use-memories whose probe passed with memories on",
+             lambda: (nomem_home(use=True, memories_dir=True)), "memories")
+refused_home("a home whose record says use_memories but whose config.toml, memories/ and probe say off",
+             lambda: (nomem_home(), helpers.put(NOMEM, "replay-home.json", json.dumps({"source": "x", "use_memories": True}))), "record")
+refused_home("a home whose config.toml turns use_memories on, the record and probe saying off",
+             lambda: nomem_home(config='[memories]\nuse_memories = true\ngenerate_memories = false\n'), "config.toml")
+refused_home("a home with no [memories] table in its config.toml (Codex's own default applies)",
+             lambda: nomem_home(config='model = "m"\n'), "config.toml")
+refused_home("a home that still holds a memories/ directory (a snapshot was copied in), whatever else says off",
+             lambda: nomem_home(memories_dir=True), "memories/")
+refused_home("a home whose probe expected memories", lambda: (nomem_home(), nomem_probe(expect_memories=True)), "probe")
+refused_home("a home whose probe record does not say what it expected (it predates the setting)",
+             lambda: (nomem_home(), helpers.put(NOMEM, "probe.json", json.dumps({"at": "x", "ok": True, "checks": {"daemon": True, "memories": True}}))), "probe")
+refused_home("a home whose probe passed without a memories check", lambda: (nomem_home(), nomem_probe(checks={"daemon": True})), "probe")
+refused_home("a home whose probe's memories check failed", lambda: (nomem_home(), nomem_probe(checks={"daemon": True, "memories": False})), "probe")
+refused_home("a home with a record that is not a bool (hand-edited)", lambda: nomem_home(use="no"), "record")
+nomem_home()
+is_("memories_off: a home made without memories, probed with them off, is the one run uses", P._home(None), NOMEM)
+nomem_probe()
 P.codexhome.alive = lambda home: False
 try:
     go(w)

@@ -218,9 +218,14 @@ def _home(a):
         raise Failed("there is no replay Codex home {}: make it with `process-replay.py home --name {} --start --probe`".format(home, HOME))
     if not codexhome.alive(home):
         raise Failed("the daemon of the replay home {} is not running: `process-replay.py home --name {} --start --probe`".format(home, HOME))
-    good, why = codexhome.probed(home)
+    good, why = codexhome.set_up(home, False)
+    if not good:       # spec 4: a run's reviewer reads no memories, which the leak scan cannot see in a prompt: the home must have none, whatever its probe says
+        raise Failed("the replay home {} is not a home with memories off: {}. A §4 run needs one: stop its daemon (`process-replay.py home --name {} --stop`), "
+                     "remove {}, and make it again with `process-replay.py home --name {} --start --probe` (no --memories, no --use-memories)".format(
+                         home, why, HOME, home, HOME))
+    good, why = codexhome.probed(home, False)
     if not good:
-        raise Failed("the replay home {} has not passed its probe: {}; `process-replay.py home --name {} --probe`".format(home, why, HOME))
+        raise Failed("the replay home {} has not passed its probe with memories off: {}; `process-replay.py home --name {} --probe`".format(home, why, HOME))
     return home
 
 

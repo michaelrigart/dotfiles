@@ -217,7 +217,7 @@ ok("home_refuses_live: a name that leaves the directory", raises(H.ensure, STATE
 leave()
 n_out = len(helpers.read_log(LOG))
 refused = [name for name, fn in (("start", lambda: H.start(home)), ("stop", lambda: H.stop(home)), ("ensure", lambda: H.ensure(STATE, "nomem", source=SRC)),
-                                 ("probe", lambda: H.probe(home, False)), ("reclaim", lambda: H.reclaim(home))) if raises(fn)]
+                                 ("probe", lambda: H.probe(STATE, home, False)), ("reclaim", lambda: H.reclaim(home))) if raises(fn)]
 ok("outside_session: start, stop, ensure, probe and reclaim refuse outside a command's session, and run no daemon command",
    refused == ["start", "stop", "ensure", "probe", "reclaim"] and len(helpers.read_log(LOG)) == n_out, (refused, helpers.read_log(LOG)[n_out:]))
 enter()
@@ -662,7 +662,7 @@ def probe_fresh(home_dir, expect, rpc=None):
     """The stubs all name their first thread th1, so a home's earlier rollouts are cleared first."""
     for d in ("sessions", "archived_sessions"):
         shutil.rmtree(os.path.join(home_dir, d), ignore_errors=True)
-    return H.probe(home_dir, expect, rpc=rpc)
+    return H.probe(STATE, home_dir, expect, rpc=rpc)
 
 
 def rpc_for(name, home_dir, developer, health_rc=0):
@@ -809,7 +809,7 @@ os.chmod(guard, 0o755)
 res = probe_fresh(phome, False, rpc=guard)
 ok("probe_checks: a source daemon that stops answering fails the probe",
    res["ok"] is False and res["checks"]["source_daemon"] is False and res["checks"]["answered"] is True, res)
-ok("probe_checks: a directory that is not a replay home is refused", raises(H.probe, SRC, False, rpc=stub))
+ok("probe_checks: a directory that is not a replay home is refused", raises(H.probe, STATE, SRC, False, rpc=stub))
 
 # ---- the command
 leave()
@@ -938,6 +938,133 @@ try:
     ok("probe_tokens: one token below the stop the probe runs", rc == 0 and len(rpc_log(pw_stub)) > n, rc)
 finally:
     H.XR.RPC = UP
+
+# ---- probe_charged: a probe is a turn, so what it uses is spent like any other turn's, failed or not, and the next start sees it
+from process_replay import codex as K  # noqa: E402
+
+
+def spent_in(state):
+    return K.spent_now(ap_mod.Namespace(state=state), {})
+
+
+def probe_via_cmd(stub, state, *flags, name="p-weekly"):
+    """`home --probe` as the command line runs it, against this rpc; (exit code, what it printed)."""
+    H.XR.RPC = stub
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = H.cmd_home(ap.parse_args(["--state", state, "--name", name, "--codex-source", pw_cold, "--probe"] + list(flags)))
+    finally:
+        H.XR.RPC = UP
+    return rc, buf.getvalue()
+
+
+def fresh_homes():
+    for d in ("sessions", "archived_sessions"):
+        shutil.rmtree(os.path.join(pw_home, d), ignore_errors=True)
+
+
+pc_ok = rpc_for("pc-ok", pw_home, "You are Codex. Nothing about the project is remembered.")
+pc_state = os.path.join(ROOT, "pc-state")
+fresh_homes()
+rc, _out = probe_via_cmd(pc_ok, pc_state)
+is_("probe_charged: a passing probe's turn is spent (1000 tokens) in the state's tally", (rc, spent_in(pc_state)), (0, 1000))
+fresh_homes()
+rc, _out = probe_via_cmd(pc_ok, pc_state)
+is_("probe_charged: and a second start's probe adds to it: every probe counts", (rc, spent_in(pc_state)), (0, 2000))
+pc_fail = rpc_for("pc-fail", pw_home, "Memory:\n" + "\n".join(lines3))
+fresh_homes()
+rc, _out = probe_via_cmd(pc_fail, pc_state)
+is_("probe_charged: a probe that fails its isolation check used its turn all the same: charged", (rc, spent_in(pc_state)), (1, 3000))
+pc_late = helpers.stub_rpc(os.path.join(ROOT, "rpc-pc-late"), pw_home, {"default": {"answer": None, "rc": 1, "tokens": 700}})
+fresh_homes()
+rc, _out = probe_via_cmd(pc_late, pc_state)
+is_("probe_charged: so does one whose turn-wait failed after the turn had run (the rollout holds its usage)", (rc, spent_in(pc_state)), (1, 3700))
+is_("probe_charged: the tally reads it from the state, not from this process (a later command sees all four)",
+    K.spent_now(ap_mod.Namespace(state=pc_state), {"case": "x", "label": "y", "tokens": 0}), 3700)
+other_state = os.path.join(ROOT, "pc-other-state")
+is_("probe_charged: and a probe is charged to its own state only", spent_in(other_state), 0)
+
+# the cap: a probe that crosses it is the last turn that starts
+cap_state = os.path.join(ROOT, "pc-cap-state")
+fresh_homes()
+rc1, _o = probe_via_cmd(pc_ok, cap_state, "--max-tokens", "1500")
+fresh_homes()
+rc2, _o = probe_via_cmd(pc_ok, cap_state, "--max-tokens", "1500")
+n_turns = len([c for c in rpc_log(pc_ok) if c["cmd"] == "turn-start"])
+fresh_homes()
+rc3, out3 = probe_via_cmd(pc_ok, cap_state, "--max-tokens", "1500")
+is_("probe_charged: below the stop the probe runs (1000 < 1500), and the one that crosses it (2000) runs; the next is refused naming the 2000",
+    (rc1, rc2, rc3, "2000 tokens spent, stop at 1500" in out3), (0, 0, 1, True))
+is_("probe_charged: ... and starts no turn", len([c for c in rpc_log(pc_ok) if c["cmd"] == "turn-start"]), n_turns)
+
+# probe() itself charges, so no caller can leave one out
+direct_state = os.path.join(ROOT, "pc-direct-state")
+fresh_homes()
+res = in_session(H.probe, direct_state, pw_home, False, rpc=pc_ok)
+is_("probe_charged: H.probe charges the state it is given, and tells the caller what the turn used", (spent_in(direct_state), res["tokens"]), (1000, 1000))
+stub_nothing = helpers.stub_rpc(os.path.join(ROOT, "rpc-pc-down"), pw_home, {"health_rc": 5})
+res = in_session(H.probe, direct_state, pw_home, False, rpc=stub_nothing)
+is_("probe_charged: a probe that never got a turn (the daemon does not answer) charges nothing", (res["ok"], spent_in(direct_state), res["tokens"]), (False, 1000, 0))
+
+# ---- configured: what a home is set up for, in every place a turn's memories come from, and what its probe proved
+cn = in_session(H.ensure, STATE, "c-nomem", source=SRC)
+cm = in_session(H.ensure, STATE, "c-mem", memories_src=SNAP, use_memories=True, source=SRC)
+PASSED = {"at": "2026-11-03T00:00:00Z", "ok": True, "checks": {"daemon": True, "memories": True}}
+put(cn, H.PROBED, json.dumps(dict(PASSED, expect_memories=False)))
+put(cm, H.PROBED, json.dumps(dict(PASSED, expect_memories=True)))
+is_("configured: a home made without memories and probed with them off is a memories-off home", H.configured(cn, False), (True, ""))
+is_("configured: a home made with a snapshot and --use-memories, probed with them on, is a memories-on home", H.configured(cm, True), (True, ""))
+good, why = H.configured(cm, False)
+ok("configured: ... and the latter is not a memories-off home, whatever its probe passed: its record says so", not good and "record" in why, (good, why))
+good, why = H.configured(cn, True)
+ok("configured: ... nor the former a memories-on one", not good and "record" in why, (good, why))
+
+
+def broken(label, home, memories, needle, change):
+    """`home`, changed by `change` (and put back), is not configured for `memories`; the reason holds `needle`."""
+    saved = dict((n, open(os.path.join(home, n)).read() if os.path.exists(os.path.join(home, n)) else None) for n in (H.RECORD, "config.toml", H.PROBED))
+    mem, kept = os.path.join(home, "memories"), os.path.join(ROOT, "kept-memories")
+    shutil.rmtree(kept, ignore_errors=True)
+    if os.path.isdir(mem):
+        shutil.copytree(mem, kept)
+    change(home)
+    good, why = H.configured(home, memories)
+    shutil.rmtree(mem, ignore_errors=True)
+    if os.path.isdir(kept):
+        shutil.copytree(kept, mem)
+    for n, text in saved.items():
+        if text is None:
+            if os.path.exists(os.path.join(home, n)):
+                os.unlink(os.path.join(home, n))
+        else:
+            put(home, n, text)
+    ok("configured: {} is refused, naming {}".format(label, needle), not good and needle in why, (good, why))
+
+
+def probe_rec(**over):
+    return lambda home: put(home, H.PROBED, json.dumps(dict(PASSED, **dict({"expect_memories": False}, **over))))
+
+
+broken("a record that says memories are on though config.toml, memories/ and the probe say off", cn, False, "record",
+       lambda h: put(h, H.RECORD, json.dumps({"source": SRC, "use_memories": True})))
+broken("a record with no use_memories at all", cn, False, "record", lambda h: put(h, H.RECORD, json.dumps({"source": SRC})))
+broken("a config.toml with use_memories on", cn, False, "config.toml", lambda h: put(h, "config.toml", "[memories]\nuse_memories = true\n"))
+broken("a config.toml whose [memories] table sets no use_memories", cn, False, "config.toml", lambda h: put(h, "config.toml", "[memories]\nmax_items = 1\n"))
+broken("a config.toml whose use_memories is in another table", cn, False, "config.toml",
+       lambda h: put(h, "config.toml", "[other]\nuse_memories = false\n[memories]\ngenerate_memories = false\n"))
+broken("a memories-off home with a memories/ directory", cn, False, "memories/", lambda h: os.makedirs(os.path.join(h, "memories")))
+broken("a memories-on home without its memories/ directory", cm, True, "memories/", lambda h: shutil.rmtree(os.path.join(h, "memories")))
+broken("a probe run expecting memories on a memories-off home", cn, False, "expected memories", probe_rec(expect_memories=True))
+broken("a probe that does not record what it expected", cn, False, "expected memories",
+       lambda h: put(h, H.PROBED, json.dumps(PASSED)))
+broken("a probe with no memories check", cn, False, "memories check", probe_rec(checks={"daemon": True}))
+broken("a probe whose memories check failed", cn, False, "failed", probe_rec(ok=False, checks={"daemon": True, "memories": False}))
+broken("a home never probed", cn, False, "probed", lambda h: os.unlink(os.path.join(h, H.PROBED)))
+os.makedirs(os.path.join(cn, "memories"))
+is_("configured: set_up alone reads the record, config.toml and memories/ (no probe)", H.set_up(cn, False)[0], False)
+shutil.rmtree(os.path.join(cn, "memories"))
+is_("configured: ... and is true again once the directory is gone", H.set_up(cn, False), (True, ""))
 
 SNAP2 = os.path.join(ROOT, "snap2")
 put(SNAP2, "memory_summary.md", "second\n")

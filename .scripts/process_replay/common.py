@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import date
 
 SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -194,6 +195,31 @@ Answer: {"class": "design"}
 # ------------------------------------------------------------------ state and labels
 def state_default():
     return os.path.join(L.state_home(), "process-replay", date.today().isoformat())
+
+
+# ------------------------------------------------------------------ turns that belong to no run
+PROBES = "probes.json"
+
+
+def charge_probe(state, home, thread, turn, tokens):
+    """Charge the Codex tokens of one isolation probe's turn to the state's token tally (spent_now of process-replay, spent of xreview-replay
+    count them with every run's): <state>/probes.json, a probe per entry, appended under its own lock. A probe belongs to no run, so
+    the run files cannot hold it; recorded here it survives the command that made it, and a later start's probe adds to it."""
+    os.makedirs(state, exist_ok=True)
+    with open(os.path.join(state, "probes.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        doc = jload(os.path.join(state, PROBES))
+        probes = doc.get("probes") if isinstance(doc, dict) and isinstance(doc.get("probes"), list) else []
+        probes.append({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "home": home, "thread": thread, "turn": turn,
+                       "tokens": tokens})
+        jsave(os.path.join(state, PROBES), {"probes": probes})
+
+
+def probe_tokens(state):
+    """The Codex tokens the state's isolation probes have used."""
+    doc = jload(os.path.join(state, PROBES))
+    return sum(p["tokens"] for p in (doc.get("probes") if isinstance(doc, dict) and isinstance(doc.get("probes"), list) else [])
+               if isinstance(p, dict) and isinstance(p.get("tokens"), int) and not isinstance(p["tokens"], bool))
 
 
 # ------------------------------------------------------------------ the inputs a result was recorded against

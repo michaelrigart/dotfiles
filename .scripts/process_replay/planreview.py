@@ -164,11 +164,11 @@ class Reader(C.Reader):
 # ------------------------------------------------------------------ the rounds
 def collect(state, root):
     """(rounds, saving, skips) from the ledgers: the October plan-checkpoint rounds, each linked to its
-    next round; the October pre-merge receipts that omitted a plan (once per nonce): their plans_from
+    next round; the October pre-merge receipts that omitted a plan (once, XR.ledgers): their plans_from
     blob bytes and the Codex tokens of their turns (the receipt's and every slice_turns entry, once each); and skips, [{kind: round, nonce, reason}]."""
-    rounds, readers, skips, seen = [], {}, [], set()
+    rounds, readers, skips, turns_seen, clashes = [], {}, [], set(), []
     saving = {"bytes": 0, "receipts": 0, "with_plans": 0, "unresolved": 0, "omit_tokens": 0}
-    for gitdir, entries in XR.ledgers():
+    for gitdir, entries in XR.ledgers(clashes):
         reader = readers.setdefault(gitdir, Reader(state, gitdir, root))
         chains = collections.defaultdict(list)
         for e in entries:
@@ -191,8 +191,7 @@ def collect(state, root):
                     "tip": target["tip"], "counted": _in_window(at), "next": None, "nexts": {},
                     "plans": dict((p, b) for p, b in blobs.items() if isinstance(p, str) and isinstance(b, str))})
             elif (e.get("v") == 2 and e.get("kind") == "receipt" and e.get("checkpoint") == "pre-merge" and _in_window(at)
-                  and isinstance(e.get("nonce"), str) and e["nonce"] not in seen):
-                seen.add(e["nonce"])
+                  and XR.receipt_nonce(e)):
                 saving["receipts"] += 1
                 listed = [p for t in e.get("targets") or [] if isinstance(t, dict) for p in t.get("plans_from") or []
                           if isinstance(p, dict)]
@@ -200,8 +199,9 @@ def collect(state, root):
                     saving["with_plans"] += 1
                     turns = [(e.get("thread"), e.get("turn"))] + [(t.get("thread"), t.get("turn")) for t in e.get("slice_turns") or []
                                                                      if isinstance(t, dict)]
-                    saving["omit_tokens"] += sum(XR.turn_usage(th, tu)["tokens"]
-                                                 for th, tu in sorted(set(x for x in turns if all(isinstance(y, str) and y for y in x))))
+                    fresh = sorted(set(x for x in turns if all(isinstance(y, str) and y for y in x)) - turns_seen)
+                    turns_seen.update(fresh)        # a turn is spent once, whichever receipts list it
+                    saving["omit_tokens"] += sum(XR.turn_usage(th, tu)["tokens"] for th, tu in fresh)
                 for p in listed:
                     size = reader.size(p["blob"]) if isinstance(p.get("blob"), str) and p["blob"] else None
                     if size is None:
@@ -219,6 +219,8 @@ def collect(state, root):
                     for p in changed:
                         r["nexts"].setdefault(p, later)
             rounds += [r for r in chain if r["counted"]]
+    skips += [{"kind": "round", "nonce": c["nonce"], "reason": "{} receipts share this nonce and differ: none is used".format(c["copies"])}
+              for c in clashes if any(_in_window(x) for x in c["at"])]
     rounds.sort(key=lambda r: r["at"])
     for r in rounds:
         r["minutes"] = wall_minutes(r["thread"], r["turn"])

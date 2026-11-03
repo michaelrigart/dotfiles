@@ -281,6 +281,14 @@ c = T.cost(cpath)
 is_("cost_dedupes_messages: one message id counts once (its last, complete usage) and tokens add all four kinds",
     c["tokens"], (10 + 9 + 100 + 1000) + (1 + 2 + 3 + 4))
 is_("cost_dedupes_messages: start and end are the first and last timestamps", (c["start"], c["end"]), (ts(1), ts(5)))
+# a transcript entry copied again (a resumed session replays what it had) is one entry: by its message id, else by its own uuid
+uprow = dict(asst(None, "x", 2, WORK, usage(7, 0, 0, 0)), uuid="u-1")
+uprow["message"].pop("id")
+upath = os.path.join(ROOT, "cost-uuid.jsonl")
+with open(upath, "w") as f:
+    f.write("".join(json.dumps(r) + "\n" for r in [uprow, dict(uprow), dict(uprow, uuid="u-2"), asst("m", "y", 3, WORK, usage(1, 0, 0, 0))]))
+is_("cost_dedupes_entries: an entry with no message id, written twice under one uuid, counts once; another uuid is another entry",
+    T.cost(upath)["tokens"], 7 + 7 + 1)
 empty = os.path.join(ROOT, "empty.jsonl")
 open(empty, "w").close()
 is_("cost: an empty transcript costs nothing", T.cost(empty), {"tokens": 0, "start": None, "end": None})
