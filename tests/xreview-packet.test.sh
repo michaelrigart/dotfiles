@@ -135,8 +135,8 @@ is_("K2 comments, blanks, spaces and unknown keys are tolerated",
 is_("K2 the last line for a key wins", sw("framing=on\nfit=on\nfit=off\n"),
     {"framing": True, "fit": False, "delta": False, "omit_plans": False})
 is_("K2 case matters: ON is not on", sw("framing=ON\n"), OFF)
-is_("K2 the shipped packets.conf turns on what passed the replay (spec 9), and sets the cap Michael ruled",
-    rd(CONF, "packets.conf"), b"framing=on\nfit=off\ndelta=off\nomit_plans=on\ncap=700000\n")
+is_("K2 the shipped packets.conf turns on what passed the replay (spec 9), fit by Michael's ruling, and the cap he ruled",
+    rd(CONF, "packets.conf"), b"framing=on\nfit=on\ndelta=off\nomit_plans=on\ncap=700000\n")
 
 
 def plan_of(text):
@@ -152,7 +152,7 @@ is_("K2 and None without a cap= line", plan_of("framing=on\n"), {"framing": True
 is_("K2 the shipped file's plan carries its cap", (getattr(xp, "read_plan", lambda p: None)(os.path.join(CONF, "packets.conf")) or {}).get("cap_line"),
     "700000")
 is_("K2 and parses to it", xp.read_switches(os.path.join(CONF, "packets.conf")),
-    {"framing": True, "fit": False, "delta": False, "omit_plans": True})
+    {"framing": True, "fit": True, "delta": False, "omit_plans": True})
 sw("framing=off\nfit=on\ndelta=off\nomit_plans=on\n")
 is_("K2 the switches framing off ignored are reported", sorted(xp.switches_ignored(cfg)), ["fit", "omit_plans"])
 sw("framing=on\nfit=on\n")

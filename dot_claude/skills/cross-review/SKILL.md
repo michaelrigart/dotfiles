@@ -119,7 +119,7 @@ reviewed in slices, each on its own fresh thread, with the pane following. Slice
 longer, so give `collect` a larger budget; it runs the remaining slices itself, and exit 3
 is resumed as usual. If a sliced collect stops on a pane or daemon refusal, or on a slice
 with no turn on record, run collect again once it clears. Never re-dispatch a sliced round unless it says to (a slice's packet is gone).
-With `fit` off, as shipped, dispatch refuses a packet over its size cap (escalate, below), and there are no slices or moves;
+With `fit` off (it ships on), dispatch refuses a packet over its size cap (escalate, below), and there are no slices or moves;
 the cap is `cap=` in `~/.config/xreview/packets.conf`, Michael's file outside the sandbox.
 Never put an environment assignment in front of `xreview` to get past a refusal: the sandbox
 exclusion then no longer applies.

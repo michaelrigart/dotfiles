@@ -578,7 +578,7 @@ for phrase in 'dispatch never refuses on size' \
               'Commit each round'"'"'s plan fixes before re-dispatching' \
               'ambiguous: no turn on record' \
               '`fit` on in `~/.config/xreview/packets.conf`, the packet is xreview'"'"'s to build, and dispatch never refuses on size' \
-              'With `fit` off, as shipped, dispatch refuses a packet over its size cap (escalate, below), and there are no slices or moves' \
+              'With `fit` off (it ships on), dispatch refuses a packet over its size cap (escalate, below), and there are no slices or moves' \
               'and only with `fit` on' \
               'Never put an environment assignment in front of `xreview` to get past a refusal' \
               'Never re-dispatch a sliced round unless it says to (a slice'"'"'s packet is gone)' \
