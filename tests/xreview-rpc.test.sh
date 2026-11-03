@@ -135,6 +135,30 @@ is "a refused thread/start exits 1" "$?" 1
 XREVIEW_RPC_STDIO=false rpc thread-start --cwd /tmp/repo 2>/dev/null
 is "an unreachable daemon exits 5" "$?" 5
 
+echo "B3. hooks-status"
+hooks_answer() { # hooks_answer <status> [command]: hooks/list with the pane-map hook after another hook
+  jq -nc --arg s "$1" --arg c "${2:-/usr/bin/python3 /Users/x/.codex/herdr-codex-pane-map.py}" \
+    '{responses:{"hooks/list":{result:{data:[{cwd:"/h",hooks:[
+      {key:"k:session_start:0:0",currentHash:"sha256:a",trustStatus:"trusted",enabled:true,command:"/bin/true"},
+      {key:"k:session_start:1:0",currentHash:"sha256:b",trustStatus:$s,enabled:true,command:$c}]}]}}}}'
+}
+for st in trusted modified untrusted managed; do
+  scenario "$(hooks_answer $st)"
+  is "the pane-map hook's $st status is printed alone" "$(rpc hooks-status)" "$st"
+done
+is "hooks/list is asked about the home directory" "$(params hooks/list | jq -c .cwds)" "[\"$HOME\"]"
+scenario "$(hooks_answer modified /bin/other-hook)"
+is "no pane-map hook among the hooks is missing" "$(rpc hooks-status)" missing
+scenario '{"responses":{"hooks/list":{"result":{"data":[]}}}}'
+is "an empty hooks/list is missing" "$(rpc hooks-status)" missing
+scenario '{"responses":{"hooks/list":{"error":{"code":-32601,"message":"unknown method"}}}}'
+out="$(rpc hooks-status 2>/dev/null)"; rc=$?
+is "an RPC error prints nothing" "$out" ""
+is "and exits non-zero" "$([ "$rc" -ne 0 ] && echo yes || echo no)" yes
+XREVIEW_RPC_STDIO=false rpc hooks-status 2>/dev/null >"$T/out"; rc=$?
+is "an unreachable daemon prints nothing" "$(cat "$T/out")" ""
+is "and exits 5" "$rc" 5
+
 echo "C. thread-status"
 scenario '{"responses":{"thread/read":{"result":{"thread":{"status":{"type":"active","activeFlags":[]}}}}}}'
 is "an active thread is loaded and running" "$(rpc thread-status --thread th | jq -c '[.loaded,.running]')" '[true,true]'
