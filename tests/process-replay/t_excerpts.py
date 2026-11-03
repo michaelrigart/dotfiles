@@ -94,6 +94,12 @@ room = X.TOTAL_CAP - len(own)
 is_("total_cap_finding_first: the next is cut to the room left", (got[1]["path"], got[1]["text"]), ("big.txt", C.cap(own, room)))
 ok("total_cap_finding_first: and ends [truncated]", got[1]["text"].endswith("\n[truncated]\n"))
 is_("total_cap_finding_first: the third is absent, and none is cut for want of an anchor", ([x["path"] for x in got], cut), (["own.txt", "big.txt"], []))
+s60 = "s" * X.FILE_CAP
+got, cut = X.files_input(["own.txt", "s.txt"], read_of({"own.txt": BIG, "s.txt": s60}), {"own.txt": marks})
+is_("room_caps_whole_files: a file of 60000 characters after a windowed one is cut to the room left", (got[1]["text"], cut), (C.cap(s60, X.TOTAL_CAP - len(own)), []))
+ok("room_caps_whole_files: and the room is below the file cap, so it ends [truncated]", got[1]["text"].endswith("\n[truncated]\n") and X.TOTAL_CAP - len(own) < X.FILE_CAP)
+got, cut = X.files_input(["own.txt", "big.txt"], read_of({"own.txt": BIG, "big.txt": BIG}), {"own.txt": marks})
+is_("room_caps_whole_files: a long file with no mark in second place is cut to the room left and joins cut", (got[1]["text"], cut), (C.cap(BIG, X.TOTAL_CAP - len(own)), ["big.txt"]))
 
 # ---- git_lines
 odd = ["a{}".format(i) for i in range(1, 400)]
