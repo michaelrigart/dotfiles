@@ -569,7 +569,8 @@ methods and bars above are unchanged except where a line says so.
 - The shipped tree is the fixpoint tree, and every counted defect was judged present on it. A
   defect whose group stays reverted for another member is unassessable, with no recreation.
 - Coherence means a syntax check per revert, a lexical check for names still used elsewhere, and
-  `cargo check` once per distinct tree. A missing or timed-out tool is recorded, not fatal.
+  `cargo check` once per distinct tree. A missing tool is recorded, not fatal, and so is a
+  `cargo check` that times out; a syntax check that times out fails its step.
 - The coverage gate covers the branches that were built.
 
 **Runs and the bar (§4.4, §4.6)**
