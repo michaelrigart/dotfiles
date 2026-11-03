@@ -462,5 +462,26 @@ methods and bars above are unchanged except where a line says so.
 - Each arm's packet is built on its own scratch, and each memories home is probed before its
   turns.
 
+**Settled in the pre-merge review (Codex, nine rounds, approved xr-1793726019-522e06a8)**
+- Every command takes its locks once, at entry, and holds them until it exits: the state's
+  `run.lock` (exclusive, shared, or `run` mode), then the replay daemons' lock. A command that
+  finds a lock held exits 1 having changed nothing. One replay daemon runs at a time. The lock
+  moves to another home only once the previous daemon is confirmed down, and a home's login is
+  settled only then.
+- Each judge kind declares one answer schema, and one validator checks every answer against it.
+  An incomplete or malformed answer is asked again. A staged answer counts only for the input it
+  was staged from. Changing an input sets aside its old answers; they are kept, never deleted.
+- Evidence is bound to its inputs. Each run, plan-review verdict and §6 arm records a digest of
+  what it was made from, and it counts only while those inputs are unchanged. Superseded runs are
+  kept and marked, and fresh runs replace them.
+- The weekly pause and the Codex token stop are checked before every turn, probes included,
+  against one shared tally. The stop blocks only new turns, so the overshoot is at most one turn
+  per job in flight. A stopped round is redone whole.
+- Receipts are deduplicated by nonce. Copies that conflict are dropped and reported.
+- A §4 run needs a home whose record, config, memories directory and probe all say memories are
+  off. Each §6 arm's home must match that arm's setting the same way.
+- The suites set `HOME`, `CODEX_HOME` and `XDG_STATE_HOME` to fixtures inside the test process
+  itself, so no test reads the live homes.
+
 **Part B** runs from an export of the pushed commit, never from the shared checkout, and §11
 records that commit.

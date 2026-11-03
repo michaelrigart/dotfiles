@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (Part A built and reviewed; Codex pre-merge review, then Part B).
+**Status:** In progress (Part A done: Codex pre-merge approved xr-1793726019-522e06a8; Part B next).
 
 **Goal:** Build the harness that answers, from October's record, whether the per-task reviewer and
 the plan-review checkpoint can go, and that sets up the forward Codex-memories test; then run §4
@@ -765,9 +765,9 @@ Michael's daemon.
 ### Finishing Part A
 
 - [x] Final whole-branch review (`sp-architect`) and its fix wave.
-- [ ] Codex pre-merge review (`xreview dispatch --checkpoint pre-merge --diff main...replay-set`),
+- [x] Codex pre-merge review (`xreview dispatch --checkpoint pre-merge --diff main...replay-set`),
   fixing every finding; the full and heavy suites on the final commit.
-- [ ] Mark Part A done in this Status line; push `replay-set`.
+- [x] Mark Part A done in this Status line; push `replay-set`.
 - [ ] Give Michael the pinned-export commands below (step 0), the watcher command, and the Part B
   prompt.
 
