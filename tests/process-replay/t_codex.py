@@ -527,6 +527,11 @@ for label, cmd in (("rg with no path and stderr sent away", "rg -n defect 2>/dev
     ok("redirections: {} from a workdir above a root still walks it (M-1)".format(label), got != [], got)
 is_("redirections: ... and from its own scratch it is clean", forbid("rg -n x 2>/dev/null; grep -rn x >/tmp/o 2>&1; ls -R 2>/dev/null"), [])
 is_("redirections: an input redirection's target is still read", forbid("wc -l < ~/.codex/sessions/x.jsonl"), [CX + " in t1"])
+for label, cmd in (("a spaced number before a redirection is an option's value, not an fd (rg -C 2 >)", "rg -C 2 >/tmp/o foo ~/.codex/memories"),
+                   ("... (grep -m 1 >)", "grep -rn -m 1 >/tmp/o foo ~/.codex/memories"),
+                   ("... beside a glued fd redirection", "rg -C 2 2>/dev/null foo ~/.codex/memories")):
+    is_("redirections: {} (N-1)".format(label), forbid(cmd), [CX + " in t1"])
+is_("redirections: a glued fd redirection from its own scratch is clean", forbid("rg -n x 2>/dev/null; grep -rn -m 1 x 2>&1"), [])
 for label, cmd in (("a $( ) inside a grep pattern", 'rg -n "$(head -1 ~/.codex/memories/MEMORY.md)" src'),
                    ("a backtick inside a grep pattern", 'rg -n "`head -1 ~/.codex/memories/MEMORY.md`" src')):
     is_("substitutions: {} still runs (M-2)".format(label), forbid(cmd), [CX + " in t1"])
@@ -540,6 +545,7 @@ ABOVE = sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", house + 
 is_("cwd: ... and a second cd - goes back again, above every root under $HOME", forbid("cd ~ && cd - && cd - && rg foo"), ABOVE)
 is_("cwd: $PWD after a cd above a root is that directory", forbid('cd ~ && rg foo "$PWD"'), ABOVE)
 is_("cwd: ... and so is $(pwd)", forbid('cd ~ && rg foo "$(pwd)"'), ABOVE)
+is_("cwd: a subshell's cd leaves cd - where it was before the subshell (N-2)", forbid("cd ~ && cd /usr && (cd /var) && cd - && rg x"), ABOVE)
 for label, cmd in (("git log -G", "git log -G '~/.codex/memories' --oneline"), ("git log --grep", "git log --grep ~/.codex/sessions"),
                    ("git log --grep=", "git log --grep=$XDG_STATE_HOME/xreview"), ("git log -S glued", "git log -S'$XDG_STATE_HOME/xreview'"),
                    ("git diff -S", "git diff -S ~/.claude/projects HEAD~1"), ("git grep -e", "git grep -n -e ~/.codex/memories"),
@@ -968,4 +974,5 @@ is_("tool_words: a # inside a word is not a comment", K._logical("echo a#b; ls")
 is_("tool_words: a # in quotes is not a comment", K._logical("echo '# x' \"# y\"\nls"), "echo '# x' \"# y\" ; ls")
 is_("tool_words: a command inside a comment's line is not run", leaked(fc("ls # chezmoi diff"), CHZ), [])
 is_("tool_words: a here-string is not a heredoc: the next line is a command again", leaked(fc("cat <<< x\nchezmoi diff"), CHZ), CHZN)
+is_("tool_words: a backtick inside a quoted string runs (N-3)", leaked(fc('echo "`chezmoi diff`"'), CHZ), CHZN)
 is_("tool_words: a heredoc body is not run, but a path in it is read", leaked(fc("sh <<'EOF'\ncat ~/.local/share/chezmoi/AGENTS.md\nEOF"), CHZ), CHZN)

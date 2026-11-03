@@ -54,7 +54,7 @@ functions defined earlier, brace expansion (~/.codex/{sessions,x}), a ** glob sp
 glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it starts from /), a walk by any other command (cp -r,
 rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working directory; it is taken to read the
 pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff), a heredoc fed to a shell
-(sh <<EOF), a backtick inside a quoted string, find -exec, and a long xargs option with a separate value (--max-args 1). Counted
+(sh <<EOF), find -exec, and a long xargs option with a separate value (--max-args 1). Counted
 though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a search pattern inside
 a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS
 (its value is taken for the pattern, the pattern for a path), a depth-limited walk above a root (find ~ -maxdepth 1, tree -L 1 ~:
@@ -323,6 +323,7 @@ WITH_ARG = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-T",
 WRAPPERS = ("exec", "time", "nohup", "stdbuf", "ionice", "setsid", "builtin", "noglob", "nocorrect")
 SEPARATORS = ("&&", "||", ";", "|", "|&", ";;", "&", "(", ")", "$")
 REDIRECTS = (">", ">>", "<", "<<", "<<<", ">&", "<&", "&>", "&>>", ">|", "<>")    # operators shlex gives; each takes the next word
+FD_MARK = "\x01"       # _logical's mark on an fd number glued to < or > (2>x), which shlex would part from it like a spaced word
 # Searches whose first operand is a pattern, not a path: the short option letters and the long options that take a separate value.
 # rg, ag and ack are recursive; grep only with -r, -R or -d recurse; git grep searches its repository, not a root it is given.
 GREPS = {"grep": ("efmABCDd", ("regexp", "file", "max-count", "after-context", "before-context", "context", "devices", "directories",
@@ -528,7 +529,9 @@ def _pieces(word):
 def _logical(command, bodies=None):
     """`command` as one line: unquoted newlines become `;` (a backslash-newline is a continuation), an unquoted
     comment (a # that starts a word, to the end of its line) and heredoc bodies are dropped (appended to `bodies` when it is a list),
-    and a backtick substitution becomes $( ... ), so every command sits at a command position. A here-string (<<<) is not a heredoc."""
+    and a backtick substitution becomes $( ... ), so every command sits at a command position. A here-string (<<<) is not a heredoc.
+    A word of digits glued to < or > (2>x, 1<x) is an fd: it is marked with FD_MARK, so that once tokenised it still differs from a
+    number standing on its own before a redirection (-C 2 >x)."""
     out, quote, i, backtick = [], None, 0, False
     n = len(command)
     while i < n:
@@ -552,6 +555,13 @@ def _logical(command, bodies=None):
         elif ch == "#" and (not out or out[-1][-1:] in (" ", "\t", "\n", ";", "&", "|", "(")):
             while i < n and command[i] != "\n":
                 i += 1
+            continue
+        elif ch.isdigit() and (not out or out[-1][-1:] in (" ", "\t", "\n", ";", "&", "|", "(")):
+            j = i
+            while j < n and command[j].isdigit():
+                j += 1
+            out.append(command[i:j] + (FD_MARK if j < n and command[j] in "<>" else ""))
+            i = j
             continue
         elif ch == "`":
             out.append(" ) " if backtick else " $( ")
@@ -695,12 +705,13 @@ def _substitutions(word):
 
 
 def _plain(eff):
-    """The indices of `eff` that are not redirections: an operator of REDIRECTS (with an fd number before it) and its target."""
+    """The indices of `eff` that are not redirections: an operator of REDIRECTS (with the fd number _logical marked glued to it) and its
+    target."""
     keep, i = [], 0
     while i < len(eff):
         if eff[i] in REDIRECTS:
             i += 2
-        elif eff[i].isdigit() and i + 1 < len(eff) and eff[i + 1] in REDIRECTS:
+        elif eff[i].endswith(FD_MARK) and eff[i][:-1].isdigit() and i + 1 < len(eff) and eff[i + 1] in REDIRECTS:
             i += 3
         else:
             keep.append(i)
@@ -919,9 +930,9 @@ class _Scan(object):
                 simple = []
             before = tok
             if tok == "(":
-                stack.append(cur)
+                stack.append((cur, prev))
             elif tok == ")" and stack:
-                cur = stack.pop()
+                cur, prev = stack.pop()
         for body in bodies:
             for where in dict.fromkeys(visited):
                 self.script(body, list(where), depth + 1)
