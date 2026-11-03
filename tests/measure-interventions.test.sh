@@ -162,7 +162,7 @@ entries = [
     {"type": "assistant", "timestamp": ts(1), "message": {"role": "assistant", "content": [
         tu("c1", "xreview -C /Users/x/Code/O/r-feat dispatch --checkpoint plan b.md"),
         tu("c2", 'xreview -C "/a b/c" collect xr-9 60'),
-        tu("c3", "xreview -C /x round --reset")]}},
+        tu("c3", "xreview -C /tmp/collect round --reset")]}},
     {"type": "user", "timestamp": ts(2), "message": {"role": "user", "content": [res("c1"), res("c2"), res("c3")]}},
 ]
 with open(os.path.join(sys.argv[1], "sess-c.jsonl"), "w") as fh:
