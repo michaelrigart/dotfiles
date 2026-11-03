@@ -11,7 +11,7 @@ prompt holds the `Review id:` line or that path.
 The leak scan reads the reviewer's tool calls (Bash commands, Read/Grep/Glob/Edit paths) with codex.py's matcher (codex.named), so one
 matcher rules Codex and Claude, behind codex.forbidden's wall. A final reviewer's own subtrees are its scratch, its staged item, its own
 transcripts (its file and its descendants', never the other agents' of the driver session, which are the judges') and its session's
-tool-results/. Known limit: tool-results/ is shared by every agent of the driver session, so a final reviewer may read a judge's saved
+tool-results/ under every project key (tool_results). Known limit: tool-results/ is shared by every agent of the driver session, so a final reviewer may read a judge's saved
 tool output there.
 """
 import glob
@@ -262,10 +262,21 @@ def transcript_leaks(path, bounds, cwd):
     return sorted(found)
 
 
+def tool_results(path):
+    """The tool-results/ directories of a transcript's session: Claude Code saves a large tool output under the project key of the cwd
+    at the time (<projects>/<any key>/<session>/tool-results/), not the transcript's own, so every existing one of the session's is
+    globbed, in the transcript's projects directory and in ~/.claude/projects, beside its own session directory's."""
+    session = session_dir(path)
+    out = [os.path.join(session, "tool-results")]
+    for projects in (os.path.dirname(os.path.dirname(session)), os.path.expanduser("~/.claude/projects")):
+        out += glob.glob(os.path.join(glob.escape(projects), "*", glob.escape(os.path.basename(session)), "tool-results"))
+    return out
+
+
 def leaks(a, run, branch, path):
     """What the reviewer's transcript `path` and its subagents' read that they must not (codex.forbidden), besides their own: the
-    scratch, the staged item, these transcripts themselves and their session's tool-results/."""
+    scratch, the staged item, these transcripts themselves and their session's tool-results/ under every project key."""
     mine = [path] + descendants(path)
-    own = [C.item_dir(a.state, "final", run["label"]), run["scratch"]] + mine + sorted(set(os.path.join(session_dir(p), "tool-results") for p in mine))
+    own = [C.item_dir(a.state, "final", run["label"]), run["scratch"]] + mine + sorted(set(d for p in mine for d in tool_results(p)))
     bounds = K.forbidden(a.state, branch, own, getattr(a, "snapshot_root", None))
     return sorted(set(x for p in mine for x in transcript_leaks(p, bounds, run["scratch"])))

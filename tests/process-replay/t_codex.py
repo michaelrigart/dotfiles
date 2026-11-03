@@ -418,10 +418,11 @@ fwall = K.forbidden(FSTATE, BRANCH, [OWN])
 mwall = K.forbidden(FSTATE, BRANCH, [OWN], memwatch=True)
 is_("forbidden: the roots, by the path they are reported as: the checkout, the state, review-work, the snapshot, October's answers, xreview, cxh",
     [r.label for r in fwall.roots],
-    [house + "/Code/Org/repo", FSTATE, os.path.join(XSH, "review-work"), house + "/Code/.replay/snapshot", house + "/.codex/sessions",
-     house + "/.codex/archived_sessions", house + "/.codex/memories", house + "/.claude/projects", os.path.join(XSH, "xreview"), os.path.join(XSH, "cxh")])
+    [house + "/Code/Org/repo", FSTATE, os.path.join(XSH, "review-work"), house + "/Code/.replay/snapshot", house + "/.codex",
+     house + "/.claude", os.path.join(XSH, "xreview"), os.path.join(XSH, "cxh")])
 is_("forbidden: only the checkout has wt siblings", [r.label for r in fwall.roots if r.siblings], [house + "/Code/Org/repo"])
-is_("forbidden: the run's own directories are allowed, as real paths", fwall.allowed, [K._parts(os.path.realpath(OWN))])
+is_("forbidden: the run's own directories are allowed, as real paths, then the instructions in ~/.codex and ~/.claude", fwall.allowed,
+    [K._parts(os.path.realpath(OWN))] + [K._parts(os.path.realpath(os.path.expanduser(x))) for x in K.INSTRUCTIONS])
 is_("forbidden: a memories run adds the watcher's directory", [r.label for r in mwall.roots][len(fwall.roots):], [os.path.join(XSH, "process-replay", "memwatch")])
 
 
@@ -500,8 +501,56 @@ for label, text in (("rg over . from its own scratch", "rg foo ."), ("find . fro
                     ("an rg that reads a pipe, from a workdir above a root", json.dumps({"cmd": "git -C {} diff | rg foo".format(OWN), "workdir": house})),
                     ("rg over its own scratch by absolute path", "rg foo {}".format(OWN))):
     is_("search: {} is not a leak".format(label), forbid(text), [])
-is_("search: an ancestor search reports every root beneath it", forbid("rg foo ~/.codex"),
-    sorted("{} in t1".format(x) for x in (house + "/.codex/sessions", house + "/.codex/archived_sessions", house + "/.codex/memories")))
+is_("search: an ancestor search reports every root beneath it", forbid("rg foo ~/Code"),
+    sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", house + "/Code/.replay/snapshot")))
+
+# ---- the review of the rewrite (eaceea4): I-1, M-1, M-2, M-3, M-5, M-6
+CX, CL = house + "/.codex", house + "/.claude"
+for label, rel in (("memories_v2 rollout summaries", ".codex/memories_v2/rollout_summaries/x.md"), ("memories_1.sqlite", ".codex/memories_1.sqlite"),
+                   ("memories_v2_1.sqlite", ".codex/memories_v2_1.sqlite"), ("thread_history_1.sqlite", ".codex/thread_history_1.sqlite"),
+                   ("state_5.sqlite", ".codex/state_5.sqlite"), ("logs_2.sqlite", ".codex/logs_2.sqlite"), ("Codex's history.jsonl", ".codex/history.jsonl"),
+                   ("session_index.jsonl", ".codex/session_index.jsonl"), ("shell_snapshots", ".codex/shell_snapshots/x.sh"),
+                   ("Claude's file-history", ".claude/file-history/abc/1.txt"), ("Claude's history.jsonl", ".claude/history.jsonl"),
+                   ("a deployed guard in ~/.claude", ".claude/xreview-guard.py"), ("Claude's settings", ".claude/settings.json")):
+    is_("home stores: reading {} is a leak (I-1)".format(label), forbid("sqlite3 ~/{} .dump".format(rel)), [(CX if rel.startswith(".codex") else CL) + " in t1"])
+for label, rel in (("a ~/.codex skill", ".codex/skills/review/SKILL.md"), ("a ~/.codex plugin skill", ".codex/plugins/cache/m/agent-skills/0.6/skills/x/SKILL.md"),
+                   ("~/.codex rules", ".codex/rules/default.rules"), ("~/.codex/AGENTS.md", ".codex/AGENTS.md"),
+                   ("a ~/.claude plugin skill", ".claude/plugins/cache/o/superpowers/5.0/skills/x/SKILL.md"), ("a ~/.claude skill", ".claude/skills/x/SKILL.md"),
+                   ("a ~/.claude agent", ".claude/agents/sp-architect.md"), ("~/.claude/CLAUDE.md", ".claude/CLAUDE.md")):
+    is_("home stores: reading {} (instructions) is not a leak".format(label), forbid("cat ~/" + rel), [])
+is_("home stores: a file that merely starts like ~/.codex/AGENTS.md is a leak", forbid("cat ~/.codex/AGENTS.md.bak"), [CX + " in t1"])
+is_("home stores: an escape from ~/.codex/skills is judged where it lands", forbid("cat ~/.codex/skills/../memories/MEMORY.md"), [CX + " in t1"])
+for label, cmd in (("rg with no path and stderr sent away", "rg -n defect 2>/dev/null"), ("rg with no path and its output redirected", "rg -n x > /tmp/out"),
+                   ("grep -r with no path and 2>&1", "grep -rn x 2>&1"), ("ls -R with no path and stderr sent away", "ls -R 2>/dev/null"),
+                   ("find with no path and &>", "find -name x &>/dev/null")):
+    got = forbid(json.dumps({"cmd": cmd, "workdir": house}))
+    ok("redirections: {} from a workdir above a root still walks it (M-1)".format(label), got != [], got)
+is_("redirections: ... and from its own scratch it is clean", forbid("rg -n x 2>/dev/null; grep -rn x >/tmp/o 2>&1; ls -R 2>/dev/null"), [])
+is_("redirections: an input redirection's target is still read", forbid("wc -l < ~/.codex/sessions/x.jsonl"), [CX + " in t1"])
+for label, cmd in (("a $( ) inside a grep pattern", 'rg -n "$(head -1 ~/.codex/memories/MEMORY.md)" src'),
+                   ("a backtick inside a grep pattern", 'rg -n "`head -1 ~/.codex/memories/MEMORY.md`" src')):
+    is_("substitutions: {} still runs (M-2)".format(label), forbid(cmd), [CX + " in t1"])
+for label, cmd, want in (("a cd to a computed directory does not go to $HOME", "cd $(git rev-parse --show-toplevel) && rg -n foo", []),
+                         ("... nor with backticks", "cd `git rev-parse --show-toplevel` && rg -n foo", []),
+                         ("$PWD is the tracked directory", 'rg foo "$PWD"; rg foo ${PWD}/src', []),
+                         ("$(pwd) is the tracked directory", 'rg foo "$(pwd)"; cat `pwd`/src/a.py', []),
+                         ("cd - returns to the previous directory, its own scratch", "cd ~ && cd - && rg foo", [])):
+    is_("cwd: {} (M-3)".format(label), forbid(cmd), want)
+ABOVE = sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", house + "/Code/.replay/snapshot", CX, CL))
+is_("cwd: ... and a second cd - goes back again, above every root under $HOME", forbid("cd ~ && cd - && cd - && rg foo"), ABOVE)
+is_("cwd: $PWD after a cd above a root is that directory", forbid('cd ~ && rg foo "$PWD"'), ABOVE)
+is_("cwd: ... and so is $(pwd)", forbid('cd ~ && rg foo "$(pwd)"'), ABOVE)
+for label, cmd in (("git log -G", "git log -G '~/.codex/memories' --oneline"), ("git log --grep", "git log --grep ~/.codex/sessions"),
+                   ("git log --grep=", "git log --grep=$XDG_STATE_HOME/xreview"), ("git log -S glued", "git log -S'$XDG_STATE_HOME/xreview'"),
+                   ("git diff -S", "git diff -S ~/.claude/projects HEAD~1"), ("git grep -e", "git grep -n -e ~/.codex/memories"),
+                   ("rg --replace", "rg -n --replace '~/.codex/memories' x ."), ("rg -r", "rg -r ~/.claude x src")):
+    is_("patterns: the value of {} is a pattern, not a path (M-5)".format(label), forbid(cmd), [])
+is_("globs: a word that is no valid glob ([z-a]) does not break the scan, as a search root or deep enough to meet a root",
+    forbid("rg foo '/[z-a]'; ls /[z-a]/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p"), [])
+for label, cmd, want in (("ag -g PAT DIR walks DIR", "ag -g jsonl ~/.codex", [CX + " in t1"]), ("ack -g PAT DIR walks DIR", "ack -g jsonl ~/.codex", [CX + " in t1"]),
+                         ("ag -g with a forbidden-looking pattern in its own scratch", "ag -g '~/.codex' src", []),
+                         ("ack --match PAT DIR", "ack --match '~/.codex' src", [])):
+    is_("ag/ack: {} (M-6)".format(label), forbid(cmd), want)
 MW = "cat $XDG_STATE_HOME/process-replay/memwatch/polls.jsonl"
 is_("forbidden: the memories watcher's directory is open to an ordinary run", forbid(MW), [])
 ok("forbidden: ... and forbidden to a memories run", forbid(MW, memwatch=True) != [], forbid(MW, memwatch=True))
@@ -509,7 +558,7 @@ ok("forbidden: ... by its path too", forbid("ls {}/process-replay/memwatch".form
 
 # ---- allowed subtrees: a §6 arm's own memories (F-3), a reviewer's own replay home's skills, plugins, rules and AGENTS.md (A)
 HOME_A = os.path.join(XSH, "cxh", "mem-a1")
-MEMWALL = K.forbidden(FSTATE, BRANCH, [OWN, os.path.join(HOME_A, "memories")])
+MEMWALL = K.forbidden(FSTATE, BRANCH, [OWN], home=HOME_A, memories=True)
 is_("allowed: a path inside an allowed directory is not a read of the root above it (absolute, $XDG_STATE_HOME)",
     (forbid("cat {}/memories/MEMORY.md".format(HOME_A), wall=MEMWALL), forbid("cat $XDG_STATE_HOME/cxh/mem-a1/memories/MEMORY.md", wall=MEMWALL)), ([], []))
 for label, text in (("another home's memories", "cat {}/cxh/mem-b2/memories/MEMORY.md".format(XSH)), ("the same home's sessions", "cat {}/sessions/x.jsonl".format(HOME_A)),
@@ -518,9 +567,10 @@ for label, text in (("another home's memories", "cat {}/cxh/mem-b2/memories/MEMO
                     ("... in the $XDG_STATE_HOME spelling, to another home", "cat $XDG_STATE_HOME/cxh/mem-a1/memories/../../mem-b2/memories/x")):
     got = forbid(text, wall=MEMWALL)
     ok("allowed: {} is a leak".format(label), got == [os.path.join(XSH, "cxh") + " in t1"], got)
-SKILLWALL = K.forbidden(FSTATE, BRANCH, [OWN] + K.own_home(HOME_A))
+SKILLWALL = K.forbidden(FSTATE, BRANCH, [OWN], home=HOME_A)
 is_("own_home: the parts of a replay home its reviewer may read", K.own_home("/h"), ["/h/skills", "/h/plugins", "/h/rules", "/h/AGENTS.md"])
 is_("own_home: ... and for a memories arm its memories", K.own_home("/h", memories=True)[-1], "/h/memories")
+is_("own_home: forbidden() allows them for the reviewer's home", SKILLWALL.allowed[-4:], [K._parts(os.path.realpath(x)) for x in K.own_home(HOME_A)])
 for label, rel in (("a plugin's skill", "plugins/cache/market/superpowers/1.0.0/skills/brainstorming/SKILL.md"), ("a skill", "skills/review/SKILL.md"),
                    ("its rules", "rules/default.rules"), ("its AGENTS.md", "AGENTS.md")):
     is_("own_home: a reviewer reading {} in its own home is not a leak (A)".format(label), forbid("cat {}/{}".format(HOME_A, rel), wall=SKILLWALL), [])
@@ -530,7 +580,7 @@ for label, text in (("another home's plugin skill", "cat {}/cxh/nomem/plugins/ca
                     ("an escape from its plugins", "cat {}/plugins/../memories/x".format(HOME_A))):
     ok("own_home: {} is a leak".format(label), forbid(text, wall=SKILLWALL) != [], forbid(text, wall=SKILLWALL))
 CXHOME = os.path.join(XSH, "cxh", "own-h")
-CXWALL = K.forbidden(FSTATE, BRANCH, [OWN] + K.own_home(CXHOME))
+CXWALL = K.forbidden(FSTATE, BRANCH, [OWN], home=CXHOME)
 is_("own_home: $CODEX_HOME is the reviewer's own home: its skills are not a leak", forbid("cat $CODEX_HOME/skills/s/SKILL.md", wall=CXWALL, home=CXHOME), [])
 is_("own_home: ... its sessions are", forbid("cat ${CODEX_HOME}/sessions/2026/x.jsonl", wall=CXWALL, home=CXHOME), [os.path.join(XSH, "cxh") + " in t1"])
 w = World("ownhome")
@@ -543,7 +593,29 @@ stub = stub_for("ownhome", home, {"default": {"answer": ans(), "tools": [tool("c
 ok("own_home: ... and one reading another home's is void", "leak" in w.round(home))
 wp = K.forbidden(FSTATE, BRANCH, [OWN, "/items/own"], snapshot_root="/elsewhere/snap")
 ok("forbidden: a snapshot root given by the caller is forbidden too, and every own directory is allowed",
-   "/elsewhere/snap" in [r.label for r in wp.roots] and wp.allowed == [K._parts(os.path.realpath(OWN)), ("items", "own")], wp)
+   "/elsewhere/snap" in [r.label for r in wp.roots] and wp.allowed[:2] == [K._parts(os.path.realpath(OWN)), ("items", "own")], wp)
+# a case whose original is the chezmoi source: ~/.codex, ~/.claude and a replay home copied from them hold that repository's later
+# state, so no instruction allowance applies; an A/A2 arm keeps its own memories. Any other repository keeps them all.
+DOTFILES = {"repo": house + "/.local/share/chezmoi/.git"}
+TAGTEAM = {"repo": house + "/.local/share/tagteam/.git"}
+READS = (("~/.claude/CLAUDE.md", "cat ~/.claude/CLAUDE.md", CL), ("~/.codex/AGENTS.md", "cat ~/.codex/AGENTS.md", CX),
+         ("a ~/.claude plugin skill", "cat ~/.claude/plugins/cache/o/superpowers/5.0/skills/x/SKILL.md", CL),
+         ("~/.codex rules", "cat ~/.codex/rules/default.rules", CX),
+         ("its own home's skill", "cat {}/skills/x/SKILL.md".format(HOME_A), os.path.join(XSH, "cxh")),
+         ("its own home's plugin skill", "cat {}/plugins/cache/m/p/1/skills/x/SKILL.md".format(HOME_A), os.path.join(XSH, "cxh")))
+dot_wall, tag_wall = K.forbidden(FSTATE, DOTFILES, [OWN], home=HOME_A, memories=True), K.forbidden(FSTATE, TAGTEAM, [OWN], home=HOME_A, memories=True)
+for label, cmd, root in READS:
+    is_("dotfiles: a dotfiles-case reviewer reading {} reads the source's later state: a leak".format(label), forbid(cmd, wall=dot_wall), [root + " in t1"])
+    is_("dotfiles: ... a tagteam-case reviewer reading it is clean", forbid(cmd, wall=tag_wall), [])
+is_("dotfiles: a dotfiles-case A/A2 arm still reads its own memories", forbid("cat {}/memories/MEMORY.md".format(HOME_A), wall=dot_wall), [])
+is_("dotfiles: ... and its scratch", forbid("cat src/a.py", wall=dot_wall), [])
+is_("dotfiles: a dotfiles-case wall allows only the reviewer's own directories", dot_wall.allowed,
+    [K._parts(os.path.realpath(OWN)), K._parts(os.path.realpath(os.path.join(HOME_A, "memories")))])
+OBJ, VIEW = os.path.join(ROOT, "objects-elsewhere"), os.path.join(ROOT, "view-elsewhere")
+ovwall = K.forbidden(FSTATE, dict(BRANCH, objects=OBJ, view=VIEW), [OWN])
+is_("forbidden: a branch's objects directory and its view are roots of their own, after the checkout (M-7)", [r.label for r in ovwall.roots][1:3], [OBJ, VIEW])
+is_("forbidden: ... and reading either is a leak", (forbid("cat {}/pack/x.idx".format(OBJ), wall=ovwall), forbid("git -C {} log".format(VIEW), wall=ovwall)),
+    ([OBJ + " in t1"], [VIEW + " in t1"]))
 
 # ---- home_env
 w = World("env")

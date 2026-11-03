@@ -247,6 +247,7 @@ ok("leak_scan: reading $XDG_STATE_HOME/xreview/ledgers is still a leak", leaks_o
 
 # ---- a reviewer's own saved tool results (Claude Code keeps them in the session's tool-results/) are its to read; another session's are not
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
+CLAUDE_ROOT = os.path.expanduser("~/.claude")       # ~/.claude is forbidden whole (I-1); a leak there is reported as it
 
 
 def own_session(session, commands=(), calls=None, agent=None, others=()):
@@ -273,24 +274,44 @@ sub = os.path.join(mine_dir, "subagents", "agent-rev.jsonl")
 is_("leak_scan: a reviewer reading its own session's tool-results (absolute or ~ spelling) and its own transcript is clean, whether its transcript is the subagent's or the session's",
     (F.leaks(a, run, branch, sub), F.leaks(a, run, branch, top)), ([], []))
 own_session("s-mine2", calls=[("Read", {"file_path": CLAUDE_PROJECTS + "/proj/s-other/tool-results/x.txt"})])
-is_("leak_scan: ... but another session's files are a leak", F.leaks(a, run, branch, rev("s-mine2")), [CLAUDE_PROJECTS])
+is_("leak_scan: ... but another session's files are a leak", F.leaks(a, run, branch, rev("s-mine2")), [CLAUDE_ROOT])
 own_session("s-mine3", commands=["cat {}-evil/tool-results/x".format(CLAUDE_PROJECTS + "/proj/s-mine3")])
-is_("leak_scan: a sibling that merely starts like the session's is a leak, read alone (D)", F.leaks(a, run, branch, rev("s-mine3")), [CLAUDE_PROJECTS])
+is_("leak_scan: a sibling that merely starts like the session's is a leak, read alone (D)", F.leaks(a, run, branch, rev("s-mine3")), [CLAUDE_ROOT])
 own_session("s-mine4", commands=["ls ~/.claude/projects"])
-is_("leak_scan: ... and so is the projects root itself, alone", F.leaks(a, run, branch, rev("s-mine4")), [CLAUDE_PROJECTS])
+is_("leak_scan: ... and so is the projects root itself, alone", F.leaks(a, run, branch, rev("s-mine4")), [CLAUDE_ROOT])
 # C: the driver session's subagents/ holds the judges' transcripts beside the reviewer's; only the reviewer's own (and its descendants') are its own
 S5 = os.path.join(CLAUDE_PROJECTS, "proj", "s-mine5")
 judge = {"id": "judge1", "meta": {"agentType": "sp-standard"}}
 kid = {"id": "kid1", "meta": {"agentType": "sp-reviewer", "parentAgentId": "rev"}}
 own_session("s-mine5", calls=[("Read", {"file_path": S5 + "/subagents/agent-judge1.jsonl"})], others=(judge, kid))
-is_("leak_scan: a final reviewer reading a judge's transcript in its driver session is a leak (C)", F.leaks(a, run, branch, rev("s-mine5")), [CLAUDE_PROJECTS])
+is_("leak_scan: a final reviewer reading a judge's transcript in its driver session is a leak (C)", F.leaks(a, run, branch, rev("s-mine5")), [CLAUDE_ROOT])
 own_session("s-mine5", commands=["cat {}/subagents/agent-rev.jsonl {}/subagents/agent-kid1.jsonl {}/tool-results/toolu_1.txt".format(S5, S5, S5)], others=(judge, kid))
 is_("leak_scan: ... while its own transcript, its subagent's and the session's tool-results are clean", F.leaks(a, run, branch, rev("s-mine5")), [])
 for label, path in (("its own session up and over to another (B)", S5 + "/../s-other/tool-results/x"),
                     ("its tool-results up and over to another session", S5 + "/tool-results/../../s-other/tool-results/x"),
                     ("its tool-results up and into a judge's transcript", S5 + "/tool-results/../subagents/agent-judge1.jsonl")):
     own_session("s-mine5", calls=[("Read", {"file_path": path})], others=(judge, kid))
-    is_("leak_scan: an escape from an allowed directory is judged where it lands: {}".format(label), F.leaks(a, run, branch, rev("s-mine5")), [CLAUDE_PROJECTS])
+    is_("leak_scan: an escape from an allowed directory is judged where it lands: {}".format(label), F.leaks(a, run, branch, rev("s-mine5")), [CLAUDE_ROOT])
+# I-2: Claude Code saves a tool result under the project key of the cwd at save time, not the transcript's: every <key>/<its session>/
+# tool-results/ is its own; another session's under that key is not
+helpers.put(os.path.join(CLAUDE_PROJECTS, "-sibling-key", "s-mine6", "tool-results"), "toolu_9.txt", "x")
+helpers.put(os.path.join(CLAUDE_PROJECTS, "-sibling-key", "s-other6", "tool-results"), "toolu_9.txt", "x")
+own_session("s-mine6", calls=[("Read", {"file_path": os.path.join(CLAUDE_PROJECTS, "-sibling-key", "s-mine6", "tool-results", "toolu_9.txt")})])
+is_("leak_scan: its session's tool-results under another project key are its own (I-2)", F.leaks(a, run, branch, rev("s-mine6")), [])
+own_session("s-mine6", calls=[("Read", {"file_path": os.path.join(CLAUDE_PROJECTS, "-sibling-key", "s-other6", "tool-results", "toolu_9.txt")})])
+is_("leak_scan: ... another session's under that key are not", F.leaks(a, run, branch, rev("s-mine6")), [CLAUDE_ROOT])
+own_session("s-mine6", commands=["cat ~/.claude/file-history/abc/1.txt", "cat ~/.claude/plugins/cache/o/superpowers/5.0/skills/x/SKILL.md"])
+is_("leak_scan: a final reviewer reading Claude's file-history is a leak, a superpowers skill is not (I-1)", F.leaks(a, run, branch, rev("s-mine6")), [CLAUDE_ROOT])
+
+own_session("s-mine7", calls=[("Read", {"file_path": os.path.expanduser("~/.claude/CLAUDE.md")}),
+                              ("Read", {"file_path": os.path.expanduser("~/.claude/plugins/cache/o/superpowers/5.0/skills/x/SKILL.md")})])
+is_("leak_scan: a final reviewer of a dotfiles case reading ~/.claude/CLAUDE.md or a plugin skill reads the source's later state: a leak",
+    F.leaks(a, run, dict(branch, repo=os.path.expanduser("~/.local/share/chezmoi/.git")), rev("s-mine7")), [CLAUDE_ROOT])
+is_("leak_scan: ... a final reviewer of another repository reading them is clean", F.leaks(a, run, branch, rev("s-mine7")), [])
+own_session("s-mine7", calls=[("Read", {"file_path": os.path.join(CLAUDE_PROJECTS, "proj", "s-mine7", "tool-results", "t.txt")})])
+is_("leak_scan: ... while a dotfiles-case final reviewer still reads its own tool-results",
+    F.leaks(a, run, dict(branch, repo=os.path.expanduser("~/.local/share/chezmoi/.git")), rev("s-mine7")), [])
+
 # E: a Bash search for a root's name in its own scratch is not a read; the root itself is
 is_("leak_scan: a Bash rg for a root's name in its own scratch is clean (E)",
     leaks_of(["rg -n xreview {}/dot_claude".format(run["scratch"]), "grep -rn '.claude/projects' {}".format(run["scratch"])], name="bashgrep"), [])
