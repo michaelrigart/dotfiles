@@ -56,7 +56,7 @@ after a newline, && || ; | & ( ) { ! then do else, in $( ) and backticks, under 
 Known limits, not chased further. Missed: an unknown variable ($DIR/x stays literal, and so does a cd to it), a path built at run
 time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
 command's directory is not moved), reads spread over separate calls (a cd in one call does not carry to the next), aliases or
-functions defined earlier, a loop body that runs a use again after a later assignment, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
+functions defined earlier (and an assignment inside a function body), a loop body that runs a use again after a later assignment, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
 glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it starts from /), a walk by any other command (cp -r,
 rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working directory; it is taken to read the
 pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff), a heredoc fed to a shell
@@ -326,6 +326,7 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 WITH_ARG = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-T", "-U"), "env": ("-u", "-C", "-S"),
             "xargs": ("-I", "-J", "-L", "-n", "-P", "-s", "-d", "-E", "-a"), "timeout": ("-s", "-k"), "nice": ("-n",),
             "stdbuf": (), "ionice": ("-c", "-n", "-p")}
+DECLARES = ("export", "declare", "local", "typeset", "readonly")     # builtins whose arguments are assignments
 WRAPPERS = ("exec", "time", "nohup", "stdbuf", "ionice", "setsid", "builtin", "noglob", "nocorrect")
 SEPARATORS = ("&&", "||", ";", "|", "|&", ";;", "&", "(", ")", "$")
 REDIRECTS = (">", ">>", "<", "<<", "<<<", ">&", "<&", "&>", "&>>", ">|", "<>")    # operators shlex gives; each takes the next word
@@ -513,11 +514,21 @@ def judge(parts, bounds):
     return next((root.label for root in bounds.roots if _within(parts, root)), None)
 
 
+def _tilde(token, values):
+    """`token` with a leading ~ or ~/ spelled ${HOME}, so that it takes every value $HOME has (one that `values` lacks: the user's home);
+    ~user is that user's home."""
+    if not token.startswith("~"):
+        return token
+    if "HOME" in values and re.match(r"~(/|\Z)", token):
+        return "${HOME}" + token[1:]
+    return os.path.expanduser(token)
+
+
 def _expand(token, values):
     """(results, complete): `token` with a leading ~ and the variables of `values` expanded, one result per value; an unknown variable
     stays as written, and so does one whose values hold LITERAL. complete is False when expanding would exceed MAX_EXPANSIONS."""
     token = _PWD.sub("${PWD}", token)
-    todo, done = [(os.path.expanduser(token) if token.startswith("~") else token, 0)], []
+    todo, done = [(_tilde(token, values), 0)], []
     while todo and len(done) + len(todo) <= MAX_EXPANSIONS:
         t, at = todo.pop()
         m = next((m for m in _VAR.finditer(t, at) if (m.group(1) or m.group(2)) in values), None)
@@ -817,20 +828,22 @@ class _Scan(object):
         self.bounds, self.found, self._seen = bounds, set(), {}
         self.values = dict((k, list(v)) for k, v in values.items())
 
-    def assign(self, words):
-        """The literal assignments among `words` (NAME=value, no $ in the value once its quotes are removed): each adds its value to the
-        variable for what the call does next, never removes one. A variable the scan knows keeps its values; an unknown one also keeps
-        its spelling (LITERAL)."""
-        for w in words:
+    def assign(self, words, end=None):
+        """The literal assignments among `words[:end]` (NAME=value, no $ in the value once its quotes are removed; NAME= before a $( ) is
+        a backtick substitution's value, which is not literal): each adds its value to the variable for what the call does next, never
+        removes one. A variable the scan knows keeps its values; an unknown one also keeps its spelling (LITERAL). A leading ~ in the
+        value is every home $HOME has so far."""
+        for i, w in enumerate(words[:end]):
             m = ASSIGNMENT.match(w)
-            if not m or "$" in w[m.end():]:
+            if not m or "$" in w[m.end():] or (m.end() == len(w) and words[i + 1:i + 2] and words[i + 1].startswith("$(")):
                 continue
             name, value = w[:m.end() - 1], w[m.end():]
             if name not in self.values:
                 self.values[name] = [] if name == "PWD" else [LITERAL]
-            value = os.path.expanduser(value) if value.startswith("~") else value
-            if value not in self.values[name]:
-                self.values[name].append(value)
+            homes = [h for h in self.values.get("HOME", []) if h is not LITERAL]
+            for v in [h + value[1:] for h in homes] if homes and re.match(r"~(/|\Z)", value) else [os.path.expanduser(value)]:
+                if v not in self.values[name]:
+                    self.values[name].append(v)
 
     def variables(self, cwds):
         """The variables a path may spell from `cwds`: $PWD is the directories the cd tracker holds, and any value assigned to it."""
@@ -899,7 +912,9 @@ class _Scan(object):
         recursive search, from `cwds`; the directories it leaves the cd tracker in."""
         eff = _effective(words)
         at = len(words) - len(eff)
-        self.assign(words[:at] + (eff[1:] if eff and os.path.basename(eff[0]) == "export" else []))
+        self.assign(words, at)
+        if eff and os.path.basename(eff[0]) in DECLARES:
+            self.assign(eff[1:])
         keep = _plain(eff)
         plain = [eff[k] for k in keep]
         skip = set(at + keep[i] for i in _patterns(plain))

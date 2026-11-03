@@ -1200,3 +1200,29 @@ is_("too_many_values: a use with more values than the scan expands is a leak", l
 is_("too_many_values: sixteen values are expanded, none is lost", leaked(fc("; ".join("A=/a{}".format(i) for i in range(1, 16)) + "; cat $A/x"), CHZ), [])
 is_("too_many_values: a cd to more directories than the scan follows is a leak",
     leaked(fc("D=/d1; D=/d2; D=/d3; D=/d4; D=/d5; cd $D && ls"), CHZ), ["$D (more values than the scan expands) in t1"])
+
+# ---- assignments, fix round 1
+OWNWALL = CHZ + [house + "/.codex"]
+for label, cmd in (("a backtick value", "T=`mktemp -d`; rg -n foo $T/"), ("a backtick value, searched by find", "T=`mktemp -d`; find $T/ -name x"),
+                   ("a $( ) value", "T=$(mktemp -d); rg -n foo $T/"), ("a quoted $( ) value", 'T="$(mktemp -d)"; rg -n foo $T/'),
+                   ("an exported backtick value", "export T=`mktemp -d`; rg -n foo $T/"), ("a local $( ) value", "local T=$(mktemp -d); rg -n foo $T/")):
+    is_("backtick_value_adds_nothing: {} is not a literal and leaves the variable unknown".format(label), leaked(fc(cmd), OWNWALL, cwd=SCR), [])
+
+for label, cmd in (("an assignment that runs", "D=/tmp; cat $D/../.codex/x"), ("one that may not run", "false && D=/tmp; cat $D/../.codex/x"),
+                   ("export", "export D=/tmp; cat $D/../.codex/x"), ("a prefix assignment", "D=/tmp sh -c 'cat $D/../.codex/x'")):
+    is_("assignment_keeps_spelling: {} does not hide the unknown variable's spelling".format(label), forbid(fc(cmd), cwd=house), [house + "/.codex in t1"])
+
+CHZH = "HOME=~/.local/share"
+for label, cmd in (("a ~/ path", CHZH + "; cat ~/chezmoi/x"), ("a bare cd, then a relative path", CHZH + "; cd; cat chezmoi/x"),
+                   ("cd ~/path", CHZH + "; cd ~/chezmoi && ls"), ("export, a recursive search", "export " + CHZH + "; ls -R ~/chezmoi"),
+                   ("a prefix assignment", CHZH + " sh -c 'cat ~/chezmoi/x'"), ("a $HOME path", CHZH + "; cat $HOME/chezmoi/x"),
+                   ("a second assignment built on the first", CHZH + "; HOME=~/chezmoi; cat ~/x")):
+    is_("tilde_sees_home: {}".format(label), leaked(fc(cmd), CHZ), CHZN)
+is_("tilde_sees_home: ~ without an assignment is as before", (leaked(fc("cat ~/.local/share/chezmoi/x"), CHZ), leaked(fc("cat ~/other"), CHZ)), (CHZN, []))
+is_("tilde_sees_home: _expand without HOME in its values takes the user's home", K._expand("~/x", {}), ([os.path.expanduser("~/x")], True))
+is_("tilde_sees_home: ... with it, ~/x takes every value of $HOME", sorted(K._expand("~/x", {"HOME": ["/a", "/b"]})[0]), ["/a/x", "/b/x"])
+
+for word in ("declare", "local", "typeset", "readonly", "export"):
+    is_("assignment_builtins: {} NAME=value gives the variable its value".format(word),
+        leaked(fc("{} D=~/.local/share; cat $D/chezmoi/x".format(word)), CHZ), CHZN)
+is_("assignment_builtins: declare -x NAME=value too", leaked(fc("declare -x D=~/.local/share; cat $D/chezmoi/x"), CHZ), CHZN)
