@@ -405,7 +405,7 @@ run could pass whatever the runs showed.
 |---|---|---|
 | 93b16f3d | c97ff647b | Final review recovered 4 of 6 per-task defects; 2 censored. Stopped before its first Codex round; the pre-merge defect is still present. |
 | 66ad81cc | c97ff647b | Void, a false positive (11.4, item 3) |
-| 7f3b624a | cf4b66353 | Void, a false positive (11.4, item 3) |
+| 7f3b624a | cf4b66353 | Void under §13's rule: it ran `chezmoi` four times. It also had 66ad81cc's false positive (11.4, item 3) |
 | 3819843a | cf4b66353 | Void, a real leak: the reviewer ran `git log` on `feat/agent-skills` in `~/.local/share/chezmoi`, the original repository, and listed `~/.claude/skills` |
 
 The reviewer was told the review was read-only. Isolation rests on the scan, not on the brief.
@@ -425,7 +425,8 @@ Claude subagents across both Part B sessions: 566 transcripts, 1.73M output toke
 
 ### 11.4 What has to change before a rerun
 
-Each item below changed the outcome; items 1–3 are defects, item 4 is a design limit.
+Each item below changed the outcome. Items 1 and 2 and the first cause in item 3 are defects; the
+second cause in item 3 and item 4 are limits of the design as settled.
 
 1. **Build checks run through mise shims.** `process-replay.py` starts with `#!/usr/bin/python3`, so
    `checks.py` calls the mise shims for `python3`, `ruby` and `cargo` inside the work tree. In a
@@ -433,9 +434,9 @@ Each item below changed the outcome; items 1–3 are defects, item 4 is a design
    syntax check and `cargo check` failed in VM.Deployments.Docker, curato and tagteam. At its worst
    (inject #4) that made 10 defects unassessable and 6 incoherent. It predates this session:
    da2708893 was already out in the previous session's last inject. From inject #5 on, every
-   harness command ran with
-   `MISE_IGNORED_CONFIG_PATHS=$S/work`, which trusts nothing and lasts for one process. Fix: run the
-   checks with tools resolved outside the work tree, or set that variable in the harness.
+   harness command ran with `MISE_IGNORED_CONFIG_PATHS=$S/work`, which trusts nothing and lasts for
+   one process. Fix: run the checks with tools resolved outside the work tree, or set that variable
+   in the harness.
 2. **The 60,000-character cut on judge input.** judge-present sees each file cut at 60,000
    characters. In large files (`dashboard-thuis.json`, `git-push-guard.py` near line 1188,
    `executable_xreview` near line 1095, the forge-guard tests, tagteam's `input.rs`) the cut falls
@@ -443,16 +444,20 @@ Each item below changed the outcome; items 1–3 are defects, item 4 is a design
    and 5 of the 6 no answers were given on files cut this way. It reached three of the six branches
    disqualified for a P0/P1 defect not shown present (bb2c8d04b, bb1f2a025, b8631963c). Fix: show
    each file around the finding's location and the fix's hunks, not from the top.
-3. **The leak scan voids clean runs (§7.1 against §7.3).** §7.3 puts the driving session, and so
-   every subagent's cwd, in `~/Code/.replay`, which holds the forbidden `snapshot/`. The matcher
-   resolves relative text against that cwd, and glob-shaped text that is not a path matches
-   `snapshot`: `:\s*` in a `sed` regex yields the piece `s*`, and
-   `tar --include='*/SKILL.md'` yields `*/SKILL.md`. It also counts every `chezmoi` call as reading
-   `~/.local/share/chezmoi`, even `chezmoi --version` and `chezmoi --source <own scratch> managed`.
-   66ad81cc is the first cause alone; 7f3b624a is both. Rescanned with each run's scratch as the
-   cwd, 66ad81cc names nothing and 7f3b624a names only its four `chezmoi` calls; 3819843a still
-   names the original. Fix: keep forbidden roots out of the driving session's directory, and judge
-   a `chezmoi` call by the source and destination it names.
+3. **The leak scan voids runs that read nothing forbidden (§7.1 against §7.3).** Two causes:
+   - *A false positive, a defect.* §7.3 puts the driving session, and so every subagent's cwd, in
+     `~/Code/.replay`, which holds the forbidden `snapshot/`. The matcher resolves relative text
+     against that cwd, and glob-shaped text that is not a path matches `snapshot`: `:\s*` in a
+     `sed` regex yields the piece `s*`, and `tar --include='*/SKILL.md'` yields `*/SKILL.md`.
+     Rescanned with its scratch as the cwd, 66ad81cc names nothing: this alone voided it. Fix: keep
+     forbidden roots out of the driving session's directory.
+   - *The `chezmoi` rule, a limit of §13.* §13 counts running `chezmoi` as reading the original
+     dotfiles, and the scan does exactly that, whatever the arguments: `chezmoi --version` and
+     `chezmoi --source <own scratch> managed` count too. 7f3b624a's four calls were of that kind,
+     so it is void under the rule as settled, false positive or not. Judging a call by the paths
+     it names would change the rule, not fix the scan.
+
+   3819843a names the original under either: it read the repository directly.
 4. **Recreations that cannot apply.** 34 defects: a recreation is made against the final tree, and a
    sibling group's revert in the injected tree changes the same lines (§4.3's known limit). It
    reached four of the six disqualified branches (b64e632c6, bfb0da41d, bb1f2a025, b8631963c).
@@ -482,7 +487,7 @@ Smaller issues, each in the run notes:
 
 | Removal | Recommendation |
 |---|---|
-| Per-task reviewer | None: keep it. The result is inconclusive for structural reasons, not on the evidence. A rerun needs items 1–4 fixed, the 15 defects above resolved, and more qualifying cases; with two cases even a clean pass falls short of §4.1. §4.7's confirmation replay remains Michael's call. |
+| Per-task reviewer | None: keep it. The result is inconclusive for structural reasons, not on the evidence. A rerun needs items 1–4 addressed, the 15 defects above resolved, and more qualifying cases; with two cases even a clean pass falls short of §4.1. §4.7's confirmation replay remains Michael's call. |
 | Plan checkpoint | Not measured; unchanged. |
 | Codex memories | Not measured; unchanged. |
 
@@ -588,9 +593,13 @@ methods and bars above are unchanged except where a line says so.
   turns.
 
 **Settled in the pre-merge review (Codex, nine rounds, approved xr-1793726019-522e06a8)**
-- Every command takes its locks once, at entry, and holds them until it exits: the state's
-  `run.lock` (exclusive, shared, or `run` mode), then the replay daemons' lock. A command that
-  finds a lock held exits 1 having changed nothing. One replay daemon runs at a time. The lock
+- Every command takes its locks once, at entry, and holds them until it exits (`command_locks`).
+  `snapshot`, `cases`, `inject` and `cleanup` hold the state's `run.lock` exclusively. `match`,
+  `pending`, `report`, `cases --plans` and `home` share it, and so does `run`, which also holds
+  `runner.lock` alone, so one `run` goes at a time. `run`, `cleanup` and `home` then hold the
+  replay daemons' lock; `home --login-cmd` holds only that one. `memories-watch` takes no lock,
+  and neither does a dry run that writes nothing. A command that finds a lock held in a mode that
+  conflicts with its own exits 1 having changed nothing. One replay daemon runs at a time. The lock
   moves to another home only once the previous daemon is confirmed down, and a home's login is
   settled only then.
 - Each judge kind declares one answer schema, and one validator checks every answer against it.
