@@ -825,12 +825,12 @@ skipped once logged).
 
 **§6** runs once 10 cases have accrued (about a week), not while §4's `run` is going:
 `xreview-replay.py cases --switch memories --memwatch ~/.local/state/process-replay/memwatch`; a
-judge for each `judge-known/<round>.json` in the directory `cases` prints (`judge inputs: N
-round(s) in <dir>`; these are not listed by `process-replay pending`); `cases --switch memories …`
-again for the selection, then
-`run --switch memories` (unsandboxed; it probes each memories home before its turns and starts
-each home's daemon in turn), `match --switch memories`, its judges, `report --switch memories`;
-results into §11 the same way.
+judge for every item `xreview-replay.py pending --switch memories` lists, handed only the staged
+brief path it prints; `cases --switch memories …` again for the selection, then
+`run --switch memories` (unsandboxed; it probes each memories home before its turns, starts each
+home's daemon in turn, and pauses at the weekly-usage limit like §4), `match --switch memories`,
+a judge for every item `pending --switch memories` lists, `report --switch memories`; results
+into §11 the same way.
 
 ## Rulings
 
