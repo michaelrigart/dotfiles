@@ -687,10 +687,15 @@ This reverses §13's ruling of the same day *(Michael, 2026-11-03)*. Before the 
 on, a test against a real `chezmoi` shows that `managed` and `source-path` read nothing outside the
 source state. A subcommand that fails the test loses the exemption.
 
-**(c) Literal assignments expand within a call.** A variable assigned a literal value earlier in the
-same tool call (`NAME=value`, or `export NAME=value`, before `;`, `&&` or a newline) is expanded where
-that call uses it later. A value that is not literal stays unknown, as §13 lists. This closes a
-miss, and it lets (b) judge `chezmoi --source "$SRC"` by where `$SRC` points.
+**(c) Literal assignments add values within a call.** A variable assigned a literal value in a tool
+call (`NAME=value`, or `export NAME=value`) may hold that value wherever the same call uses it later
+in its text. An assignment adds a value and never removes one: a variable the scan already knows
+(`$HOME`, the XDG variables) keeps its known values, and one it does not know keeps its literal
+spelling. A later use is judged under every value it may hold, so an assignment that may not run
+(after `&&` or `||`, in a branch, a loop or a subshell) can add a hit but never hide one. A use with
+more values than the scan expands counts as a leak. A value that is not literal adds nothing, as
+§13 lists. This closes a miss, and it lets (b) judge `chezmoi --source "$SRC"` by where `$SRC`
+points.
 
 Against this run's transcripts: (a) alone clears 66ad81cc (a rescan with its scratch as the cwd names
 nothing). By inspection, (a) to (c) together clear 7f3b624a's four `chezmoi` calls. 3819843a still
@@ -728,6 +733,7 @@ evidence, and the verdict stays inconclusive.
   beneath it;
 - `chezmoi --version`, a `--source` call into the run's own scratch with `managed`, and a default
   destination read as a search root;
-- an assignment expanded within one call, and not across calls;
+- an assignment that adds its value within one call and not across calls, and one that may not run
+  (`false && HOME=/tmp; cat "$HOME/.codex/x"` still names `~/.codex`);
 - a recreation made against a round tree in which a sibling's revert changed its context: it
   applies, and merges with that sibling's group at locate.
