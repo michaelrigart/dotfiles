@@ -1,6 +1,6 @@
 # Replay set: deciding the quality-relevant removals from October's record
 
-**Status:** In progress (plan docs/superpowers/plans/2026-11-02-replay-set.md, Codex-approved xr-1793629001-9de89da9)
+**Status:** In progress (plans docs/superpowers/plans/2026-11-02-replay-set.md, Codex-approved xr-1793629001-9de89da9, and docs/superpowers/plans/2026-11-03-replay-set-amendment-1.md, for §14)
 **Date:** 2026-11-02
 **Branch:** `replay-set` (the dotfiles have no MR; the pushed branch is the end)
 **Sign-off:** Michael, 2026-11-02 (Codex approved round 4, xr-1793626109-f7b04e58)
@@ -668,10 +668,11 @@ runs from (`~/Code/.replay/`) holds no forbidden root and no copy of a repositor
 - Part B's export of the harness commit goes to `$XDG_STATE_HOME/process-replay/harness-<commit>`.
   It is a forbidden root in every case: in a dotfiles case it holds the repository's later state.
 
-The move rewrites, in the same step and while no `process-replay` command runs, every reference
-the kept state holds to the old path: the views' alternates, `branches.json` and the run records
-*(Michael, 2026-11-03)*. `run` refuses to start while a forbidden root lies beneath its working
-directory. The matcher still
+The move *(Michael, 2026-11-03)* rewrites, in the same step and while no `process-replay` command
+runs, only the kept state's references the harness reads objects through: the views' alternates
+and `branches.json`. Run records, transcripts, `reviews.json` and `report.md` keep their recorded
+text, since a verdict names what the scan saw then (the amendment plan's ruling R10). `run` refuses
+to start while a forbidden root lies beneath its working directory. The matcher still
 resolves relative text against the record's cwd, so a real relative read is judged where it lands.
 Glob-shaped text that is not a path can then match only the session's own files.
 
