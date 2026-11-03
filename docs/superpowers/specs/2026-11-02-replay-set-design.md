@@ -387,9 +387,15 @@ methods and bars above are unchanged except where a line says so.
 - The leak scan (§7.1) covers Codex rounds, the final reviewer and its subagents, and §6's arms.
   It flags any read or command naming the original checkout or a `wt` sibling, the harness's
   state, another scratch or item, the snapshot, Codex's sessions and memories, Claude's
-  transcripts, or the xreview state. Running `chezmoi` counts as reading the original dotfiles. A
-  rollout that cannot be read counts as a leak. The scan is lexical; its known limits are listed
-  in `codex.py`.
+  transcripts, the replay homes, or the xreview state. Each path a tool call names is resolved
+  first: the call's working directory and any `cd`, `~` and the home and XDG variables, `..`, and
+  symlinks. It is then tested against those roots by real-path containment. Allowed subtrees are
+  applied after resolving: the run's own scratch or staged item, its own home's skills, plugins
+  and rules, an A/A′ arm's own memories, and a final reviewer's own transcript and the session's
+  `tool-results/`. A recursive search rooted above a forbidden root counts too. A grep pattern is
+  not a path. Running `chezmoi` counts as reading the original dotfiles. A rollout that cannot be
+  read counts as a leak. The remaining limits (unknown variables, paths built at run time, reads
+  spread over separate calls) are listed in `codex.py` (Michael's restructure, 2026-11-03).
 - Merge evidence runs `git merge-tree` in a private view repository whose alternates are the
   snapshot (or the original's objects). Git then refreshes those packs' modification times. The
   content is unchanged.
