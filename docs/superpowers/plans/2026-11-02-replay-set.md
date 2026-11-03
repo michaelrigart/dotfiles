@@ -793,7 +793,8 @@ start the session with `--add-dir` for `$XDG_STATE_HOME/review-work` and
 1. **Login.** Michael runs the line `process-replay home --login-cmd` prints (in a terminal if
    `! …` runs sandboxed).
 2. **Mechanism.** `home --name nomem --start --probe`. It must pass every check; if it fails, stop
-   and report to Michael before any replay turn. The daemon keeps running; start no other replay
+   and report to Michael before any replay turn. If it prints `paused:`, the weekly usage is at
+   the pause level: run it again after the reset it names. The daemon keeps running; start no other replay
    home while §4's `run` is going (`run` holds the replay run lock and refuses otherwise).
 3. `snapshot`; `cases` (opens 16 candidates); dispatch a judge for every item `pending` lists; run
    `cases` again; repeat until it reports `judge answers pending: 0` and an inventory for every
