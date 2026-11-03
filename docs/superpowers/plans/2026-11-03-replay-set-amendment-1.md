@@ -9,7 +9,7 @@ state can pass the coverage gate and its leak scan voids only runs that read som
 move the kept state's snapshot out of the driving session's directory.
 
 **Architecture:** Every change stays in `.scripts/process_replay/`, `.scripts/process-replay.py` and their
-suite. One new module, `excerpts.py`, builds the file list of every judge-present input (§14.2). One new
+suite, apart from one test in `tests/xreview-replay.test.sh` (Task 12). One new module, `excerpts.py`, builds the file list of every judge-present input (§14.2). One new
 module, `relocate.py`, is the `relocate-snapshot` subcommand: it renames the snapshot and rewrites the kept
 state's references under the state's exclusive lock (§14.3 a). The leak-scan changes (§14.3 b, c) stay in
 `codex.py`'s `_Scan`, the one matcher that Codex rounds, final reviewers and §6's arms share. The
@@ -45,11 +45,11 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
 
   | Batch | Tasks | Why they can share a batch |
   |---|---|---|
-  | 1 | 1, 2, 3 | disjoint files; `t_checks`/`t_inject`, `t_excerpts` and `t_codex` load none of the other tasks' modules |
-  | 2 | 4, 5 | `codex.py` vs `inject.py`/`gate.py`; `t_codex` loads neither, `t_inject`/`t_gate` do not load `codex` |
+  | 1 | 1, 2, 3, 12 | disjoint files; `t_checks`/`t_inject`, `t_excerpts` and `t_codex` load none of the other tasks' modules; Task 12 changes only `tests/xreview-replay.test.sh`, a module no other task changes |
+  | 2 | 4, 5 | `codex.py` vs `inject.py`/`gate.py`; `t_codex` loads neither, `t_inject`/`t_gate` do not load `codex`. `t_e2e` (Task 5 changes its cleanup assertions) runs in the batch's full suite |
   | 3 | 6 | it touches `gate`, `inventory`, `loop`, `inject` and `bar`; `t_loop` loads every module |
   | 4 | 7 | it changes `common.py`, which every suite loads |
-  | 5 | 8, 9 | `loop.py`/`inject.py` vs `relocate.py`/`process-replay.py`; Task 8 runs `t_loop`/`t_inject`, which do not load the CLI; Task 9 runs `t_relocate`, which loads only the CLI, `relocate` and `common`. `t_e2e` (Task 8 adds one line to it) runs in the batch's full suite |
+  | 5 | 8, 9 | `loop.py`/`inject.py`/`bar.py` vs `relocate.py`/`process-replay.py`; Task 8 runs `t_loop`/`t_inject`/`t_bar`, which do not load the CLI; Task 9 runs `t_relocate`, which loads only the CLI, `relocate` and `common`. `t_e2e` (Task 8 adds one line to it) runs in the batch's full suite |
 
 - **Python.** `#!/usr/bin/python3`, 3.9-compatible (no `match`, no `X | Y`), stdlib only. New package
   modules are mode `100644`. Tests run with `-B`, and no `__pycache__` is ever committed.
@@ -118,12 +118,13 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
 | `.scripts/process_replay/inject.py` | env (1); base, request timing, units (5); anchors to judges (6); coverage line (8) | 1, 5, 6, 8 |
 | `.scripts/process_replay/inventory.py` | presence input through `excerpts` | 6 |
 | `.scripts/process_replay/loop.py` | revalidation through `excerpts` (6); `run`'s refusals (8) | 6, 8 |
-| `.scripts/process_replay/bar.py` | the fallback count in the report | 6 |
+| `.scripts/process_replay/bar.py` | the fallback count in the report (6); the verdict under a failing gate (8) | 6, 8 |
 | `.scripts/process_replay/common.py` | `snapshot_home`, `harness_root`; lock wording | 7 |
 | `.scripts/process-replay.py` | snapshot default, lock wording (7); `relocate-snapshot` (9) | 7, 9 |
 | `.scripts/process_replay/relocate.py` | **new**: `relocate-snapshot` | 9 |
 | `tests/process-replay.test.sh` | the new modules in its files-under-test list | 2, 9 |
 | `tests/process-replay/t_*.py` | each task's own; `t_excerpts.py`, `t_relocate.py` new | each |
+| `tests/xreview-replay.test.sh` | RP21's pool case on a state below the token stop | 12 |
 
 ## Shared records (what changes)
 
@@ -402,7 +403,8 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
 **Files:**
 - Modify: `.scripts/process_replay/gate.py` (`recreation`, `tree_patches`, new `recreation_id`,
   docstring), `.scripts/process_replay/inject.py` (`Fixpoint`: new `recreation_base`; `second_attempts`,
-  `locate`, `resolve`, `repair`, `run`; module docstring)
+  `locate`, `resolve`, `repair`, `run`; module docstring), `tests/process-replay/t_e2e.py` (the cleanup
+  assertions' recreation paths)
 - Test: `tests/process-replay/t_inject.py`, `tests/process-replay/t_gate.py`
 
 **Interfaces:**
@@ -453,8 +455,9 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
       apply: §11.4 item 4.
     - B's repair alone does not apply to the head, but applies after A's recreation repair. So A and B
       carry the same `group`, the same repair bytes and the same hunks.
-    - `inject` completes, so `check_invariant` held, and that repair applied to the work commit gives the
-      final `a.txt`.
+    - `inject` completes, so `check_invariant` held. That repair applied to the work commit restores lines
+      10, 12 and 15 to the final `a.txt`'s and leaves line 35 `C bad` (C is reverted on its own). C's
+      repair applied after it gives the final `a.txt`.
   - `settled_round_requests` (R1): while the round's answers are pending, no `recreate/` item exists. In a
     round where another per-task defect D (another file) leaves beside A, none is requested either. The
     next settled round requests A with a base whose D file is the final one.
@@ -466,8 +469,12 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
     the old files are byte-identical afterwards, and `pending` lists only the new item.
   - `recreation_replay_stable` (Review Focus 5): a second `inject` with no new answer writes no
     `recreate/` item and rewrites no brief (a listing with mtimes is unchanged).
-  - Existing tests: every `recreate/<did>` path becomes the rid, through a helper `rid_of(state, did)` that
-    returns the single `recreate/<did>-*.json`'s id. Some tests pin a request in a round whose answers are
+  - Existing tests: every `recreate/<did>` and `recreated/<did>` path becomes the rid, through a helper
+    `rid_of(state, did)` that returns the single `recreate/<did>-*.json`'s id. That covers `t_inject.py`,
+    `t_gate.py` (its recreation cases, lines 72–90, which also pass a base now) and `t_e2e.py`'s cleanup
+    assertions (lines 466–481, `CASE_D`). Task 5's implementer does not run `t_e2e.py`, which loads Task 4's
+    `codex.py`; the batch's full suite does, and a failure there is Task 5's to fix. `t_loop.py`'s cleanup
+    cases name their own fixture files (`dX`, `dY`) and stay. Some tests pin a request in a round whose answers are
     still pending, and they now expect it once the round's answers are in (R1). These are at least "…gets
     its recreation request at once…" (S5), "waiting: a defect with no fix range is out from the start and
     its recreation is requested" and the S41b waiting case after it. Any other test that reads
@@ -555,7 +562,9 @@ runs alone).
   `command_locks` docstring), `.scripts/process_replay/codex.py` (`SNAPSHOT` removed; `exports`,
   `forbidden`, new `beneath`; docstring), `.scripts/process-replay.py` (`snapshot_root_default`, the
   `--snapshot-root` default, docstring)
-- Test: `tests/process-replay/t_common.py`, `t_codex.py`, `t_final.py`
+- Test: `tests/process-replay/t_common.py`, `t_codex.py`, `t_final.py`. After the change, `rg -n
+  'Code/\.replay/snapshot' tests/process-replay .scripts` lists only test lines that show the old home is no
+  root (`old_home_no_root`).
 
 **Interfaces:**
 - Produces:
@@ -586,12 +595,15 @@ runs alone).
       is a leak labelled that directory.
     - `snapshot_new_home`: `ls $XDG_STATE_HOME/process-replay/snapshot/2026-11-02` is a leak.
     - `old_home_no_root`: `ls ~/Code/.replay/snapshot` gives `[]`.
-    - The existing cases that name `~/Code/.replay/snapshot` follow suit: the snapshot-root read uses the new
-      path, `rg foo ~/Code` reports only the checkout, and `ABOVE` drops the old snapshot.
+    - The existing cases that name `~/Code/.replay/snapshot` follow suit (`t_codex.py` lines 460, 485, 544
+      and 583): the snapshot-root read uses the new path, `rg foo ~/Code` reports only the checkout, and
+      `ABOVE` drops the old snapshot.
     - `beneath_cwd`: `beneath(XSH, fwall)` includes review-work, the snapshot home, xreview and cxh;
       `beneath(<a fresh empty temp dir>, fwall) == []`; `beneath(FSTATE, fwall) == [FSTATE]` (a root at the
       cwd counts); `beneath(house, fwall)` includes the checkout, `~/.codex` and `~/.claude`.
-  - `t_final.py`, replacing the two "from ~/Code/.replay … is a leak" cases:
+  - `t_final.py`, line 238: "a final reviewer reading the snapshot root" reads
+    `$XDG_STATE_HOME/process-replay/snapshot/2026-11-02` and is still a leak.
+  - `t_final.py`, replacing the two "from ~/Code/.replay … is a leak" cases (lines 336–338):
     - (§14.6) From `REPLAY`, a Grep without a path and `rg -n defect` give `[]`.
     - The 66ad81cc false positive: `sed -E 's/:\s*/ /' notes.md` and `tar --include='*/SKILL.md' -cf o.tar .`
       from `REPLAY` give `[]`. The same `sed` call from `$XDG_STATE_HOME/process-replay`, which holds the
@@ -607,9 +619,9 @@ runs alone).
 
 **Files:**
 - Modify: `.scripts/process_replay/loop.py` (new `add_args_run`, `preflight`; `cmd_run`; docstring),
-  `.scripts/process_replay/inject.py` (the coverage line in `cmd_inject`), `tests/process-replay/t_e2e.py`
-  (one `os.chdir`)
-- Test: `tests/process-replay/t_loop.py`, `tests/process-replay/t_inject.py`
+  `.scripts/process_replay/inject.py` (the coverage line in `cmd_inject`), `.scripts/process_replay/bar.py`
+  (`bar`'s precedence under a failing gate), `tests/process-replay/t_e2e.py` (one `os.chdir`)
+- Test: `tests/process-replay/t_loop.py`, `tests/process-replay/t_inject.py`, `tests/process-replay/t_bar.py`
 
 **Interfaces:**
 - Produces:
@@ -632,6 +644,10 @@ runs alone).
     wait)` while a branch waits.
   - `t_loop.py` and `t_e2e.py` call `os.chdir(helpers.tmp_root())` before their first command. The suites'
     own cwd is the checkout, which is now a forbidden root (the running harness's).
+  - `bar.bar` (ruling R13): when `coverage.unassessable_task` is non-empty, the status is `inconclusive` even
+    when a run fails (§4.3: "§4 is inconclusive"; §14.5: "the verdict stays inconclusive"). The reasons list
+    the fails first, unchanged, then the blocks, the coverage gate's included, so the recovery evidence stays
+    in the report. With the gate holding, the precedence is today's: a fail is a fail.
 
 - [ ] **Step 1: Write the failing tests.** `t_loop.py`:
   - `refuses_forbidden_beneath_cwd` (§14.6): from `os.path.dirname(os.environ["XDG_STATE_HOME"])`, which
@@ -647,10 +663,17 @@ runs alone).
   `t_inject.py`:
   - `coverage_line`: a complete branch with no unassessable defect prints `coverage gate: passes`, one with
     one prints `coverage gate: fails: 1 …`, and a waiting branch prints `coverage gate: not settled`.
-- [ ] **Step 2: Run** `t_loop.py` and `t_inject.py`. The new cases fail.
+
+  `t_bar.py`:
+  - The table row "coverage_gate: a fail stays a fail" becomes `coverage_gate_override_inconclusive`: the
+    same runs (a per-task P1 unrecovered while every pre-merge P0/P1 was recovered) with `HELD` give
+    `inconclusive`, and the reasons hold the fail's reason (`per-task … unrecovered while every pre-merge
+    P0/P1 was recovered`) before the `coverage gate:` reason. A new row with the same runs and `NONE` still
+    gives `fail`. This catches a precedence that lets a fail through a failing gate.
+- [ ] **Step 2: Run** `t_loop.py`, `t_inject.py` and `t_bar.py`. The new cases fail.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** both files. They pass. (`t_e2e.py` runs in the batch's full suite.)
-- [ ] **Step 5: Commit.** `Let run refuse a forbidden root beneath it and a failing coverage gate`
+- [ ] **Step 4: Run** the three files. They pass. (`t_e2e.py` runs in the batch's full suite.)
+- [ ] **Step 5: Commit.** `Let run refuse a forbidden root beneath it and a failing coverage gate, and keep its verdict inconclusive`
 
 ### Task 9: `relocate-snapshot` (§14.3 a)
 
@@ -719,6 +742,33 @@ runs alone).
 - [ ] **Step 4: Run** it. It passes.
 - [ ] **Step 5: Commit.** `Add relocate-snapshot: move the snapshot and rewrite the state's references`
 
+### Task 12: The pool's start check is tested below the token stop (plan review, round 1)
+
+**Depends on:** none.
+
+Not a §14 part: a test on this branch that cannot fail. RP21's pool case (`tests/xreview-replay.test.sh`,
+around line 1263) puts 2,600 tokens in flight on `unit21`, whose run files already record 4,000 against a
+cap of 2,500. A pool that ignored the in-flight tokens would still start nothing, so the case passes either
+way.
+
+**Files:**
+- Modify: `tests/xreview-replay.test.sh` (RP21's pool case only)
+- Test: the same file, run as `./tests/xreview-replay.test.sh` (it passes when it prints no failing line
+  and exits 0)
+
+- [ ] **Step 1: Rewrite the case** on a fresh state directory of its own (`unit21p`, beside `unit21`), whose
+  run files record nothing, so `Hm.spent(unit21p) == 0`, with `Hm.rpc` a plain stub that records each
+  `turn-start` (RP21's `interleaved` starts a nested job):
+  - With `Hm.FLIGHT[(unit21p, "c.pre", "zzzzzzzz")] = 2600` and a cap of 2,500, `run_pool` starts no job
+    (the rpc stub records no `turn-start`) and hands the job back.
+  - Control: with `FLIGHT` cleared and the same fresh state, the pool starts the job (a `turn-start` is
+    recorded). Without it the case cannot tell a pool that starts nothing at all.
+  - `FLIGHT` is cleared afterwards, as today.
+- [ ] **Step 2: Show it bites** (nothing of this is committed). Make `run_pool`'s start check call `spent`
+  instead of `spent_now` in `.scripts/xreview-replay.py`; the new case fails and the control passes. Restore
+  the file, check `git diff --quiet .scripts/xreview-replay.py`, and the case passes.
+- [ ] **Step 3: Commit.** `Test the pool's start check on a state below the token stop`
+
 ### Finishing the code
 
 - [ ] `./tests/run.sh` (every default suite) and `./tests/run.sh xreview git-forge-guard wt-functions`
@@ -731,7 +781,7 @@ runs alone).
 
 ### Task 10: Relocate the kept state (operator step, run by the driver)
 
-**Depends on:** Tasks 1–9 and "Finishing the code" (pushed, Codex pre-merge approved).
+**Depends on:** Tasks 1–9, Task 12 and "Finishing the code" (pushed, Codex pre-merge approved).
 
 This is the only step that touches real data. It moves data and never deletes any: the snapshot and the old
 harness export are renamed on the same volume (`/System/Volumes/Data` holds both `~/Code` and
@@ -832,3 +882,7 @@ These are the builder's calls on what §14 leaves open. The controller records a
   after a later assignment is a listed limit.
 - **R12, checks (§14.1):** inherited `MISE_IGNORED_CONFIG_PATHS` entries are kept after ours, and
   `coherent` requires its env so no call site can drop it.
+- **R13, the verdict under a failing gate (§4.3, §14.5):** a failing coverage gate makes the verdict
+  inconclusive even when a run fails, as §4.3 ("§4 is inconclusive") and §14.5 ("the verdict stays
+  inconclusive") say. This reverses the completed plan's "a fail stays a fail" for the gate; §14.5 names the
+  verdict of a run started despite the gate. The fail's reasons stay in the report, first.
