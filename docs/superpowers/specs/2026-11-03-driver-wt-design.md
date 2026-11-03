@@ -1,6 +1,6 @@
 # Driver-run `wt` checkouts, each reviewed in its own Codex pane
 
-**Status:** Approved
+**Status:** In progress on `driver-wt` (no MR)
 **Date:** 2026-11-03
 **Branch:** `driver-wt` (harness worktree; the dotfiles have no MR, the pushed branch is the end)
 **Sign-off:** Michael, 2026-11-03. That includes two rulings he made after a scoping pass found a
