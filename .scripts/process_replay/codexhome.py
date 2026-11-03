@@ -483,8 +483,10 @@ def start(home):
 
 
 def stop(home):
-    """Stop the replay daemon of `home`, then take back a refreshed login. The one-daemon marker, and this command's claim on the home,
-    go only when the daemon stopped (its stop succeeded or its socket is gone). A stop is never a hand-over: it needs the session only."""
+    """Stop the replay daemon of `home`, then take back a refreshed login. The login is settled, the one-daemon marker and this command's
+    claim on the home go, only when the daemon is confirmed down (its stop succeeded, or it has no socket or refuses, as start() decides).
+    A stop that failed or timed out with the daemon possibly still running leaves the home's auth.json and the shared login as they are:
+    the daemon may refresh its token at any moment. A stop is never a hand-over: it needs the session only."""
     _record(home)
     _owned(home)
     _need(handover=False)
@@ -493,14 +495,18 @@ def stop(home):
         _daemon(home, "stop")
     except Failed as e:
         failure = e
-    _settle_auth(home)
-    if failure is None or not os.path.exists(_socket(home)):
+    down = failure is None or _health(home) == "down"
+    if down:
+        _settle_auth(home)
         cur = jload(_marker())
         if isinstance(cur, dict) and cur.get("home") == home:
             os.unlink(_marker())
         if _same(_HELD["home"], home):
             _HELD.update(home=None, started=False)
     if failure is not None:
+        if not down:
+            raise Failed("{}; the daemon of {} may still be running, so its login was left as it is: stop that home first "
+                         "(process-replay home --name {} --stop)".format(failure, home, os.path.basename(home.rstrip("/"))))
         raise failure
 
 

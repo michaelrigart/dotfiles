@@ -285,11 +285,31 @@ os.chmod(failing, 0o755)
 good_bin = os.environ["CODEX_REAL_BIN"]
 os.environ["CODEX_REAL_BIN"] = failing
 H.start(hm)
-ok("start_stop: a failed daemon stop raises", raises(H.stop, hm))
+# a daemon that may still run refreshes its token at any moment: a failed stop settles nothing
+hm_auth = os.path.join(hm, "auth.json")
+os.unlink(hm_auth)
+put(hm, "auth.json", "MAYBE-STILL-REFRESHING")
+os.utime(hm_auth, (time.time() + 400, time.time() + 400))
+shared_before = (open(shared).read(), os.lstat(shared).st_mtime_ns, os.listdir(H.auth_dir()))
+hm_before = os.lstat(hm_auth).st_mtime_ns
+stop_error = []
+try:
+    H.stop(hm)
+except H.Failed as e:
+    stop_error.append(str(e))
+ok("start_stop: a failed daemon stop raises", len(stop_error) == 1, stop_error)
+ok("start_stop: and says the home must be stopped first", stop_error and "stop" in stop_error[0] and hm in stop_error[0], stop_error)
+ok("start_stop: a failed stop whose socket remains leaves the home's refreshed auth.json a regular file, unchanged",
+   os.path.isfile(hm_auth) and not os.path.islink(hm_auth) and open(hm_auth).read() == "MAYBE-STILL-REFRESHING"
+   and os.lstat(hm_auth).st_mtime_ns == hm_before, os.path.islink(hm_auth))
+ok("start_stop: and leaves the shared login as it was",
+   (open(shared).read(), os.lstat(shared).st_mtime_ns, os.listdir(H.auth_dir())) == shared_before, open(shared).read())
 ok("start_stop: and the marker stays while the socket is still there", raises(H.start, home))
 os.environ["STOP_REMOVES"] = "1"
 ok("start_stop: a failed stop that leaves no socket still raises", raises(H.stop, hm))
 ok("start_stop: and then the marker is gone", not os.path.exists(H._marker()))
+is_("start_stop: and, the daemon being down, its refreshed token is settled",
+    (open(shared).read(), os.path.islink(hm_auth)), ("MAYBE-STILL-REFRESHING", True))
 H.start(home)
 del os.environ["STOP_REMOVES"]
 os.environ["CODEX_REAL_BIN"] = good_bin
