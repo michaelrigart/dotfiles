@@ -549,7 +549,7 @@ def _pieces(word):
 def _logical(command, bodies=None):
     """`command` as one line: unquoted newlines become `;` (a backslash-newline is a continuation), an unquoted
     comment (a # that starts a word, to the end of its line) and heredoc bodies are dropped (appended to `bodies` when it is a list),
-    and a backtick substitution becomes $( ... ), so every command sits at a command position. A here-string (<<<) is not a heredoc.
+    and a backtick substitution becomes $( ... ) (glued to the text before it, as T=~/`date` is T=~/$(date)), so every command sits at a command position. A here-string (<<<) is not a heredoc.
     A word of digits glued to < or > (2>x, 1<x) is an fd: it is marked with FD_MARK, so that once tokenised it still differs from a
     number standing on its own before a redirection (-C 2 >x)."""
     out, quote, i, backtick = [], None, 0, False
@@ -584,7 +584,7 @@ def _logical(command, bodies=None):
             i = j
             continue
         elif ch == "`":
-            out.append(" ) " if backtick else " $( ")
+            out.append(" ) " if backtick else ("$(" if out and out[-1][-1:] not in " \t\n;&|()<>" else " $( "))
             backtick = not backtick
         elif ch == "\n":
             line = "".join(out)
@@ -829,13 +829,12 @@ class _Scan(object):
         self.values = dict((k, list(v)) for k, v in values.items())
 
     def assign(self, words, end=None):
-        """The literal assignments among `words[:end]` (NAME=value, no $ in the value once its quotes are removed; NAME= before a $( ) is
-        a backtick substitution's value, which is not literal): each adds its value to the variable for what the call does next, never
+        """The literal assignments among `words[:end]` (NAME=value, no $ or backtick in the value once its quotes are removed): each adds its value to the variable for what the call does next, never
         removes one. A variable the scan knows keeps its values; an unknown one also keeps its spelling (LITERAL). A leading ~ in the
         value is every home $HOME has so far."""
-        for i, w in enumerate(words[:end]):
+        for w in words[:end]:
             m = ASSIGNMENT.match(w)
-            if not m or "$" in w[m.end():] or (m.end() == len(w) and words[i + 1:i + 2] and words[i + 1].startswith("$(")):
+            if not m or "$" in w[m.end():] or "`" in w[m.end():]:
                 continue
             name, value = w[:m.end() - 1], w[m.end():]
             if name not in self.values:

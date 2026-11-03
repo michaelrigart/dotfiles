@@ -1205,8 +1205,12 @@ is_("too_many_values: a cd to more directories than the scan follows is a leak",
 OWNWALL = CHZ + [house + "/.codex"]
 for label, cmd in (("a backtick value", "T=`mktemp -d`; rg -n foo $T/"), ("a backtick value, searched by find", "T=`mktemp -d`; find $T/ -name x"),
                    ("a $( ) value", "T=$(mktemp -d); rg -n foo $T/"), ("a quoted $( ) value", 'T="$(mktemp -d)"; rg -n foo $T/'),
-                   ("an exported backtick value", "export T=`mktemp -d`; rg -n foo $T/"), ("a local $( ) value", "local T=$(mktemp -d); rg -n foo $T/")):
-    is_("backtick_value_adds_nothing: {} is not a literal and leaves the variable unknown".format(label), leaked(fc(cmd), OWNWALL, cwd=SCR), [])
+                   ("an exported backtick value", "export T=`mktemp -d`; rg -n foo $T/"), ("a local $( ) value", "local T=$(mktemp -d); rg -n foo $T/"),
+                   ("a backtick glued after ~/", "T=~/`date +%F`; rg -n foo $T"), ("... searched by find", "T=~/`date +%F`; find $T -name x"),
+                   ("a backtick glued after ./", "T=./`date +%F`; rg -n foo $T"), ("a $( ) glued after ~/", "T=~/$(date +%F); rg -n foo $T"),
+                   ("a backtick inside double quotes", 'T="`mktemp -d`"; rg -n foo $T/'), ("a backtick glued inside double quotes", 'T="~/`date`"; rg -n foo $T'),
+                   ("a prefix backtick value", "T=`mktemp -d` sh -c 'rg -n foo $T/'"), ("a backtick glued before text", "T=`date`/x; rg -n foo $T")):
+    is_("backtick_value_adds_nothing: {} is not a literal and leaves the variable unknown".format(label), leaked(fc(cmd), OWNWALL, cwd=house), [])
 
 for label, cmd in (("an assignment that runs", "D=/tmp; cat $D/../.codex/x"), ("one that may not run", "false && D=/tmp; cat $D/../.codex/x"),
                    ("export", "export D=/tmp; cat $D/../.codex/x"), ("a prefix assignment", "D=/tmp sh -c 'cat $D/../.codex/x'")):
@@ -1226,3 +1230,12 @@ for word in ("declare", "local", "typeset", "readonly", "export"):
     is_("assignment_builtins: {} NAME=value gives the variable its value".format(word),
         leaked(fc("{} D=~/.local/share; cat $D/chezmoi/x".format(word)), CHZ), CHZN)
 is_("assignment_builtins: declare -x NAME=value too", leaked(fc("declare -x D=~/.local/share; cat $D/chezmoi/x"), CHZ), CHZN)
+
+is_("backtick_value_adds_nothing: a glued backtick is glued in the logical line", K._logical("T=~/`date`; ls"), "T=~/$(date ) ; ls")
+is_("backtick_value_adds_nothing: a spaced backtick keeps its space", K._logical("echo `pwd`"), "echo  $( pwd ) ")
+empty = K._Scan(fwall, {})
+empty.script("T= $(cmd)", [SCR])
+is_("backtick_value_adds_nothing: an empty prefix assignment on a substitution's output gains the empty value (T= $(cmd))", empty.values, {"T": [K.LITERAL, ""]})
+for label, cmd in (("a value built from an assigned HOME through a variable", "HOME=~/.local/share; D=~; cat $D/chezmoi/x"),
+                   ("a ~/.. path after HOME was assigned twice", "HOME=~/.local/share; HOME=~/x; cat ~/../chezmoi/y")):
+    is_("tilde_sees_home: {} (the assignment side)".format(label), leaked(fc(cmd), CHZ), CHZN)
