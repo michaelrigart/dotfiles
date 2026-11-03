@@ -359,7 +359,132 @@ Read-only, 2026-11-02:
 
 ## 11. Results
 
-Filled in after the run.
+Run of 2026-11-03 (Part B). Harness `f0919ec9b5bec2dee4df56cb5659e9b065dc7a22`, state
+`~/.local/state/process-replay/2026-11-03`, replay home `nomem`. Michael stopped it in §4's run
+step (runbook Part B step 5) after the leak scan voided three of four runs; no replacement run was
+started. **No removal is recommended from this run.**
+
+### 11.1 Per-task reviewer (§4): inconclusive
+
+`report` gives INCONCLUSIVE: two cases, one run, and the coverage gate fails.
+
+**Cases.** 164 branches examined, all 23 candidates opened, 2 qualified. That is below §4.1's 10–12
+and is reported, not padded.
+
+| Case | Repository | Branch | Counted defects | October pre-merge rounds |
+|---|---|---|---|---|
+| c97ff647b | VM.Deployments.Docker | feature/update-edge-stack | 6 per-task, 1 pre-merge | 5 |
+| cf4b66353 | dotfiles | feat/agent-skills | 2 per-task, 1 pre-merge | 2 |
+
+| Why the other 162 did not qualify | Branches |
+|---|---|
+| No task review joined | 68 |
+| No merge evidence | 30 |
+| Fewer than two task-review fix ranges | 25 |
+| No pre-merge defect to calibrate against | 13 |
+| Merged outside the window | 10 |
+| A P0/P1 defect not shown present | 6 |
+| The last round did not approve | 5 |
+| A round tip is gone | 3 |
+| Fewer than two (assessable) per-task P0–P2 defects | 2 |
+
+**Coverage gate (§4.3): fails.** 75 per-task defects are unassessable after the second attempt, so no
+run could pass whatever the runs showed.
+
+| Reason | Defects |
+|---|---|
+| The recreation does not apply to the injected tree | 34 |
+| judge-present answered unclear | 30 |
+| judge-present answered no on the injected tree | 6 |
+| judge-same did not find the same defect | 3 |
+| The recreation changed nothing | 2 |
+
+**Runs (§4.4).** Four started, two per case. The final-review leak scan voided three:
+
+| Run | Case | Outcome |
+|---|---|---|
+| 93b16f3d | c97ff647b | Final review recovered 4 of 6 per-task defects; 2 censored. Stopped before its first Codex round; the pre-merge defect is still present. |
+| 66ad81cc | c97ff647b | Void, a false positive (11.4, item 3) |
+| 7f3b624a | cf4b66353 | Void, a false positive (11.4, item 3) |
+| 3819843a | cf4b66353 | Void, a real leak: the reviewer ran `git log` on `feat/agent-skills` in `~/.local/share/chezmoi`, the original repository, and listed `~/.claude/skills` |
+
+The reviewer was told the review was read-only. Isolation rests on the scan, not on the brief.
+
+**The per-task reviewer's October cost** over the two cases: 27 dispatches, 13.35M tokens, 49.9 wall
+minutes (c97ff647b 15 / 7.99M / 32.8 min; cf4b66353 12 / 5.36M / 17.1 min). 15 per-task P3 defects
+are listed in the report, not counted.
+
+### 11.2 Plan checkpoint (§5) and Codex memories (§6)
+
+Not run.
+
+### 11.3 Cost of this run
+
+Claude subagents across both Part B sessions: 566 transcripts, 1.73M output tokens, 192M cache reads,
+22.6M cache writes. Codex: no §4 round ran.
+
+### 11.4 What has to change before a rerun
+
+Each item below changed the outcome; items 1–3 are defects, item 4 is a design limit.
+
+1. **Build checks run through mise shims.** `process-replay.py` starts with `#!/usr/bin/python3`, so
+   `checks.py` calls the mise shims for `python3`, `ruby` and `cargo` inside the work tree. In a
+   repository with a `mise.toml`, every shim exits with "Config files … are not trusted", so every
+   syntax check and `cargo check` failed in VM.Deployments.Docker, curato and tagteam. At its worst
+   (inject #4) that made 10 defects unassessable and 6 incoherent. It predates this session:
+   da2708893 was already out in the previous session's last inject. From inject #5 on, every
+   harness command ran with
+   `MISE_IGNORED_CONFIG_PATHS=$S/work`, which trusts nothing and lasts for one process. Fix: run the
+   checks with tools resolved outside the work tree, or set that variable in the harness.
+2. **The 60,000-character cut on judge input.** judge-present sees each file cut at 60,000
+   characters. In large files (`dashboard-thuis.json`, `git-push-guard.py` near line 1188,
+   `executable_xreview` near line 1095, the forge-guard tests, tagteam's `input.rs`) the cut falls
+   before the code the finding is about, and the judge answers unclear. 21 of the 30 unclear answers
+   and 5 of the 6 no answers were given on files cut this way. It reached three of the six branches
+   disqualified for a P0/P1 defect not shown present (bb2c8d04b, bb1f2a025, b8631963c). Fix: show
+   each file around the finding's location and the fix's hunks, not from the top.
+3. **The leak scan voids clean runs (§7.1 against §7.3).** §7.3 puts the driving session, and so
+   every subagent's cwd, in `~/Code/.replay`, which holds the forbidden `snapshot/`. The matcher
+   resolves relative text against that cwd, and glob-shaped text that is not a path matches
+   `snapshot`: `:\s*` in a `sed` regex yields the piece `s*`, and
+   `tar --include='*/SKILL.md'` yields `*/SKILL.md`. It also counts every `chezmoi` call as reading
+   `~/.local/share/chezmoi`, even `chezmoi --version` and `chezmoi --source <own scratch> managed`.
+   66ad81cc is the first cause alone; 7f3b624a is both. Rescanned with each run's scratch as the
+   cwd, 66ad81cc names nothing and 7f3b624a names only its four `chezmoi` calls; 3819843a still
+   names the original. Fix: keep forbidden roots out of the driving session's directory, and judge
+   a `chezmoi` call by the source and destination it names.
+4. **Recreations that cannot apply.** 34 defects: a recreation is made against the final tree, and a
+   sibling group's revert in the injected tree changes the same lines (§4.3's known limit). It
+   reached four of the six disqualified branches (b64e632c6, bfb0da41d, bb1f2a025, b8631963c).
+   Where fixes sit this close together, this alone fails the coverage gate. It needs a design
+   answer, such as recreating against the injected tree, before a rerun can pass.
+
+Items 1–4 do not address the causes of 15 of the 75 unassessable defects: 9 unclear and 1 no answer
+on files shown whole, 3 recreations judged not the same defect, and 2 that changed nothing. While
+any of them stays unassessable, §4.3's gate fails again. The sixth disqualified branch, b4e316dca,
+is neither item: an unclear answer on a whole file and a fix that does not revert.
+
+Smaller issues, each in the run notes:
+- A fix range attributed to the wrong finding: d409e8f15, a core-spec A.3 finding in tagteam, maps
+  to a range that edits only `SECURITY.md`.
+- The lexical dangling-name check reads words in non-code files as names ("local is still used by
+  .gitignore", "delete is still used by README.md"): 4 defects marked incoherent.
+- 11 receipt nonces carry differing receipts (cross-repository receipts with per-repository targets);
+  their rounds are left out, so unifi-mcp, worktreeinclude-vault-password and the VM.Inference copy
+  of inference-upload-errors never chained.
+- Group g7f4887d8 joined `feat/mise-trust-worktrees` through a quoted range; harmless here.
+- Judge 019e0f7a mapped reviewer labels to severities (Critical to P0) instead of the brief's scale.
+- Operations: the auto-mode classifier denied judges' shell writes, and about 20 judges reported a
+  write that had not happened; every answer was checked on disk and redone with the Write tool.
+  Dispatch was capped at 20 subagents at once.
+
+### 11.5 Recommendation
+
+| Removal | Recommendation |
+|---|---|
+| Per-task reviewer | None: keep it. The result is inconclusive for structural reasons, not on the evidence. A rerun needs items 1–4 fixed, the 15 defects above resolved, and more qualifying cases; with two cases even a clean pass falls short of §4.1. §4.7's confirmation replay remains Michael's call. |
+| Plan checkpoint | Not measured; unchanged. |
+| Codex memories | Not measured; unchanged. |
 
 ## 12. Left to the builder
 
