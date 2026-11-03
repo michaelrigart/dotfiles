@@ -625,7 +625,8 @@ records that commit. Where the export lives is amended in §14.3.
 
 ## 14. Amendment 1: harness fixes before a rerun
 
-**Sign-off:** Michael, 2026-11-03, with the decisions marked below; Codex spec review pending.
+**Sign-off:** Michael, 2026-11-03, with the decisions marked below (Codex approved round 2,
+xr-1793742614-0a194fb1).
 
 It addresses §11.4's items: it fixes the defects (14.1, 14.2, 14.3 a) and changes the rule or the
 design behind the two limits (14.3 b, 14.4). The methods, the pass bars, the coverage gate, the one
