@@ -801,9 +801,13 @@ changed nothing: run it again when the other command has finished. While §4's `
    and report to Michael before any replay turn. If it prints `paused:`, the weekly usage is at
    the pause level: run it again after the reset it names. The daemon keeps running, on record for the next command;
    `run` takes the replay daemons' lock at its entry, so no `home` command runs beside it.
+   `run` refuses a `nomem` whose record, `config.toml`, `memories/` and probe do not all say
+   memories off; such a home cannot be switched, so ask Michael before removing
+   `$XDG_STATE_HOME/cxh/nomem` (after `home --name nomem --stop`) and redoing this step.
 3. `snapshot`; `cases` (opens 16 candidates); dispatch a judge for every item `pending` lists; run
    `cases` again; repeat until it reports `judge answers pending: 0` and an inventory for every
-   opened candidate.
+   opened candidate. A line saying receipts share a nonce and differ means the ledgers disagree:
+   that round is left out; report it to Michael.
 4. `inject`; dispatch the judges and recreations `pending` lists; run `inject` again; repeat. When
    `inject` prints the hint to open more (`cases --open N`), run it, go through step 3's loop, then
    `inject` again. From then on every `cases` in step 3's loop is `cases --open N` with the latest
