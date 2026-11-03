@@ -252,8 +252,8 @@ the answers, and no older snapshot exists (the memories directory's own git hist
   without `.git`) into the state directory. It reads `~/.codex/memories` and writes nothing outside
   the state directory.
   Michael starts it as a background process or a launchd job for the collection period. The copy
-  frozen on 2026-11-02 at 13:21 UTC (`~/Code/.replay/snapshot/2026-11-02/codex-memories/`) is the
-  first snapshot.
+  frozen on 2026-11-02 at 13:21 UTC (`~/Code/.replay/snapshot/2026-11-02/codex-memories/`, moved in
+  §14.3) is the first snapshot.
 - **Arms.** A and A′ read the latest snapshot taken before the case's round-1 dispatch. That is what
   the deployed reviewer had then, the branch's earlier spec and plan reviews included, and nothing
   from the review itself or later. B reads no memories.
@@ -290,7 +290,7 @@ any turn runs. If neither works, stop and report.
 - Codex turns go through `xreview-rpc`, so no ledger entry or receipt is written.
 - The Claude session that drives the harness and dispatches the judges runs from
   `~/Code/.replay/`. `measure-interventions.py` excludes that project key by default
-  (`--exclude-project`).
+  (`--exclude-project`). That directory holds no forbidden root (amended in §14.3).
 - Running the replay changes no setup, so it may run before 2026-11-15. Adopting a removal waits
   until after the 2026-11-15 reading.
 
@@ -319,8 +319,8 @@ any turn runs. If neither works, stop and report.
   object snapshot below, writing nothing into the original repositories.
 - The object stores of VM.Portal, VM.Inference, curato, opsmaster, tagteam and the dotfiles were
   copied on 2026-11-02, before sign-off, to `~/Code/.replay/snapshot/2026-11-02/<repo>/objects`
-  (APFS clones, so no extra space until the originals change). `snapshot` uses them as a
-  read-only object source for scratch repositories, never as alternates.
+  (APFS clones, so no extra space until the originals change; moved in §14.3). `snapshot` uses
+  them as a read-only object source for scratch repositories, never as alternates.
 - The `memories` switch in `.scripts/xreview-replay.py`.
 - `--exclude-project` in `.scripts/measure-interventions.py`.
 - Tests: `tests/process-replay.test.sh`, a dry run on fixture cases with a stubbed daemon. It covers:
@@ -537,9 +537,9 @@ methods and bars above are unchanged except where a line says so.
 
   A recursive search rooted above a forbidden root counts as a read. Grep patterns and
   redirection targets are not search roots (a redirection target is still checked as a path); command substitutions inside a pattern are still scanned.
-  Running `chezmoi` counts as reading the original dotfiles. A rollout that cannot be read counts
-  as a leak. Dotfiles cases may void more often than others; that verdict is correct. The
-  remaining limits (unknown variables, paths built at run time, reads spread over separate calls,
+  Running `chezmoi` counts as reading the original dotfiles (amended in §14.3). A rollout that
+  cannot be read counts as a leak. Dotfiles cases may void more often than others; that verdict
+  is correct. The remaining limits (unknown variables, paths built at run time, reads spread over separate calls,
   ANSI-C quoting, `env -C`) are listed in `codex.py` (Michael's restructure, 2026-11-03).
 - Merge evidence runs `git merge-tree` in a private view repository whose alternates are the
   snapshot (or the original's objects). Git then refreshes those packs' modification times. The
@@ -565,12 +565,14 @@ methods and bars above are unchanged except where a line says so.
   - each round builds the tree from the final tree with the active defects reverted;
   - judge questions are keyed by a digest of exactly what the judge sees;
   - whatever fails leaves, and the active set only shrinks;
-  - each per-task defect gets one recreation attempt (against the final tree, checked for syntax).
+  - each per-task defect gets one recreation attempt (against the final tree, checked for syntax;
+    amended in §14.4).
 - The shipped tree is the fixpoint tree, and every counted defect was judged present on it. A
   defect whose group stays reverted for another member is unassessable, with no recreation.
 - Coherence means a syntax check per revert, a lexical check for names still used elsewhere, and
   `cargo check` once per distinct tree. A missing tool is recorded, not fatal, and so is a
-  `cargo check` that times out; a syntax check that times out fails its step.
+  `cargo check` that times out; a syntax check that times out fails its step. §14.1 sets the
+  tools these checks use.
 - The coverage gate covers the branches that were built.
 
 **Runs and the bar (§4.4, §4.6)**
@@ -619,4 +621,113 @@ methods and bars above are unchanged except where a line says so.
   itself, so no test reads the live homes.
 
 **Part B** runs from an export of the pushed commit, never from the shared checkout, and §11
-records that commit.
+records that commit. Where the export lives is amended in §14.3.
+
+## 14. Amendment 1: harness fixes before a rerun
+
+**Sign-off:** Michael, 2026-11-03, with the decisions marked below; Codex spec review pending.
+
+It addresses §11.4's items: it fixes the defects (14.1, 14.2, 14.3 a) and changes the rule or the
+design behind the two limits (14.3 b, 14.4). The methods, the pass bars, the coverage gate, the one
+recreation per defect and judge blindness are unchanged. Each part names the text it replaces, and
+each line it amends elsewhere in this spec points here.
+
+### 14.1 Checks ignore the work tree's tool configuration (§11.4 item 1)
+
+Every check the harness runs in a tree it built (the syntax checks and `cargo check`) runs with
+`MISE_IGNORED_CONFIG_PATHS` covering the state directory and `review-work/scratch`. A repository's
+`mise.toml` is then ignored, and the shims resolve the tools of the global mise configuration.
+Nothing is trusted and no mise state is written. The variable is set for those child processes
+only. Injects #5–#10 ran this way, set for the whole process, and every `cargo check` passed. A test
+pins it: a check in a tree that holds an untrusted `mise.toml` passes.
+
+### 14.2 Judges see a file around the defect, not from the top (item 2)
+
+Replaces the cut of each file at its first 60,000 characters, for every judge-present input:
+presence at the round-1 tip (inventory), validation on the injected tree, and revalidation in a run.
+One function builds those inputs. A file of up to 60,000 characters is shown whole, as now. A longer
+file is shown as windows of at least 150 lines either side of each anchor, each window headed with
+its line range and the file's length, and overlapping windows are merged. The anchors are:
+- the hunks of the defect's repair (for presence at the round-1 tip, its fix's), located in the
+  tree the judge sees;
+- the finding's line, when the finding gives one.
+
+The 150,000-character total stays, with the finding's own file first. Windows show no diff and no
+mark of what changed. A file in which no anchor can be located keeps the cut from the top, and the
+report counts those inputs. Question ids are digests of what the judge sees, so every input that was
+cut is asked again; the old answers are kept (§13).
+
+### 14.3 The leak scan (item 3)
+
+**(a) Nothing forbidden under the driving session.** Amends §7.3. The directory the driving session
+runs from (`~/Code/.replay/`) holds no forbidden root and no copy of a repository:
+- the snapshot moves to `$XDG_STATE_HOME/process-replay/snapshot/2026-11-02/`, a rename on the
+  same volume, so the clones stay clones (§9 and §6 keep their 2026-11-02 path, with a pointer to
+  this line);
+- Part B's export of the harness commit goes to `$XDG_STATE_HOME/process-replay/harness-<commit>`.
+  It is a forbidden root in every case: in a dotfiles case it holds the repository's later state.
+
+The move rewrites, in the same step and while no `process-replay` command runs, every reference
+the kept state holds to the old path: the views' alternates, `branches.json` and the run records
+*(Michael, 2026-11-03)*. `run` refuses to start while a forbidden root lies beneath its working
+directory. The matcher still
+resolves relative text against the record's cwd, so a real relative read is judged where it lands.
+Glob-shaped text that is not a path can then match only the session's own files.
+
+**(b) `chezmoi` judged by what it names.** Replaces §13's "Running `chezmoi` counts as reading
+the original dotfiles":
+- `chezmoi --version` and `chezmoi help` read nothing;
+- a call that gives `--source` or `-S` is judged by its paths: the source, `--config`, `--cache`,
+  `--persistent-state` and the destination (`--destination` or `-D`, default `~`). The destination
+  is read as a search root, unless the subcommand reads only the source state (`managed`,
+  `source-path`);
+- any other `chezmoi` call still counts as reading the original.
+
+This reverses §13's ruling of the same day *(Michael, 2026-11-03)*. Before the exemption is relied
+on, a test against a real `chezmoi` shows that `managed` and `source-path` read nothing outside the
+source state. A subcommand that fails the test loses the exemption.
+
+**(c) Literal assignments expand within a call.** A variable assigned a literal value earlier in the
+same tool call (`NAME=value`, or `export NAME=value`, before `;`, `&&` or a newline) is expanded where
+that call uses it later. A value that is not literal stays unknown, as §13 lists. This closes a
+miss, and it lets (b) judge `chezmoi --source "$SRC"` by where `$SRC` points.
+
+Against this run's transcripts: (a) alone clears 66ad81cc (a rescan with its scratch as the cwd names
+nothing). By inspection, (a) to (c) together clear 7f3b624a's four `chezmoi` calls. 3819843a still
+voids on its `git -C ~/.local/share/chezmoi log` and `ls ~/.claude/skills`.
+
+### 14.4 Recreations made against the injected tree (item 4)
+
+Replaces §13's "against the final tree". A per-task defect that leaves the active set gets its one
+recreation against the tree of the round in which it left: the final tree with every other active
+group reverted and `docs/superpowers` pinned. Its patch and its repair are relative to that tree.
+
+The locate step treats a recreation as it treats a group. A group whose repair applies only after
+the recreation's repair merges with it, so a match on either repairs both and the other is censored.
+If a later round's tree changes under a recreation so that it no longer applies, its defect is out
+for good. The one attempt per defect stays, and so does the fixpoint's bound. `check_invariant` is
+unchanged: the shipped tree with every repair applied is the final tree.
+
+The recreations in the kept state were made against the final tree. They are set aside and kept,
+and each defect gets its one recreation under this rule.
+
+### 14.5 Order of the rerun
+
+After these fixes, `inject` runs again on the kept state and reports the coverage gate before any
+Codex round. `run` starts only if the gate passes *(Michael, 2026-11-03)*. Otherwise §4 stays
+inconclusive, and that report goes to Michael without spending the §4 Codex budget. Stopping is the
+default, not a lock: on Michael's request, `run` starts anyway (an explicit option) for the recovery
+evidence, and the verdict stays inconclusive.
+
+### 14.6 Tests
+
+`tests/process-replay.test.sh` gains:
+- a check in a tree with an untrusted `mise.toml`;
+- a window input for a long file: anchors located, windows merged, the fallback counted;
+- the scan from a cwd with nothing forbidden beneath it, and `run` refusing one with a forbidden root
+  beneath it;
+- `chezmoi --version`, a `--source` call into the run's own scratch with `managed`, and a default
+  destination read as a search root;
+- an assignment expanded within one call, and not across calls;
+- a recreation made against a round tree in which a sibling's revert changed its context: it
+  applies, and merges with that sibling's group at locate.
