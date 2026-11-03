@@ -3421,17 +3421,33 @@ bash "$XREVIEW" apply --done >/dev/null 2>&1
 out="$(bash "$XREVIEW" apply xr-ck-none 2>&1)"; rc=$?
 is "CK6 a nonce on record nowhere still opens the window" "$rc/$([ -e "$STATE/applying" ] && echo opened || echo none)" "0/opened"
 bash "$XREVIEW" apply --done >/dev/null 2>&1
+# . and .. exist under turns/ in every state directory, so they are not nonces: apply refuses
+# them as malformed, never as "another checkout"; an option-looking id is an unsafe identifier.
+for bad in . .. ; do
+  out="$(bash "$XREVIEW" apply "$bad" 2>&1)"; rc=$?
+  is "CK6 apply $bad refuses as a malformed nonce, not as another checkout, and writes no window" \
+     "$rc/$(printf '%s' "$out" | grep -c 'nonces start with xr-')/$(printf '%s' "$out" | grep -c 'another checkout')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/0/none"
+done
+out="$(bash "$XREVIEW" apply -x 2>&1)"; rc=$?
+is "CK6 apply -x refuses as an unsafe identifier, and writes no window" \
+   "$rc/$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/none"
 fresh; rm -rf "$(ckstate)"; export PANE_CWD="$CK"
 mkdir -p "$STATE" "$(ckstate)"; echo "$U2" > "$STATE/review-thread"; echo "$U3" > "$(ckstate)/review-thread"
 bash "$XREVIEW" -C "$CK" round --reset >/dev/null 2>&1
 is "CK7 round --reset with -C drops only the checkout's thread" \
    "$([ -e "$(ckstate)/review-thread" ] && echo kept || echo gone)/$([ -e "$STATE/review-thread" ] && echo kept || echo gone)" "gone/kept"
 fresh; rm -rf "$(ckstate)"
-for bad in "$ROOT/nope:cannot enter $ROOT/nope" "$ROOT/plain:$ROOT/plain is not inside a git checkout"; do
+CKGIT="$(git -C "$CK" rev-parse --absolute-git-dir)"   # inside it, --is-inside-work-tree prints false and exits 0
+for bad in "$ROOT/nope:cannot enter $ROOT/nope" "$ROOT/plain:$ROOT/plain is not inside a git checkout" \
+           "$CKGIT:$CKGIT is not inside a git checkout"; do
   out="$(bash "$XREVIEW" -C "${bad%%:*}" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
   is "CK8 -C ${bad%%:*} refuses with the reason, touching nothing" \
      "$rc/$(printf '%s' "$out" | grep -cF "xreview: ${bad#*:}")/$(untouched)" "1/1/yes"
 done
+# -C - is not "the previous directory": cd would follow OLDPWD and print it.
+out="$(OLDPWD="$CK" bash "$XREVIEW" -C - dispatch --checkpoint plan b.md 2>"$ROOT/dash-err")"; rc=$?
+is "CK8 -C - refuses, prints nothing on stdout, and touches nothing" \
+   "$rc/${#out}/$(grep -cF 'xreview: cannot enter -' "$ROOT/dash-err")/$(untouched)" "1/0/1/yes"
 out="$(bash "$XREVIEW" -C 2>&1)"; rc=$?
 is "CK8 a bare -C refuses" "$rc/$(printf '%s' "$out" | grep -cF 'xreview: -C needs a checkout directory')/$(untouched)" "1/1/yes"
 fresh

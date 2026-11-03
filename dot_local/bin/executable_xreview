@@ -124,7 +124,7 @@ state_dir() {
 nonce_elsewhere() {
   local here d; here="$(state_dir)"
   for d in "${XDG_STATE_HOME:-$HOME/.local/state}"/xreview/*; do
-    [ "$d" != "$here" ] && [ -e "$d/turns/$1" ] || continue
+    [ "$d" != "$here" ] && [ -f "$d/turns/$1" ] || continue
     printf '%s\n' "$d"; return 0
   done
   return 1
@@ -876,7 +876,11 @@ cmd_apply() {
   fi
   [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
   assert_id "$1"
-  if [ ! -e "$dir/turns/$1" ] && other="$(nonce_elsewhere "$1")"; then
+  case "$1" in
+    xr-*) ;;
+    *) die "usage: xreview apply <nonce> | xreview apply --done - nonces start with xr-" ;;
+  esac
+  if [ ! -f "$dir/turns/$1" ] && other="$(nonce_elsewhere "$1")"; then
     die "$1 was dispatched from another checkout (its state is $other); run apply with the -C it was dispatched with"
   fi
   git rev-parse --show-toplevel >/dev/null 2>&1 \
@@ -2020,8 +2024,11 @@ done
 if [ "${1:-}" = "-C" ]; then
   [ "${3:-}" != help ] || { usage; exit 0; }
   [ -n "${2:-}" ] || die "-C needs a checkout directory"
-  CDPATH='' builtin cd -- "$2" 2>/dev/null || die "cannot enter $2"
-  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$2 is not inside a git checkout"
+  # cd treats a lone - as $OLDPWD and prints it; a checkout is never named that way.
+  [ "$2" != - ] || die "cannot enter $2"
+  CDPATH='' builtin cd -- "$2" >/dev/null 2>&1 || die "cannot enter $2"
+  # Inside a .git directory the answer is the word false with exit 0, so the word is checked.
+  [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || die "$2 is not inside a git checkout"
   shift 2
 fi
 
