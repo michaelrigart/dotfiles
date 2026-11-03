@@ -45,11 +45,12 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
 
   | Batch | Tasks | Why they can share a batch |
   |---|---|---|
-  | 1 | 1, 2, 3, 12 | disjoint files; `t_checks`/`t_inject`, `t_excerpts` and `t_codex` load none of the other tasks' modules; Task 12 changes only `tests/xreview-replay.test.sh`, a module no other task changes |
-  | 2 | 4, 5 | `codex.py` vs `inject.py`/`gate.py`; `t_codex` loads neither, `t_inject`/`t_gate` do not load `codex`. `t_e2e` (Task 5 changes its cleanup assertions) runs in the batch's full suite |
-  | 3 | 6 | it touches `gate`, `inventory`, `loop`, `inject` and `bar`; `t_loop` loads every module |
-  | 4 | 7 | it changes `common.py`, which every suite loads |
-  | 5 | 8, 9 | `loop.py`/`inject.py`/`bar.py` vs `relocate.py`/`process-replay.py`; Task 8 runs `t_loop`/`t_inject`/`t_bar`, which do not load the CLI; Task 9 runs `t_relocate`, which loads only the CLI, `relocate` and `common`. `t_e2e` (Task 8 adds one line to it) runs in the batch's full suite |
+  | 1 | 12 | alone: its suite, `tests/xreview-replay.test.sh`, loads `process_replay.codex` and `common`, which later batches change |
+  | 2 | 1, 2, 3 | disjoint files; `t_checks`/`t_inject`, `t_excerpts` and `t_codex` load none of the other tasks' modules |
+  | 3 | 4, 5 | `codex.py` vs `inject.py`/`gate.py`; `t_codex` loads neither, `t_inject`/`t_gate` do not load `codex`. `t_e2e` (Task 5 changes its cleanup assertions) runs in the batch's full suite |
+  | 4 | 6 | it touches `gate`, `inventory`, `loop`, `inject` and `bar`; `t_loop` loads every module |
+  | 5 | 7 | it changes `common.py`, which every suite loads |
+  | 6 | 8, 9 | `loop.py`/`inject.py`/`bar.py` vs `relocate.py`/`process-replay.py`; Task 8 runs `t_loop`/`t_inject`/`t_bar`, which do not load the CLI; Task 9 runs `t_relocate`, which loads only the CLI, `relocate` and `common`. `t_e2e` (Task 8 adds one line to it) runs in the batch's full suite |
 
 - **Python.** `#!/usr/bin/python3`, 3.9-compatible (no `match`, no `X | Y`), stdlib only. New package
   modules are mode `100644`. Tests run with `-B`, and no `__pycache__` is ever committed.
@@ -757,12 +758,14 @@ way.
   and exits 0)
 
 - [ ] **Step 1: Rewrite the case** on a fresh state directory of its own (`unit21p`, beside `unit21`), whose
-  run files record nothing, so `Hm.spent(unit21p) == 0`, with `Hm.rpc` a plain stub that records each
-  `turn-start` (RP21's `interleaved` starts a nested job):
-  - With `Hm.FLIGHT[(unit21p, "c.pre", "zzzzzzzz")] = 2600` and a cap of 2,500, `run_pool` starts no job
-    (the rpc stub records no `turn-start`) and hands the job back.
-  - Control: with `FLIGHT` cleared and the same fresh state, the pool starts the job (a `turn-start` is
-    recorded). Without it the case cannot tell a pool that starts nothing at all.
+  run files record nothing, so `Hm.spent(unit21p) == 0`. The case records what the pool submits by
+  replacing `Hm.run_job` with a recorder that appends the job's label and returns `{}` (a finished job), and
+  restores it afterwards. A `turn-start` count cannot show the pool's check: `review()` checks `spent_now`
+  again before each turn and stops a submitted job before its first turn.
+  - With `Hm.FLIGHT[(unit21p, "c.pre", "zzzzzzzz")] = 2600` and a cap of 2,500, `run_pool` submits no job
+    (the recorder holds nothing) and hands the job back.
+  - Control: with `FLIGHT` cleared and the same fresh state, the pool submits the job (the recorder holds
+    its label). Without it the case cannot tell a pool that submits nothing at all.
   - `FLIGHT` is cleared afterwards, as today.
 - [ ] **Step 2: Show it bites** (nothing of this is committed). Make `run_pool`'s start check call `spent`
   instead of `spent_now` in `.scripts/xreview-replay.py`; the new case fails and the control passes. Restore
