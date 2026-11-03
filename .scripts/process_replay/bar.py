@@ -14,6 +14,10 @@ the class, severity and summary of a defect are not in the run states. Precedenc
   inconclusive anything else.
 
 A run voided and replaced by a re-run is not counted; a final void (no replacement) or an error run is not assessable.
+
+A run counts only for the case inputs it began with: it records common.case_digest of its case (run["case_digest"]), `bar` takes each
+case's current one as case["digest"], and a run with another digest, or one `run` marked superseded, is set aside: not counted, not
+tallied, listed apart (bar()["superseded"], the report). `run` then makes fresh runs of the case as it is now.
 """
 import collections
 import glob
@@ -82,20 +86,35 @@ def runs_of(a):
     return out
 
 
-def live_runs(runs, cid):
-    """The case's runs that count: a run replaced by a re-run is left out."""
-    return sorted((r for r in runs if r["case"] == cid and not (r.get("end") == "void" and r.get("replaced_by"))), key=lambda r: r["label"])
+def current(case, run):
+    """Whether `run` was made for the case's inputs as they are now (and not set aside)."""
+    return not run.get("superseded") and run.get("case_digest") == case.get("digest")
+
+
+def set_aside(runs, case):
+    """The case's runs made for other inputs than it has now, by label."""
+    return sorted((r for r in runs if r["case"] == case["id"] and not current(case, r)), key=lambda r: r["label"])
+
+
+def live_runs(runs, case):
+    """The case's runs that count: those made for its inputs as they are, and not replaced by a re-run after a void."""
+    return sorted((r for r in runs if r["case"] == case["id"] and current(case, r) and not (r.get("end") == "void" and r.get("replaced_by"))),
+                  key=lambda r: r["label"])
 
 
 def bar(cases, runs, coverage):
     fails, blocks = [], []
-    assessable, unrecovered, uncounted, no_pre = {}, [], [], []
+    assessable, unrecovered, uncounted, no_pre, superseded = {}, [], [], [], {}
     for case in cases:
         if not [d for d in case["defects"] if _info(case, d).get("class") != "task"]:
             no_pre.append(case["id"])
-        mine = live_runs(runs, case["id"])
+        mine = live_runs(runs, case)
+        old = [r["label"] for r in set_aside(runs, case)]
+        if old:
+            superseded[case["id"]] = old
         if len(mine) < C.RUNS:
-            blocks.append("case {}: {} of {} runs".format(case["id"], len(mine), C.RUNS))
+            blocks.append("case {}: {} of {} runs{}".format(case["id"], len(mine), C.RUNS, " ({} more set aside as superseded: the case's inputs changed since they ran; "
+                                                            "`run` makes fresh ones)".format(len(old)) if old else ""))
         uncounted += [{"case": case["id"], "defect": d["id"], "severity": d.get("severity"), "summary": d.get("summary")}
                       for d in sorted(case["info"].values(), key=lambda x: x["id"]) if d.get("class") == "task" and not d.get("counted")]
         for run in mine:
@@ -129,7 +148,8 @@ def bar(cases, runs, coverage):
         status, reasons = "inconclusive", blocks
     else:
         status, reasons = "pass", ["every run of every case is assessable and every per-task defect was recovered in every run"]
-    return {"status": status, "assessable": assessable, "reasons": reasons, "unrecovered_task": unrecovered, "uncounted_task": uncounted, "no_pre_cases": no_pre}
+    return {"status": status, "assessable": assessable, "reasons": reasons, "unrecovered_task": unrecovered, "uncounted_task": uncounted, "no_pre_cases": no_pre,
+            "superseded": superseded}
 
 
 # ------------------------------------------------------------------ the report's numbers
@@ -189,6 +209,8 @@ def _load(a):
     if not isinstance(doc, dict) or not isinstance(doc.get("cases"), list):
         raise Failed("no cases.json in {}: run inject first".format(a.state))
     inventories, injected = {}, {}
+    branches = dict((b["id"], b) for b in (jload(os.path.join(a.state, "branches.json")) or {}).get("branches") or []
+                    if isinstance(b, dict) and isinstance(b.get("id"), str))
     cases = []
     for c in doc["cases"]:
         if not isinstance(c, dict):
@@ -198,8 +220,9 @@ def _load(a):
             raise Failed("case {}: no inventory/{}.json".format(c["id"], c["branch"]))
         inventories[c["branch"]] = inv
         injected[c["branch"]] = jload(os.path.join(a.state, "injected", c["branch"] + ".json")) or {}
-        cases.append(dict(c, info=dict((d["id"], d) for d in inv.get("defects") or [] if isinstance(d, dict) and "id" in d)))
-    return doc, cases, inventories, injected
+        info = dict((d["id"], d) for d in inv.get("defects") or [] if isinstance(d, dict) and "id" in d)
+        cases.append(dict(c, info=info, digest=C.case_digest(c, branches.get(c["branch"]), injected[c["branch"]], info)))
+    return doc, cases, inventories, injected, branches
 
 
 def _mins(x):
@@ -228,9 +251,13 @@ def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines):
                 out.append("      {}: recovered {}, unrecovered {}, censored {}".format(name, r[k]["recovered"], r[k]["unrecovered"], r[k]["censored"]))
             if r["replaces"]:
                 out.append("      re-run of void run {}".format(r["replaces"]))
-        live = set(x["label"] for x in live_runs(runs, case["id"]))
-        for r in sorted((x for x in runs if x["case"] == case["id"] and x["label"] not in live), key=lambda x: x["label"]):
+        live = set(x["label"] for x in live_runs(runs, case))
+        for r in sorted((x for x in runs if x["case"] == case["id"] and current(case, x) and x["label"] not in live), key=lambda x: x["label"]):
             out.append("  void run {}: replaced by {}; leak {}".format(r["label"], r.get("replaced_by"), ", ".join(r.get("leak") or []) or "none"))
+        old = status["superseded"].get(case["id"])
+        if old:
+            out.append("  {} run(s) set aside as superseded, not counted: the case's inputs (its injected tree, defects, repairs or branch) changed after they began: {}".format(
+                len(old), ", ".join(old)))
     out += ["", "Extra Codex rounds the simulation needed (simulated minus original), over the {} assessable run(s): {:+d}; Codex tokens: {}".format(
         total[True]["runs"], total[True]["extra"], total[True]["tokens"]),
             "  over the {} run(s) that are not assessable (error, final void, unfinished, too much censored or missed, or no pre-merge class): {:+d}; Codex tokens: {}".format(
@@ -277,13 +304,11 @@ def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines):
 
 @C.locked("shared")
 def cmd_report(a):
-    doc, cases, inventories, injected = _load(a)
+    doc, cases, inventories, injected, branches = _load(a)
     ids = set(c["id"] for c in cases)
     runs = [r for r in runs_of(a) if r["case"] in ids]
     status = bar(cases, runs, doc.get("coverage"))
-    rows = dict((c["id"], [run_row(c, r) for r in live_runs(runs, c["id"])]) for c in cases)
-    branches = dict((b["id"], b) for b in (jload(os.path.join(a.state, "branches.json")) or {}).get("branches") or []
-                    if isinstance(b, dict) and isinstance(b.get("id"), str))
+    rows = dict((c["id"], [run_row(c, r) for r in live_runs(runs, c)]) for c in cases)
     reviews = jload(os.path.join(a.state, "reviews.json"))
     cost = None
     if isinstance(reviews, dict) and isinstance(reviews.get("groups"), list):
@@ -295,6 +320,7 @@ def cmd_report(a):
     data = {"bar": status, "coverage": doc.get("coverage") or {}, "drops": dropped, "examined_not_cases": [e for e in doc.get("examined") or []
                                                                                                          if isinstance(e, dict) and not e.get("qualified")],
             "cases": [dict(id=c["id"], branch=c["branch"], repo=c.get("repo"), original_rounds=c.get("original_rounds"), runs=rows[c["id"]],
+                           superseded=status["superseded"].get(c["id"], []),
                            october=(cost or {}).get(c["id"]),
                            october_unknown=("branch {} is not in branches.json".format(c["branch"]) if cost is not None and cost.get(c["id"]) is None else None))
                       for c in cases],
@@ -304,6 +330,7 @@ def cmd_report(a):
         return 0
     C.jsave(os.path.join(a.state, "report.md"), text)
     C.jsave(os.path.join(a.state, "report.json"), json.dumps(data, indent=2))
-    say("report: {} ({} case(s), {} run(s)); written to {}".format(status["status"], len(cases), sum(len(v) for v in rows.values()),
-                                                                  os.path.join(a.state, "report.md")))
+    aside = sum(len(v) for v in status["superseded"].values())
+    say("report: {} ({} case(s), {} run(s){}); written to {}".format(status["status"], len(cases), sum(len(v) for v in rows.values()),
+                                                                    ", {} set aside as superseded".format(aside) if aside else "", os.path.join(a.state, "report.md")))
     return 0

@@ -41,6 +41,11 @@ holding only input.json and brief.md; the judge writes answer.json there, and `c
   judge-match/<case>.json          {known:[...], runs:{label:[findings]}}  (no case id in either: it names the class)
   judge-match answer               {matches:[{known_index, label, finding_index|null}]}
 (<kind>/<id>.answer.json in the state, once collected, is where the answer lives; an answer put there by hand counts too.)
+A result counts only for the inputs it was recorded against. arms.json records, per arm, the digest of what its run depends on (arm_digest: the
+case's round, target, fork, switch and, for the memories arms, the snapshot's hash) and cases.json, per case, the digest of the judge-known input
+its known findings were judged on ("known_input"). `prepare` gives an arm whose digest changed a new label and marks the old one superseded (its
+run file stays and still counts toward the token stop, never toward a report); `match` and `report` use only arms whose digest is the case's now,
+and a case whose judge-known input changed since `cases` wrote it is not counted. The report says how many were set aside.
 An answer is used only when complete for its input: a verdict for every finding, a match for every known finding and review. One
 that is not is set aside (<id>.rejected-<n>.answer.json) and the input is pending again.
 A round is named by its review's nonce; a case by <nonce>.<class>: pre (pre-merge, fresh thread),
@@ -540,6 +545,7 @@ def cases_memories(a):
         ans = judge_got(a, "judge-known", n)
         yes = set(v.get("index") for v in (ans or {}).get("verdicts", []) if isinstance(v, dict) and v.get("answer") == "yes")
         case["known"] = None if ans is None else [dict(f, index=i) for i, f in enumerate(f for f in case["findings"] if f["index"] in yes)]
+        case["known_input"] = common.input_digest(a.state, "judge-known", n)
     chosen = [c for c in pool if (c["known"] if not a.dry_run else c["known"] != [])][:MEMORIES_QUOTA]
     say("memories: {} case(s); {} dropped; {} on branches that started before the watcher".format(len(chosen), len(dropped), early))
     say("judge inputs: {} round(s); `pending` lists them with their briefs".format(len(pool)))
@@ -589,6 +595,7 @@ def cmd_cases(a):
         ans = judge_got(a, "judge-known", n)
         yes = set(v.get("index") for v in (ans or {}).get("verdicts", []) if isinstance(v, dict) and v.get("answer") == "yes")
         c["known"] = None if ans is None else [dict(f, index=i) for i, f in enumerate(f for f in c["findings"] if f["index"] in yes)]
+        c["known_input"] = pkg("common").input_digest(a.state, "judge-known", n)
 
     def ok(c):
         return c["known"] if not a.dry_run else c["known"] != []
@@ -714,6 +721,35 @@ def arms_of(case):
     return [("A", None), ("A2", None), ("B", "delta" if case["class"] == "inc" else "fit")]
 
 
+def arm_digest(case, arm, sw):
+    """The digest of everything an arm's run of `case` depends on: the round, its thread, turn and place, the target (repository, range, base, tip,
+    destination), the fork the arm starts from, the arm and its switch, and for a memories case the snapshot an A or A2 arm's home holds
+    (its hash and directory). A run is recorded against it (arms.json, the run file); one made for another digest never counts."""
+    mem = case.get("memories") if case.get("class") == "mem" and arm != "B" else None
+    return pkg("common").digest_of({
+        "round": case.get("round"), "class": case.get("class"), "thread": case.get("thread"), "turn": case.get("turn"), "k": case.get("k"),
+        "at": case.get("at"), "target": case.get("target"), "fork": case.get("fork") if forks(case, arm) else None, "arm": arm, "switch": sw,
+        "memories": {"hash": mem.get("hash"), "dir": mem.get("dir")} if isinstance(mem, dict) else None})
+
+
+def current_arms(case, arms):
+    """{arm: label} of the case's arms whose recorded digest is the one the case gives them now (arm_digest), not set aside. An arm the case
+    now has but arms.json has no current label for is missing from it."""
+    mine, out = arms.get(case["id"], {}), {}
+    for arm, sw in arms_of(case):
+        dig = arm_digest(case, arm, sw)
+        for label, v in sorted(mine.items()):
+            if v.get("arm") == arm and not v.get("superseded") and v.get("input") == dig:
+                out[arm] = label
+    return out
+
+
+def set_aside_arms(case, arms):
+    """The labels in arms.json for the case that current_arms does not take: made for other inputs than the case has now."""
+    keep = set(current_arms(case, arms).values())
+    return sorted(l for l in arms.get(case["id"], {}) if l not in keep)
+
+
 def exercised(case, sw, dec):
     """Why B's packet did not exercise the switch under test, or None. A B that did not is an error
     run: its result would rest on a packet that is not the thing being measured."""
@@ -771,13 +807,20 @@ def prepare(a, cases, live):
             except Failed as e:
                 hist_error = str(e)
         for arm, sw in arms_of(case):
-            label = next((l for l, v in arms.get(cid, {}).items() if v["arm"] == arm), None)
+            dig, label = arm_digest(case, arm, sw), None
+            for l, v in arms.get(cid, {}).items():
+                if v["arm"] == arm and not v.get("superseded"):
+                    if v.get("input") == dig:
+                        label = l
+                    else:       # the case's inputs changed since this arm ran: its run file stays, and is never counted again
+                        v["superseded"] = dig
+                        say("{} {} {}: set aside as superseded, the case's inputs changed since it ran".format(cid, arm, l))
             if label is None:
                 label = os.urandom(4).hex()
                 while label in taken:
                     label = os.urandom(4).hex()
                 taken.add(label)
-                arms.setdefault(cid, {})[label] = {"arm": arm, "switch": sw}
+                arms.setdefault(cid, {})[label] = {"arm": arm, "switch": sw, "input": dig}
             on = {"A": [], "A2": [], "F": ["framing"]}.get(arm) if arm != "B" else ["framing", sw]
             if case["class"] == "mem":      # only the Codex home differs between the arms: one packet for all
                 on = []
@@ -790,7 +833,7 @@ def prepare(a, cases, live):
                    "turns_file": turns_file if (arm == "B" and sw == "delta") else None}
             job = {"case": cid, "arm": arm, "switch": sw, "framing": "framing" in on, "repo": t["repo"], "tip": t["tip"], "target": t,
                    "fork": case["fork"] if forks(case, arm) else None, "error": hist_error if (arm == "B" and sw == "delta") else None,
-                   "decision": None, "home": None, "memories": None, "scratch": None, "label": label}
+                   "decision": None, "home": None, "memories": None, "scratch": None, "label": label, "input": dig}
             if case["class"] == "mem":
                 job["home"] = "nomem" if arm == "B" else "mem-" + case["memories"]["hash"][:12]
                 job["memories"] = None if arm == "B" else case["memories"]["dir"]
@@ -952,7 +995,7 @@ def leak_scan(a, job, turns, clone):
 
 def run_job(a, job):
     res = {"verdict": None, "findings": [], "reviewed_files": [], "tokens": 0, "compacted": False, "slices": 0,
-           "kind": None, "missing": None, "error": None, "home": job.get("home")}
+           "kind": None, "missing": None, "error": None, "home": job.get("home"), "input": job.get("input")}
     clone, own, wasted, voids = None, None, 0, []
     try:
         if job["error"]:
@@ -1180,7 +1223,7 @@ def cmd_run(a):
             return 0
         def finished(j):
             run = jload(os.path.join(a.state, "runs", j["case"], j["label"] + ".json"))
-            return bool(run) and not (run.get("error") and (a.retry_errors or run.get("interrupted")))
+            return bool(run) and run.get("input") == j["input"] and not (run.get("error") and (a.retry_errors or run.get("interrupted")))
         todo = [j for j in jobs if not finished(j)]
         drop_scratch([j for j in jobs if j not in todo])
         groups = collections.OrderedDict()
@@ -1233,15 +1276,17 @@ def cmd_cleanup(a):
 
 
 # ------------------------------------------------------------------ match and report
-def load_run(state, cid, label):
+def load_run(state, cid, label, want=ANY):
+    """The finished run of an arm, or None (no file, or an error). With `want` (the arm's digest), only a run recorded against it."""
     run = jload(os.path.join(state, "runs", cid, label + ".json"))
-    return run if run and not run.get("error") else None
+    return run if run and not run.get("error") and (want is ANY or run.get("input") == want) else None
 
 
 def match_doc(a, case, arms):
     """The judge-match input of `case` as the finished runs stand now, or None while no run has findings. `match` writes it and
     `report` compares it with what the judge was given: an answer counts only for the input it saw."""
-    runs = dict((l, (load_run(a.state, case["id"], l) or {}).get("findings")) for l in sorted(arms.get(case["id"], {})))
+    mine = arms.get(case["id"], {})
+    runs = dict((l, (load_run(a.state, case["id"], l, mine[l]["input"]) or {}).get("findings")) for l in sorted(current_arms(case, arms).values()))
     runs = dict((l, [dict((k, f.get(k)) for k in FINDING_KEYS) for f in found if isinstance(f, dict)])
                 for l, found in runs.items() if found is not None)
     return {"case": case["id"], "known": case["known"], "runs": runs} if runs else None
@@ -1282,11 +1327,19 @@ def cmd_report(a):
     cj, arms = jload(os.path.join(a.state, "cases.json"), {}), jload(os.path.join(a.state, "arms.json"), {})
     prog = jload(os.path.join(a.state, "progress.json"), {})
     byid = dict((c["id"], c) for c in cj.get("cases", []))
-    out, errors, mixed, outdated = {}, [], [], []
+    out, errors, mixed, outdated, aside, stale = {}, [], [], [], {}, []
+    common = pkg("common")
     for cid in sorted(set(i for v in (cj.get("selected") or {}).values() for i in v)):
         models = set()
-        for label, v in sorted(arms.get(cid, {}).items()):
+        if byid[cid].get("known_input") != (common.input_digest(a.state, "judge-known", byid[cid]["round"]) if isinstance(byid[cid].get("round"), str) else None):
+            stale.append(cid)       # the input its known findings were judged on has changed since `cases` wrote them
+        if set_aside_arms(byid[cid], arms):
+            aside[cid] = set_aside_arms(byid[cid], arms)
+        for label in sorted(current_arms(byid[cid], arms).values()):
+            v = arms[cid][label]
             run = jload(os.path.join(a.state, "runs", cid, label + ".json"))
+            if run and run.get("input") != v["input"]:
+                run = None
             if run and run.get("error"):
                 errors.append({"case": cid, "arm": v["arm"], "label": label, "error": run["error"], "tokens": run.get("tokens", 0)})
             if run and run.get("model"):
@@ -1301,12 +1354,14 @@ def cmd_report(a):
         sums = dict((arm, {"hit": 0, "tokens": 0, "compactions": 0, "turns": 0}) for arm in ("A", "A2", "F", "B"))
         n = known = misses = framed = failed = 0
         for cid in ids:
-            amap = dict((v["arm"], l) for l, v in arms.get(cid, {}).items())
+            amap = current_arms(byid[cid], arms)
+            if len(amap) < len(arms_of(byid[cid])) or cid in stale:
+                continue        # an arm has no run for the case as it is now, or the known findings are of another input: the case is not judged
             ans = judge_got(a, "judge-match", cid)
             if ans is not None and not match_current(a, byid[cid], arms):
                 outdated.append(cid)        # its runs or known findings changed since the judge saw them: only `match` and a new answer make it current
                 ans = None
-            runs = dict((arm, load_run(a.state, cid, l)) for arm, l in amap.items())
+            runs = dict((arm, load_run(a.state, cid, l, arms[cid][l]["input"])) for arm, l in amap.items())
             if not amap or ans is None or not all(runs.values()):
                 continue
             n += 1
@@ -1331,7 +1386,7 @@ def cmd_report(a):
                 if runs.get(arm) and sw != "memories":
                     framed += 1
                     failed += 1 if runs[arm].get("verdict") == "approve" and runs[arm].get("missing") else 0
-        present = set(v["arm"] for cid in ids for v in arms.get(cid, {}).values())
+        present = set(arm for cid in ids for arm in current_arms(byid[cid], arms))
         recall = dict((arm, round(s["hit"] / known, 4) if known else None) for arm, s in sums.items() if arm in present)
         coverage = round(failed / framed, 4) if framed else 0.0
         bar = {"recall": bool(known) and x in present and sums[x]["hit"] >= min(sums["A"]["hit"], sums["A2"]["hit"]),
@@ -1362,6 +1417,12 @@ def cmd_report(a):
             lines.append("{}: {}".format(sw, v["note"]))
     if outdated:
         lines.append("The judge-match of these cases was answered for other runs than are there now, so it is not used (run `match`, then `pending`): " + ", ".join(sorted(set(outdated))))
+    if aside:
+        lines.append("Runs set aside as superseded, not counted (their case's inputs changed since they ran; `run` makes fresh ones): "
+                     + "; ".join("{} {}".format(cid, ", ".join(labels)) for cid, labels in sorted(aside.items())))
+    if stale:
+        lines.append("The known findings of these cases were judged on a judge-known input that has changed since `cases` wrote them, so the cases are not "
+                     "counted (run `cases` again): " + ", ".join(stale))
     if mixed:
         lines.append("Arms of these cases ran at different models or efforts, so compare them with care: " + ", ".join(mixed))
     if errors:
@@ -1371,7 +1432,8 @@ def cmd_report(a):
     say(text)
     if not a.dry_run:
         jsave(os.path.join(a.state, "report.md"), text)
-        jsave(os.path.join(a.state, "report.json"), {"switches": out, "progress": prog, "errors": errors, "mixed_models": mixed})
+        jsave(os.path.join(a.state, "report.json"), {"switches": out, "progress": prog, "errors": errors, "mixed_models": mixed,
+                                                          "superseded": {"arms": aside, "known": stale}})
     return 0
 
 

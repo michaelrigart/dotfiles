@@ -73,7 +73,7 @@ class Ctx(object):
         self.cases = dict((c["id"], c) for c in doc["cases"] if isinstance(c, dict) and isinstance(c.get("id"), str))
         branches = jload(os.path.join(a.state, "branches.json")) or {}
         self.branches = dict((b["id"], b) for b in branches.get("branches") or [] if isinstance(b, dict) and isinstance(b.get("id"), str))
-        self._inj, self._inv = {}, {}
+        self._inj, self._inv, self._dig = {}, {}, {}
         self.failed = set()            # runs whose round failed in this command: retried by the next one
 
     def branch(self, case):
@@ -96,6 +96,21 @@ class Ctx(object):
             doc = jload(os.path.join(self.a.state, "inventory", case["branch"] + ".json")) or {}
             self._inv[case["id"]] = dict((d["id"], d) for d in doc.get("defects") or [] if isinstance(d, dict) and "id" in d)
         return self._inv[case["id"]]
+
+    def digest(self, case):
+        """The digest of the case's inputs as they stand (common.case_digest). An injected record that is gone digests as none."""
+        if case["id"] not in self._dig:
+            try:
+                injected = self.injected(case)
+            except Failed:
+                injected = {}
+            self._dig[case["id"]] = C.case_digest(case, self.branches.get(case.get("branch")), injected, self.inventory(case))
+        return self._dig[case["id"]]
+
+    def current(self, run):
+        """Whether the run still counts: its case is in cases.json with the inputs it began with, and it was not set aside."""
+        case = self.cases.get(run["case"])
+        return case is not None and not run.get("superseded") and run.get("case_digest") == self.digest(case)
 
     def path(self, run):
         return os.path.join(self.a.state, "runs", run["case"], run["label"], "state.json")
@@ -251,7 +266,7 @@ def start_run(ctx, case, label, voids=0, replaces=None):
         raise
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    run = {"case": case["id"], "label": label, "scratch": out, "thread": None, "round": 0, "step": "final", "reviews": [],
+    run = {"case": case["id"], "label": label, "case_digest": ctx.digest(case), "scratch": out, "thread": None, "round": 0, "step": "final", "reviews": [],
            "defects": dict((d, "present") for d in case["defects"]), "rejected": [], "addressed": [], "outside": [], "ledger": None,
            "end": None, "voids": voids, "tokens": 0, "base_tip": tip, "repairs": repairs, "judging": None, "failures": 0}
     if replaces:
@@ -265,14 +280,29 @@ def start_run(ctx, case, label, voids=0, replaces=None):
     return run
 
 
+def _supersede(ctx, run):
+    """Mark a run whose case's inputs changed since it began (or whose case is gone): it counts no more, is not driven, and its items wait for
+    no agent. Its directory, state, scratch and answers stay. A run another command holds is marked by the next `run`."""
+    with ctx.locked(run) as got:
+        if got and not run.get("superseded"):
+            case = ctx.cases.get(run["case"])
+            run["superseded"] = ctx.digest(case) if case is not None else "the case is no longer in cases.json"
+            ctx.save(run)
+            say("{}: set aside as superseded: the inputs of case {} changed since it began".format(run["label"], run["case"]))
+
+
 def ensure_runs(ctx, runs):
-    """Every case has its runs, and every voided run its replacement. The runs made, appended to `runs`."""
+    """Every case has its runs, and every voided run its replacement, counting only the runs whose case still has the inputs they began with
+    (a run of other inputs is marked superseded and never reused). The runs made, appended to `runs`."""
     a = ctx.a
     made = False
+    for r in runs:
+        if not r.get("superseded") and not ctx.current(r):
+            _supersede(ctx, r)
     for cid, case in sorted(ctx.cases.items()):
         if not case.get("defects"):
             continue
-        mine = [r for r in runs if r["case"] == cid]
+        mine = [r for r in runs if r["case"] == cid and ctx.current(r)]
         have = set(r["label"] for r in mine)
         for r in list(mine):
             if r.get("replaced_by") and r["replaced_by"] not in have:
@@ -700,10 +730,15 @@ def _rounds(ctx, runs, home):
 
 
 # ------------------------------------------------------------------ the commands
-def _summary(runs):
-    for r in runs:
+def _summary(ctx, runs):
+    live = [r for r in runs if ctx.current(r)]
+    for r in live:
         what = "ended {}".format(r["end"]) if r["end"] else "waits at {}".format(r["step"])
         say("{} {}: {}; defects {}".format(r["case"], r["label"], what, ", ".join("{} {}".format(d, s) for d, s in sorted(r["defects"].items()))))
+    old = [r["label"] for r in runs if r not in live]
+    if old:
+        say("{} run(s) set aside as superseded (their case's inputs changed since they began; they are not counted or driven): {}".format(
+            len(old), ", ".join(sorted(old))))
 
 
 def _drive(a, rounds):
@@ -711,16 +746,17 @@ def _drive(a, rounds):
     if a.dry_run:
         runs = runs_of(a)
         for cid, case in sorted(ctx.cases.items()):
-            mine = [r for r in runs if r["case"] == cid and not r.get("replaces")]
+            mine = [r for r in runs if r["case"] == cid and not r.get("replaces") and ctx.current(r)]
             if len(mine) < C.RUNS:
                 say("would start {} run(s) of case {}".format(C.RUNS - len(mine), cid))
-        _summary(runs)
+        _summary(ctx, runs)
         return 0
     with contextlib.ExitStack() as held:
         home = None
         while True:
             runs = runs_of(a)
             moved = ensure_runs(ctx, runs) if rounds else False
+            runs = [r for r in runs if ctx.current(r)]          # a superseded run is neither settled nor given a round
             for run in runs:
                 moved |= _settle(ctx, run)
             if rounds and any(r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed for r in runs):
@@ -730,8 +766,7 @@ def _drive(a, rounds):
                 moved |= _rounds(ctx, runs, home)
             if not moved:
                 break
-        runs = runs_of(a)
-        _summary(runs)
+        _summary(ctx, runs_of(a))
         waits = C.pending(a.state)
         if waits:
             say("{} item(s) wait for an agent: run `process-replay.py pending`, then `{}` again".format(len(waits), getattr(a, "command", "run")))

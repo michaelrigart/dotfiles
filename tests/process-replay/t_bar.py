@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 from argparse import Namespace
 
@@ -23,7 +24,7 @@ def case(cid, task=(), pre=(), uncounted=(), rounds=2):
         for did, sev in items:
             info[did] = {"id": did, "class": klass, "severity": sev, "counted": counted, "summary": "what " + did, "file": "f.py", "line": 1}
     return {"id": cid, "branch": "b" + cid, "repo": "/repo/" + cid, "defects": [d for d, i in info.items() if i["counted"]],
-            "original_rounds": rounds, "work_commit": "w", "info": info}
+            "original_rounds": rounds, "work_commit": "w", "info": info, "digest": "digest-" + cid}
 
 
 def run(cid, label, states, end="approve", codex=2, **more):
@@ -31,7 +32,7 @@ def run(cid, label, states, end="approve", codex=2, **more):
     reviews += [{"id": "{}-{}".format(label, k), "kind": "codex", "k": k, "findings": [], "verdict": "revise", "tokens": 1000, "turns": 1,
                  "model": "gpt-x", "effort": "high"} for k in range(1, codex + 1)]
     r = {"case": cid, "label": label, "scratch": "/s", "thread": "t", "round": codex, "step": "done", "reviews": reviews, "defects": dict(states),
-         "rejected": [], "addressed": [], "outside": [], "ledger": None, "end": end, "voids": 0, "tokens": 1000 * codex}
+         "rejected": [], "addressed": [], "outside": [], "ledger": None, "end": end, "voids": 0, "tokens": 1000 * codex, "case_digest": "digest-" + cid}
     r.update(more)
     return r
 
@@ -216,7 +217,16 @@ RUNS = [
     run("c1", "gamma", sts(t1="p", t2="p", q1="p", q2="p"), end="void", voids=1, replaced_by="delta", leak=["/orig"]),
     run("c1", "delta", ALL_R, codex=2, voids=1, replaces="gamma"),
 ]
-for r in RUNS:
+def stamp(state, runs):
+    """The digest each case has in `state`, set as the case_digest of the runs of it (what `run` records when it makes a run)."""
+    cases = bar._load(Namespace(state=state))[1]
+    digests = dict((c["id"], c["digest"]) for c in cases)
+    for r in runs:
+        r["case_digest"] = digests[r["case"]]
+    return runs
+
+
+for r in stamp(STATE, RUNS):
     C.jsave(os.path.join(STATE, "runs", r["case"], r["label"], "state.json"), r)
 args = Namespace(state=STATE, dry_run=False)
 is_("report: cmd_report returns 0", bar.cmd_report(args), 0)
@@ -276,7 +286,7 @@ C.jsave(os.path.join(S2, "cases.json"), {"cases": [dict((k, v) for k, v in NP.it
 C.jsave(os.path.join(S2, "branches.json"), {"branches": []})
 C.jsave(os.path.join(S2, "inventory", "bcn.json"), {"branch": "bcn", "dropped": [], "defects": list(NP["info"].values())})
 C.jsave(os.path.join(S2, "reviews.json"), {"groups": []})
-for r in two("cn", sts(t1="r", t2="r"), codex=1):
+for r in stamp(S2, two("cn", sts(t1="r", t2="r"), codex=1)):
     C.jsave(os.path.join(S2, "runs", "cn", r["label"], "state.json"), r)
 bar.cmd_report(Namespace(state=S2, dry_run=False))
 md2 = open(os.path.join(S2, "report.md")).read()
@@ -306,6 +316,52 @@ md = open(os.path.join(STATE, "report.md")).read()
 rep = C.jload(os.path.join(STATE, "report.json"))
 ok("report.md: the plan-checkpoint section is included when there are rounds", "Plan-review checkpoint" in md and "7777" in md, md[-600:])
 ok("report.json: and its data", isinstance(rep.get("planreview"), dict) and rep["planreview"]["rounds"] == 1, rep.get("planreview"))
+
+# ---- superseded_runs: a run counts only for the inputs of its case as they are now
+OLD = dict(case("c1", task=[("t1", "P1"), ("t2", "P2")], pre=[("q1", "P1")]), digest="digest-old")
+NEW = dict(case("c1", task=[("t1", "P1"), ("t2", "P2"), ("t3", "P2")], pre=[("q1", "P1")]), digest="digest-new")      # inject added an assessable defect
+gone = two("c1", sts(t1="r", t2="r", q1="r"), case_digest="digest-old")
+got = bar.bar([OLD], gone, NONE)
+is_("superseded_runs: control: the runs and the case have one digest: pass", got["status"], "pass")
+got = bar.bar([NEW], gone, NONE)
+is_("superseded_runs: two runs that recovered t1, t2 and q1 do not make a pass for a case now holding t1, t2, t3 and q1 (neither tested t3)", got["status"], "inconclusive")
+ok("superseded_runs: the case needs runs, and the reason says how many were set aside", "case c1: 0 of 2 runs (2 more set aside as superseded" in " ".join(got["reasons"]), got["reasons"])
+is_("superseded_runs: neither run is assessable or tallied", (got["assessable"], got["unrecovered_task"]), ({}, []))
+is_("superseded_runs: the labels set aside are listed per case", got["superseded"], {"c1": ["c1a", "c1b"]})
+fresh_ = two("c1", sts(t1="r", t2="r", t3="r", q1="r"), case_digest="digest-new")
+fresh_ = [dict(r, label=r["label"] + "n") for r in fresh_]
+got = bar.bar([NEW], gone + fresh_, NONE)
+is_("superseded_runs: with two runs of the current inputs beside the old, only those count and the bar passes", (got["status"], sorted(got["assessable"])), ("pass", ["c1an", "c1bn"]))
+is_("superseded_runs: and the old ones are still listed as set aside", got["superseded"], {"c1": ["c1a", "c1b"]})
+got = bar.bar([NEW], [dict(r, superseded="digest-new") for r in fresh_], NONE)
+is_("superseded_runs: a run marked superseded does not count even when its digest is the case's", (got["status"], got["assessable"]), ("inconclusive", {}))
+got = bar.bar([NEW], [dict((k, v) for k, v in r.items() if k != "case_digest") for r in fresh_], NONE)
+is_("superseded_runs: a run that recorded no digest does not count", (got["status"], got["assessable"]), ("inconclusive", {}))
+
+# the same through report: a state whose case gained a defect after its runs
+S5 = os.path.join(ROOT, "state5")
+shutil.copytree(STATE, S5, ignore=shutil.ignore_patterns("report.*"))
+C.jsave(os.path.join(S5, "injected", "bc1.json"), dict(INJ, rounds=[{"k": 1}], build_check="ran again"))        # what a re-run of inject rewrites without changing an input
+bar.cmd_report(Namespace(state=S5, dry_run=False))
+same = C.jload(os.path.join(S5, "report.json"))
+is_("superseded_runs: control: an injected record rewritten with the same inputs leaves the runs counted", (same["bar"]["status"], same["bar"]["superseded"]), ("fail", {}))
+inv5 = C.jload(os.path.join(S5, "inventory", "bc1.json"))
+inv5["defects"].append({"id": "t9", "class": "task", "severity": "P1", "counted": True, "summary": "a new per-task defect", "file": "f.py", "line": 9})
+C.jsave(os.path.join(S5, "inventory", "bc1.json"), inv5)
+cases5 = C.jload(os.path.join(S5, "cases.json"))
+cases5["cases"][0]["defects"].append("t9")
+C.jsave(os.path.join(S5, "cases.json"), cases5)
+inj5 = C.jload(os.path.join(S5, "injected", "bc1.json"))
+inj5["defects"]["t9"] = {"status": "present", "reason": ""}
+C.jsave(os.path.join(S5, "injected", "bc1.json"), inj5)
+bar.cmd_report(Namespace(state=S5, dry_run=False))
+moved = C.jload(os.path.join(S5, "report.json"))
+md5 = open(os.path.join(S5, "report.md")).read()
+is_("superseded_runs: report: a case that gained an assessable defect after its runs is not judged by them", moved["bar"]["status"], "inconclusive")
+is_("superseded_runs: report: the runs counted are none, and the report.json lists those set aside", (moved["cases"][0]["runs"], moved["cases"][0]["superseded"]),
+    ([], ["alpha", "beta", "delta", "gamma"]))
+ok("superseded_runs: report.md says how many runs were set aside, and which", "4 run(s) set aside as superseded, not counted" in md5 and "alpha, beta, delta, gamma" in md5
+   and "case c1: 0 of 2 runs (4 more set aside" in md5, md5[:900])
 
 # ---- failures
 EMPTY = os.path.join(ROOT, "empty")

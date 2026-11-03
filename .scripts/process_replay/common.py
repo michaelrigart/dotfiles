@@ -33,6 +33,7 @@ and every take is non-blocking: a lock another process holds is a refusal at onc
 import contextlib
 import fcntl
 import functools
+import glob
 import hashlib
 import importlib.util
 import json
@@ -193,6 +194,57 @@ Answer: {"class": "design"}
 # ------------------------------------------------------------------ state and labels
 def state_default():
     return os.path.join(L.state_home(), "process-replay", date.today().isoformat())
+
+
+# ------------------------------------------------------------------ the inputs a result was recorded against
+def digest_of(value):
+    """The sha256 of a JSON value, keys in order, so equal values digest equally whatever order they were written in."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _file_digest(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except (OSError, TypeError):
+        return None
+
+
+BRANCH_KEYS = ("repo", "objects", "dest", "dest_ref", "branch", "base", "plan_commit")
+
+
+def case_digest(case, branch, injected, info):
+    """The digest of everything a run of `case` depends on: the case's identity and defect set, the injected tree (the work commit of the case
+    and of injected/<branch>.json, its plan and final commits), for each defect of the case its whole inventory record (class, severity,
+    counted, summary, location: what the bar and the judges see), its injected status and group, its hunks and the bytes of its repair, and
+    the branch's repository, base, destination and plan commit. `branch`, `injected` and `info` ({defect id: inventory record}) may be
+    missing. A run records it when it is made (run["case_digest"]) and counts only while the case still has it: a re-run of `cases` or
+    `inject` that changes any of these leaves the old runs superseded, never reused."""
+    injected = injected if isinstance(injected, dict) else {}
+    recs = injected.get("defects") if isinstance(injected.get("defects"), dict) else {}
+    defects = {}
+    for did in sorted(d for d in case.get("defects") or [] if isinstance(d, str)):
+        rec = recs.get(did) if isinstance(recs.get(did), dict) else {}
+        defects[did] = {"inventory": (info or {}).get(did), "status": rec.get("status"), "group": rec.get("group"), "hunks": rec.get("hunks"),
+                        "repair": _file_digest(rec.get("repair"))}
+    return digest_of({"case": case.get("id"), "branch": case.get("branch"), "work_commit": case.get("work_commit"),
+                      "injected": dict((k, injected.get(k)) for k in ("work_commit", "plan_commit", "final_commit")),
+                      "repo": dict((k, (branch or {}).get(k)) for k in BRANCH_KEYS), "defects": defects})
+
+
+def superseded_labels(state):
+    """The labels of the runs under <state>/runs marked superseded (loop.ensure_runs): their cases' inputs changed after they began."""
+    out = set()
+    for path in glob.glob(os.path.join(glob.escape(state), "runs", "*", "*", "state.json")):
+        run = jload(path)
+        if isinstance(run, dict) and run.get("superseded") and isinstance(run.get("label"), str):
+            out.add(run["label"])
+    return out
+
+
+def of_runs(jid, labels):
+    """Whether item id `jid` belongs to a run in `labels`: the final review is the label, the others <label>-<n>[-<defect>]."""
+    return any(jid == lab or jid.startswith(lab + "-") for lab in labels)
 
 
 # ------------------------------------------------------------------ command locks
@@ -792,6 +844,9 @@ def _input_digest(state, kind, jid, data=None):
     return hashlib.sha256(data).hexdigest()
 
 
+input_digest = _input_digest
+
+
 def _staged_from(dirs, name, digest):
     """Whether staged directory `name` serves the input whose digest is `digest` (staged.json's record `dirs`)."""
     rec = dirs.get(name) if isinstance(dirs, dict) else None
@@ -870,16 +925,19 @@ def _pending(state):
     """[(kind, id, input path, answer path, brief path)], the harness's own paths (the state's), of everything unanswered, except a
     question or a recreation its kind's needed.json marks as no longer needed."""
     out = []
+    dead = superseded_labels(state)         # a superseded run is not driven: nothing of it waits for an agent
     for kind in JUDGE_KINDS:
         obsolete = _not_needed(state, kind)
         for jid in _inputs(state, kind):
-            if jid in obsolete:
+            if jid in obsolete or of_runs(jid, dead):
                 continue
             base = os.path.join(state, kind, jid)
             if not _answered(state, kind, jid):
                 out.append((kind, jid, base + ".json", base + ".answer.json", base + ".brief.md"))
     fdir = os.path.join(state, "final")
     for jid in sorted(os.listdir(fdir)) if os.path.isdir(fdir) else []:
+        if of_runs(jid, dead):
+            continue
         brief = os.path.join(fdir, jid, "brief.md")
         staged = _staged(state, "final", jid)
         if os.path.isfile(brief) and not _final_text(os.path.join(fdir, jid, "answer.md")) \

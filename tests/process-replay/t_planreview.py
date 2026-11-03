@@ -291,6 +291,62 @@ ok("report_section: and a design P0/P1 already found still says keep, noting the
    rep3["recommendation"] == "keep" and rep3["incomplete"] and any("keep" in l and "incomplete" in l for l in _l), _l)
 is_("report_section: no state, no output", P.report_section(os.path.join(ROOT, "nowhere")), ([], {}))
 
+# ---- superseded_inputs: an answer counts for the input plan-cases.json recorded, not for one written since
+import shutil  # noqa: E402
+
+answers(STATE, "judge-class", "plan-n1-0", {"class": "design"})
+answers(STATE, "judge-class", "plan-n1-1", {"class": "diff-visible"})
+answers(STATE, "judge-class", "plan-n2-0", {"class": "design"})
+_l, base_rep = P.report_section(STATE)
+is_("superseded_inputs: control: with every input as recorded, 3 findings are classified, 2 of them design P0/P1, nothing set aside",
+    (base_rep["classified"], base_rep["design_p0p1"], base_rep["superseded_known"], base_rep["superseded_class"], base_rep["incomplete"]), (3, 2, 0, 0, False))
+doc0 = C.jload(os.path.join(STATE, "plan-cases.json"))
+ok("superseded_inputs: plan-cases.json records the digest of each judge-known input written and of each judge-class input",
+   all(r["known_input"] == C.input_digest(STATE, "judge-known", "plan-" + r["nonce"]) for r in doc0["rounds"] if r["asked"])
+   and all(f["class_input"] == C.input_digest(STATE, "judge-class", "plan-{}-{}".format(r["nonce"], f["index"])) for r in doc0["rounds"] for f in r["findings"] if f["judged"]),
+   [(r["nonce"], r["known_input"]) for r in doc0["rounds"]])
+
+# a judge-known input rewritten after plan-cases.json (a dry `cases --plans` over changed receipts does this: it writes inputs, not plan-cases.json), and
+# the judge's new answer to it, which indexes another findings list than the one plan-cases.json holds
+S_K = os.path.join(ROOT, "superseded-known")
+shutil.copytree(STATE, S_K)
+changed = C.jload(os.path.join(S_K, "judge-known", "plan-n1.json"))
+changed["findings"] = changed["findings"][:1]
+C.judge_write(S_K, "judge-known", "plan-n1", changed)
+answers(S_K, "judge-known", "plan-n1", {"verdicts": [{"index": 0, "answer": "yes"}]})
+_l, rk = P.report_section(S_K)
+is_("superseded_inputs: a round whose judge-known input changed since plan-cases.json is set aside: its findings are not counted from an answer to another input",
+    (rk["superseded_known"], rk["known"], rk["classified"], rk["incomplete"]), (1, 1, 1, True))
+ok("superseded_inputs: and the report says so and to run cases --plans again", any("set aside as superseded" in l and "1 round(s)" in l and "cases --plans" in l for l in _l), _l)
+doc_k = C.jload(os.path.join(S_K, "plan-cases.json"))
+P.plan_cases(args(S_K))           # the input is rebuilt from the receipts, and plan-cases.json records it again
+ok("superseded_inputs: running cases --plans again makes the round current (its answer was set aside with the input, so it waits again)",
+   P.report_section(S_K)[1]["superseded_known"] == 0 and P.report_section(S_K)[1]["pending_known"] == 1, P.report_section(S_K)[1])
+
+# a judge-class input rewritten since: its answer is not the finding's class
+S_C = os.path.join(ROOT, "superseded-class")
+shutil.copytree(STATE, S_C)
+cc = C.jload(os.path.join(S_C, "judge-class", "plan-n1-0.json"))
+cc["fix"] = cc["fix"] + "extra\n"
+C.judge_write(S_C, "judge-class", "plan-n1-0", cc)
+answers(S_C, "judge-class", "plan-n1-0", {"class": "design"})
+_l, rc = P.report_section(S_C)
+is_("superseded_inputs: a finding whose judge-class input changed since plan-cases.json is set aside: it is not classified",
+    (rc["superseded_class"], rc["classified"], rc["design_p0p1"], rc["incomplete"]), (1, 2, 1, True))
+ok("superseded_inputs: and the report says so", any("set aside as superseded" in l and "1 finding(s)" in l for l in _l), _l)
+
+# a judge-class input that lingers from an earlier plan-cases.json, for a finding this one never put to a judge, is no input of this one
+S_L = os.path.join(ROOT, "superseded-lingering")
+shutil.copytree(STATE, S_L)
+dl = C.jload(os.path.join(S_L, "plan-cases.json"))
+for r in dl["rounds"]:
+    for f in r["findings"]:
+        if r["nonce"] == "n2" and f["index"] == 0:
+            f["class_input"] = None
+C.jsave(os.path.join(S_L, "plan-cases.json"), dl)
+_l, rl = P.report_section(S_L)
+is_("superseded_inputs: a judge-class file that plan-cases.json records no input for is not used", (rl["no_input"], rl["classified"]), (1, 2))
+
 # ---------------------------------------------------------------- scenario 2: no plan rounds at all
 STATE2 = world("w2")
 helpers.write_ledger(os.environ["XDG_STATE_HOME"], WT, [pre_receipt("q1", "2026-10-15T10:00:00.000000Z", WT, BASE, C4, [])])

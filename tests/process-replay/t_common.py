@@ -779,3 +779,66 @@ ok("Reader.patch: the change, capped with a [truncated] line", "+two" in rd.patc
 ok("Reader.patch_id: a cherry-pick has its original's id, and branch_patch_ids maps it back",
    rd.patch_id(R2) == rd.patch_id(R2C) and rd.patch_id(R2) is not None and rd.branch_patch_ids(R1, R2C) == {rd.patch_id(R2): R2C})
 is_("cap and norm", (C.cap("abcdef", 3), C.cap("abc", 3), C.norm("./a/x"), C.norm("b/x"), C.norm("x"), C.norm(None)), ("abc\n[truncated]\n", "abc", "x", "x", "x", ""))
+
+# ---- case_digest: what a run is bound to
+import copy  # noqa: E402
+
+DSTATE = os.path.join(ROOT, "digest")
+put(DSTATE, "repairs/d1.patch", "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
+D_CASE = {"id": "c1", "branch": "b1", "repo": "/r", "defects": ["d2", "d1"], "original_rounds": 3, "work_commit": "w1"}
+D_BRANCH = {"id": "b1", "repo": "/r", "objects": "/r/objects", "dest": "main", "dest_ref": "main", "branch": "feat", "base": "base1", "plan_commit": "p1",
+            "rounds": [{"k": 1}], "joined": []}
+D_INJ = {"work": "/w", "work_commit": "w1", "plan_commit": "p1", "final_commit": "f1", "complete": True, "rounds": [1], "build_check": "ok",
+         "defects": {"d1": {"status": "present", "reason": "", "group": "d1", "repair": os.path.join(DSTATE, "repairs", "d1.patch"),
+                            "hunks": [{"file": "x", "start": 1, "end": 1}]},
+                     "d2": {"status": "present", "reason": "", "group": "g", "repair": None, "hunks": []}}}
+D_INFO = {"d1": {"id": "d1", "class": "task", "severity": "P1", "counted": True, "summary": "s1", "file": "x", "line": 1},
+          "d2": {"id": "d2", "class": "pre", "severity": "P2", "counted": True, "summary": "s2", "file": "y", "line": 2}}
+
+
+def digest(case=D_CASE, branch=D_BRANCH, inj=D_INJ, info=D_INFO):
+    return C.case_digest(case, branch, inj, info)
+
+
+base_digest = digest()
+is_("case_digest: a digest is stable, and does not depend on key or defect order",
+    (digest(), digest(case=dict(reversed(list(D_CASE.items())), defects=["d1", "d2"]))), (base_digest, base_digest))
+
+
+def changed(fn):
+    case, branch, inj, info = (copy.deepcopy(x) for x in (D_CASE, D_BRANCH, D_INJ, D_INFO))
+    fn(case, branch, inj, info)
+    return digest(case, branch, inj, info) != base_digest
+
+
+for what, fn in (
+        ("the case's defect set (a defect added)", lambda c, b, i, n: c["defects"].append("d3")),
+        ("the case's defect set (a defect dropped)", lambda c, b, i, n: c["defects"].remove("d2")),
+        ("the case's branch", lambda c, b, i, n: c.update(branch="b2")),
+        ("the case's work commit (the injected tree)", lambda c, b, i, n: c.update(work_commit="w2")),
+        ("the injected record's work commit", lambda c, b, i, n: i.update(work_commit="w2")),
+        ("the injected record's final commit", lambda c, b, i, n: i.update(final_commit="f2")),
+        ("the injected record's plan commit", lambda c, b, i, n: i.update(plan_commit="p2")),
+        ("a defect's severity (what the bar and the judges see)", lambda c, b, i, n: n["d1"].update(severity="P0")),
+        ("a defect's class", lambda c, b, i, n: n["d1"].update(**{"class": "pre"})),
+        ("whether a defect counts (its assessability)", lambda c, b, i, n: n["d1"].update(counted=False)),
+        ("a defect's summary", lambda c, b, i, n: n["d2"].update(summary="other")),
+        ("a defect's injected status", lambda c, b, i, n: i["defects"]["d1"].update(status="recreated")),
+        ("a defect's repair group", lambda c, b, i, n: i["defects"]["d2"].update(group="h")),
+        ("a defect's hunks", lambda c, b, i, n: i["defects"]["d1"]["hunks"][0].update(start=2)),
+        ("a defect's repair, by its bytes", lambda c, b, i, n: put(DSTATE, "repairs/d1.patch", "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+c\n")),
+        ("the branch's base", lambda c, b, i, n: b.update(base="base2")),
+        ("the branch's plan commit", lambda c, b, i, n: b.update(plan_commit="p2")),
+        ("the branch's destination", lambda c, b, i, n: b.update(dest="release")),
+):
+    ok("case_digest: it changes with " + what, changed(fn))
+    put(DSTATE, "repairs/d1.patch", "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
+for what, fn in (
+        ("the original round count", lambda c, b, i, n: c.update(original_rounds=9)),
+        ("the repository path of the case", lambda c, b, i, n: c.update(repo="/elsewhere")),
+        ("the injected record's bookkeeping (rounds, build check)", lambda c, b, i, n: i.update(rounds=[1, 2], build_check="skipped", complete=False)),
+        ("the branch's recorded rounds", lambda c, b, i, n: b.update(rounds=[])),
+        ("a defect the case does not hold", lambda c, b, i, n: (i["defects"].update(d9={"status": "dropped"}), n.update(d9={"id": "d9", "severity": "P0"}))),
+):
+    ok("case_digest: it does not change with " + what, not changed(fn))
+is_("case_digest: a missing branch, injected record and inventory give a digest, not an error", type(C.case_digest(D_CASE, None, None, {})).__name__, "str")

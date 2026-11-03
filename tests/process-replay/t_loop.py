@@ -125,7 +125,7 @@ class World(object):
     """An original repository, the work repository inject would have built (a tree with the defects in), the records
     inject and cases leave in the state, and a state directory."""
 
-    def __init__(self, name, ids=("dA", "dB", "dC", "dD"), cases=1, original_rounds=3):
+    def __init__(self, name, ids=("dA", "dB", "dC", "dD"), cases=1, original_rounds=3, case_ids=None):
         self.name = name
         self.state = os.path.join(ROOT, "state-" + name)
         self.orig = helpers.make_repo(ROOT, "orig-" + name)
@@ -170,7 +170,7 @@ class World(object):
             {"id": bid, "repo": self.common, "objects": self.objects, "view": None, "dest": "main", "dest_ref": "main", "branch": "feat",
              "base": self.base, "rounds": [{"k": 1, "nonce": "n1", "tip": self.buggy, "base": self.base, "thread": "t", "turns": [], "at": "2026-10-20T10:00:00Z",
                                             "verdict": "changes"}], "plan_commit": self.base}]})
-        cases = [{"id": "c%s%d" % (name, i), "branch": bid, "repo": self.common, "defects": list(ids), "original_rounds": original_rounds,
+        cases = [{"id": "c%s%d" % (name, i), "branch": bid, "repo": self.common, "defects": list(case_ids or ids), "original_rounds": original_rounds,
                   "work_commit": self.wc} for i in range(cases)]
         C.jsave(os.path.join(self.state, "cases.json"), {"cases": cases, "examined": [], "coverage": {"unassessable_task": []}})
         self.case_ids = [c["id"] for c in cases]
@@ -1135,16 +1135,24 @@ go(w)
 ok("repair_copy: each run holds its own copy of every repair, under its own directory", all(
     r["repairs"][d]["repair"] == os.path.join(w.state, "runs", r["case"], r["label"], "repairs", d + ".patch") and open(r["repairs"][d]["repair"]).read() == w.patches[d]
     for r in w.runs() for d in r["repairs"]), [r["repairs"]["dA"] for r in w.runs()])
+first = w.runs()
 with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
     f.write(w.patches["dA"].replace("a3", "not the line"))
+drive(w, report=["found dA", "found dC"])
+go(w)
+drive(w, report=["found dA", "found dC"])
+go(w)
+mine = dict((x["label"], x) for x in w.runs())
+ok("repair_copy: rewriting repairs/<defect>.patch after the runs began supersedes them (the repair is one of the inputs a run is bound to): their own copies "
+   "stay what they began with, nothing of theirs advances, and the two new runs hold and apply the new repair",
+   len(mine) == 4 and all(mine[x["label"]]["superseded"] and mine[x["label"]]["step"] == "final" and open(mine[x["label"]]["repairs"]["dA"]["repair"]).read() == w.patches["dA"]
+                          for x in first)
+   and all(not x.get("superseded") and "not the line" in open(x["repairs"]["dA"]["repair"]).read() for l, x in mine.items() if l not in [y["label"] for y in first]),
+   [(x["label"], x.get("superseded"), x["step"]) for x in mine.values()])
 os.unlink(os.path.join(w.state, "repairs", "dC.patch"))
-drive(w, report=["found dA", "found dC"])
-go(w)
-drive(w, report=["found dA", "found dC"])
-go(w)
-ok("repair_copy: rewriting or deleting repairs/<defect>.patch after the run began changes what its oracle applies",
-   all(x["end"] != "error" and by_status(x)["dA"] == "recovered" and by_status(x)["dC"] == "recovered"
-       and git(x["scratch"], "show", "HEAD:src/a.py").splitlines()[4] == "a5" for x in w.runs()), [(x["end"], x.get("error"), by_status(x)) for x in w.runs()])
+got = refusal(go, w)
+ok("repair_copy: and deleting a repair file makes the next `run` refuse naming the defect, the runs it set aside staying set aside", "dC" in got and "cannot be read" in got
+   and sum(1 for x in w.runs() if x.get("superseded")) >= 2, got)
 
 # ... an empty repair is the third site
 w = World("repair-empty")
@@ -1377,6 +1385,173 @@ text = go(w, rounds=False)
 ok("match: match never starts a Codex round, and does not need the home", not CALLS and before == snap(w.state))
 
 # ================================================================== dry run and missing records
+# ================================================================== stale_inputs: a run belongs to the inputs of its case as they were
+def edit(path, fn):
+    doc = C.jload(path)
+    fn(doc)
+    C.jsave(path, doc)
+
+
+def report_of(w):
+    with contextlib.redirect_stdout(io.StringIO()):
+        BAR.cmd_report(w.args())
+    return C.jload(os.path.join(w.state, "report.json"))
+
+
+# the finding's probe: two runs finish a case of t1, t2, p; re-running inject adds an assessable defect t3 to the same case id
+w = World("stale", ids=("dA", "dF", "dG", "dB", "dM"), case_ids=("dA", "dF", "dG", "dB"))
+behave(lambda run, k: ("approve", []))
+FOUR = ["found dA", "found dF", "found dG", "found dB"]
+settle(w, report=FOUR)
+old = w.runs()
+ok("stale_inputs: control: two runs of the case ended and recovered its four defects", len(old) == 2 and all(r["end"] == "approve" and set(r["defects"].values()) == {"recovered"} for r in old),
+   [(r["end"], r["defects"]) for r in old])
+is_("stale_inputs: control: and the bar passes", report_of(w)["bar"]["status"], "pass")
+ok("stale_inputs: each run recorded the digest of its case's inputs", all(r["case_digest"] == C.case_digest(
+    C.jload(os.path.join(w.state, "cases.json"))["cases"][0], C.jload(os.path.join(w.state, "branches.json"))["branches"][0],
+    C.jload(os.path.join(w.state, "injected", w.bid + ".json")), dict((d["id"], d) for d in C.jload(os.path.join(w.state, "inventory", w.bid + ".json"))["defects"]))
+    for r in old), [r.get("case_digest") for r in old])
+before = snap(w.state)
+text = go(w)
+ok("stale_inputs: unchanged inputs: run reuses the two runs, makes none and changes no state file", len(w.runs()) == 2 and before == snap(w.state) and "superseded" not in text, text)
+edit(os.path.join(w.state, "cases.json"), lambda d: d["cases"][0]["defects"].append("dM"))          # inject finds dM assessable
+rep1 = report_of(w)
+is_("stale_inputs: the probe: two runs that recovered every defect they were tested on do not pass a case holding a third per-task defect",
+    rep1["bar"]["status"], "inconclusive")
+ok("stale_inputs: report names the case as needing runs, and the two it set aside", any("case %s: 0 of 2 runs (2 more set aside as superseded" % w.case_ids[0] in r for r in rep1["bar"]["reasons"])
+   and sorted(rep1["bar"]["superseded"][w.case_ids[0]]) == sorted(r["label"] for r in old) and rep1["cases"][0]["runs"] == [], rep1["bar"])
+dry = go(w, dry_run=True)
+ok("stale_inputs: a dry run says it would start two runs, and that two are set aside", "would start 2 run(s) of case %s" % w.case_ids[0] in dry and "2 run(s) set aside as superseded" in dry, dry)
+del PREP[:]
+del CALLS[:]
+text = go(w)
+runs_ = w.runs()
+new = [r for r in runs_ if r["label"] not in [o["label"] for o in old]]
+ok("stale_inputs: run makes two fresh runs of the case as it is now (all five defects present), not reusing the finished ones",
+   len(runs_) == 4 and len(new) == 2 and all(r["end"] is None and r["step"] == "final" and sorted(r["defects"]) == sorted(w.ids) and set(r["defects"].values()) == {"present"} for r in new)
+   and len(PREP) == 2 and not CALLS, [(r["label"], r["end"], r["step"], sorted(r["defects"])) for r in runs_])
+kept = dict((r["label"], r) for r in w.runs())
+ok("stale_inputs: the old runs are kept, marked superseded, and otherwise as they ended (their directories, scratches and verdicts stay)",
+   all(kept[o["label"]].get("superseded") and dict((k, v) for k, v in kept[o["label"]].items() if k != "superseded") == o
+       and os.path.isdir(o["scratch"]) and os.path.isdir(os.path.join(w.state, "runs", o["case"], o["label"])) for o in old), [kept[o["label"]].get("superseded") for o in old])
+ok("stale_inputs: and run says so", "set aside as superseded" in text and all(o["label"] in text for o in old), text)
+ok("stale_inputs: the new runs carry the case's new digest, which the old ones do not", len(set(r["case_digest"] for r in new)) == 1 and new[0]["case_digest"] != old[0]["case_digest"]
+   and not any(r.get("superseded") for r in new))
+rep2 = report_of(w)
+ok("stale_inputs: report counts the two fresh runs only (not assessable yet), still naming the two set aside",
+   rep2["bar"]["status"] == "inconclusive" and sorted(r["label"] for r in rep2["cases"][0]["runs"]) == sorted(r["label"] for r in new)
+   and sorted(rep2["cases"][0]["superseded"]) == sorted(o["label"] for o in old), rep2["bar"])
+ok("stale_inputs: and report.md says how many were set aside", "2 run(s) set aside as superseded, not counted" in open(os.path.join(w.state, "report.md")).read())
+waits = sorted(i for k, i, *_ in C.pending(w.state) if k == "final")
+is_("stale_inputs: pending hands the driver the new runs' final reviews only: a superseded run's items wait for no agent", waits, sorted(r["label"] for r in new))
+before = snap(w.state)
+go(w)
+go(w, rounds=False)
+ok("stale_inputs: run and match again change no state file (the set-aside runs stay set aside; no third pair is made)", before == snap(w.state) and len(w.runs()) == 4)
+settle(w, report=FOUR + ["found dM"])
+rep3 = report_of(w)
+ok("stale_inputs: the fresh runs finish and, recovering dM too, make the bar pass, with the two old runs still listed apart",
+   rep3["bar"]["status"] == "pass" and sorted(rep3["bar"]["assessable"]) == sorted(r["label"] for r in new) and len(rep3["cases"][0]["superseded"]) == 2, rep3["bar"])
+ok("stale_inputs: the old runs never moved, whatever was answered (still approve, still their four defects)",
+   all(dict((k, v) for k, v in r.items() if k != "superseded") == o for r in w.runs() for o in old if r["label"] == o["label"]))
+
+# one change per input a run depends on: each supersedes the runs, and one that changes none does not
+w = World("stale-each", ids=("dA", "dF", "dG", "dB", "dM"), case_ids=("dA", "dF", "dG", "dB"))
+behave(lambda run, k: ("approve", []))
+go(w)
+git(w.work, "checkout", "-q", "-b", "other")
+put(w.work, "src/z.py", "z\n")
+git(w.work, "add", "-A")
+git(w.work, "commit", "-q", "-m", "another tree")
+WC2 = git(w.work, "rev-parse", "HEAD")
+inj = os.path.join(w.state, "injected", w.bid + ".json")
+inv = os.path.join(w.state, "inventory", w.bid + ".json")
+brn = os.path.join(w.state, "branches.json")
+cas = os.path.join(w.state, "cases.json")
+MUTATIONS = (
+    ("the injected tree (injected record's work commit)", lambda: edit(inj, lambda d: d.update(work_commit=WC2))),
+    ("the case's work commit", lambda: edit(cas, lambda d: d["cases"][0].update(work_commit="another-commit"))),
+    ("a repair's bytes", lambda: put(os.path.join(w.state, "repairs"), "dA.patch", w.patches["dA"] + "\n")),
+    ("a defect's hunks", lambda: edit(inj, lambda d: d["defects"]["dA"]["hunks"][0].update(start=d["defects"]["dA"]["hunks"][0]["start"] + 1))),
+    ("a defect's injected status", lambda: edit(inj, lambda d: d["defects"]["dB"].update(status="recreated"))),
+    ("a defect's severity in the inventory", lambda: edit(inv, lambda d: [x.update(severity="P0") for x in d["defects"] if x["id"] == "dB"])),
+    ("whether a defect counts (assessability)", lambda: edit(inv, lambda d: [x.update(counted=False) for x in d["defects"] if x["id"] == "dF"])),
+    ("the defect set (a defect added)", lambda: edit(cas, lambda d: d["cases"][0]["defects"].append("dM"))),
+    ("the branch's plan commit", lambda: edit(brn, lambda d: d["branches"][0].update(plan_commit=w.buggy))),
+)
+for what, change in MUTATIONS:
+    now = [r["label"] for r in w.runs() if not r.get("superseded")]
+    total = len(w.runs())
+    change()
+    go(w)
+    after = dict((r["label"], r) for r in w.runs())
+    fresh = [l for l, r in after.items() if l not in now and not r.get("superseded") and r["step"] == "final"]
+    ok("stale_inputs: a change to " + what + " supersedes the case's two runs and makes two fresh ones",
+       len(now) == 2 and all(after[l].get("superseded") for l in now) and len(fresh) == 2 and len(after) == total + 2,
+       [(l, bool(r.get("superseded"))) for l, r in after.items()])
+now = [r for r in w.runs() if not r.get("superseded")]
+before = snap(w.state)
+edit(inj, lambda d: d.update(rounds=[{"k": 9}], build_check="ran again", complete=True, checks_skipped=["x"]))
+edit(cas, lambda d: (d["cases"][0].update(original_rounds=7), d.update(examined=[{"branch": "x"}])))
+edit(brn, lambda d: d["branches"][0].update(rounds=[]))
+edit(inv, lambda d: d.update(dropped=[{"why": "x"}]))
+go(w)
+ok("stale_inputs: a re-run of inject or cases that changes no input (round counts, bookkeeping, dropped lists) keeps the runs", [r["label"] for r in w.runs() if not r.get("superseded")] == [r["label"] for r in now]
+   and len(w.runs()) == len(now) + 2 * len(MUTATIONS))
+
+# a superseded run is neither driven nor matched: its Codex round does not start and its answers are not applied
+w = World("stale-driven", ids=("dA", "dF", "dG", "dB", "dM"), case_ids=("dA", "dF", "dG", "dB"))
+behave(lambda run, k: ("approve", []))
+to_codex(w, report=FOUR)
+parked = w.runs()
+ok("stale_inputs: control: both runs wait at the Codex step", all(r["step"] == "codex" for r in parked), [r["step"] for r in parked])
+edit(os.path.join(w.state, "cases.json"), lambda d: d["cases"][0]["defects"].append("dM"))
+del CALLS[:]
+go(w)
+ok("stale_inputs: a superseded run at its Codex step is given no round", not [c for c in CALLS if c["label"] in [r["label"] for r in parked]], CALLS)
+ok("stale_inputs: and stays at the step it was", all(next(x for x in w.runs() if x["label"] == r["label"])["step"] == "codex" for r in parked))
+# what a superseded run still has waiting is waiting for no agent: its final review and its judge inputs are not handed out
+w = World("stale-pending", ids=("dA", "dF", "dG", "dB", "dM"), case_ids=("dA", "dF", "dG", "dB"))
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=FOUR)
+go(w, rounds=False)
+dead = sorted(r["label"] for r in w.runs())
+ok("stale_inputs: control: before the case changes, each run's judge-match waits for a judge", sorted(i for k, i, *_ in C.pending(w.state) if k == "judge-match") == sorted(l + "-0" for l in dead),
+   C.pending(w.state))
+edit(os.path.join(w.state, "cases.json"), lambda d: d["cases"][0]["defects"].append("dM"))
+go(w)
+alive = sorted(r["label"] for r in w.runs() if not r.get("superseded"))
+waits = sorted((k, i) for k, i, *_ in C.pending(w.state))
+is_("stale_inputs: pending hands out the new runs' final reviews and nothing of the superseded runs (their judge-match input stays in the state, unanswered)",
+    waits, sorted(("final", l) for l in alive))
+ok("stale_inputs: control: the superseded runs' judge-match inputs are still in the state", all(os.path.isfile(os.path.join(w.state, "judge-match", l + "-0.json")) for l in dead))
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    C.cmd_pending(w.args())
+ok("stale_inputs: and `pending` prints nothing of them", not any(l in out.getvalue() for l in dead) and all(l in out.getvalue() for l in alive), out.getvalue())
+
+w = World("stale-pending2", ids=("dA", "dF", "dG", "dB", "dM"), case_ids=("dA", "dF", "dG", "dB"))
+behave(lambda run, k: ("approve", []))
+go(w)
+dead = sorted(r["label"] for r in w.runs())
+ok("stale_inputs: control: each run's final review waits for the driver", sorted(i for k, i, *_ in C.pending(w.state) if k == "final") == dead)
+edit(os.path.join(w.state, "cases.json"), lambda d: d["cases"][0]["defects"].append("dM"))
+go(w)
+alive = sorted(r["label"] for r in w.runs() if not r.get("superseded"))
+is_("stale_inputs: a superseded run's unanswered final review is not handed out; the new runs' are", sorted(i for k, i, *_ in C.pending(w.state) if k == "final"), alive)
+ok("stale_inputs: control: its brief is still in the state", all(os.path.isfile(os.path.join(w.state, "final", l, "brief.md")) for l in dead))
+
+w = World("stale-matched", ids=("dA", "dF", "dG", "dB", "dM"), case_ids=("dA", "dF", "dG", "dB"))
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=FOUR)
+edit(os.path.join(w.state, "cases.json"), lambda d: d["cases"][0]["defects"].append("dM"))
+text = go(w, rounds=False)
+parked = w.runs()
+ok("stale_inputs: match does not take the final review's answer for a run whose case changed: the run stays at final and no judge-match is opened",
+   all(r["step"] == "final" and r["reviews"] == [] for r in parked) and not os.path.isdir(os.path.join(w.state, "judge-match")), [(r["step"], len(r["reviews"])) for r in parked])
+
 w = World("dry")
 behave(lambda run, k: ("approve", []))
 before = snap(w.state)

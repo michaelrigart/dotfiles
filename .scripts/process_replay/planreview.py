@@ -6,6 +6,11 @@ and what kind each real one was (judge-class), and records the rounds, their cos
 omit_plans saving in <state>/plan-cases.json. `report` calls report_section for the checkpoint's part
 of the report.
 
+Each result is bound to the input it answers. plan-cases.json records, per round, the digest of the judge-known input written for it
+("known_input") and, per finding, that of its judge-class input ("class_input"); `report` counts a judge's answer only while the input in the
+state still has the digest recorded, so findings and verdicts that belong to different versions of an input never mix. A round or finding whose
+input changed since plan-cases.json was written is counted apart (superseded) and makes the section incomplete: run `cases --plans` again.
+
 A round is a plan-checkpoint receipt. Its plans are the keys of its target's plan_blobs (derived from
 git for old receipts). Its next round is the next one on the same thread that lists one of its plans
 with another blob, so a thread that carries two plans on a null branch matches each plan to its own.
@@ -263,7 +268,7 @@ def plan_cases(a):
     written = {"judge-known": 0, "judge-class": 0}
     keys = ("severity", "file", "line", "summary", "failure_scenario")
     for r in rounds:
-        r["asked"], r["judged"] = False, set()
+        r["asked"], r["judged"], r["known_input"], r["class_input"] = False, set(), None, {}
         if r["next"] is None or not r["findings"]:
             continue
         reader = r["reader"]
@@ -280,6 +285,7 @@ def plan_cases(a):
         C.judge_write(a.state, "judge-known", _judge_known_id(r["nonce"]),
                       {"case": r["nonce"], "findings": judged, "interdiff": diff})
         r["asked"], r["judged"] = True, set(f["index"] for f in judged)
+        r["known_input"] = C.input_digest(a.state, "judge-known", _judge_known_id(r["nonce"]))
         written["judge-known"] += 1
         ans = C.accepted_answer(a.state, "judge-known", _judge_known_id(r["nonce"]))
         if not isinstance(ans, dict):
@@ -302,6 +308,7 @@ def plan_cases(a):
                           {"finding": dict((k, f.get(k)) for k in keys), "plan_excerpt": body,
                            "fix": fix if fix is not None else ""})
             written["judge-class"] += 1
+            r["class_input"][f["index"]] = C.input_digest(a.state, "judge-class", _class_id(r["nonce"], f["index"]))
     by_kind = collections.Counter(s["kind"] for s in skips)
     C.say("plan rounds: {} in October; judge-known inputs {}, judge-class inputs {}; skipped {} round(s), {} finding(s)".format(
         len(rounds), written["judge-known"], written["judge-class"], by_kind["round"], by_kind["finding"]))
@@ -312,8 +319,9 @@ def plan_cases(a):
             "window": list(WINDOW), "skips": skips, "lost_saving": saving,
             "rounds": [{"nonce": r["nonce"], "at": r["at"], "repo": r["repo"], "plans": sorted(r["plans"]), "thread": r["thread"],
                         "turn": r["turn"], "verdict": r["verdict"], "minutes": r["minutes"], "tokens": r["tokens"],
-                        "next": r["next"]["nonce"] if r["next"] else None, "asked": r["asked"],
-                        "findings": [dict(f, plan=r["plan_of"][f["index"]], judged=f["index"] in r["judged"]) for f in r["findings"]]} for r in rounds]})
+                        "next": r["next"]["nonce"] if r["next"] else None, "asked": r["asked"], "known_input": r["known_input"],
+                        "findings": [dict(f, plan=r["plan_of"][f["index"]], judged=f["index"] in r["judged"], class_input=r["class_input"].get(f["index"]))
+                                     for f in r["findings"]]} for r in rounds]})
     return 0
 
 
@@ -347,7 +355,7 @@ def report_section(state):
         return plans.setdefault((repo, path), {"repo": repo, "plan": path, "rounds": 0, "minutes": 0.0, "tokens": 0, "known": 0,
                                                "classes": _blank(), "design_p0p1": 0})
 
-    known = classified = pending_known = no_input = pending_class = unclassifiable = 0
+    known = classified = pending_known = no_input = pending_class = unclassifiable = superseded_known = superseded_class = 0
     for r in rounds:
         for path in r["plans"] or ["(none listed)"]:
             p = row(r["repo"], path)
@@ -355,6 +363,9 @@ def report_section(state):
             p["minutes"] += r["minutes"]
             p["tokens"] += r["tokens"]
         if not r.get("asked"):
+            continue
+        if C.input_digest(state, "judge-known", _judge_known_id(r["nonce"])) != r.get("known_input"):
+            superseded_known += 1           # the input the findings below were judged against has changed (or was never recorded)
             continue
         ans = C.accepted_answer(state, "judge-known", _judge_known_id(r["nonce"]))
         if not isinstance(ans, dict):
@@ -371,8 +382,11 @@ def report_section(state):
             if (r["nonce"], f["index"]) in skipped_findings:
                 unclassifiable += 1
                 continue
-            if not os.path.isfile(os.path.join(state, "judge-class", cid + ".json")):
+            if f.get("class_input") is None or not os.path.isfile(os.path.join(state, "judge-class", cid + ".json")):
                 no_input += 1
+                continue
+            if C.input_digest(state, "judge-class", cid) != f["class_input"]:
+                superseded_class += 1
                 continue
             ans = C.accepted_answer(state, "judge-class", cid)
             klass = ans.get("class") if isinstance(ans, dict) else None
@@ -394,10 +408,11 @@ def report_section(state):
     saving = doc.get("lost_saving") or {}
     lower = saving.get("bytes", 0) / XP.BYTES_PER_TOKEN
     measured = saving.get("omit_tokens", 0) * MEASURED_SAVING[0] / MEASURED_SAVING[1]
-    incomplete = bool(pending_known or no_input or pending_class or unclassifiable or skips)
+    incomplete = bool(pending_known or no_input or pending_class or unclassifiable or superseded_known or superseded_class or skips)
     data = {"rounds": len(rounds), "wall_minutes": minutes, "tokens": tokens, "known": known, "classified": classified,
             "pending": known - classified - unclassifiable, "pending_known": pending_known, "no_input": no_input,
-            "pending_class": pending_class, "unclassifiable": unclassifiable, "classes": classes, "design_p0p1": design,
+            "pending_class": pending_class, "unclassifiable": unclassifiable, "superseded_known": superseded_known,
+            "superseded_class": superseded_class, "classes": classes, "design_p0p1": design,
             "minutes_per_design": _per(minutes, design), "tokens_per_design": _per(tokens, design),
             "lost_saving_tokens": lower, "lost_saving_measured_tokens": measured,
             "net_tokens_lower": tokens - lower, "net_tokens_measured": tokens - measured,
@@ -412,6 +427,9 @@ def report_section(state):
         out.append("  pending: {} round(s) awaiting judge-known, {} known-real finding(s) without a judge-class input "
                    "(run cases --plans again), {} awaiting a class, {} not sent to a judge (see skipped)".format(
                        pending_known, no_input, pending_class, unclassifiable))
+    if superseded_known or superseded_class:
+        out.append("  set aside as superseded, not counted: {} round(s) whose judge-known input changed since plan-cases.json was written, {} finding(s) whose "
+                   "judge-class input did (run cases --plans again)".format(superseded_known, superseded_class))
     out.append("  {:<14}{:>4}{:>4}{:>4}".format("class", "P0", "P1", "P2"))
     out += ["  {:<14}{:>4}{:>4}{:>4}".format(c, *(classes[c][s] for s in SEVERITIES)) for c in CLASSES]
     if design:

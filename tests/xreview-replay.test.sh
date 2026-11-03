@@ -86,6 +86,12 @@ def commit(repo, msg):
     return git(repo, "rev-parse", "HEAD")
 
 
+def sha256_file(path):
+    import hashlib
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 def jl(path):
     with open(path) as f:
         return json.load(f)
@@ -614,20 +620,126 @@ is_("RP3 every switch passes when every arm finds every known-real finding",
 ok("RP3 report.md is written", os.path.isfile(os.path.join(S1, "report.md")))
 ok("RP3 and prints the table", "omit_plans" in p.stdout and "recall" in p.stdout.lower(), p.stdout[:300])
 
+# ------------------------------------------------------------------ RP22 a result counts for the inputs it was recorded against
+print("RP22. runs and matches are bound to the case's inputs: a changed case supersedes them, and the report says so")
+import shutil as sh22
+S22 = os.path.join(ROOT, "state22")
+sh22.copytree(S1, S22)
+CID = "xr-2-r1.pre"
+other = [c for c in jl(os.path.join(S22, "cases.json"))["selected"]["framing"] if c != CID]
+harness(S22, "report")
+rep22 = jl(os.path.join(S22, "report.json"))
+ok("RP22 control: with every input as the arms recorded it, every switch passes and nothing is set aside",
+   all(v["status"] == "pass" for v in rep22["switches"].values()) and rep22["superseded"] == {"arms": {}, "known": []}, rep22["switches"])
+arms22 = jl(os.path.join(S22, "arms.json"))
+ok("RP22 arms.json records, per arm, the digest of the inputs it ran on, and every run file records the same",
+   all(v.get("input") and jl(os.path.join(S22, "runs", cid, l + ".json")).get("input") == v["input"] for cid, m in arms22.items() for l, v in m.items()),
+   arms22[CID])
+ok("RP22 the arms of one case have digests of their own (the arm and its switch are inputs)", len(set(v["input"] for v in arms22[CID].values())) == len(arms22[CID]))
+ok("RP22 cases.json records, per case, the digest of the judge-known input its known findings were judged on",
+   all(c.get("known_input") == sha256_file(os.path.join(S22, "judge-known", c["round"] + ".json")) for c in jl(os.path.join(S22, "cases.json"))["cases"]))
+before_runs = dict((l, open(os.path.join(S22, "runs", CID, l + ".json")).read()) for l in arms22[CID])
+case_doc = jl(os.path.join(S22, "cases.json"))
+for c in case_doc["cases"]:
+    if c["id"] == CID:
+        c["thread"] = "thOther"       # cases was run again and this round now names another thread
+wr(os.path.join(S22, "cases.json"), case_doc)
+p = harness(S22, "report")
+rep22 = jl(os.path.join(S22, "report.json"))
+md22 = open(os.path.join(S22, "report.md")).read()
+ok("RP22 a case whose inputs changed is not counted from the runs made for the old ones: its switches are incomplete, never pass",
+   all(rep22["switches"][sw]["status"] == "incomplete" and rep22["switches"][sw]["n"] < rep22["switches"][sw]["selected"] for sw in ("framing", "omit_plans")), rep22["switches"])
+ok("RP22 report.json and report.md say which runs were set aside",
+   sorted(rep22["superseded"]["arms"].get(CID, [])) == sorted(arms22[CID]) and "Runs set aside as superseded, not counted" in md22 and CID in md22, (rep22["superseded"], md22[-400:]))
+ok("RP22 the cases that did not change still pass on their runs", all(c not in rep22["superseded"]["arms"] for c in other), rep22["superseded"])
+p = harness(S22, "match")
+ok("RP22 match writes no input from the runs set aside", "judge input {}".format(CID) not in p.stdout, p.stdout)
+n0 = len(calls())
+p = harness(S22, "run")
+arms22b = jl(os.path.join(S22, "arms.json"))
+fresh22 = [l for l, v in arms22b[CID].items() if not v.get("superseded")]
+ok("RP22 run gives every arm of the case a new label, marks the old ones superseded and keeps their run files unchanged",
+   len(arms22b[CID]) == 2 * len(arms22[CID]) and sorted(l for l, v in arms22b[CID].items() if v.get("superseded")) == sorted(arms22[CID]) and len(fresh22) == len(arms22[CID])
+   and all(open(os.path.join(S22, "runs", CID, l + ".json")).read() == t for l, t in before_runs.items()), arms22b[CID])
+is_("RP22 and only that case's arms ran again (one turn each), the finished runs of the other cases are reused",
+    len([c for c in calls()[n0:] if c["cmd"] == "turn-start"]), len(arms22[CID]))
+ok("RP22 unchanged cases keep their labels", all(arms22b[c] == arms22[c] for c in other))
+p = harness(S22, "report")
+md22 = open(os.path.join(S22, "report.md")).read()
+ok("RP22 after the run, the case's old judge-match answer is not used: it was for other runs (run match, then pending)",
+   "answered for other runs" in md22 and CID in md22.split("answered for other runs")[1], md22[-500:])
+p = harness(S22, "match")
+ok("RP22 match writes the judge-match input from the fresh runs only", sorted(jl(os.path.join(S22, "judge-match", CID + ".json"))["runs"]) == sorted(fresh22),
+   jl(os.path.join(S22, "judge-match", CID + ".json"))["runs"].keys())
+k22 = len(jl(os.path.join(S22, "cases.json"))["cases"][0]["known"]) if False else len(next(c for c in jl(os.path.join(S22, "cases.json"))["cases"] if c["id"] == CID)["known"])
+judge_says(S22, "judge-match", CID, {"matches": [{"known_index": i, "label": l, "finding_index": 0} for l in fresh22 for i in range(k22)]})
+p = harness(S22, "report")
+rep22 = jl(os.path.join(S22, "report.json"))
+ok("RP22 answered for the fresh runs, the switches pass again, the old runs still listed apart",
+   all(v["status"] == "pass" for v in rep22["switches"].values()) and sorted(rep22["superseded"]["arms"][CID]) == sorted(arms22[CID]), (rep22["switches"], rep22["superseded"]))
+
+# a run file recorded against other inputs than its arm's is not a finished run, even under a current label
+S22c = os.path.join(ROOT, "state22c")
+sh22.copytree(S1, S22c)
+victim = next(l for l, v in jl(os.path.join(S22c, "arms.json"))["xr-3-r2.inc"].items() if v["arm"] == "A")
+vpath = os.path.join(S22c, "runs", "xr-3-r2.inc", victim + ".json")
+good_input = jl(vpath)["input"]
+wr(vpath, dict(jl(vpath), input="recorded-against-something-else"))
+n0 = len(calls())
+harness(S22c, "run")
+ok("RP22 a run file whose recorded input is not its arm's is run again (one turn), and now records the arm's", len([c for c in calls()[n0:] if c["cmd"] == "turn-start"]) == 1
+   and jl(vpath)["input"] == good_input, (len(calls()) - n0, jl(vpath).get("input")))
+
+# a switch dropped from a case: its arm is no longer one of the case's, and its run is set aside
+S22b = os.path.join(ROOT, "state22b")
+sh22.copytree(S1, S22b)
+case_doc = jl(os.path.join(S22b, "cases.json"))
+for c in case_doc["cases"]:
+    if c["id"] == CID:
+        c["switches"] = ["framing"]
+wr(os.path.join(S22b, "cases.json"), case_doc)
+harness(S22b, "report")
+rep22b = jl(os.path.join(S22b, "report.json"))
+b_label = next(l for l, v in arms22[CID].items() if v["arm"] == "B")
+is_("RP22 an arm the case no longer has (omit_plans dropped from its switches) is set aside, the others stay", rep22b["superseded"]["arms"], {CID: [b_label]})
+
+# known findings judged on an input that has changed since cases wrote them
+S22k = os.path.join(ROOT, "state22k")
+sh22.copytree(S1, S22k)
+ji22 = jl(os.path.join(S22k, "judge-known", "xr-2-r1.json"))
+ji22["interdiff"] += "\n"
+wr(os.path.join(S22k, "judge-known", "xr-2-r1.json"), ji22)
+harness(S22k, "report")
+rep22k = jl(os.path.join(S22k, "report.json"))
+ok("RP22 a case whose judge-known input changed after cases wrote its known findings is not counted, and the report says so",
+   rep22k["superseded"]["known"] == [CID] and rep22k["switches"]["framing"]["status"] == "incomplete"
+   and "judge-known input that has changed" in open(os.path.join(S22k, "report.md")).read(), rep22k["superseded"])
+
 # ------------------------------------------------------------------ RP4 the pass bar
 print("RP4. report computes recall and the pass bar")
 S4 = os.path.join(ROOT, "state4")
 
 
+def case_rec(cid, known, arms):
+    """A case record as `cases` writes it, with only what the report reads: its class (.mem: memories; B beside F: a pre-merge case with omit_plans), a target
+    and the known findings."""
+    klass = "mem" if cid.endswith(".mem") else "pre"
+    sws = ["memories"] if klass == "mem" else (["framing", "omit_plans"] if "B" in arms else ["framing"])
+    return {"id": cid, "round": cid.split(".")[0], "class": klass, "thread": "th", "turn": "tu", "k": 1, "at": "2026-10-20T10:00:00Z",
+            "target": {"repo": "/r", "tip": cid}, "fork": None, "switches": sws, "memories": {"hash": "h" * 40, "dir": "/m"} if klass == "mem" else None,
+            "known": [{"index": i, "severity": s, "summary": "k%d" % i} for i, s in enumerate(known)]}
+
+
 def mk(state, cases, selected, arms_map, runs_map, matches, progress=None):
     """cases: {id: {known: [severities]}}; arms_map {id: {arm: label}}; runs_map {(id, arm): run dict};
-    matches {(id, arm): [matched known indexes]}."""
-    wr(os.path.join(state, "cases.json"), {"cases": [
-        {"id": cid, "switches": [], "known": [{"index": i, "severity": s, "summary": "k%d" % i} for i, s in enumerate(c["known"])]}
-        for cid, c in cases.items()], "selected": selected})
-    wr(os.path.join(state, "arms.json"), dict((cid, dict((l, {"arm": a, "switch": None}) for a, l in m.items())) for cid, m in arms_map.items()))
+    matches {(id, arm): [matched known indexes]}. The arms and runs record the digest the case gives them, as `run` does."""
+    recs = dict((cid, case_rec(cid, c["known"], arms_map[cid])) for cid, c in cases.items())
+    wr(os.path.join(state, "cases.json"), {"cases": list(recs.values()), "selected": selected})
+    sw = dict((cid, dict(Hg.arms_of(rec))) for cid, rec in recs.items())
+    dig = dict((cid, dict((a, Hg.arm_digest(recs[cid], a, sw[cid][a])) for a in m)) for cid, m in arms_map.items())
+    wr(os.path.join(state, "arms.json"), dict((cid, dict((l, {"arm": a, "switch": sw[cid][a], "input": dig[cid][a]}) for a, l in m.items())) for cid, m in arms_map.items()))
     for (cid, arm), run in runs_map.items():
-        wr(os.path.join(state, "runs", cid, arms_map[cid][arm] + ".json"), run)
+        wr(os.path.join(state, "runs", cid, arms_map[cid][arm] + ".json"), dict(run, input=dig[cid][arm]))
     for cid, m in arms_map.items():
         got = [{"known_index": i, "label": arms_map[cid][a], "finding_index": 0 if i in matches.get((cid, a), []) else None}
                for a in m for i in range(len(cases[cid]["known"]))]
@@ -1543,6 +1655,20 @@ is_("RP7m memories_report: B below the lower of A and A2 and missing P0/P1s both
 mk(SR, mcases, {"memories": list(mcases)}, mamap, mrm, mgood)
 harness(SR, "report")
 is_("RP7m memories_report: it does not wait on framing passing", jl(os.path.join(SR, "report.json"))["switches"]["memories"]["status"], "pass")
+# a memories case's snapshot is an input of the arms whose home holds it (A, A2), not of B, whose home has none
+mc = case_rec("c1.mem", ["P1", "P2"], mamap["c1.mem"])
+mc2 = dict(mc, memories={"hash": "i" * 40, "dir": "/m2"})
+msw = dict(Hg.arms_of(mc))
+is_("RP22 memories: another snapshot changes the digest of A and A2, not B's", [Hg.arm_digest(mc, a, msw[a]) != Hg.arm_digest(mc2, a, msw[a]) for a in ("A", "A2", "B")], [True, True, False])
+case_doc = jl(os.path.join(SR, "cases.json"))
+for c in case_doc["cases"]:
+    if c["id"] == "c1.mem":
+        c["memories"] = {"hash": "i" * 40, "dir": "/m2"}       # cases was run again and this round now has another snapshot
+wr(os.path.join(SR, "cases.json"), case_doc)
+harness(SR, "report")
+repm = jl(os.path.join(SR, "report.json"))
+is_("RP22 memories: the report sets aside the two arms that ran on the old snapshot, not B, and the switch is incomplete",
+    (repm["superseded"]["arms"], repm["switches"]["memories"]["status"]), ({"c1.mem": ["a1a1a1a1", "a2a2a2a2"]}, "incomplete"))
 # the replay homes' source is ~/.codex, never an inherited CODEX_HOME (which may itself be a replay home)
 FH = os.path.join(ROOT, "fakehome")
 wr(os.path.join(FH, ".codex", "config.toml"), 'model = "from-home"\n')
