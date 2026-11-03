@@ -782,6 +782,11 @@ judges and final reviews get a staged `review-work/items/<hex>/brief.md`, recrea
 start the session with `--add-dir` for `$XDG_STATE_HOME/review-work` and
 `$XDG_STATE_HOME/process-replay`.
 
+Every command takes its locks at entry. One that finds a lock held exits 1 naming it, having
+changed nothing: run it again when the other command has finished. While §4's `run` is going,
+`match`, `pending`, `report` and `cases --plans` work beside it; `snapshot`, `cases`, `inject`,
+`cleanup` and every `home` command refuse.
+
 0. **Pin the harness.** Export the pushed commit and run everything from the export, never from the
    shared checkout (other sessions switch branches there):
    `mkdir -p ~/Code/.replay/harness-<sha7> && git -C ~/.local/share/chezmoi archive <sha> | tar -x -C ~/Code/.replay/harness-<sha7>`;
@@ -794,8 +799,8 @@ start the session with `--add-dir` for `$XDG_STATE_HOME/review-work` and
    `! …` runs sandboxed).
 2. **Mechanism.** `home --name nomem --start --probe`. It must pass every check; if it fails, stop
    and report to Michael before any replay turn. If it prints `paused:`, the weekly usage is at
-   the pause level: run it again after the reset it names. The daemon keeps running; start no other replay
-   home while §4's `run` is going (`run` holds the replay run lock and refuses otherwise).
+   the pause level: run it again after the reset it names. The daemon keeps running, on record for the next command;
+   `run` takes the replay daemons' lock at its entry, so no `home` command runs beside it.
 3. `snapshot`; `cases` (opens 16 candidates); dispatch a judge for every item `pending` lists; run
    `cases` again; repeat until it reports `judge answers pending: 0` and an inventory for every
    opened candidate.
@@ -825,6 +830,8 @@ in a background pane or as a launchd job. Restarting with the same command is sa
 skipped once logged).
 
 **§6** runs once 10 cases have accrued (about a week), not while §4's `run` is going:
+each step after the last has finished (xreview-replay's `pending` and `report` refuse while that
+state's `run` is going):
 `xreview-replay.py cases --switch memories --memwatch ~/.local/state/process-replay/memwatch`; a
 judge for every item `xreview-replay.py pending --switch memories` lists, handed only the staged
 brief path it prints; `cases --switch memories …` again for the selection, then
