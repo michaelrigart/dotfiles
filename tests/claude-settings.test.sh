@@ -258,12 +258,17 @@ jq_is '.autoContinueAtUsageLimit == null' true "autoContinueAtUsageLimit not inv
 # Default-only like effortLevel: a fresh machine starts at xhigh, a runtime value persists.
 emit '{}'
 jq_is '.modelSettings["claude-opus-5-5"].effortLevel' 'xhigh' "opus-5-5 effort seeded to xhigh when absent"
-emit '{"modelSettings":{"claude-opus-5-5":{"effortLevel":"medium"}}}'
-jq_is '.modelSettings["claude-opus-5-5"].effortLevel' 'medium' "a live opus-5-5 effort persists"
+# Default-only: render a fresh file, apply the runtime /effort change to the rendered
+# output, render again; the changed value must survive the second apply.
+seeded=$(printf '%s' "$OUT" | jq -r '.modelSettings["claude-opus-5-5"].effortLevel' 2>&1)
+emit "$(printf '%s' "$OUT" | jq -c '.modelSettings["claude-opus-5-5"].effortLevel = "medium"')"
+jq_is '"'"$seeded"'" + ">" + .modelSettings["claude-opus-5-5"].effortLevel' 'xhigh>medium' "opus-5-5 effort: seeded xhigh, then a runtime change to medium persists"
+# Both halves in one comparison: the seed lands AND the sibling entry and sibling key survive.
 emit '{"modelSettings":{"other-model":{"effortLevel":"low"},"claude-opus-5-5":{"autoCompactWindow":123}}}'
-jq_is '.modelSettings["other-model"].effortLevel'           'low'   "another model's modelSettings entry survives the seed"
-jq_is '.modelSettings["claude-opus-5-5"].autoCompactWindow' 123     "other opus-5-5 keys survive the seed"
-jq_is '.modelSettings["claude-opus-5-5"].effortLevel'       'xhigh' "opus-5-5 effort seeded beside its other keys"
+want='{"other-model":{"effortLevel":"low"},"claude-opus-5-5":{"autoCompactWindow":123,"effortLevel":"xhigh"}}'
+got=$(printf '%s' "$OUT" | jq -S -c '.modelSettings' 2>&1)
+if [ "$got" = "$(printf '%s' "$want" | jq -S -c .)" ]; then _pass "modelSettings is seeded and otherwise kept whole"
+else _fail "modelSettings is seeded and otherwise kept whole" "$got"; fi
 # A runtime-written map of the wrong type must not stop the apply (jq exit 5, no output):
 # it is replaced by an object, like the other guarded maps.
 for bad in '"x"' '[]' '5' 'false'; do
