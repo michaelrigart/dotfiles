@@ -611,15 +611,29 @@ done
 # arbitrary socket added later, and "contains docker *" would admit extra excluded
 # commands — each a hole in the boundary this layer exists to draw.
 #
-# Five entries, each because the tool reaches a resource the sandbox blocks: docker its
+# Six entries, each because the tool reaches a resource the sandbox blocks: docker its
 # own socket, basecamp the macOS Keychain, herdr and xreview the herdr unix socket, review
-# the 1Password integration (op) and its state and session directories. The middle three
-# earn it for a second reason — sandboxed they return confident wrong answers rather than
-# failing, so the "escalate only on sandbox evidence" rule has nothing to fire on. Adding a
-# sixth entry should require the same justification, which is why this is pinned rather
-# than open-ended.
-jq_is '.sandbox.excludedCommands == ["docker *", "basecamp *", "herdr *", "xreview *", "review *"]' true \
-      "excludedCommands is exactly the five socket/keychain/state tools"
+# the 1Password integration (op) and its state and session directories, wt git configuration
+# (git worktree add), the herdr socket and ~/.local/state. The middle three earn it for a
+# second reason — sandboxed they return confident wrong answers rather than failing, so the
+# "escalate only on sandbox evidence" rule has nothing to fire on. Adding a seventh entry
+# should require the same justification, which is why this is pinned rather than open-ended.
+jq_is '.sandbox.excludedCommands == ["docker *", "basecamp *", "herdr *", "xreview *", "review *", "wt *"]' true \
+      "excludedCommands is exactly the six socket/keychain/state tools"
+x_match() { # x_match <command> -> how many excludedCommands patterns match it
+  printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.sandbox.excludedCommands[] | ("Bash(" + . + ")") | select(hit($c))] | length'
+}
+x_is() { # x_is <command> <expected count> <label>
+  got=$(x_match "$1")
+  if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
+}
+x_is 'wt --no-focus feat/x main' 1 "wt with flags runs unsandboxed"
+x_is 'wt feat/x' 1 "plain wt runs unsandboxed"
+for c in 'wt-rm feat/x' 'wt-prepare feat/x' 'wt-teardown feat/x' 'command wt-rm feat/x'; do
+  x_is "$c" 0 "teardown tool stays sandboxed: $c"
+done
+m_is 'wt --no-focus feat/x main' 0 "no allow rule lets an unsandboxed wt skip the classifier"
+m_is 'wt feat/x' 0 "no allow rule matches plain wt"
 jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
       "allowUnixSockets contains only the stable agent socket"
 

@@ -413,7 +413,13 @@ printf '%s' "$input" | jq \
         # integration) and writes its reports to ~/.local/state/review and the session it
         # starts to ~/.claude, all denied in the sandbox. The Claude session it launches
         # runs under its own sandbox.
-        "excludedCommands": ["docker *", "basecamp *", "herdr *", "xreview *", "review *"],
+        #
+        # wt is here because it writes git configuration (git worktree add), drives the
+        # herdr socket through dev and layout.sh, and writes state under ~/.local/state
+        # (mise trust, the layout lock). Sandboxed it fails partway and can leave a branch
+        # behind. Like the others it has no allow rule, so an unsandboxed wt still reaches
+        # the classifier (spec 2026-11-03-driver-wt, section 1).
+        "excludedCommands": ["docker *", "basecamp *", "herdr *", "xreview *", "review *", "wt *"],
         "filesystem": {
           "allowRead": [
             "~/.ssh/config",
