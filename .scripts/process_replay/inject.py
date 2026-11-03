@@ -761,6 +761,7 @@ def _merged_key(b):
     return (I._epoch((b.get("merged") or {}).get("at")) or 0, _final_at(b)[0])
 
 
+@C.locked("exclusive")
 def cmd_inject(a):
     doc = C.jload(os.path.join(a.state, "branches.json"))
     if not isinstance(doc, dict) or not isinstance(doc.get("branches"), list):

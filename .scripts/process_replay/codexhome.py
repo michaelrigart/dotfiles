@@ -13,14 +13,17 @@ lands in ~/.codex, where it could feed memory generation.
                                    replay-home.json (its record)
   $XDG_STATE_HOME/process-replay/codex-auth/   the shared login; daemon.json names the home running now
 
-At most one replay daemon runs at a time, and a process that starts one holds an flock on <auth_dir>/run.lock until it
-stops it; a process that only uses a daemon (the loop's `run`) holds it for as long as it does (hold). Every other operation that
-changes a daemon or the shared login (stop, probe, making or refreshing a home, settling the login, `login-cmd`'s setup, the
-cleanups) takes the same lock for its own duration (_exclusive) and is refused, at once, while another process holds it: a
-`home --stop` or a `cleanup` never shuts down the daemon of a run that is going. A daemon that answers
-while no process holds that lock was left by a run that died: `start` and `reclaim` stop it (and say so) rather than refuse. While one runs, Codex replaces its auth.json link with a
-regular file when it refreshes the token; `stop` (and the next `ensure`) copies that file back to the
-shared login when newer and restores the link.
+At most one replay daemon runs at a time. Every command that touches a replay daemon or the shared login holds an flock on
+<auth_dir>/run.lock for its whole life (session, which common.command_locks takes at the command's entry, after the state's lock);
+every operation here that changes a daemon or the login (start, stop, probe, making or refreshing a home, settling the login,
+`login-cmd`'s setup, reclaim) needs it and does nothing without it, so a `home --stop` or a `cleanup` never shuts down the daemon of a
+run that is going, and no other process acts between two steps of a command. Within its session a command claims the home whose
+daemon it started or uses (start, hold). <auth_dir>/daemon.json, the marker, names the home whose daemon may be running: it is written
+before a daemon starts, read only under the lock, and removed only once a stop confirms the daemon down, so a daemon left running at a
+command's end is always on record. A daemon that answers and that this command does not hold was left by another process (a run
+that died, or `home --start` for a run to use): `start` and `reclaim` stop it (and say so) rather than refuse. While one runs, Codex
+replaces its auth.json link with a regular file when it refreshes the token; `stop` (and the next `ensure`) copies that file back to
+the shared login when newer and restores the link.
 
 Nothing here reads the source home's auth.json or writes below the source home.
 """
@@ -249,8 +252,8 @@ def _make(state, name, memories_src, use_memories, source, keep_memories):
     if len(_socket(home).encode("utf-8")) > SOCKET_LIMIT:
         raise Failed("the daemon socket {} would be over {} bytes, more than a unix socket allows: use a shorter XDG_STATE_HOME".format(
             _socket(home), SOCKET_LIMIT))
-    with _exclusive(home):
-        return _make_locked(state, name, home, source, memories_src, use_memories, keep_memories)
+    _need(home)         # a home is not made over another home's daemon that is not confirmed down
+    return _make_locked(state, name, home, source, memories_src, use_memories, keep_memories)
 
 
 def _make_locked(state, name, home, source, memories_src, use_memories, keep_memories):
@@ -340,7 +343,9 @@ def _daemon(home, verb):
         raise Failed("daemon {} failed ({}): {}".format(verb, p.returncode, p.stderr.decode("utf-8", "replace").strip()))
 
 
-_HELD = {"home": None, "fd": None}      # the run lock this process holds, and for which home
+_HELD = {"fd": None, "home": None, "started": False}
+# fd: the replay daemons' lock, held by this process from session() entry to its exit (the whole command)
+# home: the home whose daemon this command started or uses (start, hold); started: this command started that daemon and has not seen it down
 
 
 def _lock_path():
@@ -351,31 +356,13 @@ def _same(a, b):
     return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
 
 
-def _release():
-    if _HELD["fd"] is not None:
-        os.close(_HELD["fd"])       # closing drops the flock
-    _HELD.update(home=None, fd=None)
-
-
-def _handover(home):
-    """Failed when this process holds the run lock for another home whose daemon is not confirmed down (its stop failed or timed
-    out, or it does not answer health in time): the lock, the marker and the shared login stay with that home until it is stopped.
-    Only a daemon confirmed down (no socket, or the socket refuses, as start() decides) lets the lock move on to `home`."""
-    prev = _HELD["home"]
-    if _HELD["fd"] is None or prev is None or home is None or _same(prev, home):
-        return
-    if _health(prev) != "down":
-        raise Failed("the replay daemon of {} may still be running (its stop failed, or it does not answer): stop that home first "
-                     "(process-replay home --name {} --stop), then use {}".format(prev, os.path.basename(prev.rstrip("/")), home))
-
-
-def _acquire(home):
-    """Hold the run lock for `home` (this process may move it from one home to the next, once the previous home's daemon is
-    confirmed down: _handover); Failed when another process holds it: a run is going."""
-    if _HELD["fd"] is not None and _same(_HELD["home"], home):
-        return
-    _handover(home)
-    _release()
+@contextlib.contextmanager
+def session():
+    """The replay daemons' lock for a whole command (common.command_locks takes it, after the state's lock): taken once, before anything
+    reads the marker, and held across every reconcile, hand-over, start, probe and stop until the command ends, so no other process can act
+    between two of its steps. Failed, at once, when another process holds it. A daemon this command leaves running (one it started or used
+    and did not see stop) is on record in the marker, so the next command, which reads the marker only once it holds the lock, finds it:
+    start() names a home in the marker before its daemon starts, and hold() names one it uses that the marker does not."""
     os.makedirs(auth_dir(), exist_ok=True)
     fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -383,73 +370,93 @@ def _acquire(home):
     except OSError:
         os.close(fd)
         raise Failed("a replay run holds the replay daemon (lock {}): wait for it to finish".format(_lock_path()))
-    _HELD.update(home=home, fd=fd)
+    _HELD.update(fd=fd, home=None, started=False)
+    try:
+        yield
+    finally:
+        _HELD.update(fd=None, home=None, started=False)
+        os.close(fd)        # closing the descriptor releases the flock
+
+
+def _on_record(home):
+    """Make the marker name `home` when its daemon may be running and the marker names no other daemon that may be."""
+    if not home:
+        return
+    cur = jload(_marker())
+    named = cur.get("home") if isinstance(cur, dict) else None
+    if _same(named, home) or _health(home) == "down":
+        return
+    if not named or _health(named) == "down":
+        jsave(_marker(), {"home": home})
+
+
+def _need(home=None, handover=True):
+    """Failed unless this process holds the replay daemons' lock (a command's session): no daemon or login change happens outside one. With
+    `handover`, also when this command holds another home whose daemon is not confirmed down (_handover)."""
+    if _HELD["fd"] is None:
+        raise Failed("the replay daemon is only changed by a command that holds its lock (codexhome.session): none is held")
+    if handover:
+        _handover(home)
+
+
+def _handover(home):
+    """Failed when this command holds another home whose daemon is not confirmed down (it is in use, its stop failed or timed out, or it
+    does not answer health in time): that home, the marker and the shared login stay as they are until it is stopped. Only a daemon
+    confirmed down (no socket, or the socket refuses, as start() decides) lets the command move on to `home`."""
+    prev = _HELD["home"]
+    if prev is None or home is None or _same(prev, home):
+        return
+    if _health(prev) != "down":
+        raise Failed("the replay daemon of {} may still be running (it is in use, its stop failed, or it does not answer): stop that home "
+                     "first (process-replay home --name {} --stop), then use {}".format(prev, os.path.basename(prev.rstrip("/")), home))
 
 
 @contextlib.contextmanager
 def hold(home):
-    """Hold the run lock for as long as a process uses the daemon of `home` that it did not start itself (a `run` finds the
-    daemon `home --start` left): without it that daemon looks left by a crashed run, and another `home --start`, or a `reclaim`,
-    would stop it mid-run. Failed, at once, when another process holds the lock. A lock this process already holds for `home`
-    (it started the daemon) stays held when the block ends."""
+    """Claim the daemon of `home` for the block: a command that uses a daemon it did not start (a `run` finds the one `home --start` left)
+    keeps it from looking left behind, so nothing in this command stops it as a leftover. Needs the command's session; Failed when this
+    command holds another home whose daemon is not confirmed down. A daemon this command started (before or inside the block) stays
+    claimed after it, until a stop confirms it down."""
+    _need(home)
     had = _same(_HELD["home"], home)
-    _acquire(home)
+    if not had:
+        _HELD.update(home=home, started=False)
+        _on_record(home)        # a daemon this command uses is on record from now, should it be left running
     try:
         yield
     finally:
-        if not had and _same(_HELD["home"], home):
-            _release()
+        if not had and _same(_HELD["home"], home) and not _HELD["started"]:
+            _HELD.update(home=None, started=False)
 
 
-@contextlib.contextmanager
-def _exclusive(home=None, handover=True):
-    """The run lock for the block, whichever process-wide holder: this process already holding it (it started the daemon, or a `run`
-    uses it) is the owner and the block runs under that lock, which it leaves held; otherwise the lock is taken for the block only.
-    Failed, at once, when another process holds it, and when this process holds it for another home whose daemon is not confirmed
-    down (_handover): a home is not made, probed or started over a daemon whose stop failed."""
-    if _HELD["fd"] is not None:
-        if handover:
-            _handover(home)
-        yield
-        return
-    _acquire(home)
-    try:
-        yield
-    finally:
-        _release()
-
-
-def _leftover(home, keep):
-    """Stop the daemon of `home` when it answers and no run holds it: one left behind by a run that died. Returns
-    whether it did; Failed when a run holds it. The lock stays held with `keep` (a start follows), else it is let go."""
+def _leftover(home):
+    """Stop the daemon of `home` when it answers and this command does not hold it: one another process left behind (a run that died,
+    or a `home --start` that left it for a run). Returns whether it did."""
     if _same(_HELD["home"], home) or _health(home) == "down":
         return False
-    _acquire(home)
     say("the replay daemon of {} was left running by a run that did not stop it: stopping it".format(home))
     stop(home)
-    if keep:
-        _acquire(home)
-    else:
-        _release()
     return True
 
 
 def reclaim(home):
-    """Before a run makes or refreshes `home`: stop a daemon of it that a crashed run left running. Returns
-    whether it stopped one; a home that does not exist yet has none; Failed when a live run holds it."""
+    """Before a run makes or refreshes `home`: stop a daemon of it another process left running. Returns whether it stopped one; a home
+    that does not exist yet has none."""
     if not os.path.isfile(os.path.join(home, RECORD)):
         return False
     _owned(home)
-    return _leftover(home, False)
+    _need(handover=False)
+    return _leftover(home)
 
 
 def start(home):
-    """Start the replay daemon of `home`. One at a time: a second home is refused while this process runs another.
-    A daemon that answers while no process holds the run lock was left by a crashed run and is stopped first. One whose health
-    request times out is neither: start is refused and the marker and the login are left as they are. Only a home confirmed down
-    (no socket, or the socket refuses) is settled and replaced."""
+    """Start the replay daemon of `home`. One at a time: refused while this command holds another home whose daemon is not confirmed down.
+    A daemon of another home that the marker names and that answers was left by another process, and is stopped first. One whose health
+    request times out is neither: start is refused and the marker and the login are left as they are. Only a home confirmed down (no
+    socket, or the socket refuses) is settled and replaced. The marker names `home` before its daemon starts, so a start that fails half
+    way still leaves it on record."""
     _record(home)
-    os.makedirs(auth_dir(), exist_ok=True)
+    _need(home)
     cur = jload(_marker())
     last = cur.get("home") if isinstance(cur, dict) else None
     if last and not _same(last, home):
@@ -460,41 +467,39 @@ def start(home):
             raise Failed("the replay daemon of {} did not answer its health request within {} s: it may still be running. Stop that home first "
                          "(process-replay home --name {} --stop), then start this one".format(last, HEALTH_TIMEOUT, os.path.basename(last.rstrip("/"))))
         if health == "up":
-            if _same(_HELD["home"], last):
-                raise Failed("the replay daemon of {} is running: stop it first".format(last))
-            _acquire(home)
             say("the replay daemon of {} was left running by a run that did not stop it: stopping it".format(last))
             stop(last)
-        with _exclusive(home):      # the login and the marker change only under the run lock
-            if health != "up" and os.path.isfile(os.path.join(last, RECORD)):
+        else:
+            if os.path.isfile(os.path.join(last, RECORD)):
                 _settle_auth(last)      # a dead daemon's refreshed token is carried forward before another home logs in
             if os.path.exists(_marker()):
                 os.unlink(_marker())
-    _leftover(home, True)
-    _acquire(home)
+    _leftover(home)
+    _HELD.update(home=home, started=True)
     if os.path.exists(os.path.join(home, PROBED)):
         os.unlink(os.path.join(home, PROBED))        # a probe proved the daemon before this start, not this one
-    _daemon(home, "start")
     jsave(_marker(), {"home": home})
+    _daemon(home, "start")
 
 
 def stop(home):
-    """Stop the replay daemon of `home`, then take back a refreshed login. The one-daemon marker goes
-    only when the daemon stopped (its stop succeeded or its socket is gone)."""
+    """Stop the replay daemon of `home`, then take back a refreshed login. The one-daemon marker, and this command's claim on the home,
+    go only when the daemon stopped (its stop succeeded or its socket is gone). A stop is never a hand-over: it needs the session only."""
     _record(home)
     _owned(home)
-    with _exclusive(home, handover=False):      # refused, with the daemon untouched, while another process holds the run lock; a stop is never a hand-over
-        failure = None
-        try:
-            _daemon(home, "stop")
-        except Failed as e:
-            failure = e
-        _settle_auth(home)
+    _need(handover=False)
+    failure = None
+    try:
+        _daemon(home, "stop")
+    except Failed as e:
+        failure = e
+    _settle_auth(home)
+    if failure is None or not os.path.exists(_socket(home)):
         cur = jload(_marker())
-        if (failure is None or not os.path.exists(_socket(home))) and isinstance(cur, dict) and cur.get("home") == home:
+        if isinstance(cur, dict) and cur.get("home") == home:
             os.unlink(_marker())
-        if (failure is None or not os.path.exists(_socket(home))) and _same(_HELD["home"], home):
-            _release()
+        if _same(_HELD["home"], home):
+            _HELD.update(home=None, started=False)
     if failure is not None:
         raise failure
 
@@ -598,10 +603,10 @@ def probe(home, expect_memories, rpc=None):
     answer, leave its rollout under `home` and none under the source home, leave the source home's own
     daemon answering, and show the memory text in its developer message exactly when `expect_memories`.
     `rpc` is an xreview-rpc to use (default: the replay's). Returns {ok, checks, model, effort, notes}.
-    It uses the daemon, so it runs under the run lock (Failed while another process holds it)."""
+    It uses the daemon, so it needs the command's session (Failed without one)."""
     _record(home)
-    with _exclusive(home):
-        return _probe(home, expect_memories, rpc)
+    _need(home)
+    return _probe(home, expect_memories, rpc)
 
 
 def _probe(home, expect_memories, rpc):
@@ -708,14 +713,17 @@ def _ensure_for(a, home):
     return _make(a.state, a.name, a.memories, use, source, keep_memories=not a.memories)
 
 
+@common.locked(lambda a: None if a.dry_run or a.login_cmd else "shared", daemon=lambda a: not a.dry_run)
 def cmd_home(a):
     """Only a creation, a refresh or --start (which refreshes first) changes a home's files; --stop and
-    --probe read its record and leave its files alone, so --stop works on a home whose files are broken."""
+    --probe read its record and leave its files alone, so --stop works on a home whose files are broken.
+    It holds the state shared (it records the home in codex-homes.json) and the replay daemons' lock for its whole life; a dry run
+    takes neither, and --login-cmd only the daemons' lock (it sets up their shared login's directory)."""
     if a.login_cmd:
         if not a.dry_run:
-            with _exclusive():      # the login directory is the daemons' shared login: not touched under a run
-                os.makedirs(auth_dir(), exist_ok=True)
-                os.chmod(auth_dir(), 0o700)
+            _need()      # the login directory is the daemons' shared login: not touched under a run
+            os.makedirs(auth_dir(), exist_ok=True)
+            os.chmod(auth_dir(), 0o700)
         say(login_cmd())
         return 0
     if not a.name:

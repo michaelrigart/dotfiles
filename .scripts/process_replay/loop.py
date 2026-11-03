@@ -24,10 +24,11 @@ or, for the replacement, replaces. A voided run keeps end "void" and voids 1; it
 The final review's id is the run's label. Its brief is staged (final.py); the driving session hands the reviewer the staged
 brief and writes the reply to the staged directory's answer.md.
 
-Concurrency. `run` holds an exclusive lock on <state>/run.lock for its whole life (a second `run` refuses), keeps to TURNS Codex
-turns, and alone creates runs. Every mutation of a run holds that run's lock (runs/<case>/<label>/lock), re-reading its
-state.json once held; a run whose Codex round is in flight holds its lock throughout, and `match` (or `run`) skips a busy run
-and says so. A voided run's replacement is made by the next `run`.
+Concurrency (common.command_locks). `run` shares <state>/run.lock with `match`, `pending` and `report` and holds <state>/runner.lock
+alone for its whole life (a second `run` refuses), keeps to TURNS Codex turns, and alone creates runs; it holds the replay daemons'
+lock from its entry too. `cleanup` holds run.lock exclusively, so it refuses while any of those is going. Every mutation of a run
+holds that run's lock (runs/<case>/<label>/lock), re-reading its state.json once held; a run whose Codex round is in flight holds its
+lock throughout, and `match` (or `run`) skips a busy run and says so. A voided run's replacement is made by the next `run`.
 """
 import concurrent.futures as cf
 import contextlib
@@ -715,52 +716,47 @@ def _drive(a, rounds):
                 say("would start {} run(s) of case {}".format(C.RUNS - len(mine), cid))
         _summary(runs)
         return 0
-    fd = None
-    if rounds:
-        fd = _lock(os.path.join(a.state, "run.lock"))
-        if fd is None:
-            raise Failed("another `run` holds {}: only one runs at a time (it keeps to {} Codex turns and alone creates runs)".format(
-                os.path.join(a.state, "run.lock"), TURNS))
-    try:
-        with contextlib.ExitStack() as held:
-            home = None
-            while True:
-                runs = runs_of(a)
-                moved = ensure_runs(ctx, runs) if rounds else False
-                for run in runs:
-                    moved |= _settle(ctx, run)
-                if rounds and any(r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed for r in runs):
-                    if home is None:
-                        home = _home(a)
-                        held.enter_context(codexhome.hold(home))        # until this run ends: the daemon is not a crashed run's to reclaim
-                    moved |= _rounds(ctx, runs, home)
-                if not moved:
-                    break
+    with contextlib.ExitStack() as held:
+        home = None
+        while True:
             runs = runs_of(a)
-            _summary(runs)
-            waits = C.pending(a.state)
-            if waits:
-                say("{} item(s) wait for an agent: run `process-replay.py pending`, then `{}` again".format(len(waits), getattr(a, "command", "run")))
-    finally:
-        _unlock(fd)
+            moved = ensure_runs(ctx, runs) if rounds else False
+            for run in runs:
+                moved |= _settle(ctx, run)
+            if rounds and any(r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed for r in runs):
+                if home is None:
+                    home = _home(a)
+                    held.enter_context(codexhome.hold(home))        # until this run ends: the daemon is not one left behind to reclaim
+                moved |= _rounds(ctx, runs, home)
+            if not moved:
+                break
+        runs = runs_of(a)
+        _summary(runs)
+        waits = C.pending(a.state)
+        if waits:
+            say("{} item(s) wait for an agent: run `process-replay.py pending`, then `{}` again".format(len(waits), getattr(a, "command", "run")))
     return 0
 
 
+@C.locked(lambda a: None if a.dry_run else "run", daemon=lambda a: not a.dry_run)
 def cmd_run(a):
     return _drive(a, True)
 
 
+@C.locked(lambda a: None if a.dry_run else "shared")
 def cmd_match(a):
     return _drive(a, False)
 
 
+@C.locked(lambda a: None if a.dry_run else "exclusive", daemon=lambda a: not a.dry_run)
 def cmd_cleanup(a):
     """Stop the replay home's daemon and archive the threads the runs used; remove scratch/, work/, views/, packs/ (a cache), each
     recreate/<defect>/tree (a working copy of the final tree) once recreated/<defect>.patch holds what it made (before that, `inject`
     still needs it), the run scratches under review-work/scratch and this state's staged
-    items under review-work/items. Every JSON file, brief, patch and `done` marker stays. It refuses while a `run` holds run.lock or
-    any run's lock is held. Threads are archived on the daemon as it is: run cleanup before `home --stop`, or archiving fails (exit 1)
-    though everything else is removed."""
+    items under review-work/items. Every JSON file, brief, patch and `done` marker stays. It holds run.lock exclusively and the replay
+    daemons' lock, so it refuses while any other command uses the state (a `run`, `match` or `pending`) or any process uses the daemon.
+    Threads are archived on the daemon as it is: run cleanup before `home --stop`, or archiving fails (exit 1) though everything else
+    is removed."""
     runs = runs_of(a)
     gone = [os.path.join(a.state, d) for d in ("scratch", "work", "views", "packs")]
     gone += [t for t in sorted(glob.glob(os.path.join(glob.escape(a.state), "recreate", "*", "tree")))
@@ -778,32 +774,17 @@ def cmd_cleanup(a):
             if os.path.exists(p):
                 say("would remove " + p)
         return 0
-    held = []
-    try:
-        fd = _lock(os.path.join(a.state, "run.lock"))
-        if fd is None:
-            raise Failed("a `run` holds {}: cleanup waits for it".format(os.path.join(a.state, "run.lock")))
-        held.append(fd)
-        for r in runs:
-            fd = _lock(os.path.join(a.state, "runs", r["case"], r["label"], "lock"))
-            if fd is None:
-                raise Failed("run {} is busy (another command holds its lock): cleanup waits for it".format(r["label"]))
-            held.append(fd)
-        ok = True
-        if os.path.isfile(os.path.join(home, codexhome.RECORD)):
-            with codexhome.hold(home):      # Failed, with nothing archived or stopped, while another process (a `run`, either harness) uses the daemon
-                with K.homed(home):
-                    ok = XR.Threads(a.state).cleanup()
-                try:
-                    codexhome.stop(home)
-                except Failed as e:
-                    say("could not stop the daemon of {}: {}".format(home, e))
-                    ok = False
-        for p in gone:
-            if os.path.exists(p):
-                shutil.rmtree(p, ignore_errors=True)
-                say("removed " + p)
-    finally:
-        for fd in held:
-            _unlock(fd)
+    ok = True
+    if os.path.isfile(os.path.join(home, codexhome.RECORD)):
+        with K.homed(home):
+            ok = XR.Threads(a.state).cleanup()
+        try:
+            codexhome.stop(home)
+        except Failed as e:
+            say("could not stop the daemon of {}: {}".format(home, e))
+            ok = False
+    for p in gone:
+        if os.path.exists(p):
+            shutil.rmtree(p, ignore_errors=True)
+            say("removed " + p)
     return 0 if ok else 1

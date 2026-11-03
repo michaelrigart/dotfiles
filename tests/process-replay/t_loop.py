@@ -741,7 +741,7 @@ jid = "%s-1" % r["label"]
 staged = os.path.dirname([p[4] for p in C.pending(w.state) if p[1] == jid][0])
 C.jsave(os.path.join(staged, "answer.json"), {"matches": [{"defect": 0, "finding": 5}], "unmatched": []})
 text = go(w, rounds=False)
-ok("bad_answer: a match naming a finding the input does not have is reported and not used", "finding 5" in text and "not used" in text and "pending again" in text, text)
+ok("bad_answer: a match naming a finding the input does not have is reported and not used", "finding is 5" in text and "not used" in text and "pending again" in text, text)
 ok("bad_answer: the bad answer is set aside, not left as the answer", not os.path.exists(os.path.join(w.state, "judge-match", jid + ".answer.json"))
    and C.jload(os.path.join(w.state, "judge-match", jid + ".rejected-1.answer.json")) == {"matches": [{"defect": 0, "finding": 5}], "unmatched": []})
 ok("bad_answer: the judge-match is pending again, in its staged directory, and the run keeps waiting",
@@ -758,7 +758,7 @@ ok("bad_answer: the judge's second answer, written in the staged directory, is a
 other = [x for l, x in st.items() if l != r["label"]][0]
 C.jsave(os.path.join(w.state, "judge-match", "%s-1.answer.json" % other["label"]), {"matches": [{"defect": 9, "finding": 0}], "unmatched": []})
 text = go(w, rounds=False)
-ok("bad_answer: an answer put straight into the state is set aside the same way, naming the defect it got wrong", "names defect 9" in text and
+ok("bad_answer: an answer put straight into the state is set aside the same way, naming the defect it got wrong", "defect is 9" in text and
    os.path.exists(os.path.join(w.state, "judge-match", "%s-1.rejected-1.answer.json" % other["label"])), text)
 
 # an incomplete judge-match answer (no matches, or an unmatched finding with no ruling) is not read as "nothing matched, nothing ruled": that would
@@ -803,7 +803,7 @@ st = dict((x["label"], x) for x in w.runs())
 ok("final_findings: the judge's own indices order the findings (not their position in the list)",
    [f["summary"] for f in st[runs[0]["label"]]["reviews"][0]["findings"]] == ["first claim", "second claim"], st[runs[0]["label"]]["reviews"])
 ok("final_findings: an index out of range spoils that review only, is reported, and halts nothing",
-   st[runs[1]["label"]]["step"] == "match" and st[runs[1]["label"]]["reviews"][0]["findings"] == [] and "not used" in text and "not numbered" in text, text)
+   st[runs[1]["label"]]["step"] == "match" and st[runs[1]["label"]]["reviews"][0]["findings"] == [] and "not used" in text and "index is 7" in text, text)
 
 # a finding a match uses is not also an outside defect
 w = World("usedreal")
@@ -820,22 +820,41 @@ ok("used_finding_not_outside: a finding some match uses is neither outside nor r
    all(x["outside"] == [] and x["rejected"] == [] and x["defects"]["dA"] == "recovered" for x in w.runs()), [(x["outside"], x["rejected"]) for x in w.runs()])
 
 # ================================================================== two commands at once
-# a second `run` refuses while one holds run.lock
+# a second `run` refuses while one is going (a run shares run.lock and holds runner.lock alone), and match goes on beside it
 w = World("lock")
 behave(lambda run, k: ("approve", []))
 go(w)
-held = os.open(os.path.join(w.state, "run.lock"), os.O_RDWR | os.O_CREAT)
-fcntl.flock(held, fcntl.LOCK_EX)
-try:
-    go(w)
-    got = "no error"
-except Failed as e:
-    got = str(e)
-ok("run_lock: a second run refuses while another holds run.lock, and says which", "run.lock" in got and "another" in got, got)
+
+
+def holding(names_modes):
+    fds = []
+    for name, how in names_modes:
+        fds.append(os.open(os.path.join(w.state, name), os.O_RDWR | os.O_CREAT))
+        fcntl.flock(fds[-1], how | fcntl.LOCK_NB)
+    return fds
+
+
+def refusal(fn, *args):
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            fn(*args)
+        return "no error"
+    except Failed as e:
+        return str(e)
+
+
+held = holding((("run.lock", fcntl.LOCK_SH), ("runner.lock", fcntl.LOCK_EX)))
+got = refusal(go, w)
+ok("run_lock: a second run refuses while another runs, and says which lock (runner.lock) it holds", "runner.lock" in got and "another `run`" in got, got)
 text = go(w, rounds=False)
 ok("run_lock: match is not stopped by it", "waits at final" in text, text)
-fcntl.flock(held, fcntl.LOCK_UN)
-os.close(held)
+for fd in held:
+    os.close(fd)
+held = holding((("run.lock", fcntl.LOCK_EX),))
+got = [refusal(go, w), refusal(lambda: go(w, rounds=False))]
+ok("run_lock: while a command holds run.lock alone (cleanup, cases, inject), run and match both refuse and name the lock",
+   all("run.lock" in g and "another command" in g for g in got), got)
+os.close(held[0])
 go(w)
 
 # match never creates runs: only the run that holds run.lock does
@@ -867,6 +886,50 @@ go(w)
 ok("run_lock: a run started while another is running refuses", INNER[0].startswith("another `run` holds"), INNER)
 ok("busy: match skips a run whose round is in flight, and says so", "busy" in INNER[1], INNER[1:])
 ok("busy: and the round finished normally", all(x["end"] == "approve" for x in w.runs()))
+
+# the runbook's commands beside a `run` that is in a Codex round (Part B step 5): match, pending and report go on, as does the memories
+# watcher (which holds no state); cleanup, cases and inject (which hold the state alone), and `home` (the replay daemons' lock, which the
+# run holds from its entry) refuse, with nothing changed
+from process_replay import bar as BAR  # noqa: E402
+from process_replay import codexhome as CXH  # noqa: E402
+from process_replay import inject as INJ  # noqa: E402
+from process_replay import inventory as INV  # noqa: E402
+from process_replay import memwatch as MW  # noqa: E402
+w = World("beside")
+behave(lambda run, k: ("approve", []))
+to_codex(w)
+BESIDE = {}
+MEMSRC = os.path.join(ROOT, "beside-memories")
+helpers.put(MEMSRC, "memory_summary.md", "a line\n")
+
+
+def beside(run, k):
+    if run["label"] == sorted(r["label"] for r in w.runs())[0]:        # one round asks; the other run's round goes on beside it
+        before = snap(w.state)
+        BESIDE["match"] = refusal(go, w, False)
+        BESIDE["pending"] = refusal(C.cmd_pending, w.args())
+        BESIDE["report"] = refusal(BAR.cmd_report, w.args())
+        BESIDE["watch"] = refusal(MW.cmd_memories_watch, Namespace(state=w.state, dry_run=False, source=MEMSRC, interval=60, seed=None, seed_at=None, once=True))
+        mid = snap(w.state)
+        BESIDE["cleanup"] = refusal(P.cmd_cleanup, w.args())
+        BESIDE["cases"] = refusal(INV.cmd_cases, w.args(plans=False, open=16))
+        BESIDE["inject"] = refusal(INJ.cmd_inject, w.args(open=16))
+        BESIDE["home"] = refusal(CXH.cmd_home, w.args(name="nomem", memories=None, use_memories=False, start=False, stop=True, probe=False,
+                                                      login_cmd=False, codex_source=None))
+        BESIDE["unchanged"] = snap(w.state) == mid and all(os.path.isdir(r["scratch"]) for r in w.runs())
+        BESIDE["before"] = before
+    return ("approve", [])
+
+
+behave(beside)
+BESIDE_TEXT = go(w)
+ok("beside_run: match, pending, report and the memories watcher go on beside a run in its Codex round",
+   all(BESIDE[k] == "no error" for k in ("match", "pending", "report", "watch")), dict((k, BESIDE[k]) for k in ("match", "pending", "report", "watch")))
+ok("beside_run: cleanup, cases and inject refuse, naming the state's lock", all("run.lock" in BESIDE[k] for k in ("cleanup", "cases", "inject")),
+   dict((k, BESIDE[k]) for k in ("cleanup", "cases", "inject")))
+ok("beside_run: home refuses on the replay daemons' lock, which the run holds", "replay run holds" in BESIDE["home"], BESIDE["home"])
+ok("beside_run: and the refused commands changed nothing in the state, and removed no run's scratch", BESIDE["unchanged"])
+ok("beside_run: and the run finished normally", all(x["end"] == "approve" for x in w.runs()), BESIDE_TEXT)
 
 # the reviewer's sequence: run loads its runs, match applies an answer in between, run goes on: no second oracle, no lost state
 w = World("interleave")
@@ -1276,7 +1339,8 @@ from process_replay import codexhome as H
 from process_replay.common import Failed
 for label, fn, arg in (("reclaim", H.reclaim, sys.argv[2]), ("start", H.start, sys.argv[3])):
     try:
-        fn(arg)
+        with H.session():       # what a command does
+            fn(arg)
         print(label, "went ahead", flush=True)
     except Failed:
         print(label, "refused", flush=True)
@@ -1350,28 +1414,21 @@ os.makedirs(other)
 XR.Threads(w.state).add("th-clean", "new")
 items = [os.path.join(C.items_root(), n) for n in C.jload(os.path.join(w.state, "items.json")).values()]
 ok("cleanup: control: this state has staged item directories", items and all(os.path.isdir(i) for i in items), items)
-held = os.open(os.path.join(w.state, "run.lock"), os.O_RDWR | os.O_CREAT)
-fcntl.flock(held, fcntl.LOCK_EX)
-try:
-    with contextlib.redirect_stdout(io.StringIO()):
-        P.cmd_cleanup(w.args())
-    got = "no error"
-except Failed as e:
-    got = str(e)
-ok("cleanup: it refuses while a run holds run.lock, and removes nothing", "run.lock" in got and all(os.path.isdir(i) for i in items) and all(os.path.isdir(r["scratch"]) for r in w.runs()), got)
-fcntl.flock(held, fcntl.LOCK_UN)
-os.close(held)
-busy = os.open(os.path.join(w.state, "runs", w.runs()[0]["case"], w.runs()[0]["label"], "lock"), os.O_RDWR | os.O_CREAT)
-fcntl.flock(busy, fcntl.LOCK_EX)
-try:
-    with contextlib.redirect_stdout(io.StringIO()):
-        P.cmd_cleanup(w.args())
-    got = "no error"
-except Failed as e:
-    got = str(e)
-ok("cleanup: and while any run's lock is held", "busy" in got and all(os.path.isdir(i) for i in items), got)
-fcntl.flock(busy, fcntl.LOCK_UN)
-os.close(busy)
+for who, locks in (("a run", (("run.lock", fcntl.LOCK_SH), ("runner.lock", fcntl.LOCK_EX))), ("a match or pending", (("run.lock", fcntl.LOCK_SH),))):
+    fds = []
+    for name, how in locks:
+        fds.append(os.open(os.path.join(w.state, name), os.O_RDWR | os.O_CREAT))
+        fcntl.flock(fds[-1], how)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            P.cmd_cleanup(w.args())
+        got = "no error"
+    except Failed as e:
+        got = str(e)
+    for fd in fds:
+        os.close(fd)
+    ok("cleanup: it refuses while {} holds run.lock, and removes nothing".format(who), "run.lock" in got and all(os.path.isdir(i) for i in items)
+       and all(os.path.isdir(r["scratch"]) for r in w.runs()), got)
 stub = helpers.stub_rpc(os.path.join(ROOT, "rpc-clean"), NOMEM, {})
 XR.RPC = stub
 stops = []

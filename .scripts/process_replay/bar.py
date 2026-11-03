@@ -275,6 +275,7 @@ def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines):
     return "\n".join(out) + "\n"
 
 
+@C.locked("shared")
 def cmd_report(a):
     doc, cases, inventories, injected = _load(a)
     ids = set(c["id"] for c in cases)

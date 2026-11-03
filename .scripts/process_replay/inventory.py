@@ -455,34 +455,21 @@ def _item(cls, key, f, fixes, at):
 
 
 def _task_items(jid, reports, changes, answer):
-    """(items, dropped) from a judge-task answer."""
+    """(items, dropped) from a judge-task answer C.accepted_answer has passed (its schema: every key of every finding, report and changes
+    named by index, severity P0-P3 when the answer is yes)."""
     items, dropped = [], []
-    for n, f in enumerate(answer.get("findings") or []):
-        if not isinstance(f, dict):
-            continue
-        summary = _text(f.get("summary"))
-        fixed = [i for i in f.get("fixed_by") or [] if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(changes)]
-        if f.get("answer") != "yes":
-            dropped.append({"summary": summary, "why": "the judge found the report wrong" if f.get("answer") == "no" else "the judge could not settle it"})
-        elif f.get("introduced_by") is not None:
+    for n, f in enumerate(answer["findings"]):
+        summary = _text(f["summary"])
+        if f["answer"] != "yes":
+            dropped.append({"summary": summary, "why": "the judge found the report wrong" if f["answer"] == "no" else "the judge could not settle it"})
+        elif f["introduced_by"] is not None:
             dropped.append({"summary": summary, "why": "introduced by a fix"})
-        elif f.get("severity") not in RANK:
-            dropped.append({"summary": summary, "why": "no severity"})
-        elif not fixed:
+        elif not f["fixed_by"]:
             dropped.append({"summary": summary, "why": "no change fixes it"})
         else:
-            r = f.get("report")
-            at = reports[r if isinstance(r, int) and not isinstance(r, bool) and 0 <= r < len(reports) else 0].get("start") or ""
-            items.append(_item("task", "t:{}:{}".format(jid, n), dict(f, summary=summary), [changes[i]["range"] for i in fixed], at))
+            at = reports[f["report"]].get("start") or ""
+            items.append(_item("task", "t:{}:{}".format(jid, n), dict(f, summary=summary), [changes[i]["range"] for i in f["fixed_by"]], at))
     return items, dropped
-
-
-def _partition(answer, n):
-    groups = answer.get("groups") if isinstance(answer, dict) else None
-    if (isinstance(groups, list) and all(isinstance(g, list) and g and all(isinstance(i, int) and not isinstance(i, bool) for i in g) for g in groups)
-            and sorted(i for g in groups for i in g) == list(range(n))):
-        return groups
-    return None
 
 
 def _merge(items, groups):
@@ -568,10 +555,10 @@ def judge_branch(a, br, scope, counts):
     if len(items) >= 2:
         _put(state, "judge-dedup", br["id"], {"defects": [dict([(k, it[k]) for k in ("summary", "file", "line", "failure_scenario")], index=n)
                                                          for n, it in enumerate(items)]}, counts)
-        ans = C.accepted_answer(state, "judge-dedup", br["id"])
-        groups = _partition(ans, len(items))
-        if groups is None:
+        ans = C.accepted_answer(state, "judge-dedup", br["id"])       # its schema: the groups partition the defect indices
+        if ans is None:
             return None, 1
+        groups = ans["groups"]
     return {"branch": br["id"], "defects": _defects(repo, br["id"], _merge(items, groups)), "dropped": dropped}, 0
 
 
@@ -612,7 +599,10 @@ def _drop_inventories(state, current):
             os.unlink(os.path.join(d, name))
 
 
+@C.locked(lambda a: "shared" if getattr(a, "plans", False) else "exclusive")
 def cmd_cases(a):
+    """Holds the state exclusively: it rewrites the inventories, branches.json and judge inputs `run` and `inject` read. With --plans it only
+    writes the plan review's own files (plan-cases.json, its judge inputs), so it shares the state: §5 may go beside §4's `run`."""
     if getattr(a, "plans", False):
         return planreview.plan_cases(a)
     C.write_briefs(a.state)

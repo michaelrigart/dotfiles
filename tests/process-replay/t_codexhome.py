@@ -25,6 +25,23 @@ ANSWER = {"verdict": "approve", "findings": []}
 UP = helpers.stub_rpc(os.path.join(ROOT, "rpc-up"), ROOT, {"health_rc": 0, "default": {"answer": ANSWER}})
 DOWN = helpers.stub_rpc(os.path.join(ROOT, "rpc-down"), ROOT, {"health_rc": 5})
 H.XR.RPC = UP
+SESSION = __import__("contextlib").ExitStack()
+
+
+def enter():
+    """Hold the replay daemons' lock in this process, as a command does for its whole life (codexhome.session)."""
+    SESSION.enter_context(H.session())
+
+
+def leave():
+    SESSION.close()
+
+
+def in_session(fn, *args, **kw):
+    """fn as a command of its own runs it: under a session of its own."""
+    with H.session():
+        return fn(*args, **kw)
+
 
 SUMMARY = ("# Memory summary\n\nThe deploy script lives in bin/deploy-zebra and needs the --quiet flag.\n"
            "Reviews of the quokka module always hit the same off-by-one in the tail.\n"
@@ -72,6 +89,7 @@ SRC = make_source("src")
 STATE = os.path.join(ROOT, "state")
 
 # ---- home_config
+enter()
 home = H.ensure(STATE, "nomem", source=SRC)
 is_("home_config: the home lies under $XDG_STATE_HOME/cxh/<name>", home, os.path.join(ROOT, "xdg", "cxh", "nomem"))
 is_("home_config: mode 700", stat.S_IMODE(os.stat(home).st_mode), 0o700)
@@ -195,6 +213,15 @@ ok("home_refuses_live: nothing was made for the refused name", not os.path.exist
 ok("home_refuses_live: a source without config.toml", raises(H.ensure, STATE, "nocfg", source=os.path.join(ROOT, "nowhere")))
 ok("home_refuses_live: a name that leaves the directory", raises(H.ensure, STATE, "../x", source=SRC))
 
+# ---- outside_session: no daemon or login change happens outside a command's session (the lock it holds from its entry to its exit)
+leave()
+n_out = len(helpers.read_log(LOG))
+refused = [name for name, fn in (("start", lambda: H.start(home)), ("stop", lambda: H.stop(home)), ("ensure", lambda: H.ensure(STATE, "nomem", source=SRC)),
+                                 ("probe", lambda: H.probe(home, False)), ("reclaim", lambda: H.reclaim(home))) if raises(fn)]
+ok("outside_session: start, stop, ensure, probe and reclaim refuse outside a command's session, and run no daemon command",
+   refused == ["start", "stop", "ensure", "probe", "reclaim"] and len(helpers.read_log(LOG)) == n_out, (refused, helpers.read_log(LOG)[n_out:]))
+enter()
+
 # ---- real_bin and login_cmd
 is_("real_bin: CODEX_REAL_BIN wins", H.real_bin(), os.environ["CODEX_REAL_BIN"])
 is_("login_cmd: CODEX_HOME=<auth_dir> <real> login", H.login_cmd(),
@@ -266,6 +293,29 @@ ok("start_stop: and then the marker is gone", not os.path.exists(H._marker()))
 H.start(home)
 del os.environ["STOP_REMOVES"]
 os.environ["CODEX_REAL_BIN"] = good_bin
+H.stop(home)
+
+# ---- on_record: a daemon a command leaves running is named by the marker the next command reads, whatever became of its start
+half = os.path.join(ROOT, "half-codex")
+with open(half, "w") as f:
+    f.write("#!/bin/sh\nif [ \"$3\" = start ]; then mkdir -p \"$CODEX_HOME/app-server-control\"; : > \"$CODEX_HOME/app-server-control/app-server-control.sock\"; "
+            "exit 1; fi\nexec {} \"$@\"\n".format(good_bin))
+os.chmod(half, 0o755)
+leave()
+os.environ["CODEX_REAL_BIN"] = half
+with H.session():
+    half_raised = raises(H.start, hm)
+os.environ["CODEX_REAL_BIN"] = good_bin
+ok("on_record: a daemon start that fails half way, its socket up, leaves the marker naming that home once the command ends",
+   half_raised and os.path.exists(os.path.join(hm, H.SOCKET)) and H.jload(H._marker()) == {"home": hm}, (half_raised, H.jload(H._marker())))
+in_session(H.stop, hm)
+in_session(H.start, home)
+os.unlink(H._marker())          # the marker lost while the daemon runs
+with H.session(), H.hold(home):
+    pass
+ok("on_record: a command that uses a running daemon the marker does not name leaves the marker naming it", H.jload(H._marker()) == {"home": home},
+   H.jload(H._marker()))
+enter()
 H.stop(home)
 
 # ---- stale_marker: a dead daemon that left its socket does not block another home
@@ -344,9 +394,12 @@ ok("refresh_refused_while_running: ensure on a recordless home whose daemon answ
 is_("refresh_refused_while_running: and changes nothing", helpers.listing(home), before_files)
 ns = __import__("argparse").Namespace(state=os.path.join(ROOT, "norecord"), dry_run=False, name="nomem", memories=None, use_memories=False, start=True,
                                        stop=False, probe=False, login_cmd=False, codex_source=SRC)
+leave()
 ok("refresh_refused_while_running: cmd_home --start on it is refused too, and writes no record", raises(H.cmd_home, ns) and not os.path.exists(os.path.join(home, H.RECORD)))
+enter()
 put(home, H.RECORD, record)
 H.stop(home)
+leave()
 
 # ---- crashed_run: a daemon left by a run that died is stopped; one a live run holds is not
 import contextlib
@@ -356,11 +409,12 @@ import os, sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, sys.argv[1])
 from process_replay import codexhome as H
-H.start(sys.argv[2])
-print("started", flush=True)
-if sys.argv[3] == "die":
-    os._exit(0)
-sys.stdin.read()
+with H.session():           # a command: the lock from its start to its end (or its death)
+    H.start(sys.argv[2])
+    print("started", flush=True)
+    if sys.argv[3] == "die":
+        os._exit(0)
+    sys.stdin.read()
 """
 
 
@@ -387,28 +441,28 @@ H.XR.RPC = UP
 proc, first = child("wait", home)
 is_("crashed_run: a run in another process starts the daemon", (first, os.path.exists(SOCK)), ("started", True))
 n_calls = len(stops())
-ok("crashed_run: a daemon a live run holds is not reclaimed", raises(H.reclaim, home) and len(stops()) == n_calls)
-ok("crashed_run: nor stopped by another home's start", raises(H.start, hm) and len(stops()) == n_calls)
-ok("crashed_run: nor by a start of the same home", raises(H.start, home) and len(stops()) == n_calls)
+ok("crashed_run: a daemon a live run holds is not reclaimed", raises(in_session, H.reclaim, home) and len(stops()) == n_calls)
+ok("crashed_run: nor stopped by another home's start", raises(in_session, H.start, hm) and len(stops()) == n_calls)
+ok("crashed_run: nor by a start of the same home", raises(in_session, H.start, home) and len(stops()) == n_calls)
 proc.stdin.close()
 proc.wait(30)
 ok("crashed_run: the run ended without stopping the daemon", os.path.exists(SOCK))
-res, out = said(H.reclaim, home)
+res, out = said(in_session, H.reclaim, home)
 ok("crashed_run: reclaim stops the daemon nobody holds, and says so", res is True and stops()[-1] == ("stop", home) and not os.path.exists(SOCK)
    and "left running" in out, (res, stops()[-2:], out))
-is_("crashed_run: with nothing running it does nothing", (H.reclaim(home), H.reclaim(os.path.join(ROOT, "no-such-home"))), (False, False))
+is_("crashed_run: with nothing running it does nothing", (in_session(H.reclaim, home), in_session(H.reclaim, os.path.join(ROOT, "no-such-home"))), (False, False))
 proc, first = child("die", home)
 proc.wait(30)
 ok("crashed_run: a run that died leaves its daemon and marker", os.path.exists(SOCK) and json.load(open(H._marker()))["home"] == home)
-_res, out = said(H.start, hm)
+_res, out = said(in_session, H.start, hm)
 ok("crashed_run: another home's start stops the dead run's daemon first and says so", stops()[-2:] == [("stop", home), ("start", hm)], stops()[-3:])
 ok("crashed_run: and the new home runs", json.load(open(H._marker()))["home"] == hm and "left running" in out and not os.path.exists(SOCK), out)
-H.stop(hm)
+in_session(H.stop, hm)
 proc, first = child("die", home)
 proc.wait(30)
-_res, out = said(H.start, home)
+_res, out = said(in_session, H.start, home)
 ok("crashed_run: starting the same home stops its left daemon, then starts it", stops()[-2:] == [("stop", home), ("start", home)] and "left running" in out, stops()[-3:])
-H.stop(home)
+in_session(H.stop, home)
 
 # ---- hold: a process using a daemon it did not start keeps it from looking like a crashed run's
 CHILD2 = r"""
@@ -419,7 +473,8 @@ from process_replay import codexhome as H
 from process_replay.common import Failed
 for label, fn, arg in (("reclaim", H.reclaim, sys.argv[2]), ("start", H.start, sys.argv[3])):
     try:
-        fn(arg)
+        with H.session():       # what a command does
+            fn(arg)
         print(label, "went ahead", flush=True)
     except Failed as e:
         print(label, "refused", flush=True)
@@ -428,29 +483,32 @@ proc, first = child("die", home)
 proc.wait(30)
 ok("hold: a run that died leaves its daemon", os.path.exists(SOCK) and first == "started")
 n_calls = len(stops())
-with H.hold(home):
+with H.session(), H.hold(home):
     got = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD2, helpers.SCRIPTS, home, hm], capture_output=True, text=True,
                          env=dict(os.environ, XREVIEW_REPLAY_RPC=UP)).stdout.split("\n")
     is_("hold: while one process holds the daemon, another's reclaim and start of another home refuse", got[:2], ["reclaim refused", "start refused"])
     ok("hold: and neither stopped it", os.path.exists(SOCK) and len(stops()) == n_calls, stops()[n_calls:])
-res, out = said(H.reclaim, home)
-ok("hold: once the block ends the lock is let go: the daemon is a leftover again", res is True and not os.path.exists(SOCK) and "left running" in out, (res, out))
+res, out = said(in_session, H.reclaim, home)
+ok("hold: once the command ends the lock is let go: the daemon is a leftover again", res is True and not os.path.exists(SOCK) and "left running" in out, (res, out))
 proc, first = child("wait", home)
 
 
 def enter_hold():
-    with H.hold(home):
+    with H.session(), H.hold(home):
         pass
 
 
 ok("hold: it refuses at once while another process holds the home", raises(enter_hold))
 proc.stdin.close()
 proc.wait(30)
-H.start(home)
-with H.hold(home):
-    pass
-ok("hold: a lock this process holds for the home (it started the daemon) stays held after the block", H._same(H._HELD["home"], home))
-H.stop(home)
+with H.session():
+    H.start(home)
+    with H.hold(home):
+        pass
+    claimed = H._same(H._HELD["home"], home)
+    H.stop(home)
+ok("hold: a home this command started (its daemon) stays claimed after a hold block on it", claimed)
+ok("hold: outside a command's session a hold refuses", raises(lambda: H.hold(home).__enter__()))
 
 # ---- every_change_locked: a stop, a refresh, a probe or the login setup is refused while another process holds the run lock
 CHILD3 = r"""
@@ -464,13 +522,16 @@ def ns(**kw):
     base = dict(state=state, dry_run=False, name="nomem", memories=None, use_memories=False, start=False, stop=False, probe=False,
                 login_cmd=False, codex_source=src, max_tokens=10**9)
     return argparse.Namespace(**dict(base, **kw))
-tries = (("stop", lambda: H.stop(home)),
-         ("ensure", lambda: H.ensure(state, "other", source=src)),
-         ("probe", lambda: H.probe(home, False)),
+def own(fn, *args, **kw):       # what a command does: the lock for its whole life
+    with H.session():
+        return fn(*args, **kw)
+tries = (("stop", lambda: own(H.stop, home)),
+         ("ensure", lambda: own(H.ensure, state, "other", source=src)),
+         ("probe", lambda: own(H.probe, home, False)),
          ("home --stop", lambda: H.cmd_home(ns(stop=True))),
          ("home --probe", lambda: H.cmd_home(ns(probe=True))),
          ("home --login-cmd", lambda: H.cmd_home(ns(login_cmd=True))),
-         ("reclaim", lambda: H.reclaim(home)))
+         ("reclaim", lambda: own(H.reclaim, home)))
 for label, fn in tries:
     try:
         fn()
@@ -478,6 +539,7 @@ for label, fn in tries:
     except Failed as e:
         print(label, "refused", flush=True)
 """
+enter()
 H.start(home)
 n_calls, shared_before = len(stops()), (os.path.islink(auth), os.path.exists(os.path.join(H.auth_dir(), "auth.json")))
 got = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD3, helpers.SCRIPTS, home, hm, STATE, SRC], capture_output=True, text=True,
@@ -488,9 +550,11 @@ ok("every_change_locked: and none stopped the daemon or touched the login", os.p
    and (os.path.islink(auth), os.path.exists(os.path.join(H.auth_dir(), "auth.json"))) == shared_before, stops()[n_calls:])
 H.stop(home)
 ok("every_change_locked: the process that holds it can still stop the daemon", not os.path.exists(SOCK) and stops()[-1] == ("stop", home))
-ok("every_change_locked: stop took the lock only for itself, so the lock is free again",
-   subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD3, helpers.SCRIPTS, home, hm, STATE, SRC], capture_output=True, text=True,
-                  env=dict(os.environ, XREVIEW_REPLAY_RPC=UP)).stdout.split("\n")[0] == "stop went ahead")
+child3 = lambda: subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD3, helpers.SCRIPTS, home, hm, STATE, SRC], capture_output=True, text=True,
+                                env=dict(os.environ, XREVIEW_REPLAY_RPC=UP)).stdout.split("\n")[0]
+ok("every_change_locked: a stop does not let the lock go mid-command: another process still cannot act until the command ends", child3() == "stop refused")
+leave()
+ok("every_change_locked: once the command ends the lock is free again", child3() == "stop went ahead")
 
 # ---- handover: this process moves the lock to another home only once the previous home's daemon is confirmed down
 def login_state():
@@ -512,6 +576,7 @@ def switch_to(target):
         return str(e)
 
 
+enter()
 os.environ["CODEX_REAL_BIN"] = failing
 H.start(hm)
 ok("handover: control: the stop of home A fails and its socket stays", raises(H.stop, hm) and os.path.exists(os.path.join(hm, H.SOCKET)))
@@ -525,7 +590,7 @@ ok("handover: making or refreshing B refuses too (run_home's next home), and cha
    raises(H.ensure, STATE, os.path.basename(home), source=SRC) and login_state() == login)
 os.environ["CODEX_REAL_BIN"] = good_bin
 H.stop(hm)
-ok("handover: once A's stop succeeds the lock is let go", H._HELD["fd"] is None)
+ok("handover: once A's stop succeeds this command's claim on A is let go (the lock stays with the command)", H._HELD["home"] is None and H._HELD["fd"] is not None)
 got = switch_to(home)
 ok("handover: and B starts: its daemon, the marker and (while it is used) the lock are B's",
    got == "started, lock " + os.path.basename(home) and os.path.exists(SOCK) and json.load(open(H._marker()))["home"] == home, got)
@@ -727,6 +792,7 @@ ok("probe_checks: a source daemon that stops answering fails the probe",
 ok("probe_checks: a directory that is not a replay home is refused", raises(H.probe, SRC, False, rpc=stub))
 
 # ---- the command
+leave()
 sys.argv = ["process-replay.py"]
 ap_mod = __import__("argparse")
 ap = ap_mod.ArgumentParser()
@@ -761,8 +827,57 @@ def run_cmd(*argv, state="cmd-state"):
         return H.cmd_home(ap.parse_args(["--state", os.path.join(ROOT, state)] + list(argv)))
 
 
+# ---- marker_race: a command reads the marker only once it holds the replay daemons' lock, and holds it to its end, so two commands that
+# start different homes never both start a daemon. B's `home --start` reads the marker (none); before B goes on, A runs a whole
+# `home --start` of another home in another process.
+RACE_A = r"""
+import argparse, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from process_replay import codexhome as H
+from process_replay.common import Failed
+try:
+    H.cmd_home(argparse.Namespace(state=sys.argv[2], dry_run=False, name="race-a", memories=None, use_memories=False, start=True, stop=False,
+                                  probe=False, login_cmd=False, codex_source=sys.argv[3], max_tokens=10 ** 9))
+    print("A started", flush=True)
+except Failed as e:
+    print("A refused:", e, flush=True)
+"""
+RACE = {}
+real_jload = H.jload
+
+
+def racing_jload(path, *args):
+    got = real_jload(path, *args)
+    if path == H._marker() and "a" not in RACE:
+        RACE["a"] = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", RACE_A, helpers.SCRIPTS, os.path.join(ROOT, "race-state"), SRC],
+                                   capture_output=True, text=True, env=dict(os.environ, XREVIEW_REPLAY_RPC=UP)).stdout.strip()
+    return got
+
+
+n_race = len(helpers.read_log(LOG))
+H.jload = racing_jload
+try:
+    rc_b = run_cmd("--name", "race-b", "--codex-source", SRC, "--start", state="race-state")
+finally:
+    H.jload = real_jload
+race_log = [(c["argv"][2], os.path.basename(c["codex_home"])) for c in helpers.read_log(LOG)[n_race:] if c["argv"][:2] == ["app-server", "daemon"]]
+race_up, race_both = set(), False
+for verb, h in race_log:
+    if verb == "start":
+        race_up.add(h)
+        race_both |= len(race_up) > 1
+    elif verb == "stop":
+        race_up.discard(h)
+ok("marker_race: A's command, run between B's read of the marker and B's start, is refused: B holds the lock from its entry",
+   RACE.get("a", "").startswith("A refused") and "replay run holds" in RACE.get("a", ""), RACE)
+ok("marker_race: so never two replay daemons run at once on the shared login", rc_b == 0 and not race_both and race_up == {"race-b"}, (rc_b, race_log))
+ok("marker_race: and the marker names the one daemon that runs", H.jload(H._marker()) == {"home": H.home_path("race-b")}, H.jload(H._marker()))
+run_cmd("--name", "race-b", "--stop", state="race-state")
+
+
 # ---- probe_weekly: the probe is a turn, so the weekly pause holds it like any other
-pw_home = H.ensure(STATE, "p-weekly", source=SRC)
+pw_home = in_session(H.ensure, STATE, "p-weekly", source=SRC)
 pw_stub = rpc_for("weekly", pw_home, "You are Codex. Nothing about the project is remembered.")
 pw_reset = int(time.time()) + 7200
 pw_hot = os.path.join(ROOT, "pw-hot-live")

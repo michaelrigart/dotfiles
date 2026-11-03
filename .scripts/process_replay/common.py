@@ -15,12 +15,22 @@ holding only that item's files: a judge's input.json and brief.md, and the answe
 brief.md and package.diff, and the answer.md the driver writes. judge_answer and collect_final copy an answer back into
 the state when they read it. Recreations keep their aliased paths (alias, aliased).
 
-An answer counts only when complete (accepted_answer, answer_problem): it parses and gives an allowed value for every item its
-input asks about. One that is not is set aside as <id>.rejected-<n>.answer.json and the item is pending again; `pending` lists
-every item without such an answer, whatever files exist. An empty answer.md is not a final review's answer.
+An answer counts only when it matches its kind's schema (ANSWERS, checked by answer_problem against the input it answers): every key
+the brief asks for, a value of an allowed type for each, an allowed value for every item the input asks about and nothing it was not
+asked. One that does not is set aside as <id>.rejected-<n>.answer.json and the item is pending again; `pending` lists every item
+without such an answer, whatever files exist. An empty answer.md is not a final review's answer.
+
+Locks (command_locks, declared on each command with `locked`). Every command that changes a state holds <state>/run.lock from its
+entry to its exit: exclusively, or shared with the commands that may run beside it; process-replay's `run` shares it with `match`,
+`pending` and `report` and holds <state>/runner.lock alone, so one `run` goes at a time. A command that touches a replay daemon or
+the shared login then holds the replay daemons' lock (codexhome.session) to its exit as well. command_locks takes them in that order,
+and every take is non-blocking: a lock another process holds is a refusal at once, never a wait, so no two commands deadlock.
 """
+import contextlib
 import fcntl
+import functools
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -180,6 +190,77 @@ def state_default():
     return os.path.join(L.state_home(), "process-replay", date.today().isoformat())
 
 
+# ------------------------------------------------------------------ command locks
+STATE_LOCK = "run.lock"         # <state>/run.lock: held by every command that changes the state, shared or exclusive
+RUNNER_LOCK = "runner.lock"     # <state>/runner.lock: held alone by process-replay's `run`, which shares run.lock
+LOCK_MODES = ("exclusive", "shared", "run")
+
+
+def _flock(path, how):
+    """A non-blocking flock of `path` (made if need be) on a descriptor of its own: the descriptor, or None when another holds it.
+    Two descriptors conflict even in one process, so a command run inside another (a test's nested call) is refused like a second process."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, how | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+@contextlib.contextmanager
+def command_locks(state, mode, daemon=False):
+    """Every lock one command holds, taken once at its entry and held to its exit, always in this order:
+      1. <state>/run.lock: `exclusive` for a command nothing else may run beside; `shared` for one that may run beside the others that
+         share it (its writes are each atomic, or under a run's own lock); `run` shares it and also holds <state>/runner.lock alone.
+         mode None takes no state lock (a dry run that writes nothing, a command that never touches a state).
+      2. the replay daemons' lock (codexhome.session), when `daemon` is true, or a function that returns true once the state lock is held
+         (it may read the state). Taken before anything reads the daemon marker and held across every step until the command ends.
+    Nothing else takes either lock, so this is the one order there is. Each take is non-blocking: a lock another command holds is a
+    Failed at once (and nothing of the command has run), never a wait."""
+    if mode is not None and mode not in LOCK_MODES:
+        raise Failed("not a lock mode: {!r}".format(mode))
+    fds = []
+    try:
+        if mode is not None:
+            path = os.path.join(state, STATE_LOCK)
+            fd = _flock(path, fcntl.LOCK_EX if mode == "exclusive" else fcntl.LOCK_SH)
+            if fd is None:
+                raise Failed("another command is using the state {} (it holds {}): run this one once it has finished".format(state, path))
+            fds.append(fd)
+            if mode == "run":
+                runner = os.path.join(state, RUNNER_LOCK)
+                fd = _flock(runner, fcntl.LOCK_EX)
+                if fd is None:
+                    raise Failed("another `run` holds {}: only one runs at a time (it keeps to the Codex turn limit and alone creates runs)".format(runner))
+                fds.append(fd)
+        if daemon() if callable(daemon) else daemon:
+            from . import codexhome
+            with codexhome.session():
+                yield
+        else:
+            yield
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)            # closing the descriptor releases the flock
+
+
+def locked(mode, daemon=False):
+    """Declare a command's locks (command_locks) on the command function f(a): `mode` and `daemon` are values, or functions of the
+    command's arguments `a` (a `daemon` function runs once the state lock is held)."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def command(a, *args, **kw):
+            want = daemon
+            if callable(daemon):
+                want = lambda: daemon(a)
+            with command_locks(a.state, mode(a) if callable(mode) else mode, want):
+                return fn(a, *args, **kw)
+        return command
+    return wrap
+
+
 def label(taken):
     """A fresh 8-hex label, added to `taken`."""
     while True:
@@ -234,18 +315,30 @@ def _unlink(path):
         pass
 
 
-def judge_answer(state, kind, jid):
-    """The judge's answer, or None. One written in the staged item's directory is copied into the state (and removed
-    from the item) when it parses."""
+NOTHING = object()      # no answer file, or one that does not parse (yet): a JSON null is an answer, and a malformed one
+
+
+def _parsed(path):
+    """The JSON value in `path`, or NOTHING when there is none or it does not parse."""
+    try:
+        with open(path, "rb") as f:
+            return json.loads(f.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return NOTHING
+
+
+def _collected(state, kind, jid):
+    """The judge's answer, or NOTHING. One written in the staged item's directory is copied into the state (and removed from the item)
+    when it parses."""
     path = os.path.join(state, kind, jid + ".answer.json")
-    got = jload(path)
-    if got is not None:
+    got = _parsed(path)
+    if got is not NOTHING:
         return got
     staged = _staged(state, kind, jid)
     if staged:
         theirs = os.path.join(staged, "answer.json")
-        got = jload(theirs)
-        if got is not None:
+        got = _parsed(theirs)
+        if got is not NOTHING:
             with open(theirs, "rb") as f:
                 data = f.read()
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -254,6 +347,12 @@ def judge_answer(state, kind, jid):
             os.replace(path + ".tmp{}".format(os.getpid()), path)
             _unlink(theirs)
     return got
+
+
+def judge_answer(state, kind, jid):
+    """The judge's answer, or None (none yet, or a JSON null). One written in the staged item's directory is collected (_collected)."""
+    got = _collected(state, kind, jid)
+    return None if got is NOTHING else got
 
 
 def reject_answer(state, kind, jid):
@@ -271,224 +370,285 @@ def set_aside(state, kind, jid, why):
     while os.path.exists(os.path.join(state, kind, "{}.{}-{}.answer.json".format(jid, why, n))):
         n += 1
     aside = os.path.join(state, kind, "{}.{}-{}.answer.json".format(jid, why, n))
-    os.replace(path, aside)
+    try:
+        os.replace(path, aside)
+    except FileNotFoundError:       # a command beside this one (both sharing the state) set it aside first
+        return None
     return aside
 
 
-# ------------------------------------------------------------------ answer validation
+# ------------------------------------------------------------------ answer schemas
 VERDICTS = ("yes", "no", "unclear")
 SEVERITY_VALUES = ("P0", "P1", "P2", "P3")
 CLASS_VALUES = ("diff-visible", "design", "plan-only")
 RULINGS = ("real", "false_positive")
 
-
-def _int(v, n=None):
-    """Whether `v` is an int (never a bool), and below `n` and not negative when `n` is given."""
-    return isinstance(v, int) and not isinstance(v, bool) and (n is None or 0 <= v < n)
-
-
-def _listed(doc, key):
-    v = doc.get(key) if isinstance(doc, dict) else None
-    return v if isinstance(v, list) else []
-
-
-def _entries(ans, key, what):
-    """(list of dict entries, problem): ans[key] must be a list of objects."""
-    got = ans.get(key)
-    if not isinstance(got, list):
-        return None, "{} is missing or not a list".format(key)
-    for n, e in enumerate(got):
-        if not isinstance(e, dict):
-            return None, "{} {} is not an object".format(what, n)
-    return got, None
+# Every judge kind's answer is declared once, in ANSWERS, as data, and one validator (answer_problem) checks any answer against its
+# kind's schema and the input it answers. A schema is built from:
+#   Obj(key=spec, ..., *When(...))  an object holding every key named (present even where its spec allows null); other keys are ignored
+#   List(spec, what, key=, flat=, unique=, covers=, least=)
+#                                   a list of spec; `key` names the fields an item is known by (`flat`: the items are lists, and their
+#                                   elements are what is known); `unique`: none known twice; `covers`: every member of a domain known;
+#                                   `least`: at least that many items; `what` names a missing member in the message
+#   One(*values), Null(spec), Either(*specs), TEXT (a string with something in it), STR, INT (an integer, never a bool)
+#   Index(domain), Name(domain)     an integer (never a bool) or a string that is a member of the domain
+# A domain is a set the input, or the answer itself, defines: Range(path) its list's positions, Field(path, name) the `name` of each
+# object in its list, Keys(path) its object's keys, Pairs(d1, d2), Minus(d1, d2). A path starts at "input" or "answer"; Item(name) in it
+# stands for the value of `name` in the object being checked. Without an input (an answer put by hand first) a domain the input defines
+# is unknown, and only what needs no input is checked.
+UNKNOWN = object()
 
 
-def _check_verdict(_doc, ans):
-    return None if ans.get("answer") in VERDICTS else "answer is {!r}, not one of {}".format(ans.get("answer"), "/".join(VERDICTS))
+def Obj(*rules, **keys):
+    return {"obj": keys, "rules": rules}
 
 
-def _check_class(_doc, ans):
-    return None if ans.get("class") in CLASS_VALUES else "class is {!r}, not one of {}".format(ans.get("class"), "/".join(CLASS_VALUES))
+def When(key, value, **then):
+    """In an Obj: while `key` holds `value`, each key of `then` must match its spec as well."""
+    return {"when": (key, value), "then": then}
 
 
-def _check_task(doc, ans):
-    found, bad = _entries(ans, "findings", "finding")
-    if bad or doc is None:
-        return bad
-    reports, changes = len(_listed(doc, "reports")), len(_listed(doc, "changes"))
-    for n, f in enumerate(found):
-        if not _int(f.get("report"), reports):
-            return "finding {} names report {!r}, and there are {}".format(n, f.get("report"), reports)
-        if not isinstance(f.get("summary"), str) or not f["summary"].strip():
-            return "finding {} has no summary".format(n)
-        if f.get("answer") not in VERDICTS:
-            return "finding {} answers {!r}, not one of {}".format(n, f.get("answer"), "/".join(VERDICTS))
-        if f.get("introduced_by") is not None and not _int(f["introduced_by"], changes):
-            return "finding {} is introduced_by {!r}, and there are {} change(s)".format(n, f["introduced_by"], changes)
-        fixed = f.get("fixed_by")
-        if not isinstance(fixed, list) or not all(_int(i, changes) for i in fixed):
-            return "finding {} has fixed_by {!r}: a list of indices below {} is wanted".format(n, fixed, changes)
-        if f["answer"] == "yes" and f.get("severity") not in SEVERITY_VALUES:
-            return "finding {} is real but has severity {!r}".format(n, f.get("severity"))
-    return None
+def List(item, what, key=None, flat=False, unique=False, covers=None, least=0):
+    return {"list": item, "what": what, "key": key, "flat": flat, "unique": unique, "covers": covers, "least": least}
 
 
-def _check_known(doc, ans):
-    got, bad = _entries(ans, "verdicts", "verdict")
-    if bad or doc is None:
-        return bad
-    want = [f.get("index") for f in _listed(doc, "findings") if isinstance(f, dict)]
-    seen = set()
-    for v in got:
-        i = v.get("index")
-        if i not in want or not _int(i) or i in seen:
-            return "verdict index {!r} is not a finding asked about, or is repeated".format(i)
-        if v.get("answer") not in VERDICTS:
-            return "the verdict for finding {} is {!r}, not one of {}".format(i, v.get("answer"), "/".join(VERDICTS))
-        seen.add(i)
-    left = [i for i in want if i not in seen]
-    return "no verdict for finding(s) {}".format(", ".join(str(i) for i in left)) if left else None
+def One(*values):
+    return {"one": values}
 
 
-def _check_split(doc, ans):
-    got, bad = _entries(ans, "hunks", "hunk")
-    if bad or doc is None:
-        return bad
-    hunks, defects = len(_listed(doc, "hunks")), len(_listed(doc, "defects"))
-    seen = set()
-    for h in got:
-        i = h.get("index")
-        if not _int(i, hunks) or i in seen:
-            return "hunk index {!r} is not a hunk asked about, or is repeated".format(i)
-        d = h.get("defect")
-        if "defect" not in h or not (d is None or d == "unsure" or _int(d, defects)):
-            return "the defect of hunk {} is {!r}: a defect index below {}, null or \"unsure\" is wanted".format(i, d, defects)
-        seen.add(i)
-    return "no entry for hunk(s) {}".format(", ".join(str(i) for i in range(hunks) if i not in seen)) if len(seen) < hunks else None
+def Null(spec):
+    return {"null": spec}
 
 
-def _check_dedup(doc, ans):
-    groups = ans.get("groups")
-    if not isinstance(groups, list) or not all(isinstance(g, list) and g and all(_int(i) for i in g) for g in groups):
-        return "groups is missing, or not a list of non-empty lists of indices"
-    if doc is None:
+def Either(*specs):
+    return {"either": specs}
+
+
+TEXT, STR, INT = {"text": True}, {"str": True}, {"int": True}
+
+
+def Index(domain):
+    return {"in": domain, "of": int}
+
+
+def Name(domain):
+    return {"in": domain, "of": str}
+
+
+def Range(*path):
+    return ("range", path)
+
+
+def Field(path, name):
+    return ("field", path, name)
+
+
+def Keys(*path):
+    return ("keys", path)
+
+
+def Pairs(a, b):
+    return ("pairs", a, b)
+
+
+def Minus(a, b):
+    return ("minus", a, b)
+
+
+def Item(name):
+    return ("item", name)
+
+
+VERDICT, SEVERITY = One(*VERDICTS), One(*SEVERITY_VALUES)
+CHANGE = Index(Range("input", "changes"))
+
+
+def _match_lists(count):
+    """process-replay's judge-match: a match for every defect, to a finding of `count` (a domain) or null, and a ruling for every finding
+    no defect claims (a ruling for a claimed one is allowed, and unused)."""
+    return dict(
+        matches=List(Obj(defect=Index(Range("input", "defects")), finding=Null(Index(count))), "match for defect(s)",
+                     key=("defect",), unique=True, covers=Range("input", "defects")),
+        unmatched=List(Obj(finding=Index(count), ruling=One(*RULINGS)), "ruling for finding(s)", key=("finding",), unique=True,
+                       covers=Minus(count, Field(("answer", "matches"), "finding"))))
+
+
+KNOWN = Field(("input", "known"), "index")
+ANSWERS = {     # kind: ((the input key that selects the form, or None for any input), schema), ...
+    "judge-task": ((None, Obj(findings=List(Obj(
+        When("answer", "yes", severity=SEVERITY),
+        index=INT, report=Index(Range("input", "reports")), summary=TEXT, file=Null(STR), line=Null(INT), failure_scenario=Null(STR),
+        severity=Null(SEVERITY), introduced_by=Null(CHANGE), fixed_by=List(CHANGE, "change"), answer=VERDICT), "finding"))),),
+    "judge-known": ((None, Obj(verdicts=List(Obj(index=Index(Field(("input", "findings"), "index")), answer=VERDICT),
+                                             "verdict for finding(s)", key=("index",), unique=True,
+                                             covers=Field(("input", "findings"), "index")))),),
+    "judge-present": ((None, Obj(answer=VERDICT)),),
+    "judge-same": ((None, Obj(answer=VERDICT)),),
+    "judge-split": ((None, Obj(hunks=List(Obj(index=Index(Range("input", "hunks")),
+                                              defect=Null(Either(One("unsure"), Index(Range("input", "defects"))))),
+                                          "entry for hunk(s)", key=("index",), unique=True, covers=Range("input", "hunks")))),),
+    "judge-dedup": ((None, Obj(groups=List(List(Index(Range("input", "defects")), "defect", least=1), "group for defect(s)",
+                                           flat=True, unique=True, covers=Range("input", "defects")))),),
+    "judge-match": (
+        # xreview-replay's: a finding of each review, or null, for every known finding
+        ("known", Obj(matches=List(Obj(known_index=Index(KNOWN), label=Name(Keys("input", "runs")),
+                                       finding_index=Null(Index(Range("input", "runs", Item("label"))))),
+                                   "match for known finding/review pair(s)", key=("known_index", "label"), unique=True,
+                                   covers=Pairs(KNOWN, Keys("input", "runs"))))),
+        # a final review's report: the judge numbers its claims 0..n-1 first, and matches and rules on those
+        ("report", Obj(findings=List(Obj(index=Index(Range("answer", "findings")), summary=TEXT), "claim numbered", key=("index",),
+                                     unique=True, covers=Range("answer", "findings")),
+                       **_match_lists(Range("answer", "findings")))),
+        (None, Obj(**_match_lists(Range("input", "findings"))))),
+    "judge-class": ((None, Obj(**{"class": One(*CLASS_VALUES)})),),
+}
+
+
+def _shown(v):
+    text = json.dumps(v)
+    return text if len(text) <= 40 else text[:37] + "..."
+
+
+def _at(where, step):
+    return "{}[{}]".format(where, step) if isinstance(step, int) else "{}.{}".format(where, step) if where else step
+
+
+def _scalar(v):
+    return isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool))
+
+
+def _domain(dom, ctx, item=None):
+    """The frozenset a domain names, or None when it is the input's and there is no input."""
+    if dom[0] in ("pairs", "minus"):
+        a, b = _domain(dom[1], ctx, item), _domain(dom[2], ctx, item)
+        if a is None or b is None:
+            return None
+        return frozenset((x, y) for x in a for y in b) if dom[0] == "pairs" else a - b
+    path = dom[1]
+    cur = ctx[path[0]]
+    if cur is UNKNOWN:
         return None
-    n = len(_listed(doc, "defects"))
-    if sorted(i for g in groups for i in g) != list(range(n)):
-        return "the groups do not hold each of the {} defect indices exactly once".format(n)
-    return None
+    for step in path[1:]:
+        if isinstance(step, tuple):         # Item(name)
+            step = item.get(step[1]) if isinstance(item, dict) else None
+        cur = cur.get(step) if isinstance(cur, dict) and isinstance(step, str) else None
+    if dom[0] == "range":
+        return frozenset(range(len(cur))) if isinstance(cur, list) else frozenset()
+    if dom[0] == "keys":
+        return frozenset(cur) if isinstance(cur, dict) else frozenset()
+    return frozenset(e[dom[2]] for e in cur if isinstance(e, dict) and _scalar(e.get(dom[2]))) if isinstance(cur, list) else frozenset()
 
 
-def _check_rulings(unmatched, claimed, count):
-    """The `unmatched` rulings must cover every finding below `count` that no defect claimed, each once with an allowed ruling."""
-    if unmatched is None:
-        unmatched = []
-    if not isinstance(unmatched, list) or not all(isinstance(u, dict) for u in unmatched):
-        return "unmatched is not a list of objects"
-    ruled = {}
-    for u in unmatched:
-        f = u.get("finding")
-        if not _int(f, count) or f in ruled:
-            return "unmatched names finding {!r}, which is not one of the {} asked about, or is ruled twice".format(f, count)
-        if u.get("ruling") not in RULINGS:
-            return "the ruling for finding {} is {!r}, not one of {}".format(f, u.get("ruling"), "/".join(RULINGS))
-        ruled[f] = u["ruling"]
-    left = [i for i in range(count) if i not in claimed and i not in ruled]
-    return "finding(s) {} match no defect and have no ruling".format(", ".join(str(i) for i in left)) if left else None
+def _listed(keys, cap=10):
+    try:
+        keys = sorted(keys)
+    except TypeError:
+        keys = sorted(keys, key=repr)
+    shown = ", ".join("/".join(map(str, k)) if isinstance(k, tuple) else str(k) for k in keys[:cap])
+    return shown + (", ... ({} in all)".format(len(keys)) if len(keys) > cap else "")
 
 
-def _check_match_known(doc, ans):
-    """xreview-replay's judge-match: one {known_index, label, finding_index|null} per known finding and review."""
-    got, bad = _entries(ans, "matches", "match")
-    if bad:
-        return bad
-    runs = doc.get("runs") if isinstance(doc.get("runs"), dict) else {}
-    known = [k.get("index") for k in _listed(doc, "known") if isinstance(k, dict)]
-    seen = set()
-    for m in got:
-        key = (m.get("known_index"), m.get("label"))
-        if key[0] not in known or not _int(key[0]) or key[1] not in runs or key in seen:
-            return "a match names known finding {!r} of review {!r}, which was not asked about, or twice".format(*key)
-        n = len(runs[key[1]]) if isinstance(runs[key[1]], list) else 0
-        if "finding_index" not in m or (m["finding_index"] is not None and not _int(m["finding_index"], n)):
-            return "a match names finding {!r} of review {!r}, which has {}: an index or null is wanted".format(m.get("finding_index"), key[1], n)
-        seen.add(key)
-    left = [(k, l) for k in known for l in sorted(runs) if (k, l) not in seen]
-    return "no match for {} known finding/review pair(s), the first {}".format(len(left), left[0]) if left else None
-
-
-def _check_match(doc, ans):
-    if doc is None:     # either form: the lists must still hold objects, for a reader that takes their fields
-        _got, bad = _entries(ans, "matches", "match")
-        if bad is None and ans.get("unmatched") is not None:
-            _got, bad = _entries(ans, "unmatched", "unmatched entry")
-        return bad
-    if "known" in doc and "runs" in doc:
-        return _check_match_known(doc, ans)
-    defects = len(_listed(doc, "defects"))
-    if "report" in doc:     # the judge lists the report's claims first, numbered 0..n-1
-        claims, bad = _entries(ans, "findings", "finding")
-        if bad:
-            return bad
-        if sorted(c.get("index") if _int(c.get("index")) else -1 for c in claims) != list(range(len(claims))):
-            return "the findings of the report are not numbered 0..{}".format(len(claims) - 1)
-        count = len(claims)
+def _check(spec, v, ctx, where, item=None):
+    """Why `v` does not match `spec`, or None. Whatever JSON value `v` is, a mismatch is a reason, never an exception: no value is hashed,
+    compared by order or indexed before its type is known."""
+    if "null" in spec:
+        return None if v is None else _check(spec["null"], v, ctx, where, item)
+    if "either" in spec:
+        whys = [_check(s, v, ctx, where, item) for s in spec["either"]]
+        return None if None in whys else whys[-1]
+    if "one" in spec:
+        if any(type(v) is type(x) and v == x for x in spec["one"]):
+            return None
+        return "{} is {}, not one of {}".format(where, _shown(v), "/".join(str(x) for x in spec["one"]))
+    if "text" in spec:
+        return None if isinstance(v, str) and v.strip() else "{} is {}, not a text".format(where, _shown(v))
+    if "str" in spec:
+        return None if isinstance(v, str) else "{} is {}, not a string".format(where, _shown(v))
+    if "int" in spec:
+        return None if isinstance(v, int) and not isinstance(v, bool) else "{} is {}, not an integer".format(where, _shown(v))
+    if "in" in spec:
+        if not (isinstance(v, str) if spec["of"] is str else isinstance(v, int) and not isinstance(v, bool)):
+            return "{} is {}, not {}".format(where, _shown(v), "a name" if spec["of"] is str else "an index")
+        dom = _domain(spec["in"], ctx, item)
+        if dom is None or v in dom:
+            return None
+        return "{} is {}, not one of {}".format(where, _shown(v), _listed(dom)) if dom else "{} is {}, and there is none to name".format(where, _shown(v))
+    if "obj" in spec:
+        if not isinstance(v, dict):
+            return "{} is {}, not an object".format(where or "the answer", _shown(v))
+        for key, sub in spec["obj"].items():
+            if key not in v:
+                return "{} is missing".format(_at(where, key))
+            why = _check(sub, v[key], ctx, _at(where, key), v)
+            if why:
+                return why
+        for rule in spec["rules"]:
+            key, value = rule["when"]
+            if type(v[key]) is type(value) and v[key] == value:
+                for k, sub in rule["then"].items():
+                    why = _check(sub, v[k], ctx, _at(where, k), v)
+                    if why:
+                        return "{} while {} is {}".format(why, key, _shown(value))
+        return None
+    if not isinstance(v, list):         # "list"
+        return "{} is {}, not a list".format(where, _shown(v))
+    for n, x in enumerate(v):
+        why = _check(spec["list"], x, ctx, _at(where, n), item)
+        if why:
+            return why
+    if len(v) < spec["least"]:
+        return "{} is empty".format(where)
+    if spec["flat"]:                    # every item matched its spec: what is known is an integer or a string, so hashable
+        known = [e for x in v for e in x]
+    elif spec["key"]:
+        known = [x[spec["key"][0]] if len(spec["key"]) == 1 else tuple(x[k] for k in spec["key"]) for x in v]
     else:
-        count = len(_listed(doc, "findings"))
-    matches = ans.get("matches")
-    if matches is None and not defects:
-        matches = []
-    got, bad = _entries(dict(ans, matches=matches), "matches", "match")
-    if bad:
-        return bad
-    seen, claimed = set(), set()
-    for m in got:
-        d, f = m.get("defect"), m.get("finding")
-        if not _int(d, defects) or d in seen:
-            return "a match names defect {!r}, which is not one of the {} asked about, or twice".format(d, defects)
-        if "finding" not in m or not (f is None or _int(f, count)):
-            return "defect {} is matched to finding {!r}: an index below {} or null is wanted".format(d, f, count)
-        seen.add(d)
-        if f is not None:
-            claimed.add(f)
-    if len(seen) < defects:
-        return "no match for defect(s) {}".format(", ".join(str(i) for i in range(defects) if i not in seen))
-    return _check_rulings(ans.get("unmatched"), claimed, count)
-
-
-_CHECKS = {"judge-task": _check_task, "judge-known": _check_known, "judge-present": _check_verdict, "judge-split": _check_split,
-           "judge-dedup": _check_dedup, "judge-same": _check_verdict, "judge-match": _check_match, "judge-class": _check_class}
+        known = list(v)
+    if spec["unique"]:
+        seen, twice = set(), set()
+        for k in known:
+            (twice if k in seen else seen).add(k)
+        if twice:
+            return "{}: {} given more than once".format(where, _listed(twice))
+    dom = _domain(spec["covers"], ctx) if spec["covers"] else None
+    if dom is not None and dom - set(known):
+        return "{}: no {} {}".format(where, spec["what"], _listed(dom - set(known)))
+    return None
 
 
 def answer_problem(kind, doc, ans):
-    """None when `ans` is a complete answer to the judge input `doc` (an allowed value for every item asked about, nothing named that was
-    not asked), else why not. Without an input to check against (`doc` None: an answer put by hand first) only what needs none is checked."""
-    if not isinstance(ans, dict):
-        return "the answer is not a JSON object"
-    return _CHECKS[kind](doc if isinstance(doc, dict) else None, ans)
+    """None when `ans` matches the schema of `kind` (ANSWERS) for the judge input `doc`, else why not. A kind with several forms is
+    checked by the one its input has. Without an input to check against (`doc` None: an answer put by hand first) only what needs none
+    is checked, and any of the kind's forms will do. Never raises, whatever JSON value `ans` is."""
+    forms = ANSWERS[kind]
+    if not isinstance(doc, dict):
+        whys = [_check(schema, ans, {"input": UNKNOWN, "answer": ans}, "") for _form, schema in forms]
+        return None if None in whys else whys[-1]
+    schema = next(s for form, s in forms if form is None or form in doc)
+    return _check(schema, ans, {"input": doc, "answer": ans}, "")
 
 
 def _answer_file(state, kind, jid):
-    """The answer as a reader finds it, without moving anything: the state's, else the one written in the staged item."""
-    got = jload(os.path.join(state, kind, jid + ".answer.json"))
-    if got is None:
+    """The answer as a reader finds it, without moving anything: the state's, else the one written in the staged item; NOTHING without one."""
+    got = _parsed(os.path.join(state, kind, jid + ".answer.json"))
+    if got is NOTHING:
         staged = _staged(state, kind, jid)
-        got = jload(os.path.join(staged, "answer.json")) if staged else None
+        got = _parsed(os.path.join(staged, "answer.json")) if staged else NOTHING
     return got
 
 
 def _answered(state, kind, jid):
-    """Whether the item has an answer that parses and is complete for its input: the test `pending` and `accepted_answer` share."""
+    """Whether the item has an answer that parses and matches its kind's schema for its input: the test `pending` and `accepted_answer` share."""
     got = _answer_file(state, kind, jid)
-    return got is not None and answer_problem(kind, jload(os.path.join(state, kind, jid + ".json")), got) is None
+    return got is not NOTHING and answer_problem(kind, jload(os.path.join(state, kind, jid + ".json")), got) is None
 
 
 def accepted_answer(state, kind, jid):
     """The judge's answer when it parses and is complete for its input, else None. A complete answer gives an allowed value for every item
     the input asks about (answer_problem); one that is not is set aside (reject_answer, content kept) and said so, and the item is pending
     again. No consumer reads a judge's answer by any other way: a missing item is never taken as a default."""
-    got = judge_answer(state, kind, jid)
-    if got is None:
+    got = _collected(state, kind, jid)
+    if got is NOTHING:
         return None
     why = answer_problem(kind, jload(os.path.join(state, kind, jid + ".json")), got)
     if why is None:
@@ -724,6 +884,7 @@ def _stage(state, item):
     return agent_brief
 
 
+@locked("shared")
 def cmd_pending(a, briefs=None):
     """Print one line per pending judge, final review and recreation: kind, id, brief. The judges' and final reviews' items are
     staged first (see the module doc); the brief is the staged one. `briefs` as for write_briefs."""

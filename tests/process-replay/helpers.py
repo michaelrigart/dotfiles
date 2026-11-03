@@ -341,6 +341,13 @@ def archive(st):
 log()
 if cmd == "health":
     sys.exit(SCRIPT.get("health_rc", 0))
+if cmd == "turn-wait" and SCRIPT.get("gate"):
+    sent = os.path.join(D, "inputs", opt("--turn") or "-")
+    if os.path.exists(sent) and "Reply with the JSON object" not in open(sent).read():
+        open("{}.{}.waiting".format(SCRIPT["gate"], opt("--turn")), "w").close()
+        until = time.time() + 120
+        while not os.path.exists(SCRIPT["gate"]) and time.time() < until:
+            time.sleep(0.05)
 table = {"thread-start": thread_start, "turn-start": turn_start, "turn-wait": turn_wait,
          "thread-archive": archive, "thread-unarchive": archive}
 if cmd not in table:
@@ -360,7 +367,9 @@ def stub_rpc(dir, codex_home, script):
        "threads": {"th2": [spec, ...]},   consumed in that thread's turn-start order, first
        "default": spec,                   used when both are exhausted (without it, turn-start fails)
        "probe": spec,                     the answer to codexhome.probe's turn, which consumes no entry of the above
-       "health_rc": 0}
+       "health_rc": 0,
+       "gate": path}                      every turn-wait but the probe's leaves <path>.<turn>.waiting, then waits (120 s at most)
+                                          until <path> exists: a test holds a run mid-turn
 
     spec: {"answer": {verdict, findings, reviewed_files}, "tokens": 1000, "compacted": false,
            "rate_limits": {...}, "tools": [...], "model", "effort", "window", "ctx", "developer"

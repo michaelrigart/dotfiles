@@ -24,6 +24,12 @@ add_args_<command>(parser) (dashes as underscores), else add_args(parser), when 
 --dry-run starts no daemon and no turn, and writes nothing but judge inputs and briefs.
 The default state directory is $XDG_STATE_HOME/process-replay/<date>.
 
+Locks (process_replay.common.command_locks), each held from the command's entry to its exit: `run` shares <state>/run.lock
+with `match`, `pending`, `report`, `home` (but --login-cmd) and `cases --plans`, and holds <state>/runner.lock alone;
+`snapshot`, `cases`, `inject` and `cleanup` hold run.lock alone. `run`, `cleanup` and `home` also hold the replay daemons'
+lock; memories-watch holds none. A dry run that writes nothing takes no lock. A command that finds a lock held exits 1,
+naming it, before it has changed anything.
+
 Written for /usr/bin/python3 (3.9).
 """
 import argparse

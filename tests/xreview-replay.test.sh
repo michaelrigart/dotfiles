@@ -724,6 +724,42 @@ ok("RP5 the unarchived historical thread is archived again", "thT" in st5["archi
 ok("RP5 no scratch checkout is left", not [x for x in os.listdir(S5) if x.startswith("clones") and os.listdir(os.path.join(S5, x))])
 ok("RP5 an interrupted run is not a success", proc.returncode != 0, proc.returncode)
 
+# cleanup_beside_run: a cleanup, or a second run, on the state of a run that is going refuses at its entry (the state's lock): it archives
+# none of the threads the run is using, starts no turn and leaves its checkouts
+S5b, FAKE5b = os.path.join(ROOT, "state5b"), os.path.join(ROOT, "fake5b")
+harness(S5b, "cases")
+for n in nonces:
+    shutil_copy(os.path.join(S1, "judge-known", n + ".answer.json"), os.path.join(S5b, "judge-known", n + ".answer.json"))
+harness(S5b, "cases")
+env5b = env_for(FAKE_STATE=FAKE5b, FAKE_HANG="1")
+proc = subprocess.Popen([HARNESS, "run", "--state", S5b], env=env5b, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+try:
+    deadline = time.time() + 30
+    while time.time() < deadline and len([c for c in calls(FAKE5b) if c["cmd"] == "turn-start"]) < 3:
+        time.sleep(0.1)
+    clones5b = lambda: sorted((n, os.stat(os.path.join(S5b, "clones", n)).st_ino) for n in os.listdir(os.path.join(S5b, "clones"))
+                              if not n.startswith("report.")) if os.path.isdir(os.path.join(S5b, "clones")) else []
+    calls_before, clones_before = len(calls(FAKE5b)), clones5b()
+    def within(*args):          # a command that went ahead would hang in the fake's turns: cut it off, as a failure
+        try:
+            return subprocess.run([HARNESS] + list(args), capture_output=True, text=True, env=env5b, timeout=40)
+        except subprocess.TimeoutExpired as e:
+            return subprocess.CompletedProcess(e.cmd, "timed out", "", "")
+    p_clean = within("cleanup", "--state", S5b)
+    p_run = within("run", "--state", S5b)
+    beside = (calls(FAKE5b)[calls_before:], clones5b(), jl(os.path.join(S5b, "threads.json"))["threads"])
+finally:
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+ok("cleanup_beside_run: control: the run is in three turns, in checkouts of its own", len(clones_before) == 3, clones_before)
+ok("cleanup_beside_run: cleanup and a second run exit 1, naming the state's lock", (p_clean.returncode, p_run.returncode) == (1, 1)
+   and os.path.join(S5b, "run.lock") in p_clean.stderr and os.path.join(S5b, "run.lock") in p_run.stderr, (p_clean.returncode, p_clean.stderr[-200:], p_run.returncode, p_run.stderr[-200:]))
+ok("cleanup_beside_run: ... with no daemon call made, no thread archived, the run's checkouts in place", beside[0] == [] and beside[1] == clones_before
+   and beside[2] and not any(t["done"] for t in beside[2]), beside)
+
 # ------------------------------------------------------------------ RP6 a truncated run is incomplete
 print("RP6. a run cut off by the token stop reports the switch incomplete")
 S6 = os.path.join(ROOT, "state6")
@@ -1092,6 +1128,17 @@ ok("RP19 match_incomplete: an answer missing a known finding/review pair is set 
    "not used" in p.stdout and jl(os.path.join(S19, "judge-match", cid19 + ".rejected-1.answer.json")) == short19
    and all(rep19c[sw]["n"] == rep19[sw]["n"] for sw in rep19 if cid19 in jl(os.path.join(S19, "cases.json"))["selected"][sw]), (p.stdout[-300:], rep19c))
 ok("RP19 match_incomplete: and the judge-match is pending again", ("judge-match", cid19) in [(k, i) for k, i, _b in waiting(S19)], waiting(S19))
+# match_label: a label that is a list or an object (unhashable) is a malformed answer like any other, never a crash of pending or report
+for n19, bad_label in enumerate(([], {})):
+    full19 = [{"known_index": 0, "label": l, "finding_index": 0} for l in arms19[cid19]]
+    bad19 = {"matches": [dict(full19[0], label=bad_label)] + full19[1:]}
+    judge_says(S19, "judge-match", cid19, bad19)
+    pend19 = subprocess.run([HARNESS, "pending", "--state", S19], capture_output=True, text=True, env=env_for())
+    p = harness(S19, "report")
+    ok("RP19 match_label: an answer whose label is {}: pending and report exit 0, it is set aside, unused, and pending again".format(json.dumps(bad_label)),
+       (pend19.returncode, p.returncode) == (0, 0) and "Traceback" not in pend19.stderr + p.stderr and "not used" in p.stdout
+       and jl(os.path.join(S19, "judge-match", cid19 + ".rejected-{}.answer.json".format(n19 + 2))) == bad19
+       and ("judge-match", cid19) in [(k, i) for k, i, _b in waiting(S19)], (pend19.returncode, p.returncode, pend19.stderr[-300:], p.stderr[-300:]))
 
 # ------------------------------------------------------------------ RP18 the weekly pause (replay-set spec 8)
 print("RP18. replay turns pause at 80% weekly usage and resume after the reset")
@@ -1537,7 +1584,7 @@ p = subprocess.run([HARNESS, "cleanup", "--state", SCL], capture_output=True, te
 fcntl.flock(other_run, fcntl.LOCK_UN)
 os.close(other_run)
 ok("cleanup_shared_lock: while another process holds the replay lock and uses the daemon, cleanup exits 1 and says why",
-   p.returncode == 1 and "replay run holds" in p.stdout, (p.returncode, p.stdout[-300:], p.stderr[-300:]))
+   p.returncode == 1 and "replay run holds" in p.stdout + p.stderr, (p.returncode, p.stdout[-300:], p.stderr[-300:]))
 is_("cleanup_shared_lock: ... with no daemon started or stopped, no thread archived on it, and the thread still to archive",
     ([e["argv"] for e in helpers.read_log(os.path.join(CXD, "codex.log"))[cx_before:]],
      [e["cmd"] for e in helpers.read_log(os.path.join(RPCD, "rpc.log"))[rpc_before:] if e["cmd"] != "health"],
@@ -1598,6 +1645,63 @@ ok("handover: with stops that work again, the next run stops the first home's da
    (p.returncode, hlog2, p.stdout[-300:]))
 if cleanup_xm_h:
     shutil.rmtree(cleanup_xm_h, ignore_errors=True)
+# two_runs: a second `run`, or a `cleanup`, on the state of a run that is going refuses at its entry (the state's lock): it builds no packet
+# or checkout, removes none of the first run's, archives no thread and starts no daemon or turn; the first run finishes as if alone
+XT = os.path.join(ROOT, "w")
+if len(os.path.join(XT, SOCK_TAIL)) > 100:
+    XT = tempfile.mkdtemp(prefix="x2.", dir="/tmp")
+    cleanup_xt = XT
+else:
+    cleanup_xt = None
+shutil.copytree(os.path.join(XM, "xreview"), os.path.join(XT, "xreview"))
+ST = os.path.join(ROOT, "state-two-runs")
+os.makedirs(ST)
+shutil.copy(os.path.join(SM, "cases.json"), os.path.join(ST, "cases.json"))
+GATE = os.path.join(ROOT, "two-runs-gate")
+TRPC, TCX = os.path.join(ROOT, "two-runs-rpc"), os.path.join(ROOT, "two-runs-codex")
+tenv = dict(menv, XDG_STATE_HOME=XT, XREVIEW_REPLAY_RPC=helpers.stub_rpc(TRPC, CODEX, {"probe": PROBE, "default": CLEAN, "gate": GATE}),
+            CODEX_REAL_BIN=helpers.stub_codex(TCX))
+TSCR = os.path.join(XT, "review-work", "scratch")
+
+
+def two_runs_view():
+    """What a second command must not touch: each checkout (inode and HEAD), the arms, the packets, the threads, the daemon and rpc calls."""
+    checkouts = sorted((n, os.stat(os.path.join(TSCR, n)).st_ino, os.stat(os.path.join(TSCR, n, ".git", "HEAD")).st_mtime_ns)
+                       for n in os.listdir(TSCR) if os.path.isdir(os.path.join(TSCR, n))) if os.path.isdir(TSCR) else []      # not a turn's report file
+    packets = sorted((os.path.relpath(os.path.join(d, f), ST), os.stat(os.path.join(d, f)).st_mtime_ns)
+                     for d, _s, fs in os.walk(os.path.join(ST, "packets")) for f in fs)
+    return (checkouts, open(os.path.join(ST, "arms.json")).read(), packets, open(os.path.join(ST, "threads.json")).read(),
+            len(helpers.read_log(os.path.join(TCX, "codex.log"))), len(helpers.read_log(os.path.join(TRPC, "rpc.log"))))
+
+
+first = subprocess.Popen([HARNESS, "run", "--state", ST, "--codex-source", CODEX], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=tenv)
+try:
+    until = time.time() + 90
+    while time.time() < until and len(glob.glob(glob.escape(GATE) + ".*.waiting")) < 2:
+        time.sleep(0.05)
+    held_turns = len(glob.glob(glob.escape(GATE) + ".*.waiting"))
+    view_before = two_runs_view()
+    second = subprocess.run([HARNESS, "run", "--state", ST, "--codex-source", CODEX], capture_output=True, text=True, env=tenv)
+    view_second = two_runs_view()
+    tclean = subprocess.run([HARNESS, "cleanup", "--state", ST], capture_output=True, text=True, env=tenv)
+    view_cleanup = two_runs_view()
+finally:
+    wr(GATE, "go")
+    out1, err1 = first.communicate(timeout=180)
+ok("two_runs: control: the first run is in its first home's two arm turns, all six checkouts built", held_turns == 2 and len(view_before[0]) == 6,
+   (held_turns, view_before[0]))
+ok("two_runs: a second run on the same state exits 1 and names the state's lock", second.returncode == 1 and os.path.join(ST, "run.lock") in second.stderr,
+   (second.returncode, second.stdout[-300:], second.stderr[-300:]))
+ok("two_runs: ... at its entry: every checkout, the arms, the packets, the threads, the daemon and the rpc are as they were", view_second == view_before,
+   [i for i, (x, y) in enumerate(zip(view_before, view_second)) if x != y])
+ok("two_runs: cleanup on the state refuses the same way, archiving and removing nothing", tclean.returncode == 1 and os.path.join(ST, "run.lock") in tclean.stderr
+   and view_cleanup == view_before, (tclean.returncode, tclean.stderr[-300:], [i for i, (x, y) in enumerate(zip(view_before, view_cleanup)) if x != y]))
+truns = [jl(os.path.join(ST, "runs", cid, l + ".json")) for cid, m in jl(os.path.join(ST, "arms.json")).items() for l in m
+         if os.path.exists(os.path.join(ST, "runs", cid, l + ".json"))]
+ok("two_runs: and the first run finishes as if alone: every arm ran once, none in error", first.returncode == 0 and len(truns) == 6
+   and not any(r["error"] for r in truns), (first.returncode, [r["error"] for r in truns], out1[-300:]))
+if cleanup_xt:
+    shutil.rmtree(cleanup_xt, ignore_errors=True)
 for k, v in saved_env.items():
     if v is None:
         os.environ.pop(k, None)

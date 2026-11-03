@@ -28,6 +28,11 @@ more (a second leak is an error run).
 --dry-run builds and selects but starts no turn and calls no daemon. The default state directory is
 $XDG_STATE_HOME/xreview/replay/<date>. Raw run files are never committed.
 
+Every command holds the state's lock, <state>/run.lock, from its entry to its exit (process_replay.common.command_locks):
+`report` and `pending` share it, every other command holds it alone (a dry `run` too: it builds packets and checkouts; a dry
+`cleanup` takes none). A live `run` or `cleanup` that touches a replay home holds the replay daemons' lock as well. A command
+that finds a lock held exits 1, naming it, before it has changed anything.
+
 Judge files (the controller dispatches the judges between phases). The judge protocol is process_replay.common's: a judge is
 never handed a path in the state. `pending` stages each input in a real directory of its own, $XDG_STATE_HOME/review-work/items/<hex>/,
 holding only input.json and brief.md; the judge writes answer.json there, and `cases`, `match` and `report` collect it:
@@ -49,6 +54,7 @@ import collections
 import concurrent.futures as cf
 import contextlib
 import copy
+import functools
 import glob
 import importlib.util
 import json
@@ -125,6 +131,29 @@ def pkg(name):
     if __name__ == "__main__":
         sys.modules.setdefault("xreview_replay", sys.modules["__main__"])
     return importlib.import_module("process_replay." + name)
+
+
+def locked(mode, daemon=False):
+    """process_replay.common.locked (the command's locks, taken at its entry and held to its exit), looked up when the command runs: the
+    package imports this file, so it cannot be imported while this file loads."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def command(a, *args, **kw):
+            return pkg("common").locked(mode, daemon)(fn)(a, *args, **kw)
+        return command
+    return wrap
+
+
+def replay_homes(a):
+    """Whether a live `run` or `cleanup` of this state touches a replay daemon: the memories switch's arms run on replay homes, and a thread
+    left to archive on one is archived on its daemon. The packet switches' arms run on the daemon the environment names, never a replay one."""
+    if getattr(a, "dry_run", False):
+        return False
+    cj = jload(os.path.join(a.state, "cases.json")) or {}
+    if cj.get("switch") == "memories" or any(isinstance(c, dict) and c.get("class") == "mem" for c in cj.get("cases") or []):
+        return True
+    threads = (jload(os.path.join(a.state, "threads.json")) or {}).get("threads") or []
+    return any(isinstance(t, dict) and t.get("home") and not t.get("done") for t in threads)
 
 
 def jload(path, default=None):
@@ -499,6 +528,7 @@ def cases_memories(a):
     return 0
 
 
+@locked("exclusive")
 def cmd_cases(a):
     if getattr(a, "switch", None) == "memories":
         return cases_memories(a)
@@ -1100,7 +1130,11 @@ def drop_scratch(jobs):
             shutil.rmtree(j["scratch"], ignore_errors=True)
 
 
+@locked("exclusive", daemon=replay_homes)
 def cmd_run(a):
+    """Holds the state exclusively from its entry, a dry run too (it builds the packets and the memories arms' checkouts): a second `run`, a
+    `cleanup` or any other command on the state refuses before it touches a packet, a checkout, a thread or a daemon. A run that uses
+    replay homes holds the replay daemons' lock as well, across every home it takes in turn."""
     global TH
     cj = jload(os.path.join(a.state, "cases.json"))
     if not cj or not cj.get("cases"):
@@ -1166,6 +1200,7 @@ def cmd_run(a):
     return 130 if interrupted else (1 if crash else 0)
 
 
+@locked(lambda a: None if a.dry_run else "exclusive", daemon=replay_homes)
 def cmd_cleanup(a):
     global TH
     TH = Threads(a.state)
@@ -1198,6 +1233,7 @@ def match_current(a, case, arms):
     return held is None or (doc is not None and held == dict((k, v) for k, v in doc.items() if k != "case"))
 
 
+@locked("exclusive")
 def cmd_match(a):
     cj, arms = jload(os.path.join(a.state, "cases.json")), jload(os.path.join(a.state, "arms.json"), {})
     for case in (cj or {}).get("cases", []):
@@ -1214,10 +1250,12 @@ def cmd_match(a):
 
 def cmd_pending(a):
     """One line per judge input still waiting, kind, id and brief, tab-separated: the input is staged in a directory of its own (process_replay.common),
-    and the brief names the input and the answer file there. The judge is handed that brief and nothing else."""
+    and the brief names the input and the answer file there. The judge is handed that brief and nothing else. common.cmd_pending holds the
+    state shared."""
     return pkg("common").cmd_pending(a, judge_briefs())
 
 
+@locked("shared")
 def cmd_report(a):
     cj, arms = jload(os.path.join(a.state, "cases.json"), {}), jload(os.path.join(a.state, "arms.json"), {})
     prog = jload(os.path.join(a.state, "progress.json"), {})

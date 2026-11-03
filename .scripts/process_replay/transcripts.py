@@ -375,6 +375,7 @@ def find(projects, repos):
     return groups, copies
 
 
+@C.locked(lambda a: None if a.dry_run else "exclusive")
 def cmd_snapshot(a):
     """Write <state>/reviews.json and copy the transcripts it names to <state>/transcripts/. Nothing
     is filtered by date: which branches count is decided by merge date, and a branch merged in

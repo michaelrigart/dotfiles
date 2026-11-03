@@ -363,8 +363,8 @@ ok("control: the ambiguous prefix really is ambiguous in the repository", helper
 DRY = os.path.join(ROOT, "w-rich", "dry")
 is_("dry_run: exits 0", run_cases(DRY, RGROUPS, dry=True), 0)
 written = sorted(os.path.relpath(os.path.join(d, f), DRY) for d, _s, fs_ in os.walk(DRY) for f in fs_
-                 if os.sep + "views" + os.sep not in os.path.join(d, f) and not f.endswith("alias") and f != "reviews.json")
-ok("dry_run: nothing but judge inputs and briefs", bool(written) and all(w.startswith("judge") for w in written), written)
+                 if os.sep + "views" + os.sep not in os.path.join(d, f) and not f.endswith("alias") and f not in ("reviews.json", "run.lock"))
+ok("dry_run: nothing but judge inputs and briefs (the state's lock file is no record)", bool(written) and all(w.startswith("judge") for w in written), written)
 ok("dry_run: no branches.json and no inventory", not os.path.exists(os.path.join(DRY, "branches.json")) and not os.path.exists(os.path.join(DRY, "inventory")))
 
 # ---- the real run

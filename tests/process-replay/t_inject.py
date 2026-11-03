@@ -390,7 +390,7 @@ rc, out = run(S4, dry=True)
 is_("dry_run: exits 0", rc, 0)
 written = sorted(os.path.relpath(os.path.join(d, f), S4) for d, _s, fs in os.walk(S4) for f in fs)
 ok("dry_run: nothing but judge inputs and briefs (and the files the run was given)", bool(written) and all(
-    w.startswith(("judge", "views" + os.sep, "inventory" + os.sep)) or w in ("alias", "branches.json") for w in written), written)
+    w.startswith(("judge", "views" + os.sep, "inventory" + os.sep)) or w in ("alias", "branches.json", "run.lock") for w in written), written)
 ok("dry_run: no work repository, no injected record, no cases.json", not any(os.path.exists(os.path.join(S4, x)) for x in ("work", "injected", "cases.json", "repairs")))
 is_("dry_run: the judge-split input is written", len(inputs(S4, "judge-split")), 1)
 
