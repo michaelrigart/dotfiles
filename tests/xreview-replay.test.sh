@@ -1261,11 +1261,23 @@ ok("RP21 job B's third turn completed after A's run: B starts no fourth turn, is
 is_("RP21 four turns started in all (B 3, A 1)", len(STARTS21), 4)
 is_("RP21 with A finished and B's third turn in progress, B's two completed turns and A's one are counted once", SEEN21["after_a"], 3000)
 is_("RP21 both finished: the total is the two jobs' turns once, from the run files, with nothing left in flight", (Hm.spent_now(unit21), Hm.spent(unit21), Hm.FLIGHT), (4000, 4000, {}))
-# the same race through the pool: no job is started once the stop is reached by the jobs in flight
-Hm.FLIGHT[(unit21, "c.pre", "zzzzzzzz")] = 2600
-left21, _total21 = Hm.run_pool(a21, __import__("collections").deque([dict(job, label="w3w3w3w3", decision=four)]), 0, 2500, {})
-ok("RP21 a job in flight counts for the pool's start check: the pool starts nothing and hands the job back", [j["label"] for j in left21] == ["w3w3w3w3"], list(left21))
-Hm.FLIGHT.clear()
+# the same race through the pool, on a state whose run files record nothing: only the jobs in flight can hold it back
+unit21p = os.path.join(ROOT, "unit21p")
+wr(os.path.join(unit21p, "packet.txt"), "x")
+a21p = argparse.Namespace(state=unit21p, budget=10, cap=2500)
+SUBMITS21, run_job21 = [], Hm.run_job
+Hm.run_job = lambda a, j: SUBMITS21.append(j["label"]) or {}
+try:
+    Hm.FLIGHT[(unit21p, "c.pre", "zzzzzzzz")] = 2600
+    left21, _total21 = Hm.run_pool(a21p, __import__("collections").deque([dict(job, label="w3w3w3w3", decision=four)]), 0, 2500, {})
+    ok("RP21 a job in flight counts for the pool's start check: the pool submits nothing and hands the job back", Hm.spent(unit21p) == 0 and SUBMITS21 == [] and [j["label"] for j in left21] == ["w3w3w3w3"], (SUBMITS21, list(left21)))
+    Hm.FLIGHT.clear()
+    SUBMITS21.clear()
+    left21, _total21 = Hm.run_pool(a21p, __import__("collections").deque([dict(job, label="w3w3w3w3", decision=four)]), 0, 2500, {})
+    ok("RP21 control: with nothing in flight on the same state the pool submits the job", SUBMITS21 == ["w3w3w3w3"] and not left21, (SUBMITS21, list(left21)))
+finally:
+    Hm.run_job = run_job21
+    Hm.FLIGHT.clear()
 
 print("RP17. N6: a crashed run is not recorded as finished")
 Hc = None
