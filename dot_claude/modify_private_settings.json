@@ -604,6 +604,10 @@ printf '%s' "$input" | jq \
   # Learning) or a file in ~/.claude/output-styles.
   | .model = ($live.model // "opus[1m]")
   | .effortLevel = ($live.effortLevel // "xhigh")
+  # Opus 5.5 and later ignore effortLevel in user settings and read effort only from
+  # modelSettings.<model id>. Re-check the id at each Opus release.
+  | .modelSettings["claude-opus-5-5"].effortLevel =
+      ($live.modelSettings["claude-opus-5-5"].effortLevel // "xhigh")
   | .permissions.defaultMode = ($perm.defaultMode // "auto")
   | .outputStyle = ($live.outputStyle // "Concise")
 '

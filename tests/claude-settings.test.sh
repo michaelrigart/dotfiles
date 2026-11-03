@@ -254,6 +254,17 @@ jq_is '.autoContinueAtUsageLimit' 'true' "autoContinueAtUsageLimit carried throu
 emit '{}'
 jq_is '.autoContinueAtUsageLimit == null' true "autoContinueAtUsageLimit not invented when absent"
 
+# Opus 5.5 and later ignore the top-level effortLevel; /effort saves to modelSettings.<id>.
+# Default-only like effortLevel: a fresh machine starts at xhigh, a runtime value persists.
+emit '{}'
+jq_is '.modelSettings["claude-opus-5-5"].effortLevel' 'xhigh' "opus-5-5 effort seeded to xhigh when absent"
+emit '{"modelSettings":{"claude-opus-5-5":{"effortLevel":"medium"}}}'
+jq_is '.modelSettings["claude-opus-5-5"].effortLevel' 'medium' "a live opus-5-5 effort persists"
+emit '{"modelSettings":{"other-model":{"effortLevel":"low"},"claude-opus-5-5":{"autoCompactWindow":123}}}'
+jq_is '.modelSettings["other-model"].effortLevel'           'low'   "another model's modelSettings entry survives the seed"
+jq_is '.modelSettings["claude-opus-5-5"].autoCompactWindow' 123     "other opus-5-5 keys survive the seed"
+jq_is '.modelSettings["claude-opus-5-5"].effortLevel'       'xhigh' "opus-5-5 effort seeded beside its other keys"
+
 echo "E2. the merge starts from the live file: owned keys win, everything else survives"
 # Until 2026-09-30 the script rebuilt the object and carried a named whitelist, so every
 # runtime key nobody listed vanished on apply (modelSettings was the fourth). It now
