@@ -629,9 +629,12 @@ x_is() { # x_is <command> <expected count> <label>
 }
 x_is 'wt --no-focus feat/x main' 1 "wt with flags runs unsandboxed"
 x_is 'wt feat/x' 1 "plain wt runs unsandboxed"
-for c in 'wt-rm feat/x' 'wt-prepare feat/x' 'wt-teardown feat/x' 'command wt-rm feat/x'; do
-  x_is "$c" 0 "teardown tool stays sandboxed: $c"
+for c in 'wt-rm feat/x' 'wt-prepare feat/x' 'wt-teardown feat/x'; do
+  x_is "$c" 0 "wt-* tool stays sandboxed: $c"
 done
+# A "wt*" pattern would also match the three above. The command-builtin spelling cannot be
+# matched by any pattern starting with wt, so this guards only that no exclusion matches it.
+x_is 'command wt-rm feat/x' 0 "no exclusion matches the command-builtin spelling: command wt-rm feat/x"
 m_is 'wt --no-focus feat/x main' 0 "no allow rule lets an unsandboxed wt skip the classifier"
 m_is 'wt feat/x' 0 "no allow rule matches plain wt"
 jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
