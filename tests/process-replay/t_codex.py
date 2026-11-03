@@ -326,49 +326,50 @@ ok("token_stop: the stop counts every run's tokens, this run's from the caller, 
 # ---- leak_scan
 W = "/work/orig"
 lhome = os.path.join(ROOT, "cxh", "leak")
+ORIG_W = K.wall([W])        # the original checkout alone: its wt siblings count, nothing else is forbidden
 
 
 def tool(kind, text):
     return {"type": kind, "name": "shell", "arguments": text}
 
 
-def rollout(thread, turns, user=None):
+def rollout(thread, turns, user=None, home=None):
     recs, total = [], 0
     for t in turns:
         more, total = helpers.rollout_lines(t, total)
         if user:
             more.insert(1, {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": user}]}})
         recs += more
-    path = helpers.rollout_file(lhome, thread)
+    path = helpers.rollout_file(home or lhome, thread)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("".join(json.dumps(r) + "\n" for r in recs))
 
 
 rollout("lk1", [{"turn": "t1", "answer": None, "tools": [tool("custom_tool_call", "cat {}/src/a.py".format(W))]}])
-is_("leak_scan: a custom_tool_call naming the original work dir is a leak", K.leaks(lhome, [("lk1", "t1")], [W]), [W + " in t1"])
+is_("leak_scan: a custom_tool_call naming the original work dir is a leak", K.leaks(lhome, [("lk1", "t1")], ORIG_W), [W + " in t1"])
 rollout("lk2", [{"turn": "t1", "answer": None, "tools": [tool("function_call", json.dumps({"cmd": "ls {}-feat/src".format(W)}))]}])
-is_("leak_scan: a function_call naming a sibling <dir>-feat is a leak", K.leaks(lhome, [("lk2", "t1")], [W]), [W + " in t1"])
+is_("leak_scan: a function_call naming a sibling <dir>-feat is a leak", K.leaks(lhome, [("lk2", "t1")], ORIG_W), [W + " in t1"])
 rollout("lk3", [{"turn": "t1", "answer": None, "developer": "the checkout is {} and {}-feat".format(W, W), "tools": [tool("function_call", "ls /scratch/x")]}],
         user="please read {}/src/a.py".format(W))
-is_("leak_scan: the same path in a user or developer message is not a leak", K.leaks(lhome, [("lk3", "t1")], [W]), [])
+is_("leak_scan: the same path in a user or developer message is not a leak", K.leaks(lhome, [("lk3", "t1")], ORIG_W), [])
 rollout("lk4", [{"turn": "t1", "answer": None, "tools": [tool("function_call", "ls {}x/src {}2".format(W, W))]}])
-is_("leak_scan: another directory whose name merely starts the same is not a leak", K.leaks(lhome, [("lk4", "t1")], [W]), [])
+is_("leak_scan: another directory whose name merely starts the same is not a leak", K.leaks(lhome, [("lk4", "t1")], ORIG_W), [])
 rollout("lk5", [{"turn": "t1", "answer": None, "tools": [tool("function_call", "ls /scratch")]},
                 {"turn": "t2", "answer": None, "tools": [tool("function_call", "ls " + W)]}])
-is_("leak_scan: only the named turns are read", K.leaks(lhome, [("lk5", "t1")], [W]), [])
-is_("leak_scan: ... and a named turn that leaked is found", K.leaks(lhome, [("lk5", "t1"), ("lk5", "t2")], [W]), [W + " in t2"])
+is_("leak_scan: only the named turns are read", K.leaks(lhome, [("lk5", "t1")], ORIG_W), [])
+is_("leak_scan: ... and a named turn that leaked is found", K.leaks(lhome, [("lk5", "t1"), ("lk5", "t2")], ORIG_W), [W + " in t2"])
 house = os.path.expanduser("~")
 rollout("lk6", [{"turn": "t1", "answer": None, "tools": [tool("custom_tool_call", "cat ~/Code/Org/repo/x")]}])
-is_("leak_scan: the ~ spelling of a path under $HOME is a leak", K.leaks(lhome, [("lk6", "t1")], [house + "/Code/Org/repo/.git"]), [house + "/Code/Org/repo in t1"])
-is_("leak_scan: a scanned turn whose thread has no rollout cannot be shown clean: it counts as a leak", K.leaks(lhome, [("nothing", "t1")], [W]),
+is_("leak_scan: the ~ spelling of a path under $HOME is a leak", K.leaks(lhome, [("lk6", "t1")], K.wall([house + "/Code/Org/repo/.git"])), [house + "/Code/Org/repo in t1"])
+is_("leak_scan: a scanned turn whose thread has no rollout cannot be shown clean: it counts as a leak", K.leaks(lhome, [("nothing", "t1")], ORIG_W),
     ["rollout unreadable in t1"])
 is_("leak_scan: a scanned turn the rollout does not hold counts as a leak too, the turns it holds are still read",
-    K.leaks(lhome, [("lk5", "t1"), ("lk5", "t2"), ("lk5", "t9")], [W]), [W + " in t2", "rollout unreadable in t9"])
+    K.leaks(lhome, [("lk5", "t1"), ("lk5", "t2"), ("lk5", "t9")], ORIG_W), [W + " in t2", "rollout unreadable in t9"])
 os.makedirs(os.path.join(lhome, "sessions", "2026", "10", "20"), exist_ok=True)
 with open(helpers.rollout_file(lhome, "lkzst", sub="sessions/2026/10/20").replace(".jsonl", ".jsonl.zst"), "wb") as f:
     f.write(b"this is not a zstd frame")
-is_("leak_scan: a rollout that cannot be decompressed counts as a leak", K.leaks(lhome, [("lkzst", "t1")], [W]), ["rollout unreadable in t1"])
+is_("leak_scan: a rollout that cannot be decompressed counts as a leak", K.leaks(lhome, [("lkzst", "t1")], ORIG_W), ["rollout unreadable in t1"])
 real_run = K.subprocess.run
 
 
@@ -380,7 +381,7 @@ def zstd_hangs(argv, *args, **kw):
 
 K.subprocess.run = zstd_hangs
 try:
-    hung = K.leaks(lhome, [("lkzst", "t1")], [W])
+    hung = K.leaks(lhome, [("lkzst", "t1")], ORIG_W)
 finally:
     K.subprocess.run = real_run
 is_("leak_scan: a rollout whose decompression times out counts as a leak too (the scan does not raise)", hung, ["rollout unreadable in t1"])
@@ -411,23 +412,34 @@ XSH = os.environ["XDG_STATE_HOME"]
 FSTATE = os.path.join(ROOT, "forbidden-state")
 os.makedirs(FSTATE, exist_ok=True)
 OWN = os.path.join(XSH, "review-work", "scratch", "own00001")
+os.makedirs(OWN, exist_ok=True)
 BRANCH = {"repo": house + "/Code/Org/repo/.git"}
-fpaths, fwalled = K.forbidden(FSTATE, BRANCH, [OWN])
-mpaths, mwalled = K.forbidden(FSTATE, BRANCH, [OWN], memwatch=True)
-is_("forbidden: the walled directory is review-work, with the run's own directories allowed", fwalled, (os.path.join(XSH, "review-work"), [OWN]))
+fwall = K.forbidden(FSTATE, BRANCH, [OWN])
+mwall = K.forbidden(FSTATE, BRANCH, [OWN], memwatch=True)
+is_("forbidden: the roots, by the path they are reported as: the checkout, the state, review-work, the snapshot, October's answers, xreview, cxh",
+    [r.label for r in fwall.roots],
+    [house + "/Code/Org/repo", FSTATE, os.path.join(XSH, "review-work"), house + "/Code/.replay/snapshot", house + "/.codex/sessions",
+     house + "/.codex/archived_sessions", house + "/.codex/memories", house + "/.claude/projects", os.path.join(XSH, "xreview"), os.path.join(XSH, "cxh")])
+is_("forbidden: only the checkout has wt siblings", [r.label for r in fwall.roots if r.siblings], [house + "/Code/Org/repo"])
+is_("forbidden: the run's own directories are allowed, as real paths", fwall.allowed, [K._parts(os.path.realpath(OWN))])
+is_("forbidden: a memories run adds the watcher's directory", [r.label for r in mwall.roots][len(fwall.roots):], [os.path.join(XSH, "process-replay", "memwatch")])
 
 
 n_fb = [0]
 
 
-def forbid(text, memwatch=False, cwd=OWN):
+def forbid(text, memwatch=False, cwd=OWN, wall=None, home=None):
+    """What one function_call (`text` as its arguments) in a rollout of `home` (default lhome) leaks behind `wall` (default the
+    usual one for a run whose scratch is OWN)."""
     n_fb[0] += 1
     thread = "fbd{}".format(n_fb[0])
-    rollout(thread, [{"turn": "t1", "answer": None, "tools": [tool("function_call", text)]}])
-    paths, walled = (mpaths, mwalled) if memwatch else (fpaths, fwalled)
-    return K.leaks(lhome, [(thread, "t1")], list(paths), cwd, walled)
+    rollout(thread, [{"turn": "t1", "answer": None, "tools": [tool("function_call", text)]}], home=home or lhome)
+    return K.leaks(home or lhome, [(thread, "t1")], wall or (mwall if memwatch else fwall), cwd)
 
 
+ALIAS = os.path.join(ROOT, "neutral-alias")
+os.symlink(FSTATE, ALIAS)
+os.symlink(house + "/Code/Org/repo", os.path.join(OWN, "evil"))
 for label, text in (("the original checkout", "cat ~/Code/Org/repo/src/a.py"), ("a wt sibling of it", "cat ~/Code/Org/repo-feat/x"),
                     ("the state directory", "cat {}/inventory/b.json".format(FSTATE)),
                     ("the snapshot root", "ls ~/Code/.replay/snapshot/2026-11-02"), ("October's codex sessions", "rg -n x ~/.codex/sessions/2026"),
@@ -436,34 +448,102 @@ for label, text in (("the original checkout", "cat ~/Code/Org/repo/src/a.py"), (
                     ("the xreview ledgers by path", "cat {}/xreview/ledgers/k/reviews.jsonl".format(XSH)),
                     ("the replay homes", "ls $XDG_STATE_HOME/cxh/nomem/sessions"), ("a replay home by path", "cat {}/cxh/mem-a1/sessions/r.jsonl".format(XSH)),
                     ("another scratch", "cat ../other000/x"), ("a staged item", "cat ../../items/0123456789abcdef/input.json"),
-                    ("an alias link", "cat ../../deadbeef/inventory/b.json"), ("review-work itself", "ls ../.."), ("a stray ../..", "cat ../../../xreview/x")):
-    ok("forbidden: reading {} is a leak".format(label), forbid(text) != [], forbid(text))
+                    ("an alias link", "cat ../../deadbeef/inventory/b.json"), ("review-work itself", "ls ../.."), ("a stray ../..", "cat ../../../xreview/x"),
+                    ("the state through a symlink outside review-work (realpath)", "cat {}/inventory/b.json".format(ALIAS)),
+                    ("the original through a symlink inside its own scratch (judged where it lands)", "cat evil/src/a.py"),
+                    ("another scratch by a glob", "cat ../*/src/a.py"), ("October's sessions by a glob", "cat ~/.codex/*/2026/x.jsonl"),
+                    ("a wt sibling by a glob", "ls ~/Code/Org/repo-*/src"),
+                    ("another scratch after cd ..", "cd .. && cat other000/x"), ("the checkout after cd to its parent and ;", "cd ~/Code/Org; cat repo/x"),
+                    ("the checkout from a heredoc fed to python", "python3 - <<'EOF'\nprint(open('{}/Code/Org/repo/src/a.py').read())\nEOF".format(house)),
+                    ("the checkout from an inline script", "python3 -c \"print(open('{}/Code/Org/repo/src/a.py').read())\"".format(house)),
+                    ("the checkout as a redirect", "wc -l < ~/Code/Org/repo/src/a.py"),
+                    ("a pattern file in a forbidden root", "rg -f ~/.codex/memories/MEMORY.md src"),
+                    ("a grep's file operand after -e", "grep -n -e xreview ~/.codex/sessions"),
+                    ("a $( ) inside a quoted word", 'echo "$(cat ~/.codex/memories/MEMORY.md)"'),
+                    ("a glued --git-dir", "git --git-dir={}/Code/Org/repo/.git log".format(house))):
+    got = forbid(text)
+    ok("forbidden: reading {} is a leak".format(label), got != [], got)
 for label, text in (("a file in its own scratch", "cat src/a.py"), ("its own scratch by path", "git -C {} log".format(OWN)), ("a relative path inside it", "cat ./x/../src/a.py"),
                     ("a code path named like the roots", "rg -n sessions memories projects xreview src"),
                     ("a search for a root's name in its own scratch, by absolute path", "rg -n xreview {}/dot_claude".format(OWN)),
                     ("git -C its own scratch by absolute path with a root's name in the pattern", "git -C {} log --grep xreview".format(OWN)),
-                    ("a search for cxh in its own scratch", "rg -n cxh {}".format(OWN))):
+                    ("a search for cxh in its own scratch", "rg -n cxh {}".format(OWN)),
+                    ("a grep pattern naming a forbidden root's path (N3)", "rg -n '.claude/projects' dot_claude"),
+                    ("a grep pattern spelled as a forbidden path", "rg -n ~/.codex/sessions src; grep -rn $XDG_STATE_HOME/xreview ."),
+                    ("a grep pattern after options that take a value", "rg -n -C 3 -g '*.py' ~/.codex/memories src"),
+                    ("a grep -e pattern", "grep -rn -e ~/.codex/sessions -e $XDG_STATE_HOME/cxh src"),
+                    ("a git grep pattern", "git -C {} grep -n ~/.claude/projects".format(OWN)),
+                    ("a glob inside its own scratch", "cat src/*.py"),
+                    ("a subshell's cd does not outlive it", "(cd ~/Code/Org) && cat repo/x"),
+                    ("a cd inside its own scratch and back up", "cd src && cat ../README.md"),
+                    ("its own scratch through a symlink to it", "cat {}/src/a.py".format(os.path.join(ROOT, "to-own")))):
+    if label.startswith("its own scratch through"):
+        os.symlink(OWN, os.path.join(ROOT, "to-own"))
     is_("forbidden: {} is not a leak".format(label), forbid(text), [])
+# ---- a recursive search rooted at an ancestor of a forbidden root walks into it (ruling on the restructure's concern 2)
+for label, text, cwd in (("rg over the home directory", "rg foo ~", OWN), ("grep -r over ~/Code (the checkout's and the snapshot's parent)", "grep -rn foo ~/Code", OWN),
+                         ("grep -R with options glued", "grep -inR foo $HOME", OWN), ("grep -d recurse", "grep -d recurse foo ~", OWN),
+                         ("find over the home directory", "find ~ -name '*.jsonl'", OWN), ("find with global options first", "find -L ~/.codex -type f", OWN),
+                         ("fd over ~/.codex", "fd -e jsonl x ~/.codex", OWN), ("fd --search-path", "fd jsonl --search-path ~/.claude", OWN),
+                         ("tree over $XDG_STATE_HOME", "tree -L 2 $XDG_STATE_HOME", OWN), ("ls -R over ~/.claude", "ls -laR ~/.claude", OWN),
+                         ("ag over /", "ag foo /", OWN), ("ack over ~/Code", "ack foo ~/Code", OWN),
+                         ("rg with no path from a workdir above a root", json.dumps({"cmd": "rg foo", "workdir": house}), OWN),
+                         ("rg with no path after cd to the home directory", "cd ~ && rg -n foo", OWN),
+                         ("find with no path from $XDG_STATE_HOME", "cd $XDG_STATE_HOME; find -name x", OWN),
+                         ("rg --files over the home directory", "rg --files ~", OWN)):
+    got = forbid(text, cwd=cwd)
+    ok("search: {} is a leak".format(label), got != [], got)
+for label, text in (("rg over . from its own scratch", "rg foo ."), ("find . from its own scratch", "find . -name x"),
+                    ("rg with no path from its own scratch", "rg -n foo"), ("grep -r with no path from its own scratch", "grep -rn foo"),
+                    ("fd and tree inside its own scratch", "fd -e py x src; tree -L 2 src"), ("ls -R of its own scratch", "ls -R ."),
+                    ("a grep without -r naming the home directory (it reads no directory)", "grep -n foo ~"), ("ls of the home directory, not recursive", "ls -la ~"),
+                    ("an rg that reads a pipe, from a workdir above a root", json.dumps({"cmd": "git -C {} diff | rg foo".format(OWN), "workdir": house})),
+                    ("rg over its own scratch by absolute path", "rg foo {}".format(OWN))):
+    is_("search: {} is not a leak".format(label), forbid(text), [])
+is_("search: an ancestor search reports every root beneath it", forbid("rg foo ~/.codex"),
+    sorted("{} in t1".format(x) for x in (house + "/.codex/sessions", house + "/.codex/archived_sessions", house + "/.codex/memories")))
 MW = "cat $XDG_STATE_HOME/process-replay/memwatch/polls.jsonl"
 is_("forbidden: the memories watcher's directory is open to an ordinary run", forbid(MW), [])
 ok("forbidden: ... and forbidden to a memories run", forbid(MW, memwatch=True) != [], forbid(MW, memwatch=True))
 ok("forbidden: ... by its path too", forbid("ls {}/process-replay/memwatch".format(XSH), memwatch=True) != [])
+
+# ---- allowed subtrees: a §6 arm's own memories (F-3), a reviewer's own replay home's skills, plugins, rules and AGENTS.md (A)
 HOME_A = os.path.join(XSH, "cxh", "mem-a1")
-
-
-def forbid_exempt(text):
-    n_fb[0] += 1
-    thread = "fbx{}".format(n_fb[0])
-    rollout(thread, [{"turn": "t1", "answer": None, "tools": [tool("function_call", text)]}])
-    return K.leaks(lhome, [(thread, "t1")], list(fpaths), OWN, fwalled, exempt=[os.path.join(HOME_A, "memories")])
-
-
-is_("exempt: a path inside an exempt directory is not a read of the root above it (absolute, $XDG_STATE_HOME)",
-    (forbid_exempt("cat {}/memories/MEMORY.md".format(HOME_A)), forbid_exempt("cat $XDG_STATE_HOME/cxh/mem-a1/memories/MEMORY.md")), ([], []))
-ok("exempt: another home's memories, the same home's sessions, and a directory that merely starts like the exempt one are leaks",
-   all(forbid_exempt(t) for t in ("cat {}/cxh/mem-b2/memories/MEMORY.md".format(XSH), "cat {}/sessions/x.jsonl".format(HOME_A), "cat {}/memories-old/x".format(HOME_A))))
-wp, ww = K.forbidden(FSTATE, BRANCH, [OWN, "/items/own"], snapshot_root="/elsewhere/snap")
-ok("forbidden: a snapshot root given by the caller is forbidden too, and every own directory is allowed", "/elsewhere/snap" in wp and ww[1] == [OWN, "/items/own"], (wp, ww))
+MEMWALL = K.forbidden(FSTATE, BRANCH, [OWN, os.path.join(HOME_A, "memories")])
+is_("allowed: a path inside an allowed directory is not a read of the root above it (absolute, $XDG_STATE_HOME)",
+    (forbid("cat {}/memories/MEMORY.md".format(HOME_A), wall=MEMWALL), forbid("cat $XDG_STATE_HOME/cxh/mem-a1/memories/MEMORY.md", wall=MEMWALL)), ([], []))
+for label, text in (("another home's memories", "cat {}/cxh/mem-b2/memories/MEMORY.md".format(XSH)), ("the same home's sessions", "cat {}/sessions/x.jsonl".format(HOME_A)),
+                    ("a directory that merely starts like the allowed one", "cat {}/memories-old/x".format(HOME_A)),
+                    ("an escape from the allowed directory to its home's sessions (B)", "cat {}/memories/../sessions/x.jsonl".format(HOME_A)),
+                    ("... in the $XDG_STATE_HOME spelling, to another home", "cat $XDG_STATE_HOME/cxh/mem-a1/memories/../../mem-b2/memories/x")):
+    got = forbid(text, wall=MEMWALL)
+    ok("allowed: {} is a leak".format(label), got == [os.path.join(XSH, "cxh") + " in t1"], got)
+SKILLWALL = K.forbidden(FSTATE, BRANCH, [OWN] + K.own_home(HOME_A))
+is_("own_home: the parts of a replay home its reviewer may read", K.own_home("/h"), ["/h/skills", "/h/plugins", "/h/rules", "/h/AGENTS.md"])
+is_("own_home: ... and for a memories arm its memories", K.own_home("/h", memories=True)[-1], "/h/memories")
+for label, rel in (("a plugin's skill", "plugins/cache/market/superpowers/1.0.0/skills/brainstorming/SKILL.md"), ("a skill", "skills/review/SKILL.md"),
+                   ("its rules", "rules/default.rules"), ("its AGENTS.md", "AGENTS.md")):
+    is_("own_home: a reviewer reading {} in its own home is not a leak (A)".format(label), forbid("cat {}/{}".format(HOME_A, rel), wall=SKILLWALL), [])
+for label, text in (("another home's plugin skill", "cat {}/cxh/nomem/plugins/cache/market/superpowers/1.0.0/skills/x/SKILL.md".format(XSH)),
+                    ("its own home's sessions", "cat {}/sessions/2026/x.jsonl".format(HOME_A)), ("its own home's config", "cat {}/config.toml".format(HOME_A)),
+                    ("a file that merely starts like AGENTS.md", "cat {}/AGENTS.md.bak".format(HOME_A)),
+                    ("an escape from its plugins", "cat {}/plugins/../memories/x".format(HOME_A))):
+    ok("own_home: {} is a leak".format(label), forbid(text, wall=SKILLWALL) != [], forbid(text, wall=SKILLWALL))
+CXHOME = os.path.join(XSH, "cxh", "own-h")
+CXWALL = K.forbidden(FSTATE, BRANCH, [OWN] + K.own_home(CXHOME))
+is_("own_home: $CODEX_HOME is the reviewer's own home: its skills are not a leak", forbid("cat $CODEX_HOME/skills/s/SKILL.md", wall=CXWALL, home=CXHOME), [])
+is_("own_home: ... its sessions are", forbid("cat ${CODEX_HOME}/sessions/2026/x.jsonl", wall=CXWALL, home=CXHOME), [os.path.join(XSH, "cxh") + " in t1"])
+w = World("ownhome")
+home = os.path.join(XSH, "cxh", "ownhome")
+helpers.write_rollout(home, "probe-ownhome", [{"turn": "pb", "answer": None}])
+SKILL = os.path.join(home, "plugins", "cache", "market", "superpowers", "1.0.0", "skills", "x", "SKILL.md")
+stub = stub_for("ownhome", home, {"default": {"answer": ans(), "tools": [tool("custom_tool_call", "cat " + SKILL)]}})
+ok("own_home: a Codex round reading a plugin skill of its own replay home is a review (A)", w.round(home).get("kind") == "codex")
+stub = stub_for("ownhome", home, {"default": {"answer": ans(), "tools": [tool("custom_tool_call", "cat " + SKILL.replace("/ownhome/", "/nomem/"))]}})
+ok("own_home: ... and one reading another home's is void", "leak" in w.round(home))
+wp = K.forbidden(FSTATE, BRANCH, [OWN, "/items/own"], snapshot_root="/elsewhere/snap")
+ok("forbidden: a snapshot root given by the caller is forbidden too, and every own directory is allowed",
+   "/elsewhere/snap" in [r.label for r in wp.roots] and wp.allowed == [K._parts(os.path.realpath(OWN)), ("items", "own")], wp)
 
 # ---- home_env
 w = World("env")
@@ -541,11 +621,15 @@ def leaked(text, paths=(REPO,), cwd=SCR, kind="function_call", arguments=None):
     n_lk[0] += 1
     thread = "lx{}".format(n_lk[0])
     rollout(thread, [{"turn": "t1", "answer": None, "tools": [tool(kind, text if arguments is None else arguments)]}])
-    return K.leaks(lhome, [(thread, "t1")], list(paths), cwd)
+    return K.leaks(lhome, [(thread, "t1")], K.wall(list(paths)), cwd)
 
 
 want = [house + "/Code/Org/repo in t1"]
-is_("leak_scan: ../ climbing out of the scratch cwd to ~/Code/Org/repo is a leak", leaked("cat ../../../../../Code/Org/repo/src/a.py"), want)
+# The cwd was /work/scratch/x, from which five .. land on /Code/Org/repo, not the checkout: the old textual tail match flagged it all
+# the same. Resolved, the climb is a leak from where a scratch really lives (under ~/.local/state), and not from elsewhere.
+REAL_SCR = house + "/.local/state/review-work/scratch/lab1"
+is_("leak_scan: ../ climbing out of the scratch cwd to ~/Code/Org/repo is a leak", leaked("cat ../../../../../Code/Org/repo/src/a.py", cwd=REAL_SCR), want)
+is_("leak_scan: ... while the same climb from a cwd where it lands elsewhere (/Code/Org/repo) is not", leaked("cat ../../../../../Code/Org/repo/src/a.py"), [])
 is_("leak_scan: ${HOME}/ spelling is a leak", leaked("cat ${HOME}/Code/Org/repo/x"), want)
 is_("leak_scan: $HOME/ spelling is a leak", leaked("cat $HOME/Code/Org/repo/x"), want)
 is_("leak_scan: a sibling named under the HOME-relative tail is a leak", leaked("cat ~/Code/Org/repo-feat/x"), want)
@@ -722,7 +806,7 @@ def leaked_payload(payload, paths, cwd=SCR):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("".join(json.dumps(r) + "\n" for r in recs))
-    return K.leaks(lhome, [(thread, "t1")], list(paths), cwd)
+    return K.leaks(lhome, [(thread, "t1")], K.wall(list(paths)), cwd)
 
 
 ORIG = ["/work/orig/.git"]
@@ -796,8 +880,11 @@ is_("leak_scan: a template-literal cmd with a newline escape and workdir", leake
     {"type": "custom_tool_call", "name": "exec", "input": 'tools.exec_command({cmd:`ls\\ncat ../orig/a`,workdir:`/work/scratch`})'}, ORIG, cwd="/elsewhere/a/b"), ["/work/orig in t1"])
 
 # ---- parent as a path: the reviewer's round-2 probes
-is_("leak_scan: the parent spelled as a path beside the basename, in two commands, stays a leak (original: the chezmoi source)",
-    leaked("rg -n 'chezmoi' README.md; rg -n '~/.local/share' AGENTS.md", CHZ), CHZN)
+# Was a leak under the textual parent-plus-basename rule (ruling T7-l kept it as a conservative positive); both words are grep
+# patterns, which name no path read, and nothing else in the call resolves into the chezmoi source.
+is_("leak_scan: the parent and the basename as two grep patterns are not a read (original: the chezmoi source)",
+    leaked("rg -n 'chezmoi' README.md; rg -n '~/.local/share' AGENTS.md", CHZ), [])
+is_("leak_scan: ... while a cd to the parent and the basename as a path is", leaked("cd ~/.local/share && cat chezmoi/AGENTS.md", CHZ), CHZN)
 is_("leak_scan: a trailing comment naming Code and a module named like the repo is not a leak", leaked("python -m hulder.cli --help  # Code", HULDER), [])
 is_("leak_scan: a Code glob and an ls of the repo's name is not a leak", leaked("rg 'Code' -g '*.md' && ls hulder", HULDER), [])
 
@@ -808,3 +895,5 @@ is_("tool_words: a comment line of its own", leaked(fc("# the chezmoi diff\nls")
 is_("tool_words: a # inside a word is not a comment", K._logical("echo a#b; ls"), "echo a#b; ls")
 is_("tool_words: a # in quotes is not a comment", K._logical("echo '# x' \"# y\"\nls"), "echo '# x' \"# y\" ; ls")
 is_("tool_words: a command inside a comment's line is not run", leaked(fc("ls # chezmoi diff"), CHZ), [])
+is_("tool_words: a here-string is not a heredoc: the next line is a command again", leaked(fc("cat <<< x\nchezmoi diff"), CHZ), CHZN)
+is_("tool_words: a heredoc body is not run, but a path in it is read", leaked(fc("sh <<'EOF'\ncat ~/.local/share/chezmoi/AGENTS.md\nEOF"), CHZ), CHZN)

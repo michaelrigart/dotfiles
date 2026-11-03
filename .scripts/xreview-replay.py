@@ -820,17 +820,18 @@ def review(a, job, dec, clone, schema, res, turns):
 
 
 def leak_scan(a, job, turns, clone):
-    """What the turns' tool calls name that a replayed reviewer must not read (spec 7.1; process_replay.codex.forbidden): the original
-    checkout and its wt siblings, the replay's state, the snapshot, where October's answers live, the memories watcher's directory
-    and the other runs' directories under review-work. As process_replay.codex reads a rollout for it: ["<path> in <turn>"]."""
+    """What the turns' tool calls read that a replayed reviewer must not (spec 7.1; process_replay.codex.forbidden): the original
+    checkout and its wt siblings, the replay's state, the snapshot, where October's answers live, the memories watcher's directory,
+    every replay home and everything under review-work, but the arm's own checkout and what its own home gives it (skills, plugins,
+    rules, AGENTS.md; an A/A2 arm also its memories). As process_replay.codex reads a rollout for it: ["<path> in <turn>"]."""
     cx = pkg("codex")
     watch = getattr(a, "memwatch", None) or (jload(os.path.join(a.state, "cases.json"), {}) or {}).get("memwatch") or True
-    paths, walled = cx.forbidden(a.state, {"repo": job["repo"]}, [clone], memwatch=watch)
     try:
-        # an A/A2 arm may read the memories of its own replay home (they are what is under test); B's home has none
         home = job.get("home_path") or codex_home()
-        own = [os.path.join(home, "memories")] if job.get("memories") and job.get("home_path") else []
-        return cx.leaks(home, turns, paths, cwd=clone, walled=walled, exempt=own)
+        # the arms differ only by their home's memories, which an A/A2 arm reads (they are under test); B's home has none
+        bounds = cx.forbidden(a.state, {"repo": job["repo"]}, [clone] + cx.own_home(home, memories=bool(job.get("memories") and job.get("home_path"))),
+                              memwatch=watch)
+        return cx.leaks(home, turns, bounds, cwd=clone)
     except pkg("common").Failed as e:
         raise Failed("cannot scan the rollout for leaks: {}".format(e))
 

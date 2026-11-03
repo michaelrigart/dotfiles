@@ -8,8 +8,11 @@ package.diff, and the answer.md the driver writes there); the state keeps a copy
 The driving session hands the reviewer the staged brief's path or its text; the reviewer's transcript is the one whose first
 prompt holds the `Review id:` line or that path.
 
-The leak scan reads the reviewer's tool calls (Bash commands, Read/Grep/Glob paths) with codex.py's matcher, so one matcher
-rules Codex and Claude. It forbids the original checkouts, the state (real and aliased paths) and every other staged item.
+The leak scan reads the reviewer's tool calls (Bash commands, Read/Grep/Glob/Edit paths) with codex.py's matcher (codex.named), so one
+matcher rules Codex and Claude, behind codex.forbidden's wall. A final reviewer's own subtrees are its scratch, its staged item, its own
+transcripts (its file and its descendants', never the other agents' of the driver session, which are the judges') and its session's
+tool-results/. Known limit: tool-results/ is shared by every agent of the driver session, so a final reviewer may read a judge's saved
+tool output there.
 """
 import glob
 import json
@@ -211,9 +214,6 @@ def descendants(path):
     return out
 
 
-walled_leaks = K.walled_leaks
-
-
 def session_dir(path):
     """The directory Claude Code keeps a transcript's session in: <project>/<session>/ holds its subagents/ and the tool-results/ it
     saves large tool outputs to, which the agent reads back."""
@@ -222,13 +222,29 @@ def session_dir(path):
     return path[:-len(".jsonl")] if path.endswith(".jsonl") else path
 
 
-_unspell = K.unspell
+def _tool_use(item):
+    """(commands, paths, searches) of one tool_use: a Bash command; the paths it reads or writes (file_path, path, notebook_path) with a
+    Glob's pattern under its path; and the root a Grep or Glob walks (its path, else the working directory; a Glob's below that up to
+    its pattern's first glob, none for a literal pattern without a path). A Grep's pattern and glob are what it searches for, not paths."""
+    inp, name = item["input"], item.get("name")
+    commands = [inp["command"]] if isinstance(inp.get("command"), str) else []
+    paths = [inp[k] for k in ("file_path", "path", "notebook_path") if isinstance(inp.get(k), str) and inp[k]]
+    under = inp.get("path") if isinstance(inp.get("path"), str) and inp.get("path") else ""
+    searches = [under or "."] if name == "Grep" else []
+    if name == "Glob" and isinstance(inp.get("pattern"), str):
+        pattern = os.path.join(under, inp["pattern"]) if under else inp["pattern"]
+        paths.append(pattern)
+        parts = pattern.split("/")
+        first = next((k for k, x in enumerate(parts) if re.search(r"[*?\[]", x)), None)
+        if first is not None or under:         # a literal pattern without a path is one path, judged above; it walks nothing
+            literal = "/".join(parts[:first]) if first is not None else os.path.dirname(pattern)
+            searches.append(literal or ("/" if pattern.startswith("/") else "."))
+    return commands, paths, searches
 
 
-def transcript_leaks(path, forbidden, cwd, walled=None, exempt=()):
-    """The forbidden paths a transcript's tool calls name (Bash commands, Read/Grep/Glob paths), by codex.py's matcher, and, with
-    `walled` = (review-work directory, [allowed directories]), anything under review-work that is not allowed. A path inside a
-    directory of `exempt` (the reviewer's own session) is not read for the first."""
+def transcript_leaks(path, bounds, cwd):
+    """The forbidden roots of `bounds` (codex.forbidden) that a transcript's tool calls name, by codex.named; a relative path starts at
+    the record's cwd, else `cwd`."""
     found = set()
     with open(path, "rb") as f:
         for line in f:
@@ -240,24 +256,16 @@ def transcript_leaks(path, forbidden, cwd, walled=None, exempt=()):
                 continue
             content = (rec.get("message") or {}).get("content") if isinstance(rec, dict) else None
             for item in content if isinstance(content, list) else []:
-                if not (isinstance(item, dict) and item.get("type") == "tool_use" and isinstance(item.get("input"), dict)):
-                    continue
-                inp = item["input"]
-                parts = [inp[k] for k in ("command", "file_path", "path", "notebook_path") if isinstance(inp.get(k), str)]
-                if item.get("name") == "Glob" and isinstance(inp.get("pattern"), str):
-                    parts.append(inp["pattern"])
-                commands = [inp["command"]] if isinstance(inp.get("command"), str) else []
-                for name in K.named(_unspell("\n".join(parts), exempt), rec.get("cwd") or cwd, forbidden, commands):
-                    found.add(name)
-                if walled:
-                    found |= walled_leaks("\n".join(parts), rec.get("cwd") or cwd, walled[0], walled[1])
+                if isinstance(item, dict) and item.get("type") == "tool_use" and isinstance(item.get("input"), dict):
+                    commands, paths, searches = _tool_use(item)
+                    found |= K.named(bounds, rec.get("cwd") or cwd, commands, (), paths, searches=searches)
     return sorted(found)
 
 
 def leaks(a, run, branch, path):
-    """What the reviewer's transcript `path` and its subagents' name that they must not (codex.forbidden)."""
-    paths, walled = K.forbidden(a.state, branch, [C.item_dir(a.state, "final", run["label"]), run["scratch"]], getattr(a, "snapshot_root", None))
-    forbidden = K.forbidden_paths(paths, walled[1])
+    """What the reviewer's transcript `path` and its subagents' read that they must not (codex.forbidden), besides their own: the
+    scratch, the staged item, these transcripts themselves and their session's tool-results/."""
     mine = [path] + descendants(path)
-    exempt = sorted(set(session_dir(p) for p in mine))      # its own saved tool results; another session's files stay forbidden
-    return sorted(set(x for p in mine for x in transcript_leaks(p, forbidden, run["scratch"], walled, exempt)))
+    own = [C.item_dir(a.state, "final", run["label"]), run["scratch"]] + mine + sorted(set(os.path.join(session_dir(p), "tool-results") for p in mine))
+    bounds = K.forbidden(a.state, branch, own, getattr(a, "snapshot_root", None))
+    return sorted(set(x for p in mine for x in transcript_leaks(p, bounds, run["scratch"])))

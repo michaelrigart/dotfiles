@@ -1175,6 +1175,7 @@ try:
 except Failed as e:
     got = str(e)
 ok("home: with its daemon not running, run says so and starts no round", "daemon" in got and not CALLS, got)
+ok("home: ... and names the restart that also probes (start removes the probe record run needs)", "home --name nomem --start --probe" in got, got)
 P.codexhome.alive = lambda home: True
 
 # ---- the run holds the replay home's lock while it uses the daemon, so nothing reclaims or restarts it mid-run

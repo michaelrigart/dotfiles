@@ -23,35 +23,46 @@ run["reviews"] and whose `thread` it makes the run's thread:
 or one of
   {paused: str, resets_at: int}         the weekly window is at WEEKLY_PAUSE percent or more; no turn was started
   {stopped: str}                        the token stop was reached; no turn was started
-  {leak: [str], tokens, thread, turns}  a turn named a path it must not read (forbidden(): the original checkout, the state, the
-                                        other runs' directories, October's answers): the round is void
+  {leak: [str], tokens, thread, turns}  a turn read or ran something that could give it the answers (forbidden()): the round is void
 A round that fails raises RoundFailed (a Failed that carries the tokens its turns used, the thread, and `.leak`:
 what the scan of whatever turns it ran found). The caller adds `tokens` of every outcome to the run's.
 
-The leak scan is lexical. It reads a tool call's text for the original checkout's absolute path, its HOME-relative
-tail (Code/Org/repo, which also catches ~/, $HOME/, ${HOME}/ and ../../ spellings, and Code/Org/repo-<sibling>), a
-token naming the checkout beside its parent directory in one call (cd ~/Code/Org && cat repo-feat/x), and each
-path-like token with `..` resolved against the call's cwd (options glued to the path, -C../x, --git-dir=../x and
-NAME=../x, are stripped first), the parent directory counting only when spelled as a path, never as a bare tail
-(Code, .local/share). A repo-specific tool that reads the checkout without naming it (TOOLS: chezmoi for the chezmoi
-source) is a leak when run as a command: as the first word of a command, which starts at the beginning, after a
-newline, && || ; | & ( ) { ! then do else, in $( ) and backticks, and after env, sudo, command, xargs, timeout, nice
-and `mise exec --`; looking the binary up (command -v, which, type, hash) is not a run. Exec JavaScript strings may be
-"...", '...' or `...`.
-Known limits of a lexical scan, which are not chased further: a path assembled across separate commands (`cd
-~/Code/Org`, then `cat repo/x`) is caught only when a token still names the repo; `cd .. && cat x` is not followed;
-`git -c key.x=../...` and other options that glue a path to a key are not resolved; a workdir held in a variable;
-aliases, functions or variables defined earlier in the session; a command assembled from a substitution's output
-(`$(which chezmoi) diff`); a heredoc fed to a shell (`sh <<'EOF' ... EOF`, `cat <<EOF | sh`); a backtick inside a
-quoted string; a grep pattern that names a forbidden root's path (`rg -n '.claude/projects' dot_claude`) counts as a read, though
-it reads nothing there; `find -exec chezmoi`; and a long xargs option with a separate value (`--max-args 1`).
+The leak scan (spec 7.1, 13) is one matcher for every reviewer: these Codex rounds (leaks), the final reviewer and its subagents
+(final.py) and section 6's arms (xreview-replay.py leak_scan). Each caller passes its wall (forbidden(): the forbidden roots, and the
+reviewer's own allowed subtrees). A tool call is reduced to path-like tokens: the words of its shell commands (each simple command,
+looking through wrappers, sh -c, $( ), backticks and heredoc bodies), the pieces of each word between quotes, spaces and : , = { }
+(so --git-dir=x, NAME=x and a path inside an inline script count), a short option's glued value (-Cx), and its path fields (workdir,
+Read/Grep/Glob paths). A search pattern (grep's, rg's or git grep's first operand, or an -e value; a Grep's pattern) is not a path.
+Each token is resolved from the directory a left-to-right cd tracker holds (the call's workdir, else the scratch; `cd X &&` and `;`
+move it, a subshell's cd ends with it), with ~, $HOME, $XDG_STATE_HOME, $XDG_DATA_HOME and (for Codex) $CODEX_HOME expanded, then read
+two ways, ./.. collapsed first and symlinks first, each by its real path. A real path is forbidden when it lies in a root at component
+boundaries (a glob component counts as whatever it can match; the original checkout's root also covers its wt siblings <dir>-*), unless
+it lies literally in one of the reviewer's allowed subtrees. Allowed subtrees are judged after resolution, so <allowed>/../x is judged
+where it lands. A recursive search (rg, ag, ack, grep -r/-R, find, fd, tree, ls -R; the Grep and Glob tools) also reads every root
+beneath its own root, which is resolved like any path, the working directory when it names none; rg, ag, ack and grep in a pipe read
+the pipe. A repo-specific tool that reads the checkout without naming it (TOOLS: chezmoi for the chezmoi source) is a leak when run
+as a command (_runs: at a command position after a newline, && || ; | & ( ) { ! then do else, in $( ) and backticks, under env,
+sudo, command, xargs, timeout, nice and `mise exec --`; command -v, which, type and hash only look it up).
+Known limits, not chased further. Missed: an unknown variable ($DIR/x stays literal, and so does a cd to it), a path built at run
+time (string concatenation in a script, a variable set earlier), reads spread over separate calls (a cd in one call does not carry
+to the next), aliases or functions defined earlier, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components,
+a walk by any other command (cp -r, rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working
+directory; it is taken to read the pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time
+($(which chezmoi) diff), a heredoc fed to a shell (sh <<EOF), a backtick inside a quoted string, find -exec, and a long xargs option
+with a separate value (--max-args 1). Counted though nothing is read: text that merely names a root (echo, a heredoc written to a
+file, a prose argument), a search pattern inside a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep
+option that takes a value but is missing from GREPS (its value is taken for the pattern, the pattern for a path), and a depth-limited
+walk above a root (find ~ -maxdepth 1, tree -L 1 ~: the limit is not read). A pipeline's cd is kept for what follows it (a subshell
+ends only at parentheses).
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
 rollout reads of a round, and drops an inherited XREVIEW_RPC_SOCK or XREVIEW_RPC_STDIO, which would aim a call
 elsewhere. The environment is process-wide: rounds on one home may run together, a second home may not.
 """
 import calendar
+import collections
 import contextlib
+import fnmatch
 import glob
 import json
 import os
@@ -291,13 +302,12 @@ def weekly(home, live=None):
 
 
 # ------------------------------------------------------------------ the leak scan
-_TOKEN = re.compile(r"[^\s\"'`;|&<>()\\]+")
-_NOT_WORD = r"(?![A-Za-z0-9_])"
+# A tool call is reduced to the path-like tokens it names; each is resolved the way the system would (from the call's directory,
+# ~ and known variables expanded, ./.. collapsed, symlinks followed) and judged by containment in a forbidden root, component by
+# component, unless it resolves inside one of the reviewer's allowed subtrees. See the module docstring.
 
-
-# Tools that read an original checkout without naming it, by the work dir they read (HOME-relative): the
-# command words that run them, and other spellings of the checkout's path.
-TOOLS = {".local/share/chezmoi": {"words": ("chezmoi",), "spellings": ("$XDG_DATA_HOME/chezmoi", "${XDG_DATA_HOME}/chezmoi")}}
+# Checkouts a tool reads without naming them: a checkout named <key> directly in the XDG data home is read by running these words.
+TOOLS = {"chezmoi": ("chezmoi",)}
 SHELLS = ("sh", "bash", "zsh", "dash")
 KEYWORDS = ("if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done", "esac")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
@@ -305,60 +315,178 @@ WITH_ARG = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-T",
             "xargs": ("-I", "-J", "-L", "-n", "-P", "-s", "-d", "-E", "-a"), "timeout": ("-s", "-k"), "nice": ("-n",),
             "stdbuf": (), "ionice": ("-c", "-n", "-p")}
 WRAPPERS = ("exec", "time", "nohup", "stdbuf", "ionice", "setsid", "builtin", "noglob", "nocorrect")
+SEPARATORS = ("&&", "||", ";", "|", "|&", ";;", "&", "(", ")", "$")
+# Searches whose first operand is a pattern, not a path: the short option letters and the long options that take a separate value.
+# rg, ag and ack are recursive; grep only with -r, -R or -d recurse; git grep searches its repository, not a root it is given.
+GREPS = {"grep": ("efmABCDd", ("regexp", "file", "max-count", "after-context", "before-context", "context", "devices", "directories",
+                               "include", "exclude", "exclude-dir", "exclude-from", "label", "binary-files")),
+         "rg": ("efgtTmABCjMErd", ("regexp", "file", "glob", "iglob", "type", "type-not", "type-add", "type-clear", "max-count",
+                                   "after-context", "before-context", "context", "threads", "max-columns", "encoding", "replace",
+                                   "max-depth", "max-filesize", "path-separator", "pre", "pre-glob", "sort", "sortr", "colors",
+                                   "context-separator", "field-context-separator", "field-match-separator", "ignore-file", "engine",
+                                   "dfa-size-limit", "regex-size-limit", "hyperlink-format")),
+         "git grep": ("efABCm", ("max-depth", "threads", "context", "after-context", "before-context", "max-count")),
+         "ag": ("ABCGgm", ("after", "before", "context", "file-search-regex", "max-count", "ignore", "ignore-dir", "depth", "path-to-ignore")),
+         "ack": ("ABCgm", ("after-context", "before-context", "context", "max-count", "ignore-dir", "ignore-file", "type", "match"))}
+GREPS["egrep"] = GREPS["fgrep"] = GREPS["grep"]
+# Other recursive walks, as GREPS: fd (its first operand is a pattern; -x/-X run a command), tree, ls (only with -R).
+WALKS = {"fd": ("edtESxXcjo", ("extension", "type", "exclude", "max-depth", "min-depth", "exact-depth", "size", "color", "threads",
+                               "changed-within", "changed-before", "owner", "max-results", "path-separator", "ignore-file",
+                               "base-directory", "search-path", "batch-size", "exec", "exec-batch")),
+         "tree": ("LPIoHT", ("filelimit", "charset", "sort", "timefmt")),
+         "ls": ("", ("ignore", "hide", "width", "tabsize", "format", "sort", "color", "time", "time-style", "quoting-style",
+                     "indicator-style", "block-size"))}
+FIND_GLOBAL = ("-H", "-L", "-P", "-E", "-X", "-s", "-x", "-d", "-O0", "-O1", "-O2", "-O3")
+GIT_WITH_ARG = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix")
+# What a replayed reviewer must not read, besides the original checkout: where October's answers live (spec 7.1).
+ANSWERS = ("~/.codex/sessions", "~/.codex/archived_sessions", "~/.codex/memories", "~/.claude/projects")
+SNAPSHOT = "~/Code/.replay/snapshot"
+OWN_HOME = ("skills", "plugins", "rules", "AGENTS.md")     # what a replay home gives its reviewer to read (finding A)
+PATH_MAX = 4096
+MAX_DEPTH = 4           # nested sh -c, $( ) and heredocs followed
+MAX_CWDS = 4            # directories one cd may lead to (a variable with several values)
+MAX_EXPANSIONS = 16
+_PIECE = re.compile(r"[^\s\"'`;|&<>()\\:,={}]+")
+_GLOB = re.compile(r"[*?\[]")
+_SUBST = re.compile(r"\$\(([^()]*)\)")
+_VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+Root = collections.namedtuple("Root", "label parts siblings words")
+Wall = collections.namedtuple("Wall", "roots allowed")
 
 
-def forbidden_paths(paths, allowed=()):
-    """[(path, [regex naming it], [regex naming its parent directory as a path], regex naming its last component)]
-    for the original checkouts: a git directory stands for its work tree. Under $HOME a path is also matched by its
-    HOME-relative tail wherever a command spells the prefix (~/, $HOME/, ${HOME}/, ../../, /Users/x/). A parent
-    directory counts only when spelled as a path (absolute, or ~/, $HOME/, ${HOME}/ + its tail), never as a bare
-    tail (Code, .local/share), and not at all when it is $HOME or /, or contains one of `allowed` (the run's own directories:
-    the parent of a forbidden path under $XDG_STATE_HOME also holds the run's scratch, and a word of the forbidden path beside the
-    scratch's path is a search for it, not a read)."""
-    house = os.path.expanduser("~").rstrip("/")
-    mine = [x.rstrip("/") for a in allowed for x in (os.path.abspath(a), os.path.realpath(a))]
-    out, seen = [], set()
-    for path in paths:
-        if not (isinstance(path, str) and path):
-            continue
-        path = path.rstrip("/")
-        if path.endswith("/.git"):
-            path = path[:-len("/.git")]
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        names = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(path) + _NOT_WORD)]
-        parent = os.path.dirname(path)
-        parents = []
-        holds = any(x == parent or x.startswith(parent + "/") for x in mine)
-        if parent not in ("", "/", house) and not holds:
-            parents.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(parent) + _NOT_WORD))
-        if house and path.startswith(house + "/"):
-            tail = path[len(house) + 1:]
-            # a tail of one component is a bare word (foo for ~/foo): it names the checkout only behind ~/ or $HOME/
-            lead = r"(?<![A-Za-z0-9_.-])" if "/" in tail else r"(?:~|\$HOME|\$\{HOME\})/"
-            names.append(re.compile(lead + re.escape(tail) + _NOT_WORD))
-            if os.path.dirname(tail) and not holds:
-                parents.append(re.compile(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(os.path.dirname(tail)) + _NOT_WORD))
-            for spelling in TOOLS.get(tail, {}).get("spellings", ()):
-                names.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(spelling) + _NOT_WORD))
-        state_home = L.state_home().rstrip("/")
-        if state_home and path.startswith(state_home + "/"):
-            for var in ("$XDG_STATE_HOME", "${XDG_STATE_HOME}"):
-                names.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(var + path[len(state_home):]) + _NOT_WORD))
-        out.append((path, names, parents, re.compile(r"(?<![A-Za-z0-9_./-])" + re.escape(os.path.basename(path)) + _NOT_WORD)))
-    return out
+def _parts(path):
+    return tuple(x for x in path.split("/") if x)
+
+
+def _real(path):
+    """An absolute path with its symlinks resolved as far as it exists; None for a string the system cannot take as a path."""
+    if "\0" in path or len(path) > PATH_MAX:
+        return None
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return None
+
+
+def _values(extra=None):
+    """{variable: [values]} a path may spell: $HOME, $XDG_STATE_HOME and $XDG_DATA_HOME (as the harness has them, and their
+    defaults under $HOME, since a reviewer's environment may differ), and `extra` ($CODEX_HOME for a Codex reviewer)."""
+    house = os.path.expanduser("~")
+    out = {"HOME": [house], "XDG_STATE_HOME": [L.state_home(), os.path.join(house, ".local", "state")],
+           "XDG_DATA_HOME": [os.environ.get("XDG_DATA_HOME") or "", os.path.join(house, ".local", "share")]}
+    out.update(extra or {})
+    return dict((k, list(dict.fromkeys(v for v in vs if v))) for k, vs in out.items())
 
 
 def _tool_words(path):
-    house = os.path.expanduser("~").rstrip("/")
-    return TOOLS.get(path[len(house) + 1:] if house and path.startswith(house + "/") else None, {}).get("words", ())
+    """The TOOLS words that read the checkout at `path`: a chezmoi source in ~/.local/share or $XDG_DATA_HOME."""
+    if any(os.path.dirname(path) == os.path.abspath(d) for d in _values()["XDG_DATA_HOME"]):
+        return TOOLS.get(os.path.basename(path), ())
+    return ()
 
 
-def _logical(command):
+def wall(originals=(), roots=(), allowed=()):
+    """The wall of one reviewer, held as real paths. `originals` are checkouts (a git directory stands for its work tree): a sibling
+    <dir>-<anything> beside one is a `wt` worktree of it, and running one of its TOOLS words reads it. `roots` are the other forbidden
+    directories, `allowed` the reviewer's own subtrees. A root is reported by its absolute path as given."""
+    out, seen = [], set()
+    for path, siblings in [(x, True) for x in originals] + [(x, False) for x in roots]:
+        if not (isinstance(path, str) and path):
+            continue
+        label = os.path.abspath(os.path.expanduser(path))
+        if siblings and os.path.basename(label) == ".git":
+            label = os.path.dirname(label)
+        parts = _parts(_real(label) or label)
+        if parts and parts not in seen:
+            seen.add(parts)
+            out.append(Root(label, parts, siblings, _tool_words(label) if siblings else ()))
+    mine = []
+    for path in allowed:
+        parts = _parts(_real(os.path.abspath(os.path.expanduser(path))) or "") if isinstance(path, str) and path else ()
+        if parts and parts not in mine:
+            mine.append(parts)
+    return Wall(out, mine)
+
+
+def own_home(home, memories=False):
+    """The parts of a reviewer's own replay home it may read: what the home configures it with (OWN_HOME) and, for a §6 A/A2 arm, the
+    memories under test (F-3). The rest of the home (sessions, config, auth) stays behind the cxh root."""
+    return [os.path.join(home, x) for x in OWN_HOME + (("memories",) if memories else ())]
+
+
+def forbidden(state, branch, allowed, snapshot_root=None, memwatch=None):
+    """The wall of a replayed reviewer (a Codex round, a §6 arm, or the final reviewer and its subagents; spec 7.1, 13), for leaks()
+    and final.transcript_leaks(). Its roots: the original checkout (branch["repo"], with its wt siblings and the harness worktrees
+    inside it), its objects and view; the state directory (by its real path, which its aliases resolve to); $XDG_STATE_HOME/
+    review-work (every scratch, the staged items and the state's alias links); the snapshot root (SNAPSHOT, and `snapshot_root` when
+    given); October's answers (ANSWERS); $XDG_STATE_HOME/xreview; $XDG_STATE_HOME/cxh (the replay homes, whose rollouts are other runs'
+    work); and for a §6 run (`memwatch`: the watcher's directory, or True for the usual one) $XDG_STATE_HOME/process-replay/memwatch.
+    `allowed` are the reviewer's own subtrees: its scratch, and for a Codex reviewer own_home(), for a final reviewer its staged item,
+    its own transcripts and its session's tool-results/."""
+    state_home = L.state_home()
+    roots = [p for p in (branch.get("objects"), branch.get("view"), state) if isinstance(p, str) and p]
+    roots += [os.path.join(state_home, "review-work"), SNAPSHOT] + ([snapshot_root] if snapshot_root else [])
+    roots += list(ANSWERS) + [os.path.join(state_home, "xreview"), os.path.join(state_home, "cxh")]
+    if memwatch:
+        roots.append(os.path.join(state_home, "process-replay", "memwatch"))
+        if isinstance(memwatch, str):
+            roots.append(memwatch)
+    return wall([branch.get("repo")], roots, allowed)
+
+
+def _can(name, want):
+    """Whether a path component can name `want`: the same name, or a glob that matches it."""
+    return name == want or (_GLOB.search(name) is not None and fnmatch.fnmatchcase(want, name))
+
+
+def _sibling(name, want):
+    """Whether a component names a wt sibling <want>-<branch>, literally or by a glob that can (approximately: it matches <want>-x, or
+    its text before the first glob character starts <want>-)."""
+    if name.startswith(want + "-"):
+        return True
+    return _GLOB.search(name) is not None and (fnmatch.fnmatchcase(want + "-x", name) or _GLOB.split(name, 1)[0].startswith(want + "-"))
+
+
+def _within(parts, root):
+    n = len(root.parts)
+    if len(parts) < n or not all(_can(p, r) for p, r in zip(parts[:n - 1], root.parts)):
+        return False
+    return _can(parts[n - 1], root.parts[-1]) or (root.siblings and _sibling(parts[n - 1], root.parts[-1]))
+
+
+def judge(parts, bounds):
+    """The label of the forbidden root of `bounds` that a real path (its components) lies in, or None when it lies in none or inside an
+    allowed subtree. An allowed subtree holds a path only literally: a glob component in it may name a neighbour."""
+    if any(parts[:len(a)] == a for a in bounds.allowed):
+        return None
+    return next((root.label for root in bounds.roots if _within(parts, root)), None)
+
+
+def _expand(token, values):
+    """`token` with a leading ~ and the variables of `values` expanded, one result per value; an unknown variable stays as written."""
+    todo, done = [os.path.expanduser(token) if token.startswith("~") else token], []
+    while todo and len(done) + len(todo) <= MAX_EXPANSIONS:
+        t = todo.pop()
+        m = next((m for m in _VAR.finditer(t) if (m.group(1) or m.group(2)) in values), None)
+        if m is None:
+            done.append(t)
+        else:
+            todo += [t[:m.start()] + v + t[m.end():] for v in values[m.group(1) or m.group(2)]]
+    return done + todo
+
+
+def _pieces(word):
+    """The path-like pieces of a word: the word, what lies between spaces, quotes, shell punctuation and : , = { }, and a short option's
+    glued value (-C../x)."""
+    tokens = _PIECE.findall(word)
+    return list(dict.fromkeys([word] + tokens + [t[2:] for t in tokens if re.match(r"-[A-Za-z].", t)]))
+
+
+def _logical(command, bodies=None):
     """`command` as one line: unquoted newlines become `;` (a backslash-newline is a continuation), an unquoted
-    comment (a # that starts a word, to the end of its line) and heredoc bodies are dropped, and a backtick
-    substitution becomes ( ... ), so every command sits at a command position."""
+    comment (a # that starts a word, to the end of its line) and heredoc bodies are dropped (appended to `bodies` when it is a list),
+    and a backtick substitution becomes ( ... ), so every command sits at a command position. A here-string (<<<) is not a heredoc."""
     out, quote, i, backtick = [], None, 0, False
     n = len(command)
     while i < n:
@@ -389,16 +517,28 @@ def _logical(command):
         elif ch == "\n":
             line = "".join(out)
             out.append(" ; ")
-            m = re.search(r"<<-?\s*(['\"]?)([A-Za-z0-9_]+)\1", line.rsplit(" ; ", 1)[-1])
+            m = re.search(r"(?<!<)<<-?(?!<)\s*(['\"]?)([A-Za-z0-9_]+)\1", line.rsplit(" ; ", 1)[-1])
             if m:
                 end = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.M)
                 found = end.search(command, i + 1)
+                if isinstance(bodies, list):
+                    bodies.append(command[i + 1:found.start() if found else n])
                 i = found.end() if found else n
                 continue
         else:
             out.append(ch)
         i += 1
     return "".join(out)
+
+
+def _tokens(line):
+    """The shell words and operators of a _logical() line, quotes removed."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return line.split()
 
 
 def _skip(words, base):
@@ -410,9 +550,9 @@ def _skip(words, base):
 
 
 def _effective(words):
-    """The words of the command a simple command ends up running, looking through shell keywords, assignments and
-    wrappers (env, sudo, command, xargs, timeout, nice, mise exec --, ...); [] for `command -v/-V`, which only finds a
-    binary (which, type and hash are commands of their own, so what they look up is an argument)."""
+    """The words of the command a simple command ends up running (a suffix of `words`), looking through shell keywords, assignments
+    and wrappers (env, sudo, command, xargs, timeout, nice, mise exec --, ...); [] for `command -v/-V`, which only finds a binary
+    (which, type and hash are commands of their own, so what they look up is an argument)."""
     while words:
         base = os.path.basename(words[0])
         if words[0] in KEYWORDS or ASSIGNMENT.match(words[0]):
@@ -453,16 +593,9 @@ def _runs(command, words):
         command = " ".join(shlex.quote(x) for x in argv)
     if not isinstance(command, str):
         return False
-    command = _logical(command)
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        tokens = command.split()
     simple, current = [], []
-    for tok in tokens:
-        if tok in ("&&", "||", ";", "|", ";;", "&", "(", ")", "$"):
+    for tok in _tokens(_logical(command)):
+        if tok in SEPARATORS:
             simple.append(current)
             current = []
         else:
@@ -477,44 +610,236 @@ def _runs(command, words):
                 if re.match(r"-[a-z]*c[a-z]*\Z", eff[j]) and _runs(eff[j + 1], words):
                     return True
         for tok in cmd:                            # "$(chezmoi diff)" inside a quoted word
-            for inner in re.findall(r"\$\(([^()]*)\)", tok):
+            for inner in _SUBST.findall(tok):
                 if _runs(inner, words):
                     return True
     return False
 
 
-def named(text, cwd, forbidden, commands=()):
-    """The forbidden paths one tool call's text names (see the module docstring for what that covers). `commands`
-    are the call's shell commands, read for the tools of TOOLS."""
-    house = os.path.expanduser("~").rstrip("/")
-    hit = set()
-    for path, names, parents, base in forbidden:
-        if any(rx.search(text) for rx in names) or (any(rx.search(text) for rx in parents) and base.search(text)):
-            hit.add(path)
-        words = _tool_words(path)
-        if words and any(_runs(c, words) for c in commands):
-            hit.add(path)
-    resolved = []
-    for token in _TOKEN.findall(text):
-        if ".." not in token:
-            continue
-        t = re.sub(r"\A(?:--?[A-Za-z][A-Za-z0-9-]*=|-[A-Za-z]|[A-Za-z_][A-Za-z0-9_]*=)", "", token)       # --git-dir=.., -C.., GIT_DIR=..
-        t = t.replace("${HOME}", house).replace("$HOME", house)
-        if t == "~" or t.startswith("~/"):
-            t = house + t[1:]
-        if not os.path.isabs(t):
-            if not cwd:
+def _parse(eff, short, longs, i=1):
+    """(operand indices, options) of a command line from eff[i]: options as (name, value, index of the word holding the value); a
+    letter of `short` or a name of `longs` takes a value, glued (-C3, --context=3) or the next word; `--` ends the options."""
+    operands, options = [], []
+    while i < len(eff):
+        w = eff[i]
+        if w == "--":
+            operands += range(i + 1, len(eff))
+            break
+        if w.startswith("--"):
+            name, eq, value = w[2:].partition("=")
+            at = i if eq else None
+            if not eq and name in longs and i + 1 < len(eff):
+                value, at, i = eff[i + 1], i + 1, i + 1
+            options.append((name, value, at))
+        elif w.startswith("-") and w != "-":
+            for j in range(1, len(w)):
+                if w[j] not in short:
+                    options.append((w[j], None, None))
+                    continue
+                value, at = w[j + 1:], i
+                if not value and i + 1 < len(eff):
+                    value, at, i = eff[i + 1], i + 1, i + 1
+                options.append((w[j], value, at))
+                break
+        else:
+            operands.append(i)
+        i += 1
+    return operands, options
+
+
+def _grep(eff):
+    """(pattern indices, path operand indices, recursive) of a search in `eff` (a simple command's effective words) that takes a
+    pattern: grep, rg, ag, ack or git grep; None for any other command. Its first operand is the pattern, unless -e/--regexp give the
+    patterns or -f/--file a file of them (rg --files takes none): then every operand is a path."""
+    if not eff:
+        return None
+    base, i = os.path.basename(eff[0]), 1
+    if base == "git":
+        while i < len(eff) and eff[i].startswith("-"):
+            i += 2 if eff[i] in GIT_WITH_ARG else 1
+        if i >= len(eff) or eff[i] != "grep":
+            return None
+        base, i = "git grep", i + 1
+    if base not in GREPS:
+        return None
+    short, longs = GREPS[base]
+    operands, options = _parse(eff, short, longs + ("regexp", "file"), i)
+    patterns = set(at for name, _v, at in options if name in ("e", "regexp") and at is not None)
+    if operands and not patterns and not any(name in ("f", "file", "files", "type-list") for name, _v, _a in options):
+        patterns.add(operands.pop(0))
+    recursive = base in ("rg", "ag", "ack") or any(
+        name in ("r", "R", "recursive", "dereference-recursive") or (name in ("d", "directories") and value == "recurse")
+        for name, value, _a in options if base != "git grep")
+    return patterns, operands, recursive
+
+
+def _patterns(eff):
+    """The indices in `eff` of a search's patterns, which name no path read (_grep)."""
+    found = _grep(eff)
+    return found[0] if found else set()
+
+
+def _searched(eff, piped):
+    """The roots a recursive search in `eff` walks, as words ("." for the working directory): rg, ag, ack, grep -r/-R, find, fd, tree and
+    ls -R. One that names no root walks the working directory, but rg, ag, ack and grep in a pipe read their input instead."""
+    found = _grep(eff)
+    if found:
+        _patterns_at, operands, recursive = found
+        return ([eff[i] for i in operands] or ([] if piped else ["."])) if recursive else []
+    base = os.path.basename(eff[0]) if eff else ""
+    if base == "find":
+        i = 1
+        while i < len(eff) and eff[i] in FIND_GLOBAL:
+            i += 1
+        roots = []
+        while i < len(eff) and not (eff[i].startswith("-") or eff[i] in ("!", "(")):
+            roots.append(eff[i])
+            i += 1
+        return roots or ["."]
+    if base not in WALKS:
+        return []
+    words = eff
+    if base == "fd":
+        cut = [k for k, w in enumerate(eff) if k and w in ("-x", "-X", "--exec", "--exec-batch")]
+        words = eff[:cut[0] + 2] if cut else eff
+    operands, options = _parse(words, *WALKS[base])
+    if base == "ls" and not any(name in ("R", "recursive") for name, _v, _a in options):
+        return []
+    roots = [words[i] for i in (operands[1:] if base == "fd" else operands)]
+    roots += [value for name, value, _a in options if name in ("search-path", "base-directory") and value]
+    return roots or ["."]
+
+
+class _Scan(object):
+    """What one tool call names behind `bounds` (a Wall): the labels of the roots its paths fall in, in `found`."""
+
+    def __init__(self, bounds, values):
+        self.bounds, self.values, self.found, self._seen = bounds, values, set(), {}
+
+    def resolved(self, token, cwds):
+        """The real paths (as components) a path-like token names from each directory of `cwds`: expanded, joined, then read both ways,
+        ./.. collapsed first (as cd and most tools spell it) and symlinks first (as the system opens it)."""
+        out = set()
+        if not token or "\0" in token or len(token) > PATH_MAX:
+            return out
+        for t in _expand(token, self.values):
+            for joined in ([t] if t.startswith("/") else [c + "/" + t for c in cwds]):
+                for p in (os.path.normpath(joined), joined):
+                    if p not in self._seen:
+                        real = _real(p)
+                        self._seen[p] = _parts(real) if real else None
+                    if self._seen[p] is not None:
+                        out.add(self._seen[p])
+        return out
+
+    def path(self, token, cwds):
+        for parts in self.resolved(token, cwds):
+            label = judge(parts, self.bounds)
+            if label:
+                self.found.add(label)
+
+    def search(self, token, cwds):
+        """A recursive search's root: judged as a path, and every forbidden root beneath it (one it is an ancestor of) counts as read."""
+        self.path(token, cwds)
+        for parts in self.resolved(token, cwds):
+            for root in self.bounds.roots:
+                if len(parts) < len(root.parts) and all(_can(p, r) for p, r in zip(parts, root.parts)):
+                    self.found.add(root.label)
+
+    def dirs(self, target, cwds):
+        """The directories `cd target` leads to from `cwds` (logical: ./.. collapsed as cd does)."""
+        out = []
+        for t in _expand(target, self.values):
+            out += [os.path.normpath(j) for j in ([t] if t.startswith("/") else [c + "/" + t for c in cwds])]
+        return list(dict.fromkeys(out))[:MAX_CWDS]
+
+    def text(self, text, cwds):
+        """Free text (a call's other arguments, the JavaScript around its commands): every piece of every word is a path-like token."""
+        for word in text.split():
+            for piece in _pieces(word):
+                self.path(piece, cwds)
+
+    def word(self, word, cwds, depth):
+        for inner in _SUBST.findall(word):         # "$(cat x)" inside a quoted word is a command of its own
+            self.script(inner, cwds, depth + 1)
+        for piece in _pieces(_SUBST.sub(" ", word)):
+            self.path(piece, cwds)
+
+    def simple(self, words, cwds, depth, piped=False):
+        """One simple command (`piped`: it reads a pipe): every word but a search pattern, the script of sh -c, and the roots of a
+        recursive search, from `cwds`; the directories it leaves the cd tracker in."""
+        eff = _effective(words)
+        at = len(words) - len(eff)
+        skip = set(at + i for i in _patterns(eff))
+        base = os.path.basename(eff[0]) if eff else ""
+        if base in SHELLS:
+            for j in range(1, len(eff) - 1):
+                if re.match(r"-[a-z]*c[a-z]*\Z", eff[j]):
+                    self.script(eff[j + 1], cwds, depth + 1)
+                    skip.add(at + j + 1)
+                    break
+        for i, w in enumerate(words):
+            if i not in skip:
+                self.word(w, cwds, depth)
+        for root in _searched(eff, piped):
+            self.search(root, cwds)
+        if base not in ("cd", "pushd"):
+            return cwds
+        args = [w for w in eff[1:] if w == "-" or not w.startswith("-")]
+        if not args:
+            return self.dirs("~", cwds)
+        return cwds if args[0] == "-" else (self.dirs(args[0], cwds) or cwds)
+
+    def script(self, command, cwds, depth=0):
+        """A shell command (a string, or an argv list): its simple commands left to right, each from the directories a cd tracker holds
+        (cd X &&, ;, ||, |, newlines; a subshell's cd ends with it), then its heredoc bodies from every directory it visited."""
+        if depth > MAX_DEPTH:
+            return
+        if isinstance(command, (list, tuple)):
+            self.simple([str(x) for x in command], cwds, depth)
+            return
+        if not isinstance(command, str):
+            return
+        bodies, stack, simple, before = [], [], [], None
+        cur = list(cwds)
+        visited = [tuple(cur)]
+        for tok in _tokens(_logical(command, bodies)) + [";"]:
+            if tok not in SEPARATORS:
+                simple.append(tok)
                 continue
-            t = os.path.join(cwd, t)
-        t = os.path.normpath(t)
-        resolved.append(t)
-        for path, names, _parents, _base in forbidden:
-            if names[0].search(t):
-                hit.add(path)
-    for path, _names, parents, base in forbidden:
-        if base.search(text) and any(parents[:1] and parents[0].search(t) for t in resolved):
-            hit.add(path)
-    return hit
+            if simple:
+                cur = self.simple(simple, cur, depth, piped=before in ("|", "|&"))
+                visited.append(tuple(cur))
+                simple = []
+            before = tok
+            if tok == "(":
+                stack.append(cur)
+            elif tok == ")" and stack:
+                cur = stack.pop()
+        for body in bodies:
+            for where in dict.fromkeys(visited):
+                self.script(body, list(where), depth + 1)
+
+
+def named(bounds, cwd, commands=(), texts=(), paths=(), values=None, searches=()):
+    """The labels of the forbidden roots of `bounds` that one tool call names: `commands` are its shell commands (strings or argv lists),
+    `texts` its other free text, `paths` its path fields, `searches` the roots of the recursive searches it makes (_Scan.search), relative
+    ones starting at `cwd` (absolute, else none is resolved); `values` adds variables (_values). Running a root's TOOLS word as a
+    command (_runs) counts as reading that root."""
+    scan = _Scan(bounds, _values(values))
+    cwds = [cwd] if isinstance(cwd, str) and cwd.startswith("/") else []
+    for command in commands:
+        scan.script(command, cwds)
+        for root in bounds.roots:
+            if root.words and _runs(command, root.words):
+                scan.found.add(root.label)
+    for text in texts:
+        scan.text(text, cwds)
+    for path in paths:
+        scan.path(path, cwds)
+    for root in searches:
+        scan.search(root, cwds)
+    return scan.found
 
 
 _STRING = r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)"""
@@ -535,70 +860,65 @@ def _from(cwd, given):
     return given if os.path.isabs(given) or not cwd else os.path.join(cwd, given)
 
 
+def _strings(value):
+    """Every string inside a JSON value."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
 def _calls(p, cwd):
-    """[(text, workdir, [shell commands])] of one tool call payload: its text as it is searched, the directory its
-    relative paths start from (the call's own workdir when it names one, else `cwd`) and its commands. A function_call
-    carries JSON arguments {cmd, workdir}; a local_shell_call an action {command, working_directory}; a Codex `exec`
-    custom_tool_call JavaScript, tools.exec_command({cmd: "...", workdir: "..."}), perhaps several in one input."""
+    """[(workdir, commands, texts, paths)] of one Codex tool-call payload, as named() takes them: the directory its relative paths start
+    from (the call's own workdir when it names one, which is a path it names too, else `cwd`), its shell commands, its other text. A
+    function_call carries JSON arguments {cmd, workdir, ...} (arguments that are not JSON are read as a command); a local_shell_call an
+    action {command, working_directory}; a custom_tool_call free text (a patch), or Codex `exec` JavaScript calling
+    tools.exec_command({cmd: "...", workdir: "..."}), perhaps several times, each with its own workdir."""
     kind = p.get("type")
-    if kind == "custom_tool_call" and isinstance(p.get("input"), str):
-        parts = re.split(r"(?=exec_command\s*\()", p["input"])
+    if kind == "custom_tool_call":
+        if not isinstance(p.get("input"), str):
+            return [(cwd, [], _strings(p.get("input")), [])]
         out = []
-        for part in parts:
-            wd, cmds = cwd, [_js_string(m) for m in _CMD.findall(part)]
+        for part in re.split(r"(?=exec_command\s*\()", p["input"]):
+            wd, given = cwd, []
             m = _WORKDIR.search(part)
             if m and _js_string(m.group(1)):
                 wd = _from(cwd, _js_string(m.group(1)))
-            out.append((part, wd, cmds))
+                given = [wd]
+            out.append((wd, [_js_string(x) for x in _CMD.findall(part)], [_CMD.sub(" ", _WORKDIR.sub(" ", part))], given))
         return out
-    wd, cmds = cwd, []
-    if kind == "function_call":
-        try:
-            doc = json.loads(p.get("arguments"))
-        except (TypeError, ValueError):
-            doc = None
-        if isinstance(doc, dict):
-            given = doc.get("workdir") or doc.get("cwd")
-            if isinstance(given, str) and given:
-                wd = _from(cwd, given)
-            cmds = [doc[k] for k in ("cmd", "command") if isinstance(doc.get(k), (str, list))]
-    elif kind == "local_shell_call" and isinstance(p.get("action"), dict):
-        given = p["action"].get("working_directory")
-        if isinstance(given, str) and given:
-            wd = _from(cwd, given)
-        if isinstance(p["action"].get("command"), (str, list)):
-            cmds = [p["action"]["command"]]
-    return [(json.dumps(p, ensure_ascii=False), wd, cmds)]
+    if kind == "local_shell_call":
+        act = p.get("action") if isinstance(p.get("action"), dict) else {}
+        given = act.get("working_directory") if isinstance(act.get("working_directory"), str) and act.get("working_directory") else None
+        wd = _from(cwd, given) if given else cwd
+        rest = dict((k, v) for k, v in act.items() if k not in ("type", "command", "working_directory"))
+        return [(wd, [act["command"]] if isinstance(act.get("command"), (str, list)) else [], _strings(rest), [wd] if given else [])]
+    args = p.get("arguments")
+    try:
+        doc = json.loads(args) if isinstance(args, str) else args
+    except ValueError:
+        return [(cwd, [args], [], [])]
+    if not isinstance(doc, dict):
+        return [(cwd, [], _strings(doc), [])]
+    given = doc.get("workdir") or doc.get("cwd")
+    given = given if isinstance(given, str) and given else None
+    wd = _from(cwd, given) if given else cwd
+    rest = dict((k, v) for k, v in doc.items() if k not in ("cmd", "command", "workdir", "cwd"))
+    return [(wd, [doc[k] for k in ("cmd", "command") if isinstance(doc.get(k), (str, list))], _strings(rest), [wd] if given else [])]
 
 
-def unspell(text, exempt):
-    """`text` without the directories of `exempt`, in the spellings a call uses (absolute, ~/, $HOME/, ${HOME}/, $XDG_STATE_HOME/,
-    ${XDG_STATE_HOME}/): a path inside one is not read for a forbidden root."""
-    house, state_home = os.path.expanduser("~").rstrip("/"), L.state_home().rstrip("/")
-    for d in exempt:
-        d = d.rstrip("/")
-        spellings = [d]
-        for root, names in ((house, ("~", "$HOME", "${HOME}")), (state_home, ("$XDG_STATE_HOME", "${XDG_STATE_HOME}"))):
-            if root and d.startswith(root + "/"):
-                spellings += [x + d[len(root):] for x in names]
-        for spelling in spellings:
-            text = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(spelling) + r"(?![A-Za-z0-9_.-])", "<own>", text)
-    return text
-
-
-def leaks(home, turns, paths, cwd=None, walled=None, exempt=()):
-    """The tool calls of `turns` ([(thread, turn)]) in `home`'s rollouts that name one of `paths` (forbidden(): the original
-    checkouts, a wt sibling <path>-<branch> continuing the name, the state, the snapshot and where October's answers live):
-    ["<path> in <turn>"]. With `walled` = (the review-work directory, [allowed directories]), also any path under review-work that
-    is not inside an allowed directory (walled_leaks). A path inside a directory of `exempt` is not read for `paths` (unspell). `cwd`, the scratch repository,
-    is where a relative path of a call without its own workdir starts. Only the reviewer's own calls
-    (custom_tool_call, function_call, local_shell_call) are read, never a user or developer message, which may carry
-    the paths legitimately. A scanned turn whose rollout is missing, unreadable or does not hold the turn counts as a
-    leak ("rollout unreadable in <turn>"): it cannot be shown clean."""
+def leaks(home, turns, bounds, cwd=None):
+    """The tool calls of `turns` ([(thread, turn)]) in `home`'s rollouts that name a path `bounds` forbids (forbidden(), or wall()):
+    ["<root> in <turn>"]. `cwd`, the scratch repository, is where a relative path of a call without its own workdir starts, and
+    $CODEX_HOME is `home`. Only the reviewer's own calls (custom_tool_call, function_call, local_shell_call) are read, never a user or
+    developer message, which may carry the paths legitimately. A scanned turn whose rollout is missing, unreadable or does not hold the
+    turn counts as a leak ("rollout unreadable in <turn>"): it cannot be shown clean."""
     wanted = {}
     for thread, turn in turns:
         wanted.setdefault(thread, set()).add(turn)
-    forbidden = forbidden_paths(paths, list(walled[1] if walled else ()) + list(exempt))
     found = set()
     with homed(home):
         for thread, ours in wanted.items():
@@ -625,11 +945,8 @@ def leaks(home, turns, paths, cwd=None, walled=None, exempt=()):
                 elif rec.get("type") == "event_msg" and p.get("type") == "task_complete":
                     inside = False
                 elif inside and rec.get("type") == "response_item" and p.get("type") in ("custom_tool_call", "function_call", "local_shell_call"):
-                    for text, where, commands in _calls(p, cwd):
-                        names = set(named(unspell(text, exempt) if exempt else text, where, forbidden, commands))
-                        if walled:
-                            names |= walled_leaks(text, where, walled[0], walled[1])
-                        for name in names:
+                    for where, commands, texts, paths in _calls(p, cwd):
+                        for name in named(bounds, where, commands, texts, paths, {"CODEX_HOME": [home]}):
                             found.add("{} in {}".format(name, turn))
             for turn in sorted(ours - seen):      # a turn that cannot be read cannot be shown clean: it counts as a leak
                 found.add("rollout unreadable in {}".format(turn))
@@ -646,78 +963,6 @@ def _spent(a, run):
             total += other.get("tokens") or 0
     return total
 
-
-def orig_paths(branch):
-    return [p for p in (branch.get("repo"), branch.get("objects"), branch.get("view")) if isinstance(p, str)]
-
-
-# What a replayed reviewer must not read, besides the original checkout: where October's answers live (spec 7.1).
-ANSWERS = ("~/.codex/sessions", "~/.codex/archived_sessions", "~/.codex/memories", "~/.claude/projects")
-SNAPSHOT = "~/Code/.replay/snapshot"
-
-
-def forbidden(state, branch, own, snapshot_root=None, memwatch=None):
-    """(paths, walled): everything a replayed reviewer (Codex, or the final reviewer) must not read, for leaks() and
-    final.transcript_leaks(). `paths` go to forbidden_paths: the original checkout, its objects and view (and the wt siblings the
-    scan matches beside them), the state directory (as given, resolved and by its alias), the snapshot root, October's answers
-    (ANSWERS, $XDG_STATE_HOME/xreview and the replay homes, $XDG_STATE_HOME/cxh, whose rollouts are other runs' work), and, for a memories run (`memwatch` is the watcher's directory, or True for the usual
-    one), the watcher's directory. `walled` = (the review-work directory, `own`): everything under it is forbidden but the run's own
-    directories `own` (its scratch, for a final reviewer its staged item directory too): the other runs' scratch, the staged items
-    and the state's alias links."""
-    house = os.path.expanduser("~")
-    state_home = L.state_home().rstrip("/")
-    paths = orig_paths(branch)
-    if state:
-        real = os.path.abspath(state)
-        paths += [real, os.path.realpath(real)]
-        try:
-            with open(os.path.join(real, "alias")) as f:
-                link = f.read().strip()
-        except OSError:
-            link = ""
-        if link:
-            paths.append(link)
-    paths.append(os.path.expanduser(SNAPSHOT))
-    if snapshot_root:
-        paths.append(os.path.abspath(os.path.expanduser(snapshot_root)))
-    paths += [os.path.join(house, x[2:]) for x in ANSWERS] + [os.path.join(state_home, "xreview"), os.path.join(state_home, "cxh")]
-    if memwatch:
-        paths.append(os.path.join(state_home, "process-replay", "memwatch"))
-        if isinstance(memwatch, str):
-            paths += [os.path.abspath(memwatch), os.path.realpath(memwatch)]
-    return list(dict.fromkeys(paths)), (os.path.join(state_home, "review-work"), list(own))
-
-
-_WORD = re.compile(r"[^\s\"'`;|&<>()\\]+")
-_OPTION = re.compile(r"\A(?:--?[A-Za-z][A-Za-z0-9-]*=|-[A-Za-z]|[A-Za-z_][A-Za-z0-9_]*=)")
-
-
-def walled_leaks(text, cwd, review_root, allowed):
-    """The paths `text` names under `review_root` (the review-work directory) other than inside `allowed` (the review's own
-    staged directory and its scratch). Every path-like word is resolved against `cwd` (~, $HOME and $XDG_STATE_HOME expanded, `..`
-    followed, a glob pattern taken as written), and a word that names review-work/<rest> in any spelling is also read as
-    <review_root>/<rest>. The review-work directory itself, the items root and the scratch root are named by a listing or a
-    glob, so they count; only a path inside an allowed directory does not."""
-    house = os.path.expanduser("~").rstrip("/")
-    state_home = L.state_home().rstrip("/")
-    root = review_root.rstrip("/")
-    allowed = [x.rstrip("/") for x in allowed]
-    found = set()
-    for word in _WORD.findall(text):
-        for t in dict.fromkeys([word, _OPTION.sub("", word)]):
-            if not t:
-                continue
-            t = t.replace("${HOME}", house).replace("$HOME", house).replace("${XDG_STATE_HOME}", state_home).replace("$XDG_STATE_HOME", state_home)
-            if t == "~" or t.startswith("~/"):
-                t = house + t[1:]
-            cands = [os.path.normpath(t if os.path.isabs(t) else os.path.join(cwd or "/", t))]
-            parts = t.split("/")
-            if "review-work" in parts:
-                cands.append(os.path.normpath(os.path.join(root, *parts[parts.index("review-work") + 1:])))
-            for cand in cands:
-                if (cand == root or cand.startswith(root + "/")) and not any(cand == x or cand.startswith(x + "/") for x in allowed):
-                    found.add(cand)
-    return found
 
 
 def _start(a, cwd):
@@ -770,7 +1015,7 @@ def codex_round(a, run, case, branch, home):
 
     res = {"findings": [], "judged": [], "tokens": 0, "turns": [], "models": [], "approvals": []}
     thread = None
-    paths, walled = forbidden(a.state, branch, [scratch], getattr(a, "snapshot_root", None))
+    bounds = forbidden(a.state, branch, [scratch] + own_home(home), getattr(a, "snapshot_root", None))
     with homed(home):
         for i, pk in enumerate(dec["packets"]):
             try:
@@ -787,14 +1032,14 @@ def codex_round(a, run, case, branch, home):
             except Failed as e:
                 failed = RoundFailed(str(e), res["tokens"], thread)
                 try:
-                    failed.leak = leaks(home, res["turns"], paths, cwd, walled)
+                    failed.leak = leaks(home, res["turns"], bounds, cwd)
                 except Exception as scan:
                     failed.leak = ["the leak scan failed: {}".format(scan)]
                 raise failed
             res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
             res["approvals"].append(doc.get("verdict") == "approve")
             res["judged"].append(([x for x in doc.get("reviewed_files") or [] if isinstance(x, str)], pk.get("shown") or []))
-    found = leaks(home, res["turns"], paths, cwd, walled)
+    found = leaks(home, res["turns"], bounds, cwd)
     if found:
         return {"leak": found, "tokens": res["tokens"], "thread": thread, "turns": res["turns"]}
     missing = None

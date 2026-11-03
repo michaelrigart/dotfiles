@@ -249,27 +249,80 @@ ok("leak_scan: reading $XDG_STATE_HOME/xreview/ledgers is still a leak", leaks_o
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
 
 
-def own_session(session, commands=(), calls=None, agent=None):
+def own_session(session, commands=(), calls=None, agent=None, others=()):
+    """A driver session under ~/.claude/projects/proj whose subagent `agent` (default rev) is the reviewer, beside `others`: other
+    subagents of the same session (the judges a driver dispatches), each {id, meta}."""
     entries = [{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "You are a Senior Code Reviewer.\n\nReview id: {}\n".format(jid)}]}}]
     for c in commands:
         entries.append({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": c}}]}})
     for name, inp in calls or []:
         entries.append({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": name, "input": inp}]}})
     return helpers.write_transcript(CLAUDE_PROJECTS, "proj", session, [{"type": "user", "message": {"role": "user", "content": "drive"}}],
-                                    subagents=[{"id": agent or "rev", "meta": {"agentType": "sp-architect"}, "entries": entries}])
+                                    subagents=[{"id": agent or "rev", "meta": {"agentType": "sp-architect"}, "entries": entries}] + [
+                                        dict({"entries": [{"type": "user", "message": {"role": "user", "content": "judge"}}]}, **o) for o in others])
+
+
+def rev(session):
+    return os.path.join(CLAUDE_PROJECTS, "proj", session, "subagents", "agent-rev.jsonl")
 
 
 mine_dir = os.path.join(CLAUDE_PROJECTS, "proj", "s-mine")
 top = own_session("s-mine", calls=[("Read", {"file_path": mine_dir + "/tool-results/x.txt"}), ("Grep", {"pattern": "y", "path": mine_dir + "/tool-results"})],
                   commands=["cat ~/.claude/projects/proj/s-mine/tool-results/x.txt", "head {}/subagents/agent-rev.jsonl".format(mine_dir)])
 sub = os.path.join(mine_dir, "subagents", "agent-rev.jsonl")
-is_("leak_scan: a reviewer reading its own session's tool-results (absolute or ~ spelling) is clean, whether its transcript is the subagent's or the session's",
+is_("leak_scan: a reviewer reading its own session's tool-results (absolute or ~ spelling) and its own transcript is clean, whether its transcript is the subagent's or the session's",
     (F.leaks(a, run, branch, sub), F.leaks(a, run, branch, top)), ([], []))
 own_session("s-mine2", calls=[("Read", {"file_path": CLAUDE_PROJECTS + "/proj/s-other/tool-results/x.txt"})])
-ok("leak_scan: ... but another session's files are a leak", F.leaks(a, run, branch, os.path.join(CLAUDE_PROJECTS, "proj", "s-mine2", "subagents", "agent-rev.jsonl")) != [])
-own_session("s-mine3", commands=["ls ~/.claude/projects", "cat {}-evil/tool-results/x".format(CLAUDE_PROJECTS + "/proj/s-mine3")])
-ok("leak_scan: ... the projects root itself, and a sibling that merely starts like the session's, are leaks",
-   len(F.leaks(a, run, branch, os.path.join(CLAUDE_PROJECTS, "proj", "s-mine3", "subagents", "agent-rev.jsonl"))) >= 1)
+is_("leak_scan: ... but another session's files are a leak", F.leaks(a, run, branch, rev("s-mine2")), [CLAUDE_PROJECTS])
+own_session("s-mine3", commands=["cat {}-evil/tool-results/x".format(CLAUDE_PROJECTS + "/proj/s-mine3")])
+is_("leak_scan: a sibling that merely starts like the session's is a leak, read alone (D)", F.leaks(a, run, branch, rev("s-mine3")), [CLAUDE_PROJECTS])
+own_session("s-mine4", commands=["ls ~/.claude/projects"])
+is_("leak_scan: ... and so is the projects root itself, alone", F.leaks(a, run, branch, rev("s-mine4")), [CLAUDE_PROJECTS])
+# C: the driver session's subagents/ holds the judges' transcripts beside the reviewer's; only the reviewer's own (and its descendants') are its own
+S5 = os.path.join(CLAUDE_PROJECTS, "proj", "s-mine5")
+judge = {"id": "judge1", "meta": {"agentType": "sp-standard"}}
+kid = {"id": "kid1", "meta": {"agentType": "sp-reviewer", "parentAgentId": "rev"}}
+own_session("s-mine5", calls=[("Read", {"file_path": S5 + "/subagents/agent-judge1.jsonl"})], others=(judge, kid))
+is_("leak_scan: a final reviewer reading a judge's transcript in its driver session is a leak (C)", F.leaks(a, run, branch, rev("s-mine5")), [CLAUDE_PROJECTS])
+own_session("s-mine5", commands=["cat {}/subagents/agent-rev.jsonl {}/subagents/agent-kid1.jsonl {}/tool-results/toolu_1.txt".format(S5, S5, S5)], others=(judge, kid))
+is_("leak_scan: ... while its own transcript, its subagent's and the session's tool-results are clean", F.leaks(a, run, branch, rev("s-mine5")), [])
+for label, path in (("its own session up and over to another (B)", S5 + "/../s-other/tool-results/x"),
+                    ("its tool-results up and over to another session", S5 + "/tool-results/../../s-other/tool-results/x"),
+                    ("its tool-results up and into a judge's transcript", S5 + "/tool-results/../subagents/agent-judge1.jsonl")):
+    own_session("s-mine5", calls=[("Read", {"file_path": path})], others=(judge, kid))
+    is_("leak_scan: an escape from an allowed directory is judged where it lands: {}".format(label), F.leaks(a, run, branch, rev("s-mine5")), [CLAUDE_PROJECTS])
+# E: a Bash search for a root's name in its own scratch is not a read; the root itself is
+is_("leak_scan: a Bash rg for a root's name in its own scratch is clean (E)",
+    leaks_of(["rg -n xreview {}/dot_claude".format(run["scratch"]), "grep -rn '.claude/projects' {}".format(run["scratch"])], name="bashgrep"), [])
+is_("leak_scan: ... and reading $XDG_STATE_HOME/xreview is a leak", leaks_of(["cat $XDG_STATE_HOME/xreview/ledgers/x"], name="bashxr"),
+    [os.path.join(os.environ["XDG_STATE_HOME"], "xreview")])
+is_("leak_scan: a Grep whose pattern names a forbidden path, in its own scratch, is clean",
+    leaks_of(calls=[("Grep", {"pattern": "~/.claude/projects", "path": run["scratch"], "glob": "*.py"})], name="greppat"), [])
+# a recursive search rooted at an ancestor of a forbidden root walks into it: the Grep and Glob tools by their path, or the cwd without one
+USERS = os.path.dirname(os.path.expanduser("~"))
+REPLAY = os.path.expanduser("~/Code/.replay")
+is_("search: a Grep whose path holds the home directory (as /Users does) is a leak", leaks_of(calls=[("Grep", {"pattern": "x", "path": USERS})], name="s-users") != [], True)
+is_("search: a Glob over the home directory is a leak", leaks_of(calls=[("Glob", {"pattern": "**/*.jsonl", "path": "~"})], name="s-glob") != [], True)
+
+
+def at_cwd(cwd, calls, name):
+    entries = [{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Review id: {}\n".format(jid)}]}}]
+    entries += [{"type": "assistant", "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": n, "input": i}]}} for n, i in calls]
+    helpers.write_transcript(PROJECTS, KEY, "s-" + name, [], subagents=[{"id": jid, "meta": {}, "entries": entries}])
+    return F.leaks(a, run, branch, os.path.join(PROJECTS, KEY, "s-" + name, "subagents", "agent-%s.jsonl" % jid))
+
+
+is_("search: a Grep without a path from ~/Code/.replay (the driver's directory, above the snapshot) is a leak",
+    at_cwd(REPLAY, [("Grep", {"pattern": "defect"})], "s-replay"), [os.path.expanduser("~/Code/.replay/snapshot")])
+is_("search: ... and so is a Bash rg with no path there", at_cwd(REPLAY, [("Bash", {"command": "rg -n defect"})], "s-replay2"), [os.path.expanduser("~/Code/.replay/snapshot")])
+is_("search: a Glob of one literal file in the home directory, without a path, walks nothing: clean",
+    leaks_of(calls=[("Glob", {"pattern": os.path.expanduser("~/notes.txt")})], name="s-literal"), [])
+is_("search: a Grep or Glob without a path from its own scratch is clean, and so is rg .",
+    at_cwd(run["scratch"], [("Grep", {"pattern": "x"}), ("Glob", {"pattern": "**/*.py"}), ("Bash", {"command": "rg foo . && find . -name x"})], "s-scr"), [])
+ALIAS_LINK = os.path.join(ROOT, "state-alias")
+os.symlink(a.state, ALIAS_LINK)
+is_("leak_scan: a Read through a symlink into the state is a leak", leaks_of(calls=[("Read", {"file_path": ALIAS_LINK + "/inventory/b.json"})], name="symlink"),
+    [os.path.abspath(a.state)])
 
 # ---- the reviewer's own subagents are scanned too, through the parentAgentId chain
 ses = "s-sub"
