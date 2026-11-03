@@ -174,7 +174,11 @@ for shape in '"result":"x"' '"result":{"data":{"a":1}}' '"result":{"data":"x"}' 
              '"result":{"data":[{"hooks":[null]}]}' '"result":{"data":[{"hooks":["x"]}]}' \
              '"result":{"data":[{"hooks":[{"command":7,"trustStatus":"trusted"}]}]}' \
              '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py"}]}]}' \
-             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py","trustStatus":""}]}]}'; do
+             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py","trustStatus":""}]}]}' \
+             '"result":{"data":{}}' '"result":{"data":[{"hooks":{}}]}' '"result":{"data":[{}]}' \
+             '"result":{"data":[{"hooks":[{"command":["herdr-codex-pane-map.py"],"trustStatus":"trusted"}]}]}' \
+             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py","trustStatus":"trusted","enabled":"false"}]}]}' \
+             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py","trustStatus":"weird"}]}]}'; do
   refused_with "a malformed answer ($shape)" "{\"responses\":{\"hooks/list\":{$shape}}}"
 done
 XREVIEW_RPC_STDIO=false rpc hooks-status >"$T/out" 2>/dev/null; rc=$?

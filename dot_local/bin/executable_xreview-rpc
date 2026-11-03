@@ -581,19 +581,44 @@ HOOKS_STATUS_BUDGET = 5.0
 HOOKS_STATUS_CALL = 3.0
 
 
+TRUST_STATUSES = ("managed", "untrusted", "trusted", "modified")
+
+
+def hooks_listed(answer):
+    """Every hook of a hooks/list answer, or ValueError when the answer is not the documented
+    shape: result a dict, data a list of dicts, each with a hooks list of dicts whose command,
+    when present, is a string and whose enabled, when present, is a boolean. Checked before
+    anything is matched, so "no pane-map hook" is only ever said of a readable answer."""
+    result = answer.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+        raise ValueError("result is not a dict holding a data list")
+    hooks = []
+    for entry in result["data"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+            raise ValueError("a data entry is not a dict holding a hooks list")
+        for h in entry["hooks"]:
+            if not isinstance(h, dict):
+                raise ValueError("a hook is not a dict")
+            if "command" in h and not isinstance(h["command"], str):
+                raise ValueError("a hook's command is not a string")
+            if "enabled" in h and not isinstance(h["enabled"], bool):
+                raise ValueError("a hook's enabled is not a boolean")
+            hooks.append(h)
+    return hooks
+
+
 def pane_map_statuses(answer):
     """The status of every listed hook that runs the pane-map script, in listed order. A hook
-    switched off reads disabled, whatever its trust. Raises KeyError, TypeError, AttributeError
-    or ValueError for an answer of another shape."""
+    switched off reads disabled, whatever its trust. Raises ValueError for an unreadable
+    answer, and for a matched hook whose trustStatus is not one Codex defines."""
     found = []
-    for entry in answer["result"]["data"]:
-        for h in entry["hooks"]:
-            if PANE_MAP_HOOK not in h["command"]:
-                continue
-            status = h["trustStatus"]
-            if not isinstance(status, str) or not status:
-                raise ValueError("no trustStatus")
-            found.append("disabled" if h.get("enabled") is False else status)
+    for h in hooks_listed(answer):
+        if PANE_MAP_HOOK not in h.get("command", ""):
+            continue
+        status = h.get("trustStatus")
+        if status not in TRUST_STATUSES:
+            raise ValueError(f"unknown trustStatus {status!r}")
+        found.append("disabled" if h.get("enabled") is False else status)
     return found
 
 
@@ -609,8 +634,8 @@ def cmd_hooks_status(c, a):
         return 1
     try:
         found = pane_map_statuses(r)
-    except (KeyError, TypeError, AttributeError, ValueError) as e:
-        err(f"hooks/list refused: unreadable answer ({type(e).__name__}: {e})")
+    except ValueError as e:
+        err(f"hooks/list refused: unreadable answer ({e})")
         return 1
     passing = [s for s in found if s in ("trusted", "managed")]
     print((passing or found or ["missing"])[0])
