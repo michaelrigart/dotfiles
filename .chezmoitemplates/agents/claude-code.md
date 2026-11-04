@@ -5,9 +5,9 @@
     `clone`, `config`, `remote add`, `branch -u`, `submodule`, `worktree add`,
     `switch --track`, or a new branch started from a remote ref (`switch -c b origin/x`).
   - Works sandboxed: git `add`, `commit`, `push`/`fetch` over SSH, `mise exec`, local TCP.
-- **Excluded tools.** `docker`, `basecamp`, `herdr`, `xreview` and `review` are declared
-  unsandboxed in `sandbox.excludedCommands`. Sandboxed, they return confident wrong
-  answers: "unauthenticated", "no Codex pane", "daemon not running".
+- **Excluded tools.** `docker`, `basecamp`, `herdr`, `wt`, `xreview` and `review` are declared
+  unsandboxed in `sandbox.excludedCommands`. Sandboxed, they fail partway or return confident
+  wrong answers: "unauthenticated", "no Codex pane", "daemon not running".
   - The declaration only applies when the tool is the first command of the Bash call, on
     its own. Do setup in a separate call, and never pipe or prefix these tools.
   - Never pass the escape flag for them.
@@ -43,8 +43,8 @@
   the outgoing commits. A genuine false positive gets its fingerprint in `.gitleaksignore`,
   committed on the branch being pushed. While that file exists, push refs by name, never
   `--tags`/`--all`.
-- **Cross-review** with Codex runs through the `cross-review` skill (`xreview`). It uses
-  the repository's existing Codex pane; never open another. `xreview dispatch` needs
-  `--checkpoint spec|plan|pre-merge`.
+- **Cross-review** with Codex runs through the `cross-review` skill (`xreview`). It uses an
+  existing Codex pane; never open another. A `wt` checkout's line passes `-C <checkout>` to
+  every `xreview` call. `xreview dispatch` needs `--checkpoint spec|plan|pre-merge`.
 - **Guard bypasses** (`FORGE_GUARD=off`, `XREVIEW_GUARD=off`, `WT_GUARD=off`): use one only
   when Michael asks for it in this conversation, and say so in the MR.

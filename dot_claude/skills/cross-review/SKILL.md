@@ -54,7 +54,16 @@ xreview collect <nonce> [budget-secs]
 Run each one bare, as its own Bash call: `xreview` is an excluded command, and the
 exclusion applies only when it is the first command of the call, so never wrap it in
 `NONCE=$(…)`, a pipe or a prefix. `dispatch` prints the nonce (`xr-…`) on stdout, and
-nothing else there; pass it to `collect`.
+nothing else there; pass it to `collect`. Pass the body file by absolute path: outside the
+sandbox, `$TMPDIR` names another directory, so a `$TMPDIR/…` argument points at a file that is
+not there.
+
+**A line in a `wt` checkout reviews in that checkout's own pane,** with its own thread and round
+counter. A `cd` to the sibling does not last, so give every `xreview` call of the line
+`-C <checkout>` as its first argument: `xreview -C <checkout> dispatch …`, and the same for
+`collect`, `apply` and `round --reset`. As with `git -C`, relative paths after it resolve in the
+checkout. A `collect` or `apply` whose nonce "was dispatched from another checkout" refuses before
+it touches anything: run it again with the dispatch's `-C`. That refusal is never escalated.
 
 Give `xreview dispatch` a Bash timeout of 300000 ms (five minutes). It may wait up to 60 s
 for another dispatch using the same pane, then free and resume the pane; a timeout that

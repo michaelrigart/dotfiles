@@ -7,6 +7,8 @@
 set -uo pipefail
 GUARD="$(cd "$(dirname "$0")/.." && pwd)/dot_claude/executable_xreview-apply-guard.sh"
 [ -f "$GUARD" ] || { echo "missing guard under test: $GUARD" >&2; exit 2; }
+XREVIEW="$(cd "$(dirname "$0")/.." && pwd)/dot_local/bin/executable_xreview"
+[ -f "$XREVIEW" ] || { echo "missing xreview under test: $XREVIEW" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -18,8 +20,11 @@ decide() {
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null \
     || printf 'allow'
 }
-edit() { printf '{"tool_name":"%s","tool_input":{"file_path":"%s"}}' "${2:-Edit}" "$1" \
-         | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | decide; }
+# guard_out <payload> [<cwd>] - the guard's raw answer, run from <cwd> (default: the suite's own).
+# PINNED_PATH is the suite's PATH unless the caller set one, as the spy cases do.
+guard_out() { ( cd "${2:-.}" && printf '%s' "$1" | PINNED_PATH="${PINNED_PATH:-$PATH}" bash "$GUARD" 2>/dev/null ); }
+edit() { guard_out "$(printf '{"tool_name":"%s","tool_input":{"file_path":"%s"}}' "${2:-Edit}" "$1")" "${3:-.}" | decide; }
+nbedit() { guard_out "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"%s"}}' "$1")" "${2:-.}" | decide; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/xrapply.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
@@ -54,6 +59,126 @@ unset XREVIEW_GUARD
 
 rm -f "$MARKER"
 is "inert again once the window is closed"   "$(edit "$ROOT/repo/src/untouched.txt")" allow
+
+# --- K. The window is keyed by the edited file's checkout, never the hook's cwd (spec 2026-11-03 §3)
+A="$ROOT/repo"; B="$ROOT/repo-b"; H="$ROOT/repo/.claude/worktrees/h"
+mkdir -p "$ROOT/norepo"
+git -C "$A" worktree add -q "$B" -b b 2>/dev/null && git -C "$A" worktree add -q "$H" -b h 2>/dev/null \
+  || { echo "worktree fixture setup failed" >&2; exit 1; }
+printf 'changed b\n' > "$B/src/in-diff.txt"
+printf 'changed h\n' > "$H/src/in-diff.txt"
+BTOP="$(git -C "$B" rev-parse --show-toplevel)"
+# window <checkout> - open a window on that checkout, as the existing marker is written, under
+# its own key; only src/in-diff.txt is in scope.
+window() {
+  local top key; top="$(git -C "$1" rev-parse --show-toplevel)"
+  key="$(printf '%s' "$top" | tr '/' '_' | sed 's/^_//')"
+  mkdir -p "$XDG_STATE_HOME/xreview/$key"
+  { printf 'nonce=xr-k\n'; printf 'file=src/in-diff.txt\n'; } > "$XDG_STATE_HOME/xreview/$key/applying"
+}
+no_windows() { rm -rf "$XDG_STATE_HOME/xreview"; }
+REAL_GIT="$(command -v git)"; REAL_JQ="$(command -v jq)"
+mkdir -p "$ROOT/spy"
+for t in git jq; do
+  real="$REAL_GIT"; [ "$t" = jq ] && real="$REAL_JQ"
+  printf '#!/bin/sh\necho %s >> "%s/spy.log"\nexec "%s" "$@"\n' "$t" "$ROOT" "$real" > "$ROOT/spy/$t"
+  chmod +x "$ROOT/spy/$t"
+done
+
+no_windows; : > "$ROOT/spy.log"
+is "K0: no window anywhere is allowed" \
+   "$(PINNED_PATH="$ROOT/spy:$PATH" edit "$A/src/untouched.txt")" allow
+is "K0: no window anywhere runs no git and no jq" "$(cat "$ROOT/spy.log")" ""
+
+# The writer's own exit status: a guard that exits before reading stdin hands it SIGPIPE.
+no_windows
+head -c 300000 /dev/zero | tr '\0' x | PINNED_PATH="$PATH" bash "$GUARD" >/dev/null 2>&1
+printf '%s' "${PIPESTATUS[1]}" > "$ROOT/writer.status"
+is "K0b: with no window the guard still reads all of stdin (writer exits 0)" "$(cat "$ROOT/writer.status")" 0
+
+no_windows; window "$B"
+is "K1: B's window denies B's file outside the diff, from A" "$(edit "$B/src/untouched.txt")" deny
+is "K1: B's window allows B's file in the diff"              "$(edit "$B/src/in-diff.txt")"  allow
+is "K2: B's window leaves A's file alone"                    "$(edit "$A/src/untouched.txt")" allow
+is "K5: B's window holds when the hook runs outside any repository" \
+   "$(edit "$B/src/untouched.txt" Edit "$ROOT/norepo")" deny
+is "K6: a Write into a new directory of B is denied"   "$(edit "$B/src/new/dir/f.txt" Write)" deny
+is "K6: a Write of a new test file in B is allowed"    "$(edit "$B/tests/new/x_test.rb" Write)" allow
+is "K7: NotebookEdit is policed by its notebook_path"  "$(nbedit "$B/src/nb.ipynb")" deny
+reason="$(guard_out "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$B/src/untouched.txt")" \
+          | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')"
+is "K8: the deny reason starts with the classified first line" \
+   "$(printf '%s' "$reason" | head -1)" "Outside the cross-review apply window: src/untouched.txt"
+case "$reason" in
+  *"xreview -C $BTOP apply --done"*) is "K8: the remedy names B's checkout" ok ok ;;
+  *) is "K8: the remedy names B's checkout" "$reason" "a reason holding: xreview -C $BTOP apply --done" ;;
+esac
+
+no_windows; window "$H"
+is "K3: H's window denies H's file, from A's cwd" "$(edit "$H/src/untouched.txt")" deny
+
+no_windows; window "$A"
+is "K4: A's window does not claim H's file" "$(edit "$H/src/untouched.txt")" allow
+is "K4: A's window still denies A's own file" "$(edit "$A/src/untouched.txt")" deny
+
+no_windows
+PINNED_PATH="$PATH" bash "$XREVIEW" -C "$B" apply xr-k9 >/dev/null 2>&1
+is "K9: xreview apply opened a window the guard finds (B's file outside the diff)" \
+   "$(edit "$B/src/untouched.txt")" deny
+is "K9: and B's file in the diff" "$(edit "$B/src/in-diff.txt")" allow
+no_windows
+
+# --- L. The classified checkout is the one the edit lands in, not the one the path starts in
+# L1: a `..` through a missing directory climbs out of the checkout the walk stopped at.
+no_windows; window "$A"
+is "L1: A's window denies A's file reached through B/src/<missing>/../../../" \
+   "$(edit "$B/src/nope/../../../repo/src/untouched.txt")" deny
+is "L1: and still allows A's file in the diff reached that way" \
+   "$(edit "$B/src/nope/../../../repo/src/in-diff.txt")" allow
+no_windows; window "$B"
+is "L1: B's window denies B's file reached through A/src/<missing>/../../../" \
+   "$(edit "$A/src/nope/../../../repo-b/src/untouched.txt")" deny
+is "L1: a missing directory that is entered and left stays in its checkout" \
+   "$(edit "$B/src/nope/../untouched.txt")" deny
+is "L1: B's window leaves A's file alone, reached through B/src/<missing>/../" \
+   "$(edit "$B/src/nope/../../../repo/src/untouched.txt")" allow
+
+# L3: the remedy line is shell-safe for a checkout whose path holds a space.
+SP="$ROOT/sp ace"
+git -C "$A" worktree add -q "$SP" -b sp 2>/dev/null || { echo "worktree fixture setup failed" >&2; exit 1; }
+no_windows; window "$SP"
+reason="$(guard_out "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$SP/src/untouched.txt")" \
+          | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')"
+SPTOP="$(git -C "$SP" rev-parse --show-toplevel)"
+remedy="$(printf '%s\n' "$reason" | grep 'apply --done')"
+is "L3: the remedy, evaluated by a shell, names the checkout with the space" \
+   "$( xreview() { printf '%s' "$2"; }; eval "$remedy" )" "$SPTOP"
+no_windows
+
+# --- M. The path model, one row per rule (see the guard's header). B/src/alink -> A/src.
+# t <window: A|B|none> <path> <expect> <label> - one window open, one Edit, one verdict.
+t() {
+  no_windows; [ "$1" = none ] || window "${!1}"
+  is "$4" "$(edit "$2")" "$3"
+}
+ln -s "$A/src" "$B/src/alink"
+# rule 1: lexical, first
+t B "$B/src/nope/../alink/../untouched.txt" deny  "M1: .. after a symlinked directory is lexical (B's file)"
+t B "$B/src/./alink/../untouched.txt"       deny  "M1: . and .. are folded before anything is resolved"
+# rule 2: the existing prefix is physical, the missing tail is appended
+t A "$B/src/alink/untouched.txt"            deny  "M2: a symlinked directory in the prefix is entered physically"
+t B "$B/src/alink/untouched.txt"            allow "M2: and it is A's file, so B's window leaves it alone"
+t A "$B/src/alink/newdir/f.txt"             deny  "M2: the missing tail lands in A's checkout"
+# rule 3: a final symlink is allowed; Claude Code refuses to write through it and names the target
+no_windows; window "$A"
+ln -s untouched.txt "$A/src/link.txt"
+is "M3: an Edit of a symlink outside the diff, to a file outside the diff, is allowed (neither the link as its own path nor its target is classified)" \
+   "$(edit "$A/src/link.txt")" allow
+no_windows
+
+git -C "$A" worktree remove --force "$SP" 2>/dev/null; git -C "$A" branch -D sp >/dev/null 2>&1
+git -C "$A" worktree remove --force "$B" 2>/dev/null; git -C "$A" worktree remove --force "$H" 2>/dev/null
+git -C "$A" branch -D b h >/dev/null 2>&1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

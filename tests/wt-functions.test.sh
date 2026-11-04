@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Mocked test for the worktree/session helpers and the .worktreehook protocol in
-# dot_config/zsh/functions. Twenty-one sections, in dependency order — helpers
+# dot_config/zsh/functions. Twenty-two sections, in dependency order — helpers
 # first, then the commands composed from them:
 #
 #   B  wt                  destination validation (husks, slug collisions)
@@ -24,6 +24,7 @@
 #   W  wt-rm               the checkout's Codex sessions are released before check 4
 #   X  wt, wt-rm           mise trust is carried from any checkout of the repository into a new worktree; wt-rm checks it before closing anything
 #   Y  wt, wt-prompt      a reopen carries mise trust and reports what stays untrusted; the popup stays open for it
+#   Z  wt, wt-prepare, wt-rm  the shell snapshot drops every _helper; each public function reloads the file
 #
 # Herdr, layout.sh and mise are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
@@ -2215,6 +2216,33 @@ OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- '' | wt-prompt 2>&1)"; RC=$?
 rc_is 1 "an empty popup branch cancels without creating anything"
 has "cancelled" "the empty prompt reports cancellation"
 
+# --no-focus is Michael's driver mode: wt forwards it through dev to layout.sh, and only
+# when it was given.
+setup
+run "$REPO" wt --no-focus feature/nf main
+rc_is 0 "T --no-focus: wt accepts the flag before the branch"
+[[ -d "$HOME/Code/Org/repo-feature-nf" ]] && _pass "T --no-focus: the checkout is created at the sibling path" \
+                                          || _fail "T --no-focus: the checkout is created at the sibling path"
+grep -Fxq -- "--no-focus --worktree $REPO $HOME/Code/Org/repo-feature-nf" "$DLOG" \
+  && _pass "T --no-focus: layout.sh gets the flag before the mode" \
+  || _fail "T --no-focus: layout.sh gets the flag before the mode ($(<$DLOG))"
+
+setup
+run "$REPO" wt feature/plain
+grep -Fxq -- "--worktree $REPO $HOME/Code/Org/repo-feature-plain" "$DLOG" \
+  && _pass "T --no-focus: a plain wt passes layout.sh no flag" \
+  || _fail "T --no-focus: a plain wt passes layout.sh no flag ($(<$DLOG))"
+
+setup
+run "$REPO" wt --no-focus
+# rc, directory and DLOG assertions are controls: git rejects that branch name, so the old code
+# passes them too. Only the usage assertion catches the regression.
+rc_is 1 "T --no-focus: control: the flag alone is a usage error"
+has "usage: wt [--no-focus] <branch> [start-point]" "T --no-focus: the usage names the flag"
+[[ -e "$HOME/Code/Org/repo---no-focus" ]] && _fail "T --no-focus: control: the flag is not taken for a branch name" \
+                                          || _pass "T --no-focus: control: the flag is not taken for a branch name"
+eq "$(<$DLOG)" "" "T --no-focus: control: layout.sh is never invoked after the usage error"
+
 # Opening an ordinary wt-created checkout through dev must add the same lock. Otherwise
 # `dev <worktree>` would be the unguarded alternate entrance to native Herdr removal.
 setup
@@ -4335,6 +4363,70 @@ mise_sweep "$XALL"
 eq "$bad" "" "Y18 section Y's mise trust is never bare, never --all, and only ever aimed at a file of a destination checkout"
 eq "$(<$XUNEXP)" "" "Y18 ... and mise rejected no call"; : > "$XUNEXP"
 [[ "$(grep -c '^trust ' "$XALL")" -gt 0 ]] && _pass "Y18 section Y's trust calls were collected" || _fail "Y18 section Y's trust calls were collected"
+
+print -r -- "Z. the shell snapshot — public functions reload the file when their _helpers are gone"
+# --- Z. the shell snapshot ----------------------------------------------------
+# Claude Code's Bash tool sources a snapshot of the interactive shell that keeps every function
+# whose name does not start with a single "_". The public functions arrive; their helpers do not.
+# runsnap sources the file under test, drops every single-underscore function, and makes
+# $HOME/.config/zsh/functions (the only place a reload reads) a link to that same file, so a
+# reload loads the file under test and never the deployed one. XDG_CONFIG_HOME points at an unused
+# dir: the reload must not consult it. ZNOLINK=1 leaves $HOME without the file.
+ZXDG="$STUBS/xdg-unused"
+runsnap() {
+  local dir="$1"; shift
+  [[ -n "${ZNOLINK-}" ]] || { mkdir -p "$HOME/.config/zsh" && ln -sf "$FUNCS" "$HOME/.config/zsh/functions" }
+  OUT="$(cd "$dir" && export XDG_CONFIG_HOME="$ZXDG" && source "$FUNCS" \
+    && unfunction -m '_[^_]*' && "$@" 2>&1)"; RC=$?
+}
+
+# Catches wt dying on "command not found: _wt_create_or_prepare" in an agent's shell.
+setup
+runsnap "$REPO" wt --no-focus snap main
+rc_is 0 "Z1 snapshot: wt --no-focus succeeds"
+hasnt "command not found" "Z1 snapshot: no helper is reported missing"
+[[ -d "$HOME/Code/Org/repo-snap" ]] && _pass "Z1 snapshot: the checkout is created at the sibling path"                                      || _fail "Z1 snapshot: the checkout is created at the sibling path"
+grep -Fxq -- "--no-focus --worktree $REPO $HOME/Code/Org/repo-snap" "$DLOG"   && _pass "Z1 snapshot: layout.sh gets the flag before the mode"   || _fail "Z1 snapshot: layout.sh gets the flag before the mode ($(<$DLOG))"
+
+# Catches wt-prepare dying on "command not found: _wt_primary".
+setup
+run "$REPO" wt zp
+print -r -- "A" > "$REPO/a.env"; print -r -- "a.env" > "$REPO/.worktreeinclude"
+runsnap "$REPO" wt-prepare zp
+rc_is 0 "Z2 snapshot: wt-prepare succeeds"
+hasnt "command not found" "Z2 snapshot: no helper is reported missing"
+[[ -f "$HOME/Code/Org/repo-zp/a.env" ]] && _pass "Z2 snapshot: wt-prepare copies the missing file"                                          || _fail "Z2 snapshot: wt-prepare copies the missing file"
+
+# Catches wt-rm dying on "command not found: _wt_q" instead of refusing or removing.
+runsnap "$REPO" wt-rm nope
+rc_is 1 "Z3 snapshot: wt-rm refuses an unknown worktree"
+hasnt "command not found" "Z3 snapshot: no helper is reported missing"
+has "does not exist." "Z3 snapshot: ... with its own refusal"
+rm -f "$REPO/.worktreeinclude" "$HOME/Code/Org/repo-zp/a.env"
+runsnap "$REPO" wt-rm zp
+rc_is 0 "Z3 snapshot: wt-rm removes a clean worktree"
+hasnt "command not found" "Z3 snapshot: ... with no helper reported missing"
+[[ -d "$HOME/Code/Org/repo-zp" ]] && _fail "Z3 snapshot: the worktree directory is gone"                                    || _pass "Z3 snapshot: the worktree directory is gone"
+
+# A file that cannot define the helper fails once, with the loader's message, and creates nothing.
+# Catches a reload loop (the run would not end) and a half-run (a worktree or branch left behind).
+setup
+ZNOLINK=1 runsnap "$REPO" wt x
+rc_is 1 "Z4 snapshot: wt with no reloadable file returns 1"
+has "did not define _wt_create_or_prepare" "Z4 snapshot: the loader names the missing helper"
+[[ -e "$HOME/Code/Org/repo-x" ]] && _fail "Z4 snapshot: no worktree is created"                                   || _pass "Z4 snapshot: no worktree is created"
+run "$REPO" git branch --list x
+eq "$OUT" "" "Z4 snapshot: no branch is created"
+eq "$(<$DLOG)" "" "Z4 snapshot: layout.sh is never invoked"
+
+# Catches the reload parsing the file under the caller's options: wt has no emulate -L zsh, so with
+# sh_glob set the reload failed on "parse error near '('" and wt never ran.
+setup
+runsnap "$REPO" eval 'setopt sh_glob; wt --no-focus sh main'
+rc_is 0 "Z5 snapshot: wt succeeds under the caller's sh_glob"
+hasnt "parse error" "Z5 snapshot: the reload parses the file under zsh's own options"
+[[ -d "$HOME/Code/Org/repo-sh" ]] && _pass "Z5 snapshot: the checkout is created under sh_glob" \
+                                  || _fail "Z5 snapshot: the checkout is created under sh_glob"
 
 export HOME="$REAL_HOME"
 print -r -- ""

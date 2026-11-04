@@ -2,12 +2,16 @@
 # layout.sh — build or focus a project's Herdr workspace, adding any missing tab.
 # Managed by chezmoi (source: dot_config/herdr/executable_layout.sh).
 #
-#   layout.sh <repo-path>   build-or-focus, called by dev from a shell
-#   layout.sh --worktree <primary> <checkout>
+#   layout.sh [--no-focus] <repo-path>
+#                           build-or-focus, called by dev from a shell
+#   layout.sh [--no-focus] --worktree <primary> <checkout>
 #                           open a native Herdr worktree workspace
 #   layout.sh --make-tab <label>
 #                           create one managed tab on demand and print its id, called
 #                           by tab-goto.sh --create for the lazy editor tab
+#
+# --no-focus (first argument only) builds or opens without focusing anything and without
+# handing the terminal to the herdr client, for a driver that must not take Michael's focus.
 #
 # The single definition of what a project workspace looks like.
 
@@ -29,6 +33,9 @@ setopt local_options no_unset pipe_fail no_bg_nice
 # Nothing validates an existing workspace's shape.
 MANAGED_TABS=(agents editor runtime)
 EAGER_TABS=(agents runtime)
+
+# HL_NO_FOCUS is set only by --no-focus; an inherited value is ignored.
+HL_NO_FOCUS=
 # The Codex pane command lives in one file beside this script, read here and by xreview.
 # The reasoning for its flags is in that file.
 CODEX_CMD="$(grep -v '^[[:space:]]*#' "${0:A:h}/codex-pane-command" 2>/dev/null | grep . | head -1)"
@@ -361,6 +368,14 @@ hl_fill_new() {
   done
 }
 
+# hl_focus <ws> [<tab>] — focus the workspace, then the tab when one is named. A no-op under
+# --no-focus; a failed focus still fails.
+hl_focus() {
+  [[ -n "$HL_NO_FOCUS" ]] && return 0
+  hl_api workspace focus "$1" >/dev/null || return 1
+  [[ -z "${2:-}" ]] || hl_api tab focus "$2" >/dev/null || return 1
+}
+
 hl_build() {
   local repo="$1" out ws tab pane
   out="$(hl_api_json workspace create --cwd "$repo" --label "$(hl_label "$repo")" --no-focus)" || return 1
@@ -371,8 +386,7 @@ hl_build() {
   pane="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane id")" || return 1
   hl_fill_new "$ws" "$tab" "$pane" "$repo" || return 1
   trap - EXIT INT TERM
-  hl_api workspace focus "$ws" >/dev/null || return 1
-  hl_api tab focus "$tab" >/dev/null || return 1
+  hl_focus "$ws" "$tab" || return 1
 }
 
 # hl_open_worktree — Herdr's native open, so the checkout carries worktree provenance and
@@ -409,11 +423,10 @@ hl_open_worktree() {
     trap "$HL_HERDR_Q workspace close ${(q)ws} >/dev/null 2>&1" EXIT INT TERM
     hl_fill_new "$ws" "$tab" "$pane" "$repo" || return 1
     trap - EXIT INT TERM
-    hl_api workspace focus "$ws" >/dev/null || return 1
-    hl_api tab focus "$tab" >/dev/null || return 1
+    hl_focus "$ws" "$tab" || return 1
   else
     hl_ensure_eager_tabs "$ws" "$repo" || return 1
-    hl_api workspace focus "$ws" >/dev/null || return 1
+    hl_focus "$ws" || return 1
   fi
 }
 
@@ -443,6 +456,7 @@ hl_context_repo() {
 # focus first, then hand the terminal over. Inside Herdr there is nothing to attach to,
 # and DEV_NO_ATTACH lets tests and scripted runs stop short of a blocking TUI.
 hl_attach() {
+  [[ -n "$HL_NO_FOCUS" ]] && return 0
   [[ -n "${HERDR_ENV:-}" ]] && return 0
   [[ -n "${DEV_NO_ATTACH:-}" ]] && return 0
   hl_handover
@@ -450,6 +464,10 @@ hl_attach() {
 
 main() {
   local mode repo main_repo make_label
+  if [[ "${1:-}" == "--no-focus" ]]; then
+    HL_NO_FOCUS=1
+    shift
+  fi
   if [[ "${1:-}" == "--make-tab" ]]; then
     mode=make-tab
     make_label="${2:-}"
@@ -464,7 +482,7 @@ main() {
     repo="${repo:A}"
   else
     mode=path
-    repo="${1:?usage: layout.sh <repo-path>}"
+    repo="${1:?usage: layout.sh [--no-focus] <repo-path>}"
     [[ -d "$repo" ]] || die "no such directory: $repo"
     repo="${repo:A}"
   fi
@@ -502,7 +520,7 @@ main() {
     local ws; ws="$(hl_find_workspace "$repo")" || exit 1
     if [[ -n "$ws" ]]; then
       hl_ensure_eager_tabs "$ws" "$repo" || exit 1
-      hl_api workspace focus "$ws" >/dev/null || exit 1
+      hl_focus "$ws" || exit 1
     else
       hl_build "$repo" || exit 1
     fi

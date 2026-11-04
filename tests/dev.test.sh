@@ -339,6 +339,9 @@ eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
 MOCK_FZF_SELECT="ViuMore/curato" run_dev "curato"
 eq "$(<$LAYOUT_ARG)" "$R2" "A5 a picker selection resolves to the chosen repo"
 
+run_dev "--no-focus '$R1'"
+eq "$(<$LAYOUT_ARG)" "--no-focus $R1" "A6 a leading --no-focus reaches layout.sh first for a primary checkout"
+
 # --- B: linked worktrees route through Herdr's native worktree mode ---------
 print -r -- "-- B: linked worktree routing"
 WT="$CODE/Netronix/curato-feature"
@@ -349,6 +352,53 @@ run_dev "'$WT'"
 rc_is 0 "B1 a linked worktree is accepted"
 eq "$(<$LAYOUT_ARG)" "--worktree $R1 ${WT:A}" \
   "B1 the checkout is opened through the primary repo's Herdr worktree group"
+
+run_dev "--no-focus '$WT'"
+eq "$(<$LAYOUT_ARG)" "--no-focus --worktree $R1 ${WT:A}" \
+  "B3 a leading --no-focus reaches layout.sh before the worktree mode"
+
+# Claude Code's shell snapshot keeps no function named _x, so dev meets its helpers missing.
+# Source the file, drop every single-underscore function, and make $HOME/.config/zsh/functions a
+# link to the file under test, so the reload loads it and never the deployed one. XDG_CONFIG_HOME
+# points at an unused dir: the reload must not consult it.
+mkdir -p "$ROOTTMP/.config/zsh"; ln -sf "$FUNCS" "$ROOTTMP/.config/zsh/functions"
+mkdir -p "$ROOTTMP/snap-nohome"
+run_dev_snap() {
+  mock_reset
+  export LAYOUT_ARG="$(mktemp "${TMPROOT%/}/larg.XXXXXX")"
+  export FZFLOG="$(mktemp "${TMPROOT%/}/fzflog.XXXXXX")"
+  OUT="$(HOME="${SNAP_HOME:-$ROOTTMP}" XDG_CONFIG_HOME="${SNAP_XDG:-$ROOTTMP/xdg-unused}" DEV_LAYOUT="$LSTUB" zsh -c "
+    source '$FUNCS'; unfunction -m '_[^_]*'; dev $1" 2>&1)"; RC=$?
+}
+
+# Catches dev failing on the missing _wt_git when the snapshot drops its helpers. The unfixed dev
+# hides "command not found" behind 2>/dev/null and reports "is not inside a git repo" instead.
+run_dev_snap "--no-focus '$R1'"
+rc_is 0 "B4 snapshot: dev --no-focus reloads its helpers and succeeds"
+hasnt "is not inside a git repo" "B4 snapshot: the missing helper is not reported as a non-repo"
+eq "$(<$LAYOUT_ARG)" "--no-focus $R1" "B4 snapshot: the call reaches layout.sh with its flag"
+
+# The linked-worktree path needs _wt_primary and _wt_prepare_for_herdr too.
+run_dev_snap "--no-focus '$WT'"
+rc_is 0 "B5 snapshot: a linked worktree reloads its helpers and succeeds"
+hasnt "is not inside a git repo" "B5 snapshot: the missing helper is not reported as a non-repo"
+eq "$(<$LAYOUT_ARG)" "--no-focus --worktree $R1 ${WT:A}" "B5 snapshot: layout.sh gets the worktree mode"
+
+# A file that cannot define the helper fails once, with the loader's message; it never loops.
+SNAP_HOME="$ROOTTMP/snap-nohome" run_dev_snap "--no-focus '$R1'"
+rc_is 1 "B6 snapshot: a missing functions file fails with status 1"
+has "did not define _wt_git" "B6 snapshot: the loader says what is missing"
+eq "$(<$LAYOUT_ARG)" "" "B6 snapshot: layout.sh is never invoked"
+
+# Catches the reload honouring XDG_CONFIG_HOME: wt runs unsandboxed, and a repository's mise [env]
+# can redirect that variable to a file the sandbox can write. Only $HOME/.config/zsh/functions loads.
+mkdir -p "$ROOTTMP/plant/zsh"
+print -r -- '_wt_git() { : > "$PLANT_MARK"; return 1 }' > "$ROOTTMP/plant/zsh/functions"
+rm -f "$ROOTTMP/plant.mark"
+PLANT_MARK="$ROOTTMP/plant.mark" SNAP_XDG="$ROOTTMP/plant" run_dev_snap "--no-focus '$R1'"
+rc_is 0 "B7 snapshot: a planted XDG_CONFIG_HOME file is ignored, the real one loads"
+[[ -e "$ROOTTMP/plant.mark" ]] && _fail "B7 snapshot: the planted file never runs" \
+                               || _pass "B7 snapshot: the planted file never runs"
 
 mkdir -p "$WT/src/deep"
 run_dev "'$WT/src/deep'"
@@ -1244,6 +1294,69 @@ unlogged "tab focus" "N10 nothing is focused on a null id"
 run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_NO_TAB_ID=1" "$R1"
 rc_is 1 "N10b a build stops on a tab create response with no tab id"
 logged "workspace close w7" "N10b the trap closes the partial workspace"
+
+# --- Q: --no-focus (spec 2026-11-03 §4) --------------------------------------
+# A driver-run `wt` builds a workspace without taking Michael's focus or blocking on the
+# herdr client. Each absence is paired with the presence of the work that still has to
+# happen, since "nothing was logged" passes trivially when nothing ran.
+print -r -- "-- Q: --no-focus"
+
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'" --no-focus "$R1"
+rc_is 0 "Q1 a build with --no-focus succeeds"
+logged "workspace create --cwd $R1 --label Netronix/curato --no-focus" "Q1 the workspace is still built"
+logged "pane run w7:p3 claude" "Q1 claude still starts"
+logged "pane run w7:p9 codex" "Q1 codex still starts"
+unlogged "workspace focus" "Q1 the new workspace is not focused"
+unlogged "tab focus" "Q1 the agents tab is not focused"
+
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'" "$R1" --no-focus
+logged "workspace focus w7" "Q1b --no-focus after the path is not the flag, so the build still focuses"
+
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1" --no-focus "$R1"
+rc_is 0 "Q2 an existing workspace with --no-focus succeeds"
+logged "tab create --workspace w7 --label runtime" "Q2 the missing tab is still added"
+unlogged "workspace focus" "Q2 the existing workspace is not focused"
+
+mock_reset
+worktree_fixture false true
+blank_worktree_topology
+OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 DEV_NO_ATTACH=1 zsh "$LAYOUT" --no-focus --worktree "$R1" "$WT" 2>&1)"; RC=$?
+rc_is 0 "Q3 a new native worktree with --no-focus succeeds"
+logged "worktree open --cwd $R1 --path $WT --label feature --no-focus" "Q3 the worktree is still opened"
+logged "tab rename w7:t4 agents" "Q3 the root tab is still renamed"
+logged "pane run w7:p3 claude" "Q3 claude still starts"
+unlogged "workspace focus" "Q3 the new worktree workspace is not focused"
+unlogged "tab focus" "Q3 the new worktree's tab is not focused"
+
+mock_reset
+worktree_fixture true true
+mock_topology "$WT" "Netronix/curato-feature" $FULL
+export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"Netronix/curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}"
+OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 DEV_NO_ATTACH=1 zsh "$LAYOUT" --no-focus --worktree "$R1" "$WT" 2>&1)"; RC=$?
+rc_is 0 "Q4 reopening a worktree with --no-focus succeeds"
+logged "tab list --workspace w7" "Q4 the reopen still checks its tabs"
+unlogged "workspace focus" "Q4 the reopened workspace is not focused"
+
+# The client handover is the logged line with no arguments. The unflagged run is the
+# control: the same setup does hand over, so a zero is the flag's doing.
+mock_reset
+mock_topology "$R1" 'Netronix/curato' $FULL
+OUT="$(env -u HERDR_ENV -u DEV_NO_ATTACH HOME="$ROOTTMP" zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+rc_is 0 "Q5 control: without the flag the run hands the terminal to the client"
+eq "$(count_logged "")" "1" "Q5 control: the client handover is logged"
+mock_reset
+mock_topology "$R1" 'Netronix/curato' $FULL
+OUT="$(env -u HERDR_ENV -u DEV_NO_ATTACH HOME="$ROOTTMP" zsh "$LAYOUT" --no-focus "$R1" 2>&1)"; RC=$?
+rc_is 0 "Q5 a --no-focus run outside herdr succeeds"
+eq "$(count_logged "")" "0" "Q5 it does not hand the terminal to the client"
+logged "tab list --workspace w7" "Q5 it still worked on the workspace"
+
+# An inherited HL_NO_FOCUS must not switch focus off for Michael.
+run_layout "export HERDR_ENV=1 HL_NO_FOCUS=1; mock_panes '/nowhere'" "$R1"
+unset HL_NO_FOCUS
+rc_is 0 "Q6 a build with HL_NO_FOCUS in the environment succeeds"
+logged "workspace focus w7" "Q6 the variable alone does not stop the workspace focus"
+logged "tab focus w7:t4" "Q6 the variable alone does not stop the tab focus"
 
 # --- P: the scripts pin their PATH -------------------------------------------
 # layout.sh and tab-goto.sh run outside the sandbox (dev, herdr's keybindings), so a caller's

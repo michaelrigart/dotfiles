@@ -117,6 +117,19 @@ state_dir() {
     "$(printf '%s' "$root" | tr '/' '_' | sed 's/^_//')"
 }
 
+# nonce_elsewhere <nonce> - the state directory of the first OTHER checkout that holds a turn
+# record for the nonce (spec 2026-11-03 §2); 1 when none does. A nonce dispatched with -C and
+# collected or applied without it is found here, instead of reading as ambiguous or opening a
+# window on the wrong checkout. The caller has asserted the nonce is a safe id.
+nonce_elsewhere() {
+  local here d; here="$(state_dir)"
+  for d in "${XDG_STATE_HOME:-$HOME/.local/state}"/xreview/*; do
+    [ "$d" != "$here" ] && [ -f "$d/turns/$1" ] || continue
+    printf '%s\n' "$d"; return 0
+  done
+  return 1
+}
+
 # Ids reach file names and command arguments. Thread and turn ids come from Codex and nonces
 # are minted below; anything else, including a leading dash, is refused before use.
 assert_id() {
@@ -130,6 +143,16 @@ is_safe_id() {
     ""|-*|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
   return 0
+}
+
+# A nonce is xr-<epoch>-<hex>. turns/ also holds <nonce>.targets, .shown, .slices, .merged and
+# .known files, which pass the id check and -f, so a dot is never part of a nonce.
+is_nonce() {
+  case "$1" in
+    *.*) return 1 ;;
+    xr-*) return 0 ;;
+  esac
+  return 1
 }
 
 # pane_root - the directory whose Codex pane serves this repository (spec 2026-10-01 §4.2). A
@@ -857,11 +880,16 @@ bump_round() {
 }
 
 cmd_apply() {
-  local dir; dir="$(state_dir)"
+  local dir other; dir="$(state_dir)"
   if [ "${1:-}" = "--done" ]; then
     rm -f "$dir/applying"; printf 'xreview: apply window closed\n'; return 0
   fi
   [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
+  assert_id "$1"
+  is_nonce "$1" || die "usage: xreview apply <nonce> | xreview apply --done - nonces start with xr-"
+  if [ ! -f "$dir/turns/$1" ] && other="$(nonce_elsewhere "$1")"; then
+    die "$1 was dispatched from another checkout (its state is $other); run apply with the -C it was dispatched with"
+  fi
   git rev-parse --show-toplevel >/dev/null 2>&1 \
     || die "not inside a git repository; an apply window is scoped to a branch's diff"
   # A partial clone's lazy fetch would run remote.<name>.uploadpack, which this repository's
@@ -1899,14 +1927,11 @@ _slice_turn() {
 }
 
 cmd_collect() {
-  local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc \
+  local other nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc \
         dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started compacted=null shown \
         collect_trap sliced=0
   started="$(epoch_now)"
-  case "$nonce" in
-    xr-*) ;;
-    *) die "usage: xreview collect <nonce> [budget] - nonces start with xr-" ;;
-  esac
+  is_nonce "$nonce" || die "usage: xreview collect <nonce> [budget] - nonces start with xr-"
   # The budget is whole seconds only; anything else is a usage error, never a failed
   # review (F24) - this must be checked before any daemon call, not left to xreview-rpc's
   # own argparse to reject with a different, misleading exit code.
@@ -1916,7 +1941,12 @@ cmd_collect() {
   assert_id "$nonce"
   dir="$(state_dir)"
   rec="$dir/turns/$nonce"
-  [ -r "$rec" ] || die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
+  if [ ! -r "$rec" ]; then
+    if other="$(nonce_elsewhere "$nonce")"; then
+      die "$nonce was dispatched from another checkout (its state is $other); run collect with the -C it was dispatched with"
+    fi
+    die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
+  fi
   # A third field names the checkpoint and a fourth the branch dispatched on; a record from
   # before either existed has two or three, and its receipt names the current branch.
   read -r thread turn checkpoint branch < "$rec"
@@ -1969,8 +1999,9 @@ cmd_collect() {
 
 usage() {
   cat <<'USAGE'
-usage: xreview <command> [args]
+usage: xreview [-C <checkout>] <command> [args]
 
+  -C <checkout>           run the command as if started there; relative paths resolve there
   dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <body-file>
                           start a review turn; prints its nonce
   collect <nonce> [budget]
@@ -1991,6 +2022,20 @@ for a in "$@"; do
   case $a in -h|--help) usage; exit 0 ;; esac
 done
 
+# -C <checkout> (first argument only) enters the checkout, so every later lookup resolves there.
+# `help` is a case arm, not a flag, so it is looked for here: the usage comes before the
+# directory is checked.
+if [ "${1:-}" = "-C" ]; then
+  [ "${3:-}" != help ] || { usage; exit 0; }
+  [ -n "${2:-}" ] || die "-C needs a checkout directory"
+  # cd treats a lone - as $OLDPWD and prints it; a checkout is never named that way.
+  [ "$2" != - ] || die "cannot enter $2"
+  CDPATH='' builtin cd -- "$2" >/dev/null 2>&1 || die "cannot enter $2"
+  # Inside a .git directory the answer is the word false with exit 0, so the word is checked.
+  [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || die "$2 is not inside a git checkout"
+  shift 2
+fi
+
 case "${1:-}" in
   help)     usage; exit 0 ;;
   dispatch) shift; cmd_dispatch "$@" ;;
@@ -2001,5 +2046,5 @@ case "${1:-}" in
   receipts) shift; cmd_receipts "$@" ;;
   apply)    shift; cmd_apply "$@" ;;
   round)    shift; cmd_round "$@" ;;
-  *) die "usage: xreview init [id] | thread | receipts [--tiers] | apply <nonce>|--done | round [--reset] | dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <body-file> | tier [thread] | collect <nonce> [budget]" ;;
+  *) die "usage: xreview [-C <checkout>] init [id] | thread | receipts [--tiers] | apply <nonce>|--done | round [--reset] | dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <body-file> | tier [thread] | collect <nonce> [budget]" ;;
 esac

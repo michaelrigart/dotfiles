@@ -110,6 +110,22 @@ tsh() {
   fi
 }
 
+# functions-reload <name> — source this file again and check that it defined <name>. Claude
+# Code's shell snapshot keeps only functions whose names do not start with a single "_", so an
+# agent's shell has the public functions below without their _helpers. Each public function
+# calls this when its first helper is missing, then re-runs itself on the file's definitions.
+# This file holds only function definitions, so sourcing it from inside a function is safe, and
+# so is redefining the function that is running: zsh finishes the body it started. The path is
+# the one dot_zshrc sources, never XDG_CONFIG_HOME, which a repository's environment can
+# redirect; emulate -L zsh makes the file parse under zsh's own options, not the caller's.
+functions-reload() {
+  emulate -L zsh
+  local file="$HOME/.config/zsh/functions"
+  [[ -r $file ]] && source "$file" && (( $+functions[$1] )) && return 0
+  print -ru2 -- "functions-reload: $file did not define $1."
+  return 1
+}
+
 # dev — open (or return to) a project in its Herdr workspace. Resolve an argument to
 # a repository under ~/Code, then hand that path to layout.sh: a primary checkout
 # opens as an ordinary workspace, a linked one through native worktree mode.
@@ -117,6 +133,7 @@ tsh() {
 #   dev curato             by name: exact basename → case-insensitive substring → fzf
 #   dev Netronix/curato    path relative to ~/Code
 #   dev .                  the git repo containing the current directory
+#   dev --no-focus curato  the same, without moving Herdr's focus (layout.sh's --no-focus)
 #
 # The retired `dev` also accepted a session name (`dev netronix--curato`). There are no
 # session names any more, so such an argument matches no repo by basename or substring
@@ -125,9 +142,12 @@ tsh() {
 # Resolution only. Everything about Herdr lives in layout.sh.
 dev() {
   emulate -L zsh
+  (( $+functions[_wt_git] )) || { functions-reload _wt_git && dev "$@"; return }
   setopt local_options null_glob extended_glob
 
-  local code="$HOME/Code" repo arg="$1"
+  local -a focus=()
+  [[ "${1-}" == --no-focus ]] && { focus=( --no-focus ); shift }
+  local code="$HOME/Code" repo arg="${1-}"
   local -a repos=( "$code"/*/.git(N:h) "$code"/*/*/.git(N:h) )
 
   if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
@@ -164,11 +184,11 @@ dev() {
     local main
     main="$(builtin cd "$repo" && _wt_primary)" || return 1
     _wt_prepare_for_herdr "$main" "$repo" || return 1
-    "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" --worktree "$main" "$repo"
+    "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "${focus[@]}" --worktree "$main" "$repo"
     return $?
   fi
 
-  "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
+  "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "${focus[@]}" "$repo"
 }
 
 # Library functions use `builtin cd`, never bare `cd`: they must not depend on whatever an
@@ -938,6 +958,7 @@ _wt_mise_reopen_carry() {
 # never touches a Herdr workspace, so it may run while the target is live.
 wt-prepare() {
   emulate -L zsh
+  (( $+functions[_wt_primary] )) || { functions-reload _wt_primary && wt-prepare "$@"; return }
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-prepare <branch>"; return 1; }
   local slug="${branch//\//-}" main common dest
@@ -964,6 +985,7 @@ wt-prepare() {
 #   wt test                worktree ../<repo>-test        on branch "test"
 #   wt feature/foo         worktree ../<repo>-feature-foo on branch "feature/foo"
 #   wt hotfix origin/main  branch "hotfix" from an explicit start point
+#   wt --no-focus fix/x main  the same, without moving Herdr's focus, as the driver runs it
 # Run from anywhere inside the repo (or one of its worktrees).
 #
 # A new branch starts from the *caller's* HEAD, matching plain `git worktree add -b`.
@@ -977,7 +999,7 @@ wt-prepare() {
 _wt_create_or_prepare() {
   emulate -L zsh
   local branch="$1" start="${2-}"
-  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
+  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt [--no-focus] <branch> [start-point]"; return 1; }
   local slug="${branch//\//-}" qb main common dest base=""
   qb="$(_wt_q "$branch")"
   main="$(_wt_primary)" || return 1
@@ -1027,10 +1049,13 @@ _wt_create_or_prepare() {
 # The `wt` command itself: create or reopen through the locked lifecycle above, then
 # open the checkout as a native Herdr worktree workspace.
 wt() {
-  [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
+  (( $+functions[_wt_create_or_prepare] )) || { functions-reload _wt_create_or_prepare && wt "$@"; return }
+  local -a focus=()
+  [[ "${1-}" == --no-focus ]] && { focus=( --no-focus ); shift }
+  [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt [--no-focus] <branch> [start-point]"; return 1; }
   _WT_NOTICE=
   _wt_create_or_prepare "$@" || return 1
-  dev "$_WT_DEST"
+  dev "${focus[@]}" "$_WT_DEST"
 }
 
 # wt-prompt — interactive surface for Herdr's worktree popup. Kept tiny: everything
@@ -1471,6 +1496,7 @@ _wt_rm_registration() {
 # trap is installed.
 wt-rm() {
   emulate -L zsh
+  (( $+functions[_wt_q] )) || { functions-reload _wt_q && wt-rm "$@"; return }
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-rm <branch>"; return 1; }
   local slug="${branch//\//-}" qb main common dest rel_dir=""
@@ -1754,6 +1780,7 @@ chezmoi() {
   # The caller's options (SH_GLOB, KSH_ARRAYS, EXTENDED_GLOB, NO_GLOB...) would break the
   # patterns and array indexing below, so every wrapper function runs under zsh's defaults.
   emulate -L zsh
+  (( $+functions[_chezmoi_help] )) || { functions-reload _chezmoi_help && chezmoi "$@"; return }
   local -a args=("$@")
   local sub=${1:-} a i
   if _chezmoi_help "$@"; then

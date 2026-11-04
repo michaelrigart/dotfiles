@@ -1854,7 +1854,7 @@ for form in "help" "-h" "--help" "dispatch --help" "collect xr-1-a -h" "apply --
   # word and its arguments. A bare "thread" would also match the "tier [thread]" line.
   for sub in "dispatch --checkpoint spec|plan|pre-merge" "collect <nonce>" "apply <nonce>" \
              "apply --done" "round [--reset]" "receipts [--tiers]" "tier [thread]" "thread  " \
-             "init [id]" "help, -h, --help"; do
+             "init [id]" "help, -h, --help" "-C <checkout>"; do
     found=""
     while IFS= read -r line; do
       [[ $line == "  $sub"* ]] && found=1
@@ -3372,6 +3372,102 @@ rm -f "$P/start_dir.$U3"; rmdir "$sl.lock"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL12 collecting again takes slice 2 up from the turn record, never starting it twice" \
    "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-start --thread $U3")/$(called "turn-wait --thread $U3 --turn turn-$U3 ")" "0/approve/0/1"
+
+echo "CK. -C <checkout> resolves everything from that checkout (spec 2026-11-03 §2)"
+cd "$CWD" || exit 1
+git worktree add -q "$ROOT/repo-ck" -b ck
+printf 'one\n' > "$ROOT/repo-ck/ck.txt"
+git -C "$ROOT/repo-ck" add ck.txt && git -C "$ROOT/repo-ck" commit -q -m ck-file
+printf 'body of the checkout\n' > "$ROOT/repo-ck/b-ck.md"
+printf 'two\n' >> "$ROOT/repo-ck/ck.txt"          # the one working-tree change
+CK="$(git -C "$ROOT/repo-ck" rev-parse --show-toplevel)"
+ckstate() { printf '%s/xreview/%s' "$XDG_STATE_HOME" "$(printf '%s' "$CK" | tr '/' '_' | sed 's/^_//')"; }
+mkdir -p "$ROOT/plain"
+fresh; rm -rf "$(ckstate)"; export PANE_CWD="$CK"
+nonce="$(bash "$XREVIEW" -C "$CK" dispatch --checkpoint plan "$CWD/b.md" 2>/dev/null)"
+is "CK1 -C dispatch prints a nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "CK1 its thread starts in the checkout" "$(called "xreview-rpc thread-start --cwd $CK")" 1
+is "CK1 and its thread is recorded in the checkout's state, not the caller's" \
+   "$(cat "$(ckstate)/review-thread" 2>/dev/null)/$([ -e "$STATE/review-thread" ] && echo caller || echo none)" "$U1/none"
+is "CK1 the checkout's pane is resumed with -C <checkout>" \
+   "$(called "herdr pane run w1:p2 $PANE_CMD -C $CK resume $U1")" 1
+ckbranch=; [ -r "$(ckstate)/turns/$nonce" ] && read -r _ _ _ ckbranch < "$(ckstate)/turns/$nonce"
+is "CK3 the turn record names the checkout's branch" "$ckbranch" ck
+fresh; rm -rf "$(ckstate)"; export PANE_CWD="$CK"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>&1)"; rc=$?
+is "CK2 without -C the caller's checkout has no pane" "$rc/$(printf '%s' "$out" | grep -c "no Codex pane for $CWD")" "1/1"
+is "CK2 untouched" "$(untouched)" yes
+fresh; rm -rf "$(ckstate)"; export PANE_CWD="$CK"
+out="$(bash "$XREVIEW" -C "$CK" dispatch --checkpoint plan b-ck.md 2>&1)"; rc=$?
+is "CK4 a relative body file resolves in the checkout" \
+   "$rc/$(printf '%s' "$out" | grep -c '^xr-')/$([ -e "$CWD/b-ck.md" ] && echo caller || echo none)" "0/1/none"
+# CK5-CK6: a nonce dispatched with -C is collected and applied with it.
+fresh; rm -rf "$(ckstate)"; export PANE_CWD="$CK"
+CKN="$(bash "$XREVIEW" -C "$CK" dispatch --checkpoint plan "$CWD/b.md" 2>/dev/null)"
+out="$(RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" -C "$CK" collect "$CKN" 2>/dev/null)"; rc=$?
+is "CK5 -C collect of that nonce answers with the verdict" "$rc/$(printf '%s' "$out" | jq -r .verdict 2>/dev/null)" "0/approve"
+out="$(RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$CKN" 2>&1)"; rc=$?
+is "CK5 collect without -C names the other checkout, never 'ambiguous'" \
+   "$rc/$(printf '%s' "$out" | grep -c 'was dispatched from another checkout')/$(printf '%s' "$out" | grep -cF "$(ckstate)")/$(printf '%s' "$out" | grep -c ambiguous)" "1/1/1/0"
+rm -f "$STATE/applying" "$(ckstate)/applying"
+out="$(bash "$XREVIEW" -C "$CK" apply "$CKN" 2>&1)"; rc=$?
+is "CK6 -C apply opens the window in the checkout, over the checkout's changes" \
+   "$rc/$(grep -c '^file=ck.txt$' "$(ckstate)/applying" 2>/dev/null)/$(grep -c '^nonce=' "$(ckstate)/applying" 2>/dev/null)/$([ -e "$STATE/applying" ] && echo caller || echo none)" "0/1/1/none"
+bash "$XREVIEW" -C "$CK" apply --done >/dev/null 2>&1
+out="$(bash "$XREVIEW" apply "$CKN" 2>&1)"; rc=$?
+is "CK6 apply without -C refuses, and writes no window" \
+   "$rc/$(printf '%s' "$out" | grep -c 'was dispatched from another checkout')/$(printf '%s' "$out" | grep -c 'run apply with the -C')/$([ -e "$STATE/applying" ] && echo caller || echo none)" "1/1/1/none"
+bash "$XREVIEW" apply --done >/dev/null 2>&1
+out="$(bash "$XREVIEW" apply xr-ck-none 2>&1)"; rc=$?
+is "CK6 a nonce on record nowhere still opens the window" "$rc/$([ -e "$STATE/applying" ] && echo opened || echo none)" "0/opened"
+bash "$XREVIEW" apply --done >/dev/null 2>&1
+# . and .. exist under turns/ in every state directory, so they are not nonces: apply refuses
+# them as malformed, never as "another checkout"; an option-looking id is an unsafe identifier.
+for bad in . .. ; do
+  out="$(bash "$XREVIEW" apply "$bad" 2>&1)"; rc=$?
+  is "CK6 apply $bad refuses as a malformed nonce, not as another checkout, and writes no window" \
+     "$rc/$(printf '%s' "$out" | grep -c 'nonces start with xr-')/$(printf '%s' "$out" | grep -c 'another checkout')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/0/none"
+done
+out="$(bash "$XREVIEW" apply -x 2>&1)"; rc=$?
+is "CK6 apply -x refuses as an unsafe identifier, and writes no window" \
+   "$rc/$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/none"
+out="$(bash "$XREVIEW" apply xr-a/b 2>&1)"; rc=$?
+is "CK6 apply xr-a/b refuses as an unsafe identifier (only assert_id catches it), and writes no window"    "$rc/$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/none"
+# turns/ holds .targets, .shown, .slices, .merged and .known files beside each record, so a dotted
+# name passes -f and the id check; a nonce is xr-<epoch>-<hex> and never has a dot.
+fresh; rm -rf "$(ckstate)"; mkdir -p "$(ckstate)/turns"; : > "$(ckstate)/turns/xr-1-a.targets"
+out="$(bash "$XREVIEW" apply xr-1-a.targets 2>&1)"; rc=$?
+is "CK6 apply xr-1-a.targets refuses with the usage, not as another checkout, and writes no window"    "$rc/$(printf '%s' "$out" | grep -c 'nonces start with xr-')/$(printf '%s' "$out" | grep -c 'another checkout')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/0/none"
+out="$(bash "$XREVIEW" collect xr-1-a.targets 2>&1)"; rc=$?
+is "CK5 collect xr-1-a.targets refuses with the usage, not as another checkout"    "$rc/$(printf '%s' "$out" | grep -c 'nonces start with xr-')/$(printf '%s' "$out" | grep -c 'another checkout')" "1/1/0"
+fresh; rm -rf "$(ckstate)"; export PANE_CWD="$CK"
+mkdir -p "$STATE" "$(ckstate)"; echo "$U2" > "$STATE/review-thread"; echo "$U3" > "$(ckstate)/review-thread"
+bash "$XREVIEW" -C "$CK" round --reset >/dev/null 2>&1
+is "CK7 round --reset with -C drops only the checkout's thread" \
+   "$([ -e "$(ckstate)/review-thread" ] && echo kept || echo gone)/$([ -e "$STATE/review-thread" ] && echo kept || echo gone)" "gone/kept"
+fresh; rm -rf "$(ckstate)"
+CKGIT="$(git -C "$CK" rev-parse --absolute-git-dir)"   # inside it, --is-inside-work-tree prints false and exits 0
+for bad in "$ROOT/nope:cannot enter $ROOT/nope" "$ROOT/plain:$ROOT/plain is not inside a git checkout" \
+           "$CKGIT:$CKGIT is not inside a git checkout"; do
+  out="$(bash "$XREVIEW" -C "${bad%%:*}" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "CK8 -C ${bad%%:*} refuses with the reason, touching nothing" \
+     "$rc/$(printf '%s' "$out" | grep -cF "xreview: ${bad#*:}")/$(untouched)" "1/1/yes"
+done
+# -C - is not "the previous directory": cd would follow OLDPWD and print it.
+out="$(OLDPWD="$CK" bash "$XREVIEW" -C - dispatch --checkpoint plan b.md 2>"$ROOT/dash-err")"; rc=$?
+is "CK8 -C - refuses, prints nothing on stdout, and touches nothing" \
+   "$rc/${#out}/$(grep -cF 'xreview: cannot enter -' "$ROOT/dash-err")/$(untouched)" "1/0/1/yes"
+out="$(bash "$XREVIEW" -C 2>&1)"; rc=$?
+is "CK8 a bare -C refuses" "$rc/$(printf '%s' "$out" | grep -cF 'xreview: -C needs a checkout directory')/$(untouched)" "1/1/yes"
+fresh
+for form in "--help" "-h" "help"; do
+  out="$(bash "$XREVIEW" -C "$ROOT/nope" $form 2>"$ROOT/help-err")"; rc=$?
+  is "CK9 -C <bad dir> $form prints the usage on stdout, silently, calling nothing" \
+     "$rc/$(printf '%s' "$out" | grep -c '^usage: xreview ')/$(wc -c < "$ROOT/help-err" | tr -d ' ')/$(wc -c < "$CALLS" | tr -d ' ')" "0/1/0/0"
+done
+unset PANE_CWD
+cd "$CWD" || exit 1
+git worktree remove --force "$ROOT/repo-ck"; git branch -q -D ck
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
