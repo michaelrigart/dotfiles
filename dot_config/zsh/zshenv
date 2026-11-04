@@ -54,6 +54,11 @@ export BUNDLE_USER_PLUGIN="$XDG_CACHE_HOME/bundler/plugin"
 export GEMRC="$XDG_CONFIG_HOME/gem/config"
 export GEM_SPEC_CACHE="$XDG_CACHE_HOME/gem/specs"
 
+# 1Password CLI: unlock through the desktop app (Touch ID). op learns that its app integration
+# is on from the app's group-container settings, which macOS 27.2 stopped letting the terminal
+# read, so op fell back to the account password. This is 1Password's documented switch for it.
+export OP_BIOMETRIC_UNLOCK_ENABLED=true
+
 # Starship config location
 export STARSHIP_CONFIG=$XDG_CONFIG_HOME/starship/config.toml
 

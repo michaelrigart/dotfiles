@@ -69,6 +69,8 @@ printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/
 for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall osascript tee; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
 done
+# op also logs the app-integration switch it was started with (see section B).
+printf '#!/usr/bin/env bash\necho "op $*" >> "$CALLS"\necho "op-env OP_BIOMETRIC_UNLOCK_ENABLED=${OP_BIOMETRIC_UNLOCK_ENABLED:-unset}" >> "$CALLS"\nexit 0\n' > "$T/bin/op"
 # A fresh machine has no checkout: `git clone` copies the fixture source into the target, so
 # the run after it reads the same allowlist and scripts as one with an existing checkout.
 cat > "$T/bin/git" <<'G'
@@ -145,6 +147,10 @@ called "scutil --set ComputerName hercules"  "ComputerName is set"
 called "scutil --set HostName hercules"      "HostName is set (Borg reads this)"
 called "scutil --set LocalHostName hercules" "LocalHostName is set"
 grep -q '^ComputerName=hercules$' "$IDDB" && _pass "the identity really changed" || _fail "the identity really changed"
+# Regression: provisioning runs before zshenv exists, so on macOS 27.2 op could not see the
+# 1Password app integration and the 1Password gate polled for 15 minutes.
+called "op-env OP_BIOMETRIC_UNLOCK_ENABLED=true" "op runs with the 1Password app integration on"
+not_called "op-env OP_BIOMETRIC_UNLOCK_ENABLED=unset" "no op call runs without it"
 
 echo "B2. a fresh machine inits and applies; one whose checkout existed does neither"
 # This runs in zsh as a script, so the chezmoi wrapper (origin's main only) is not loaded and

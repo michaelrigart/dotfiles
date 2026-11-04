@@ -71,5 +71,13 @@ else
   _pass "zshenv calls no brew --prefix"
 fi
 
+# Regression: op asks for the account password instead of Touch ID. Since macOS 27.2 the
+# terminal may not read the 1Password app's group-container settings, so op cannot see that
+# the app integration is on unless the environment says so. Read from a child process: op
+# and chezmoi see only what is exported.
+got=$(probe '/usr/bin/printenv OP_BIOMETRIC_UNLOCK_ENABLED')
+[ "$got" = true ] && _pass "child processes get OP_BIOMETRIC_UNLOCK_ENABLED=true" \
+  || _fail "child processes get OP_BIOMETRIC_UNLOCK_ENABLED=true" "${got:-unset}"
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
