@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Implemented (Codex pre-merge approved round 5, xr-1793778112-6b2838cb; snapshot relocated 2026-11-04; next: the rerun of §14.5). Plan review approved round 3, xr-1793746153-36c07813.
+**Status:** Implemented (Codex pre-merge approved round 5, xr-1793778112-6b2838cb; snapshot relocated 2026-11-04; rerun of §14.5 on 2026-11-04: inconclusive, spec §11.6). Plan review approved round 3, xr-1793746153-36c07813.
 
 **Goal:** Fix the harness defects and change the two limits that §11.4 found, so a rerun of §4 on the kept
 state can pass the coverage gate and its leak scan voids only runs that read something forbidden; then

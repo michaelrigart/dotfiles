@@ -362,7 +362,8 @@ Read-only, 2026-11-02:
 Run of 2026-11-03 (Part B). Harness `f0919ec9b5bec2dee4df56cb5659e9b065dc7a22`, state
 `~/.local/state/process-replay/2026-11-03`, replay home `nomem`. Michael stopped it in §4's run
 step (runbook Part B step 5) after the leak scan voided three of four runs; no replacement run was
-started. **No removal is recommended from this run.**
+started. **No removal is recommended from this run.** The rerun of 2026-11-04, after amendment 1,
+is §11.6.
 
 ### 11.1 Per-task reviewer (§4): inconclusive
 
@@ -490,6 +491,126 @@ Smaller issues, each in the run notes:
 | Per-task reviewer | None: keep it. The result is inconclusive for structural reasons, not on the evidence. A rerun needs items 1–4 addressed, the 15 defects above resolved, and more qualifying cases; with two cases even a clean pass falls short of §4.1. §4.7's confirmation replay remains Michael's call. |
 | Plan checkpoint | Not measured; unchanged. |
 | Codex memories | Not measured; unchanged. |
+
+### 11.6 Rerun of 2026-11-04 (§14.5): inconclusive
+
+Harness `43c499716405bcc1a1c1cac15adfc7f2515f619a` (amendment 1), the kept state
+`~/.local/state/process-replay/2026-11-03`, driven from `~/Code/.replay`. Step 0 of the amendment
+plan's rerun ran first (`cases --open 23`): the same 23 candidates, none new. `inject` then ran seven
+times, until no answer waited. The coverage gate fails, so `run` never started and no Codex budget
+was spent (§14.5). `report` gives INCONCLUSIVE: three cases, no run. **No removal is recommended
+from this rerun.** §11.1–11.5 stay the record of 2026-11-03.
+
+**Cases.** 175 branches examined (164 on 2026-11-03), all 23 candidates opened, 3 qualified, against
+§4.1's 10–12.
+
+| Case | Repository | Branch | Counted defects | October pre-merge rounds |
+|---|---|---|---|---|
+| c6b358bef | tagteam | fix/tui-input-reader | 2 per-task, 1 pre-merge | 3 |
+| c97ff647b | VM.Deployments.Docker | feature/update-edge-stack | 7 per-task, 1 pre-merge | 5 |
+| cf4b66353 | dotfiles | feat/agent-skills | 3 per-task, 1 pre-merge | 2 |
+
+| Why the other 172 did not qualify | Branches |
+|---|---|
+| No task review joined | 68 |
+| No merge evidence | 31 |
+| Fewer than two task-review fix ranges | 25 |
+| Merged outside the window | 13 |
+| No pre-merge defect to calibrate against | 12 |
+| A round tip is gone | 11 |
+| A P0/P1 defect not shown present | 6 |
+| The last round did not approve | 4 |
+| Fewer than two (assessable) per-task P0–P2 defects | 2 |
+
+**Coverage gate (§4.3): fails.** 60 per-task defects are unassessable after the second attempt.
+
+| Reason | 2026-11-04 | 2026-11-03 |
+|---|---|---|
+| The recreation does not apply to the injected tree | 27 | 34 |
+| judge-present answered unclear | 21 (20 on the injected tree) | 30 |
+| judge-present answered no on the injected tree | 5 | 6 |
+| judge-same did not find the same defect | 5 (3 no, 2 unclear) | 3 |
+| The recreation changed nothing | 2 | 2 |
+| Total | 60 | 75 |
+
+**Inputs cut without an anchor (§14.2).** 26 judge-present inputs, all of them validation on the
+injected tree (none for presence or revalidation), showed a long file in which no anchor was located,
+and kept the cut from the top: neither the repair's located hunks nor the finding's line fell in that
+file. 23 of the 26 are test suites (`tests/xreview.test.sh` alone 9). They
+belong to 20 defects. 7 of those are among the 60: 4 of the 5 no answers and 3 of the 20 unclear
+answers on the injected tree. 12 of the other 13 were answered yes. The cut explains at most 7 of
+the 60, so most unclear answers were given on files shown whole or in windows.
+
+**Runs.** None. The four runs of 2026-11-03 are set aside as superseded, kept and not counted (the
+amendment plan's ruling R10). The two leak-scan options measured before the rerun (a scratch layout,
+and the plugin caches allowed in dotfiles cases; `~/Code/.replay/leak-scan-void-check-2026-11-04.md`)
+were not taken: they matter only once a gate passes.
+
+**The per-task reviewer's October cost** over the three cases: 34 dispatches, 22.47M tokens, 81.2
+wall minutes (c6b358bef 7 / 9.12M / 31.3 min; c97ff647b 15 / 7.99M / 32.8 min; cf4b66353 12 / 5.36M
+/ 17.1 min). 19 per-task P3 defects are listed in the report, not counted.
+
+**Cost of the rerun.** Claude: 291 transcripts (the driving session and its subagents), 0.76M output
+tokens, 168M cache reads, 12.0M cache writes. Codex: none.
+
+**Recreation agents and the push guard.** Recreations of defects in the dotfiles' push guard ran
+commands that name its file, `git-push-guard.py`, and the deployed guard denied them as a possible
+push. Its message advises, for a command that does not push, keeping `git` and `push` apart with a
+bracket (`rg 'git pu[s]h'`), and reads a word split by quotes or backslashes as a hidden push.
+- 2026-11-03: dbec693a1's agent wrote the path as `git-pus[h]-guard.py` and got through. It also ran
+  a read-only `git show b2b688c` in `~/.local/share/chezmoi`, the original repository, to restore 642
+  lines it had deleted by accident. daec60d0a's agent tried a `pu[s]h` glob; the auto-mode
+  classifier denied it, and the agent used Edit. Both recreations were later set aside (§14.4).
+- 2026-11-04: daec60d0a's agent again built a bracket-glob path, and dec780a9b's split the guard's
+  filename within a command. The classifier denied both, and they finished with Edit and Python
+  scripts. Several other agents were blocked on any command that named the file, and so was the
+  driving session's own note-taking.
+
+The bracket is the form the guard's message advises, and the form the classifier denies as a
+workaround, so a brief has to say what a recreation does on a denial (follow-up 4 below).
+
+**Other issues in the run notes.**
+- Recreation agents shared the driving session's scratchpad and overwrote one another's `fix.diff`
+  and `revert.py`. Checked tree by tree against the fix's file list, no edit crossed trees.
+- d42bbae3f's agent also edited a file the fix never touched, to make the defect real. dc7530ae3's
+  found the fix's hunks absent from its tree and invented an injection of its own. Both were resumed
+  and undone; dc7530ae3 counts as a recreation that changed nothing.
+- `gate.py`'s `tree_patches` stages with `git add -A -f`, so the `__pycache__/*.pyc` an agent's
+  checks leave in its tree would enter the recreation's patch. 10 trees had them; all were removed
+  before the next `inject`, 4 by the driving session and 6 by their agents.
+- 14 receipt nonces carry differing receipts; their rounds are left out.
+
+**Michael's decision (2026-11-04).** The per-task reviewer question is deferred until more data has
+accrued, and the per-task reviewer stays. More data means later branches. A rerun then needs their
+record kept: Claude transcripts are deleted after 30 days (`cleanupPeriodDays`), and a round tip
+that is no longer reachable survives only until `git gc`. Nothing keeps either after the 2026-11-02
+snapshot; a periodic snapshot is offered, not decided.
+
+**Before any rerun**, the harness needs:
+1. **Windows for validation inputs.** Each file a validation input shows gets an anchor, or is left
+   out. Today, a long file that neither the repair nor the finding's line reaches is cut from the
+   top (the 26 inputs above).
+2. **No `__pycache__` in recreation patches.** `tree_patches` does not stage build output that an
+   agent's checks leave behind.
+3. **A scratch directory per recreation**, named in its brief.
+4. **Recreation briefs that forbid working around a denial.** An agent whose command is denied
+   does not rephrase it, glob or split a name, or move the command into a script. It uses the
+   brief's file tools, or stops and reports the denial.
+
+These four leave the two largest causes untouched: 27 recreations that do not apply to the
+injected tree after §14.4, and 17 of the 20 unclear answers on the injected tree, whose inputs
+recorded no cut (files shown whole or in windows). Neither is analysed here. While they stand, the
+gate fails again, and three cases fall short of §4.1 even on a pass.
+
+**§5 and §6.** §5 was not run. §6 continues: the memories watcher Michael started on 2026-11-03
+keeps taking snapshots, §6 runs once about 10 cases have accrued (around 2026-11-10), and any
+removal still waits for the 2026-11-15 reading (§7.3).
+
+| Removal | Recommendation |
+|---|---|
+| Per-task reviewer | None: keep it. Deferred until more data has accrued *(Michael, 2026-11-04)*. |
+| Plan checkpoint | Not measured; unchanged. |
+| Codex memories | Pending §6. |
 
 ## 12. Left to the builder
 
