@@ -4368,14 +4368,16 @@ print -r -- "Z. the shell snapshot — public functions reload the file when the
 # --- Z. the shell snapshot ----------------------------------------------------
 # Claude Code's Bash tool sources a snapshot of the interactive shell that keeps every function
 # whose name does not start with a single "_". The public functions arrive; their helpers do not.
-# runsnap sources the file under test, drops every single-underscore function, and points
-# XDG_CONFIG_HOME at a symlink to that same file, so a reload loads the file under test and never
-# the deployed ~/.config/zsh/functions. ZXDGNONE has no zsh/functions at all.
-ZXDG="$STUBS/xdg"; ZXDGNONE="$STUBS/xdgnone"
-mkdir -p "$ZXDG/zsh" "$ZXDGNONE"; ln -s "$FUNCS" "$ZXDG/zsh/functions"
+# runsnap sources the file under test, drops every single-underscore function, and makes
+# $HOME/.config/zsh/functions (the only place a reload reads) a link to that same file, so a
+# reload loads the file under test and never the deployed one. XDG_CONFIG_HOME points at an unused
+# dir: the reload must not consult it. ZNOLINK=1 leaves $HOME without the file.
+ZXDG="$STUBS/xdg-unused"
 runsnap() {
   local dir="$1"; shift
-  OUT="$(cd "$dir" && export XDG_CONFIG_HOME="${ZXDGOVERRIDE:-$ZXDG}" && source "$FUNCS" && unfunction -m '_[^_]*' && "$@" 2>&1)"; RC=$?
+  [[ -n "${ZNOLINK-}" ]] || { mkdir -p "$HOME/.config/zsh" && ln -sf "$FUNCS" "$HOME/.config/zsh/functions" }
+  OUT="$(cd "$dir" && export XDG_CONFIG_HOME="$ZXDG" && source "$FUNCS" \
+    && unfunction -m '_[^_]*' && "$@" 2>&1)"; RC=$?
 }
 
 # Catches wt dying on "command not found: _wt_create_or_prepare" in an agent's shell.
@@ -4409,13 +4411,22 @@ hasnt "command not found" "Z3 snapshot: ... with no helper reported missing"
 # A file that cannot define the helper fails once, with the loader's message, and creates nothing.
 # Catches a reload loop (the run would not end) and a half-run (a worktree or branch left behind).
 setup
-ZXDGOVERRIDE="$ZXDGNONE" runsnap "$REPO" wt x
+ZNOLINK=1 runsnap "$REPO" wt x
 rc_is 1 "Z4 snapshot: wt with no reloadable file returns 1"
 has "did not define _wt_create_or_prepare" "Z4 snapshot: the loader names the missing helper"
 [[ -e "$HOME/Code/Org/repo-x" ]] && _fail "Z4 snapshot: no worktree is created"                                   || _pass "Z4 snapshot: no worktree is created"
 run "$REPO" git branch --list x
 eq "$OUT" "" "Z4 snapshot: no branch is created"
 eq "$(<$DLOG)" "" "Z4 snapshot: layout.sh is never invoked"
+
+# Catches the reload parsing the file under the caller's options: wt has no emulate -L zsh, so with
+# sh_glob set the reload failed on "parse error near '('" and wt never ran.
+setup
+runsnap "$REPO" eval 'setopt sh_glob; wt --no-focus sh main'
+rc_is 0 "Z5 snapshot: wt succeeds under the caller's sh_glob"
+hasnt "parse error" "Z5 snapshot: the reload parses the file under zsh's own options"
+[[ -d "$HOME/Code/Org/repo-sh" ]] && _pass "Z5 snapshot: the checkout is created under sh_glob" \
+                                  || _fail "Z5 snapshot: the checkout is created under sh_glob"
 
 export HOME="$REAL_HOME"
 print -r -- ""

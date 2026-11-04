@@ -23,9 +23,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `command chezmoi apply --dry-run --verbose`: sandboxed, so running the working tree's
   scripts is safe. The zsh wrapper reaches agent shells too (Claude Code's shell snapshot
   omits every function whose name starts with a single `_`, so each public function in
-  `~/.config/zsh/functions` reloads the file when its helper is missing): off main it
-  refuses previews, and on main its clone into `~/.cache` hits a sandbox denial. Data
-  variables (`.name`, `.email`, `.is_arm`) come from `.chezmoi.toml.tmpl`, which
+  `~/.config/zsh/functions` that uses a helper reloads the file when it is missing): off
+  main it refuses previews, and on main its clone into `~/.cache` hits a sandbox denial.
+  Data variables (`.name`, `.email`, `.is_arm`) come from `.chezmoi.toml.tmpl`, which
   `chezmoi apply --init` re-renders — not plain `apply`; `.known_hostnames` comes from
   `.chezmoidata/machines.toml`.
 - The `chezmoi` wrapper (`dot_config/zsh/functions`): Michael's `apply`, `update` and

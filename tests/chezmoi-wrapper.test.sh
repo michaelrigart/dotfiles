@@ -31,6 +31,7 @@ cat > $T/bin/chezmoi <<'EOF'
 src=""; prev=""
 for a in "$@"; do [ "$prev" = --source ] && src=$a; prev=$a; done
 printf 'ARGS %s\n' "$*" > "$LOG"
+printf 'ARGC %s\n' "$#" >> "$LOG"
 printf 'TMPDIR %s\n' "$TMPDIR" >> "$LOG"
 if [ -n "$src" ]; then printf 'SOURCE %s\n' "$src" >> "$LOG"; ls -A "$src" >> "$LOG"; else echo WORKTREE >> "$LOG"; fi
 exit ${STUBRC:-0}
@@ -182,19 +183,31 @@ fresh; chezmoi edit -i x >/dev/null 2>&1
 grep -q '^ARGS edit -i x$' $LOG 2>/dev/null && _pass "edit -i (--include) is not --init and passes through" || _fail "edit -i" "$(cat $LOG 2>/dev/null)"
 
 # Claude Code's shell snapshot keeps no function named _x: the wrapper is there, its helpers are
-# not. snap runs chezmoi in that shape, with XDG_CONFIG_HOME pointing at the file under test so the
-# reload never reads the deployed one. XDGNONE has no zsh/functions at all.
-mkdir -p $T/xdg/zsh $T/xdgnone; ln -s $FUNCS $T/xdg/zsh/functions
-snap() { ( export XDG_CONFIG_HOME=${SNAPXDG:-$T/xdg}; unfunction -m '_[^_]*'; chezmoi "$@" ) }
-# Catches the wrapper failing open: with _chezmoi_help missing, edit -a ran the real chezmoi.
+# not. snap runs chezmoi in that shape, with HOME holding a link to the file under test so the
+# reload never reads the deployed one; XDG_CONFIG_HOME points at a dir the reload must ignore.
+# SNAPHOME=$T/homenone has no .config/zsh/functions at all.
+mkdir -p $T/home/.config/zsh $T/homenone $T/xdgunused; ln -s $FUNCS $T/home/.config/zsh/functions
+snap() { ( export HOME=${SNAPHOME:-$T/home} XDG_CONFIG_HOME=${SNAPXDG:-$T/xdgunused}; unfunction -m '_[^_]*'; chezmoi "$@" ) }
 fresh; err=$(snap edit -a x 2>&1 >/dev/null); rc=$?
 (( rc == 1 )) && [[ $err == *"edit --apply is refused"* ]] && [[ $err != *"command not found"* ]] && [[ ! -e $LOG ]]   && _pass "snapshot: chezmoi edit -a is refused, the stub never runs"   || _fail "snapshot: chezmoi edit -a is refused" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
 # Catches the help check being skipped when its helper is missing: -h would reach chezmoi as is.
 fresh; err=$(snap edit -h 2>&1 >/dev/null); rc=$?
 (( rc == 0 )) && [[ $err != *"command not found"* ]] && grep -q '^ARGS help edit$' $LOG 2>/dev/null   && _pass "snapshot: chezmoi edit -h takes the help path"   || _fail "snapshot: chezmoi edit -h takes the help path" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
 # A file that cannot define the helper fails once with the loader's message, never loops, never runs chezmoi.
-fresh; err=$(SNAPXDG=$T/xdgnone snap edit x 2>&1 >/dev/null); rc=$?
+fresh; err=$(SNAPHOME=$T/homenone snap edit x 2>&1 >/dev/null); rc=$?
 (( rc == 1 )) && [[ $err == *"did not define _chezmoi_help"* ]] && [[ ! -e $LOG ]]   && _pass "snapshot: a missing functions file fails with status 1 and the stub never runs"   || _fail "snapshot: a missing functions file fails closed" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+# Catches the reload honouring XDG_CONFIG_HOME: a planted zsh/functions there would load instead of
+# $HOME/.config/zsh/functions. The planted file defines the helper and leaves a marker if it runs.
+mkdir -p $T/plant/zsh
+print -r -- '_chezmoi_help() { : > $T/plant.mark; return 1 }' > $T/plant/zsh/functions
+fresh; rm -f $T/plant.mark; err=$(SNAPXDG=$T/plant snap edit -a x 2>&1 >/dev/null); rc=$?
+(( rc == 1 )) && [[ $err == *"edit --apply is refused"* ]] && [[ ! -e $T/plant.mark ]] && [[ ! -e $LOG ]] \
+  && _pass "snapshot: a planted XDG_CONFIG_HOME file is ignored, the real one loads" \
+  || _fail "snapshot: a planted XDG_CONFIG_HOME file is ignored" "rc=$rc err=$err marker=$(ls $T/plant.mark 2>&1)"
+# Catches the guard re-running chezmoi with $@ instead of "$@": the empty argument would vanish.
+fresh; snap edit 'a b' '' >/dev/null 2>&1
+grep -qx 'ARGS edit a b ' $LOG 2>/dev/null && grep -qx 'ARGC 3' $LOG && _pass "snapshot: the re-run keeps every argument, the empty one included" \
+  || _fail "snapshot: the re-run keeps every argument" "$(cat $LOG 2>/dev/null)"
 refused "init" "chezmoi apply --init"
 refused "init $T/origin.git" "chezmoi apply --init"
 refused "update --apply=false" "update-only flags are not supported"

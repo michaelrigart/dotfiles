@@ -358,35 +358,47 @@ eq "$(<$LAYOUT_ARG)" "--no-focus --worktree $R1 ${WT:A}" \
   "B3 a leading --no-focus reaches layout.sh before the worktree mode"
 
 # Claude Code's shell snapshot keeps no function named _x, so dev meets its helpers missing.
-# Source the file, drop every single-underscore function, and point XDG_CONFIG_HOME at a copy of
-# the file under test, so the reload loads it and never the deployed ~/.config/zsh/functions.
-SNAPXDG="$ROOTTMP/snap-xdg"
-mkdir -p "$SNAPXDG/zsh"; ln -sf "$FUNCS" "$SNAPXDG/zsh/functions"
+# Source the file, drop every single-underscore function, and make $HOME/.config/zsh/functions a
+# link to the file under test, so the reload loads it and never the deployed one. XDG_CONFIG_HOME
+# points at an unused dir: the reload must not consult it.
+mkdir -p "$ROOTTMP/.config/zsh"; ln -sf "$FUNCS" "$ROOTTMP/.config/zsh/functions"
+mkdir -p "$ROOTTMP/snap-nohome"
 run_dev_snap() {
   mock_reset
   export LAYOUT_ARG="$(mktemp "${TMPROOT%/}/larg.XXXXXX")"
   export FZFLOG="$(mktemp "${TMPROOT%/}/fzflog.XXXXXX")"
-  OUT="$(HOME="$ROOTTMP" XDG_CONFIG_HOME="${SNAP_XDG:-$SNAPXDG}" DEV_LAYOUT="$LSTUB" zsh -c "
+  OUT="$(HOME="${SNAP_HOME:-$ROOTTMP}" XDG_CONFIG_HOME="${SNAP_XDG:-$ROOTTMP/xdg-unused}" DEV_LAYOUT="$LSTUB" zsh -c "
     source '$FUNCS'; unfunction -m '_[^_]*'; dev $1" 2>&1)"; RC=$?
 }
 
-# Catches dev dying with "command not found: _wt_git" when the snapshot drops its helpers.
+# Catches dev failing on the missing _wt_git when the snapshot drops its helpers. The unfixed dev
+# hides "command not found" behind 2>/dev/null and reports "is not inside a git repo" instead.
 run_dev_snap "--no-focus '$R1'"
 rc_is 0 "B4 snapshot: dev --no-focus reloads its helpers and succeeds"
-hasnt "command not found" "B4 snapshot: no helper is reported missing"
+hasnt "is not inside a git repo" "B4 snapshot: the missing helper is not reported as a non-repo"
 eq "$(<$LAYOUT_ARG)" "--no-focus $R1" "B4 snapshot: the call reaches layout.sh with its flag"
 
 # The linked-worktree path needs _wt_primary and _wt_prepare_for_herdr too.
 run_dev_snap "--no-focus '$WT'"
 rc_is 0 "B5 snapshot: a linked worktree reloads its helpers and succeeds"
-hasnt "command not found" "B5 snapshot: no helper is reported missing"
+hasnt "is not inside a git repo" "B5 snapshot: the missing helper is not reported as a non-repo"
 eq "$(<$LAYOUT_ARG)" "--no-focus --worktree $R1 ${WT:A}" "B5 snapshot: layout.sh gets the worktree mode"
 
 # A file that cannot define the helper fails once, with the loader's message; it never loops.
-SNAP_XDG="$ROOTTMP/snap-empty" run_dev_snap "--no-focus '$R1'"
+SNAP_HOME="$ROOTTMP/snap-nohome" run_dev_snap "--no-focus '$R1'"
 rc_is 1 "B6 snapshot: a missing functions file fails with status 1"
 has "did not define _wt_git" "B6 snapshot: the loader says what is missing"
 eq "$(<$LAYOUT_ARG)" "" "B6 snapshot: layout.sh is never invoked"
+
+# Catches the reload honouring XDG_CONFIG_HOME: wt runs unsandboxed, and a repository's mise [env]
+# can redirect that variable to a file the sandbox can write. Only $HOME/.config/zsh/functions loads.
+mkdir -p "$ROOTTMP/plant/zsh"
+print -r -- '_wt_git() { : > "$PLANT_MARK"; return 1 }' > "$ROOTTMP/plant/zsh/functions"
+rm -f "$ROOTTMP/plant.mark"
+PLANT_MARK="$ROOTTMP/plant.mark" SNAP_XDG="$ROOTTMP/plant" run_dev_snap "--no-focus '$R1'"
+rc_is 0 "B7 snapshot: a planted XDG_CONFIG_HOME file is ignored, the real one loads"
+[[ -e "$ROOTTMP/plant.mark" ]] && _fail "B7 snapshot: the planted file never runs" \
+                               || _pass "B7 snapshot: the planted file never runs"
 
 mkdir -p "$WT/src/deep"
 run_dev "'$WT/src/deep'"

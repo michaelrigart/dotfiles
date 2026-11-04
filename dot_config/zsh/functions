@@ -114,9 +114,13 @@ tsh() {
 # Code's shell snapshot keeps only functions whose names do not start with a single "_", so an
 # agent's shell has the public functions below without their _helpers. Each public function
 # calls this when its first helper is missing, then re-runs itself on the file's definitions.
-# This file holds only function definitions, so sourcing it from inside a function is safe.
+# This file holds only function definitions, so sourcing it from inside a function is safe, and
+# so is redefining the function that is running: zsh finishes the body it started. The path is
+# the one dot_zshrc sources, never XDG_CONFIG_HOME, which a repository's environment can
+# redirect; emulate -L zsh makes the file parse under zsh's own options, not the caller's.
 functions-reload() {
-  local file="${XDG_CONFIG_HOME:-$HOME/.config}/zsh/functions"
+  emulate -L zsh
+  local file="$HOME/.config/zsh/functions"
   [[ -r $file ]] && source "$file" && (( $+functions[$1] )) && return 0
   print -ru2 -- "functions-reload: $file did not define $1."
   return 1
