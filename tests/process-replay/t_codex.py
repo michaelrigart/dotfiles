@@ -555,6 +555,19 @@ is_("exports_forbidden: a harness export under $XDG_STATE_HOME/process-replay is
 is_("exports_forbidden: reading a file in it is a leak labelled that directory", forbid("cat {}/dot_claude/x".format(EXPORT), wall=ewall), [EXPORT + " in t1"])
 is_("exports_forbidden: ... and reading the running harness's own root is a leak", forbid("cat {}/.scripts/process-replay.py".format(helpers.SRC)), [helpers.SRC + " in t1"])
 is_("exports_forbidden: ... but a file that is no export, beside them, is not", forbid("cat {}/process-replay/other/x".format(XSH), wall=ewall), [])
+EXPORT0 = os.path.join(XSH, "process-replay", "harness-0000000")
+put(EXPORT0, "x", "x\n")
+put(os.path.join(XSH, "process-replay"), "harness-file", "not a directory\n")
+is_("exports_sorted_dirs_only: the running harness first, then the harness-* directories in sorted order, and no plain file named harness-*",
+    K.exports(), [helpers.SRC, EXPORT0, EXPORT])
+_glob = K.glob.glob
+K.glob.glob = lambda *a_, **k_: sorted(_glob(*a_, **k_), reverse=True)      # a filesystem need not list in order
+try:
+    is_("exports_sorted_dirs_only: ... whatever order the filesystem lists them in", K.exports(), [helpers.SRC, EXPORT0, EXPORT])
+finally:
+    K.glob.glob = _glob
+shutil.rmtree(EXPORT0)
+os.remove(os.path.join(XSH, "process-replay", "harness-file"))
 shutil.rmtree(EXPORT)
 is_("snapshot_new_home: the snapshot under $XDG_STATE_HOME/process-replay is a leak", forbid("ls $XDG_STATE_HOME/process-replay/snapshot/2026-11-02"),
     [os.path.join(XSH, "process-replay", "snapshot") + " in t1"])
@@ -566,6 +579,7 @@ is_("beneath_cwd: a root at the working directory counts", K.beneath(FSTATE, fwa
 is_("beneath_cwd: from the home directory it names the checkout, ~/.codex and ~/.claude",
     sorted(K.beneath(house, fwall)), sorted([house + "/Code/Org/repo", house + "/.codex", house + "/.claude"]))
 is_("beneath_cwd: a directory inside a root names nothing (the root is above it, not beneath)", K.beneath(os.path.join(FSTATE, "x"), fwall), [])
+is_("beneath_cwd: an unresolvable cwd names every root", K.beneath("x\0y", fwall), [r.label for r in fwall.roots])
 
 # ---- the review of the rewrite (eaceea4): I-1, M-1, M-2, M-3, M-5, M-6
 CX, CL = house + "/.codex", house + "/.claude"
