@@ -22,10 +22,12 @@ The fixpoint. A counted defect is in the tree by its revert (its group reverted)
   locate   the steps of the tree (the reverted groups and the recreations) form units, one step each at first. Every unit's repair (its
            steps' repairs, in the order that undoes the build) is applied to that tree on a temporary index (patches.locate), and its
            members share the hunks. A unit whose repair does not apply tries each recreation unit in the tree, those on trial too, the
-           last applied first, with that unit's repair applied first: the first that lets it apply joins it (a sibling's recreation
-           changed the lines its context holds). A join changes no tree and is never undone. A unit no join helps is merged, if it
-           holds a group, with the oldest other group whose repair, applied first, lets it apply (two fixes too close to revert apart
-           are one group); with recreations on trial, those not in the unit are blamed; else its members are out.
+           last applied first: the first whose steps, with the unit's, apply in that order joins it (a sibling's recreation changed
+           the lines its context holds). A join changes no tree and is never undone. A unit no join helps goes to resolve. If
+           recreations are on trial and none is in the unit, they are blamed and leave; else the trials in the unit leave; else a unit
+           with no group loses its recreations; else each of its groups is tried for a merge with the oldest other group whose repair,
+           applied first, lets the unit apply (two fixes too close to revert apart are one group); failing that, the members of its
+           groups are out, and its recreations stay (if they no longer apply, they go out for good at the next build).
   judge    judge-present for every member on that tree (or, while recreations are on trial, for those alone), keyed by what the
            judge sees (gate.py): a tree state already judged reuses its answer, and no question is ever overwritten. A member
            answered no or unclear is out. A round whose answers are all in and in which no defect leaves is settled. In it, a
@@ -49,7 +51,8 @@ The shipped tree is the fixpoint's last tree. check_invariant re-applies every r
 must be the final tree. Repairs (repairs/<defect>.patch) and hunks (where each repair applies in the shipped tree) are written only when
 the branch is complete: a defect's group is its unit's id (the smallest id of its steps), and its repair and hunks are the unit's.
 
-Known limit: a group stays reverted while any member is in, so a member judged absent (of a split the judge could not make, or of
+Known limits: joins are pairwise, as group merges are, so a repair that needs two recreations at once joins neither.
+A group stays reverted while any member is in, so a member judged absent (of a split the judge could not make, or of
 two fixes too close to revert apart) still has its revert in the shipped tree, inside the group's repair. The invariant holds; a
 reviewer who reports it finds a defect that is not in the case's list.
 

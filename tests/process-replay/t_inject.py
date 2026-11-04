@@ -1029,14 +1029,21 @@ ok("coverage_gate: a branch that cannot qualify (its pre-merge P1 fails) and wai
 # a branch that can no longer have two assessable per-task defects holds no place while it waits either
 S20b = setup_state("w-place-few", [rec_branch("bconf0003", RC, "feat", BC, LC, TC, at="2026-10-31T10:00:00.000000Z"), QH], {"bconf0003": [DE2, DF, dfx("d00000073", "pre", "P2", [], "src/e.txt")], "bqh1": dq})
 run(S20b)
-yes_all(S20b, ["d0000000f"])
+say(S20b, "d0000000f", "no")
 run(S20b)
-ok("place: control: while its recreation may still succeed, the branch holds the one place", not os.path.exists(os.path.join(S20b, "work", "bqh1")))
+is_("place: both per-task defects are out and requested in the settled round", wanted(S20b), ["d0000000e", "d0000000f"])
+ok("place: control: while its recreations may still succeed, the branch holds the one place", not os.path.exists(os.path.join(S20b, "work", "bqh1")))
+put(os.path.join(S20b, "recreate", rid_of(S20b, "d0000000e"), "tree"), "src/e.txt", "line1\nline2 something else\nline3\n")
 put(os.path.join(S20b, "recreate", rid_of(S20b, "d0000000e")), "done", "")
 run(S20b)
 e = examined(S20b, "bconf0003")
-ok("place: once a per-task defect is out for good and too few can still be assessed, it gives up its place",
-   "fewer than two" in e["why"] and os.path.exists(os.path.join(S20b, "work", "bqh1")), (e, os.listdir(os.path.join(S20b, "work"))))
+ok("waiting: a branch waits on a judge answer and a recreation at once: E's judge-same and F's recreation",
+   e["why"].endswith("waiting on 1 judge answer(s) and 1 recreation(s) for the coverage gate") and not os.path.exists(os.path.join(S20b, "work", "bqh1")), (e, os.listdir(os.path.join(S20b, "work"))))
+say(S20b, "d0000000e", "no", "judge-same")
+run(S20b)
+e = examined(S20b, "bconf0003")
+ok("place: once a per-task defect is out for good and too few can still be assessed, it gives up its place while a recreation waits",
+   "fewer than two" in e["why"] and "recreation" in e["why"] and os.path.exists(os.path.join(S20b, "work", "bqh1")), (e, os.listdir(os.path.join(S20b, "work"))))
 INJ.MAX_CASES = old_limits[0]
 
 
@@ -1577,9 +1584,9 @@ is_("cargo: and a pass is remembered: a third run checks nothing", (third, len(o
 
 
 # ================================================================ recreations are made against the round's injected tree (spec 14.4)
-RT = helpers.make_repo(ROOT, "roundrepo")
-BRT = cm(RT, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
-git(RT, "checkout", "-q", "-b", "feat")
+ROUND_REPO = helpers.make_repo(ROOT, "roundrepo")
+BRT = cm(ROUND_REPO, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(ROUND_REPO, "checkout", "-q", "-b", "feat")
 
 
 def forty(a="A bad", b="B bad", c="C bad"):
@@ -1588,21 +1595,21 @@ def forty(a="A bad", b="B bad", c="C bad"):
     return SS(lines)
 
 
-TRT = cm(RT, "2026-10-01T09:00:00Z", {"a.txt": forty(), "d.txt": "D bad\n", PLAN: "plan v1\n"}, "task 1")
-FRA = cm(RT, "2026-10-01T10:00:00Z", {"a.txt": forty(a="A good")}, "fix A")
-FRB = cm(RT, "2026-10-01T11:00:00Z", {"a.txt": forty(a="A good", b="B good"), PLAN: "plan v2\n"}, "fix B")
-FRD = cm(RT, "2026-10-01T12:00:00Z", {"d.txt": "D good\n"}, "fix D")
-FRC = cm(RT, "2026-10-02T10:00:00Z", {"a.txt": forty(a="A good", b="B good", c="C good")}, "fix C")
-git(RT, "checkout", "-q", "main")
-RA = dfx("d00000r01", "task", "P1", [(TRT, FRA)], "a.txt")
-RB = dfx("d00000r02", "task", "P2", [(FRA, FRB)], "a.txt", files=["a.txt", "d.txt"])
-RD = dfx("d00000r04", "task", "P2", [(FRB, FRD)], "d.txt", files=["d.txt", "a.txt"])
-RC = dfx("d00000r03", "pre", "P1", [(FRD, FRC)], "a.txt")
-RBR = rec_branch("brt000001", RT, "feat", BRT, FRC, TRT)
+TRT = cm(ROUND_REPO, "2026-10-01T09:00:00Z", {"a.txt": forty(), "d.txt": "D bad\n", PLAN: "plan v1\n"}, "task 1")
+FRA = cm(ROUND_REPO, "2026-10-01T10:00:00Z", {"a.txt": forty(a="A good")}, "fix A")
+FRB = cm(ROUND_REPO, "2026-10-01T11:00:00Z", {"a.txt": forty(a="A good", b="B good"), PLAN: "plan v2\n"}, "fix B")
+FRD = cm(ROUND_REPO, "2026-10-01T12:00:00Z", {"d.txt": "D good\n"}, "fix D")
+FRC = cm(ROUND_REPO, "2026-10-02T10:00:00Z", {"a.txt": forty(a="A good", b="B good", c="C good")}, "fix C")
+git(ROUND_REPO, "checkout", "-q", "main")
+DEF_A = dfx("d00000r01", "task", "P1", [(TRT, FRA)], "a.txt")
+DEF_B = dfx("d00000r02", "task", "P2", [(FRA, FRB)], "a.txt", files=["a.txt", "d.txt"])
+DEF_D = dfx("d00000r04", "task", "P2", [(FRB, FRD)], "d.txt", files=["d.txt", "a.txt"])
+DEF_C = dfx("d00000r03", "pre", "P1", [(FRD, FRC)], "a.txt")
+ROUND_BRANCH = rec_branch("brt000001", ROUND_REPO, "feat", BRT, FRC, TRT)
 
 
 def round_state(name, defects):
-    return setup_state(name, [RBR], {"brt000001": defects})
+    return setup_state(name, [ROUND_BRANCH], {"brt000001": defects})
 
 
 def base_tree_of(state, rid):
@@ -1623,48 +1630,48 @@ def tree_file(state, did, path):
 
 def up_to_request(name, defects=None):
     """A is answered no, B and C yes (and B and C again on the file A's revert left): the round is settled and A is requested."""
-    st = round_state(name, defects or [RA, RB, RC])
+    st = round_state(name, defects or [DEF_A, DEF_B, DEF_C])
     run(st)
-    say(st, RA["id"], "no")
-    yes_all(st, [RB["id"], RC["id"]])
+    say(st, DEF_A["id"], "no")
+    yes_all(st, [DEF_B["id"], DEF_C["id"]])
     run(st)
-    yes_all(st, [RB["id"], RC["id"]])
+    yes_all(st, [DEF_B["id"], DEF_C["id"]])
     run(st)
     return st
 
 
 S70 = up_to_request("w-round")
-rid = rid_of(S70, RA["id"])
-is_("recreation_against_round_tree: the one request is for A", wanted(S70), [RA["id"]])
+rid = rid_of(S70, DEF_A["id"])
+is_("recreation_against_round_tree: the one request is for A", wanted(S70), [DEF_A["id"]])
 is_("recreation_against_round_tree: its copy holds the round's reverts (B, C) and not A's, and the plan commit's docs/superpowers",
-    (tree_file(S70, RA["id"], "a.txt").split("\n")[9], tree_file(S70, RA["id"], "a.txt").split("\n")[14], tree_file(S70, RA["id"], "a.txt").split("\n")[34],
-     tree_file(S70, RA["id"], PLAN)), ("A good", "B bad", "C bad", "plan v1\n"))
+    (tree_file(S70, DEF_A["id"], "a.txt").split("\n")[9], tree_file(S70, DEF_A["id"], "a.txt").split("\n")[14], tree_file(S70, DEF_A["id"], "a.txt").split("\n")[34],
+     tree_file(S70, DEF_A["id"], PLAN)), ("A good", "B bad", "C bad", "plan v1\n"))
 is_("recreation_against_round_tree: its id is the defect and the first 12 hex digits of the round's injected tree",
-    rid, "{}-{}".format(RA["id"], git(inj(S70, "brt000001")["work"], "rev-parse", inj(S70, "brt000001")["work_commit"] + "^{tree}")[:12]))
-is_("recreation_against_round_tree: and of the tree its copy makes", rid, "{}-{}".format(RA["id"], base_tree_of(S70, rid)[:12]))
+    rid, "{}-{}".format(DEF_A["id"], git(inj(S70, "brt000001")["work"], "rev-parse", inj(S70, "brt000001")["work_commit"] + "^{tree}")[:12]))
+is_("recreation_against_round_tree: and of the tree its copy makes", rid, "{}-{}".format(DEF_A["id"], base_tree_of(S70, rid)[:12]))
 
 # the agent's edit puts A back and touches a line between A and B: its context holds B's reverted line
-edit = tree_file(S70, RA["id"], "a.txt").split("\n")
+edit = tree_file(S70, DEF_A["id"], "a.txt").split("\n")
 edit[9], edit[11] = "A bad", "l12 # by hand"
 put(os.path.join(S70, "recreate", rid, "tree"), "a.txt", "\n".join(edit))
 put(os.path.join(S70, "recreate", rid), "done", "")
 run(S70)
-say(S70, RA["id"], "yes", "judge-same")
+say(S70, DEF_A["id"], "yes", "judge-same")
 run(S70)
-say(S70, RA["id"], "yes")
+say(S70, DEF_A["id"], "yes")
 run(S70)
-yes_all(S70, [RB["id"], RC["id"]])
+yes_all(S70, [DEF_B["id"], DEF_C["id"]])
 run(S70)
 r = inj(S70, "brt000001")
 patch_text = open(os.path.join(S70, "recreated", rid + ".patch")).read()
 ok("sibling_context_applies_and_merges: the recreation's patch holds B's reverted line in its context (the final tree's would hold B good)",
    " B bad" in patch_text and "B good" not in patch_text, patch_text)
 is_("sibling_context_applies_and_merges: A is recreated, B and C are present, and the branch is complete",
-    (r["complete"], [r["defects"][d]["status"] for d in (RA["id"], RB["id"], RC["id"])]), (True, ["recreated", "present", "present"]))
-ra, rb, rc = (r["defects"][d] for d in (RA["id"], RB["id"], RC["id"]))
+    (r["complete"], [r["defects"][d]["status"] for d in (DEF_A["id"], DEF_B["id"], DEF_C["id"])]), (True, ["recreated", "present", "present"]))
+ra, rb, rc = (r["defects"][d] for d in (DEF_A["id"], DEF_B["id"], DEF_C["id"]))
 is_("sibling_context_applies_and_merges: A and B are one unit: the same group, the same repair bytes, the same hunks",
-    (ra["group"], rb["group"], open(ra["repair"], "rb").read() == open(rb["repair"], "rb").read(), ra["hunks"] == rb["hunks"]), (RA["id"], RA["id"], True, True))
-is_("sibling_context_applies_and_merges: C stays a unit of its own", rc["group"], RC["id"])
+    (ra["group"], rb["group"], open(ra["repair"], "rb").read() == open(rb["repair"], "rb").read(), ra["hunks"] == rb["hunks"]), (DEF_A["id"], DEF_A["id"], True, True))
+is_("sibling_context_applies_and_merges: C stays a unit of its own", rc["group"], DEF_C["id"])
 
 
 def repaired(state, work, commit, *repairs):
@@ -1700,61 +1707,61 @@ def listing(state):
 before = listing(S70)
 run(S70)
 is_("recreation_replay_stable: a second inject over the same answers writes no recreate/ item and rewrites no brief", listing(S70), before)
-is_("recreation_replay_stable: and asks for the same recreation", [rid_of(S70, RA["id"])], [rid])
+is_("recreation_replay_stable: and asks for the same recreation", [rid_of(S70, DEF_A["id"])], [rid])
 
 # B's question, asked again on the file A's recreation changed, is answered no: A's recreation no longer applies
 S71 = up_to_request("w-round-stale")
-rid71 = rid_of(S71, RA["id"])
-edit = tree_file(S71, RA["id"], "a.txt").split("\n")
+rid71 = rid_of(S71, DEF_A["id"])
+edit = tree_file(S71, DEF_A["id"], "a.txt").split("\n")
 edit[9], edit[11] = "A bad", "l12 # by hand"
 put(os.path.join(S71, "recreate", rid71, "tree"), "a.txt", "\n".join(edit))
 put(os.path.join(S71, "recreate", rid71), "done", "")
 run(S71)
-say(S71, RA["id"], "yes", "judge-same")
+say(S71, DEF_A["id"], "yes", "judge-same")
 run(S71)
-say(S71, RA["id"], "yes")
+say(S71, DEF_A["id"], "yes")
 run(S71)
-say(S71, RB["id"], "no")
-say(S71, RC["id"], "yes")
+say(S71, DEF_B["id"], "no")
+say(S71, DEF_C["id"], "yes")
 run(S71)
 r = inj(S71, "brt000001")
 is_("stale_recreation_out_for_good: A's recreation no longer applies once B's revert is out: A is unassessable, and says so",
-    (r["defects"][RA["id"]]["status"], r["defects"][RA["id"]]["reason"]), ("unassessable", "the recreation does not apply to the injected tree"))
-yes_all(S71, [RC["id"]])
+    (r["defects"][DEF_A["id"]]["status"], r["defects"][DEF_A["id"]]["reason"]), ("unassessable", "the recreation does not apply to the injected tree"))
+yes_all(S71, [DEF_C["id"]])
 run(S71)
-is_("stale_recreation_out_for_good: and no second recreate/ item is written for A", [n for n in inputs(S71, "recreate") if of(n) == RA["id"]], [rid71])
+is_("stale_recreation_out_for_good: and no second recreate/ item is written for A", [n for n in inputs(S71, "recreate") if of(n) == DEF_A["id"]], [rid71])
 
 # R1: a request waits for the round's answers, and for a round in which nothing leaves
-S72 = round_state("w-round-settled", [RA, RB, RC, RD])
+S72 = round_state("w-round-settled", [DEF_A, DEF_B, DEF_C, DEF_D])
 run(S72)
 is_("settled_round_requests: while the round's answers are pending, nothing is requested", wanted(S72), [])
-say(S72, RA["id"], "no")
-yes_all(S72, [RB["id"], RC["id"], RD["id"]])
+say(S72, DEF_A["id"], "no")
+yes_all(S72, [DEF_B["id"], DEF_C["id"], DEF_D["id"]])
 run(S72)
 is_("settled_round_requests: A is out, and its round's answers are pending again (the file A's revert held changed): nothing is requested", wanted(S72), [])
-say(S72, RD["id"], "no")
-yes_all(S72, [RB["id"], RC["id"]])
+say(S72, DEF_D["id"], "no")
+yes_all(S72, [DEF_B["id"], DEF_C["id"]])
 run(S72)
 is_("settled_round_requests: D leaves beside A in a round, and B (which shows D's file) is asked again: none is requested either, A in particular, though it is out",
     wanted(S72), [])
-yes_all(S72, [RB["id"]])
+yes_all(S72, [DEF_B["id"]])
 run(S72)
-is_("settled_round_requests: the next settled round requests both, once", wanted(S72), [RA["id"], RD["id"]])
-is_("settled_round_requests: with a base whose D file is the final one, and whose A file is too", (tree_file(S72, RA["id"], "d.txt"), tree_file(S72, RA["id"], "a.txt").split("\n")[9]),
+is_("settled_round_requests: the next settled round requests both, once", wanted(S72), [DEF_A["id"], DEF_D["id"]])
+is_("settled_round_requests: with a base whose D file is the final one, and whose A file is too", (tree_file(S72, DEF_A["id"], "d.txt"), tree_file(S72, DEF_A["id"], "a.txt").split("\n")[9]),
     ("D good\n", "A good"))
 
 # a recreation of the kept state, made against the final tree, is set aside
-S73 = round_state("w-round-old", [RA, RB, RC])
-old = {"recreate/{}.json".format(RA["id"]): '{"old": true}\n', "recreate/{}.brief.md".format(RA["id"]): "old brief\n", "recreate/{}/tree/a.txt".format(RA["id"]): forty(a="A bad"),
-       "recreate/{}/done".format(RA["id"]): "", "recreated/{}.patch".format(RA["id"]): "old patch\n", "recreated/{}.repair.patch".format(RA["id"]): "old repair\n"}
+S73 = round_state("w-round-old", [DEF_A, DEF_B, DEF_C])
+old = {"recreate/{}.json".format(DEF_A["id"]): '{"old": true}\n', "recreate/{}.brief.md".format(DEF_A["id"]): "old brief\n", "recreate/{}/tree/a.txt".format(DEF_A["id"]): forty(a="A bad"),
+       "recreate/{}/done".format(DEF_A["id"]): "", "recreated/{}.patch".format(DEF_A["id"]): "old patch\n", "recreated/{}.repair.patch".format(DEF_A["id"]): "old repair\n"}
 for rel, text in old.items():
     put(S73, rel, text)
 run(S73)
-say(S73, RA["id"], "no")
-yes_all(S73, [RB["id"], RC["id"]])
+say(S73, DEF_A["id"], "no")
+yes_all(S73, [DEF_B["id"], DEF_C["id"]])
 run(S73)
-yes_all(S73, [RB["id"], RC["id"]])
+yes_all(S73, [DEF_B["id"], DEF_C["id"]])
 run(S73)
-is_("old_recreation_set_aside: inject asks for a new recreation of A", [n for n in inputs(S73, "recreate") if n.startswith(RA["id"] + "-")], [rid_of(S73, RA["id"])])
+is_("old_recreation_set_aside: inject asks for a new recreation of A", [n for n in inputs(S73, "recreate") if n.startswith(DEF_A["id"] + "-")], [rid_of(S73, DEF_A["id"])])
 is_("old_recreation_set_aside: the old files are as they were", dict((rel, open(os.path.join(S73, rel)).read()) for rel in old), old)
-is_("old_recreation_set_aside: and pending lists only the new item", [i for k, i, *_ in C.pending(S73) if k == "recreate"], [rid_of(S73, RA["id"])])
+is_("old_recreation_set_aside: and pending lists only the new item", [i for k, i, *_ in C.pending(S73) if k == "recreate"], [rid_of(S73, DEF_A["id"])])
