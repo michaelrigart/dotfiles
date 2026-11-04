@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (Codex plan review approved round 3, xr-1793746153-36c07813).
+**Status:** Implemented (Codex pre-merge approved round 5, xr-1793778112-6b2838cb; snapshot relocated 2026-11-04; next: the rerun of §14.5). Plan review approved round 3, xr-1793746153-36c07813.
 
 **Goal:** Fix the harness defects and change the two limits that §11.4 found, so a rerun of §4 on the kept
 state can pass the coverage gate and its leak scan voids only runs that read something forbidden; then
@@ -160,7 +160,7 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
   `cargo_check(a, work, repo_name)` keeps its signature and runs with `tool_env(a.state)` plus
   `CARGO_TARGET_DIR`. Finally, `Fixpoint.env = K.tool_env(a.state)`, which both `coherent` calls pass.
 
-- [ ] **Step 1: Write the failing tests.** Each file writes its own stub shim (a bash script installed as
+- [x] **Step 1: Write the failing tests.** Each file writes its own stub shim (a bash script installed as
   `python3`, `ruby` and `cargo` in a temp bin directory put first on `PATH`). The stub walks up from `$PWD`
   to the nearest `mise.toml`. Unless that file's directory lies at or under an entry of the colon-separated
   `MISE_IGNORED_CONFIG_PATHS`, it prints `mise ERROR Config files in <dir>/mise.toml are not trusted.` on
@@ -180,15 +180,15 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
   - `mise_config_ignored`: use a branch whose final tree has a root `mise.toml` and a per-task fix of
     `src/m.py`, with the stub first on `PATH`. After `inject` and a `yes`, the defect is `present`, not
     `incoherent`. This catches an inject call site that drops the env.
-- [ ] **Step 2: Run** both files. They fail (`AttributeError: … has no attribute 'tool_env'`).
-- [ ] **Step 3: Implement** as Interfaces says.
-- [ ] **Step 4: Check the variable against the real mise** (nothing is committed). Make a temp dir holding
+- [x] **Step 2: Run** both files. They fail (`AttributeError: … has no attribute 'tool_env'`).
+- [x] **Step 3: Implement** as Interfaces says.
+- [x] **Step 4: Check the variable against the real mise** (nothing is committed). Make a temp dir holding
   a `mise.toml` with `[env]` and `REPLAY_PROBE = "1"`. With `command -v python3` resolving to a mise shim,
   `python3 -c 'print(1)'` fails with "are not trusted", and
   `MISE_IGNORED_CONFIG_PATHS="/elsewhere:<the dir's parent>" python3 -c 'print(1)'` prints `1`. A preview on
   2026-11-03 matched. If python3 is not a shim, or the sandbox denies it, say so in the report.
-- [ ] **Step 5: Run** both files. They pass.
-- [ ] **Step 6: Commit.** `Run the build checks with the work tree's mise configuration ignored`
+- [x] **Step 5: Run** both files. They pass.
+- [x] **Step 6: Commit.** `Run the build checks with the work tree's mise configuration ignored`
 
 ### Task 2: The window input (§14.2)
 
@@ -232,7 +232,7 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
     - A longer text without windows is `cap(text, min(FILE_CAP, room))`, and its path joins `cut`.
     - A name that `read` gives None for is skipped, and the loop stops once `room <= 0`.
 
-- [ ] **Step 1: Write the failing tests.** The fixture `big.txt` has 3000 lines of 31 characters
+- [x] **Step 1: Write the failing tests.** The fixture `big.txt` has 3000 lines of 31 characters
   (`line 0001 …`, about 93,000 characters).
   - `short_file_unchanged`: a 500-character file gives `([{"path": "a.py", "text": <the file>}], [])`,
     whatever the marks.
@@ -259,10 +259,10 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
     1000, and `cut == []`.
   - `huge_lines_capped` (Review Focus 3): a 4-line file of 70,000-character lines with a mark on line 2
     gives `[lines 1-4 of 4]` capped at 150,000 characters with `[truncated]`.
-- [ ] **Step 2: Run** `t_excerpts.py`. It fails (no module).
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** it. It passes.
-- [ ] **Step 5: Commit.** `Show a judge a long file around the defect, not from the top`
+- [x] **Step 2: Run** `t_excerpts.py`. It fails (no module).
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** it. It passes.
+- [x] **Step 5: Commit.** `Show a judge a long file around the defect, not from the top`
 
 ### Task 3: Literal assignments add values within a call (§14.3 c)
 
@@ -297,7 +297,7 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
     docstring's known limits gain "a loop body that runs a use again after a later assignment", and change
     "a variable set earlier" to "a variable set in another call, or to a value that is not literal".
 
-- [ ] **Step 1: Write the failing tests** (the existing `leaked`/`forbid` helpers and the `CHZ` wall).
+- [x] **Step 1: Write the failing tests** (the existing `leaked`/`forbid` helpers and the `CHZ` wall).
   - `assignment_within_call` (§14.6): `D=~/.local/share; cat $D/chezmoi/AGENTS.md` names
     `~/.local/share/chezmoi`. Today `$D` stays literal and the call is clean. The same holds for
     `export D=~/.local/share; …`, for the prefix form `D=~/.local/share sh -c 'cat $D/chezmoi/x'`, and for
@@ -312,10 +312,10 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
   - `too_many_values`: seventeen assignments, `A=/a1; …; A=/a17; cat $A/x`, give the leak
     `"$A/x (more values than the scan expands) in t1"`. Five `D=/dN;` then `cd $D && ls` give a `TOO_MANY`
     leak.
-- [ ] **Step 2: Run** `t_codex.py`. The new cases fail.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** it. It passes, the existing cases included.
-- [ ] **Step 5: Commit.** `Let a literal assignment in a tool call give its variable a value in the leak scan`
+- [x] **Step 2: Run** `t_codex.py`. The new cases fail.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** it. It passes, the existing cases included.
+- [x] **Step 5: Commit.** `Let a literal assignment in a tool call give its variable a value in the leak scan`
 
 ### Task 4: chezmoi judged by what it names (§14.3 b)
 
@@ -354,7 +354,7 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
   - `named()` stops calling `_runs`, which has no other caller and is removed.
 - Ruling R2: the source is read as a search root too, because chezmoi walks it.
 
-- [ ] **Step 1: Write the failing tests** (`CHZ`, `fc`, `leaked` as in the existing tool_words cases;
+- [x] **Step 1: Write the failing tests** (`CHZ`, `fc`, `leaked` as in the existing tool_words cases;
   `SCR` is the scratch the call runs in).
   - `version_and_help`: `chezmoi --version`, `chezmoi help` and `chezmoi help diff` give `[]`.
   - `source_into_scratch_managed` (§14.6): `chezmoi --source {SCR} managed`, `chezmoi -S {SCR} managed`,
@@ -384,9 +384,9 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
       --no-pager <sub>`, twice: once with D readable, then with D at mode 000 (restored in `finally`).
     - A `SOURCE_ONLY` subcommand passes when both runs exit 0 with the same output. The control must
       differ, in exit status or output; if it does not, the test FAILs because the probe cannot see a read.
-- [ ] **Step 2: Run** `t_codex.py`. The new scan cases fail.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** it until every case passes. **If `real_chezmoi_source_only` fails for a
+- [x] **Step 2: Run** `t_codex.py`. The new scan cases fail.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** it until every case passes. **If `real_chezmoi_source_only` fails for a
   subcommand,** that failure decides, and nothing else does:
   - Remove the subcommand from `SOURCE_ONLY`.
   - Change its `source_into_scratch_managed` cases to expect `CHZN` with the default destination and `[]`
@@ -395,7 +395,7 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
 
   A preview on 2026-11-03 (v2.74.0) passed both subcommands, and the control failed with
   `lstat …: permission denied`.
-- [ ] **Step 5: Commit.** `Judge a chezmoi call by the paths it names`
+- [x] **Step 5: Commit.** `Judge a chezmoi call by the paths it names`
 
 ### Task 5: Recreations made against the injected tree (§14.4)
 
@@ -441,7 +441,7 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
   - **Kept recreations.** The kept state's `recreate/<did>…` files were made against the final tree. They
     are never asked for again, and they stay. `pending` leaves them out (`needed.json`).
 
-- [ ] **Step 1: Write the failing tests.** The fixture is a branch whose `a.txt` has 40 lines
+- [x] **Step 1: Write the failing tests.** The fixture is a branch whose `a.txt` has 40 lines
   `l1`…`l40`, with three fixes in separate commits and groups: A (per-task) changes line 10 `A bad`→`A good`,
   B (per-task) changes line 15 `B bad`→`B good`, and C (pre-merge) changes line 35. A and B revert
   independently, five lines apart. `t_inject.py`:
@@ -485,11 +485,11 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
   `t_gate.py`:
   - `recreation_patches_against_base`: `tree_patches(work, base, dir)` diffs against base's tree. An edit
     of a file the base already reverted shows only the edit.
-- [ ] **Step 2: Run** both files. The new cases fail.
-- [ ] **Step 3: Implement.** Update the docstrings of `inject.py` (the fixpoint and "Why it ends", which
+- [x] **Step 2: Run** both files. The new cases fail.
+- [x] **Step 3: Implement.** Update the docstrings of `inject.py` (the fixpoint and "Why it ends", which
   now counts joins as free) and `gate.py` (the recreation files).
-- [ ] **Step 4: Run** both files. They pass.
-- [ ] **Step 5: Commit.** `Make each recreation against the round's injected tree and join it to what its repair needs`
+- [x] **Step 4: Run** both files. They pass.
+- [x] **Step 5: Commit.** `Make each recreation against the round's injected tree and join it to what its repair needs`
 
 ### Task 6: Window inputs at every judge-present site, and their count (§14.2)
 
@@ -524,7 +524,7 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
   - Report (bar): `report.md` gains the line `judge-present inputs cut from the top (no anchor located): N
     (presence a, validation b, revalidation c)`, and `report.json` gains `cut_inputs`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - `t_gate.py`: update the `files_input` and `validate` cases to the new signatures.
     - `validate_window`: a `big.py` of 3000 lines with a hunk at 2000–2000 gives a text starting
       `[lines 1850-2150 of 3000]`, and no `cuts/` record.
@@ -547,11 +547,11 @@ builds on. Its Part B runbook still holds, except for the paths that "After this
     X's revalidation input is windowed at `[lines 2250-2550 of 3400]`.
   - `t_bar.py`, `report_counts_cut_inputs`: records for two presence inputs and one revalidation input give
     that line with `3 (presence 2, validation 0, revalidation 1)`, and the same in `report.json`.
-- [ ] **Step 2: Run** the five files. The new cases fail.
-- [ ] **Step 3: Implement.** Remove the three old copies of the cut (`gate.files_input`'s body,
+- [x] **Step 2: Run** the five files. The new cases fail.
+- [x] **Step 3: Implement.** Remove the three old copies of the cut (`gate.files_input`'s body,
   `loop._files`'s, `inventory._files_input`) and their caps, so `excerpts` is the only place the rule lives.
-- [ ] **Step 4: Run** the five files. They pass.
-- [ ] **Step 5: Commit.** `Build every judge-present input with the window input and count the fallbacks`
+- [x] **Step 4: Run** the five files. They pass.
+- [x] **Step 5: Commit.** `Build every judge-present input with the window input and count the fallbacks`
 
 ### Task 7: The snapshot's new home, the exports forbidden, the lock wording (§14.3 a)
 
@@ -585,7 +585,7 @@ runs alone).
   - `common.py`'s module docstring: "a lock held in a conflicting mode is a refusal at once, never a wait".
   - `command_locks`: "a lock held in a mode that conflicts with this one is a Failed at once".
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - `t_common.py`, `snapshot_home_and_harness_root`: `C.snapshot_home() ==
     $XDG_STATE_HOME/process-replay/snapshot` and `C.harness_root() == helpers.SRC`. With the CLI loaded as
     `t_e2e` loads it, `CLI.snapshot_root_default()` is that home joined with `2026-11-02`.
@@ -609,10 +609,10 @@ runs alone).
     - The 66ad81cc false positive: `sed -E 's/:\s*/ /' notes.md` and `tar --include='*/SKILL.md' -cf o.tar .`
       from `REPLAY` give `[]`. The same `sed` call from `$XDG_STATE_HOME/process-replay`, which holds the
       snapshot, names the snapshot home: the matcher is unchanged, and the new layout is the fix.
-- [ ] **Step 2: Run** the three files. The new cases fail.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the three files. They pass.
-- [ ] **Step 5: Commit.** `Keep the snapshot and every harness export out of the driving session's directory and forbid them`
+- [x] **Step 2: Run** the three files. The new cases fail.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** the three files. They pass.
+- [x] **Step 5: Commit.** `Keep the snapshot and every harness export out of the driving session's directory and forbid them`
 
 ### Task 8: `run` refuses a forbidden root beneath it and a failing coverage gate (§14.3 a, §14.5)
 
@@ -650,7 +650,7 @@ runs alone).
     the fails first, unchanged, then the blocks, the coverage gate's included, so the recovery evidence stays
     in the report. With the gate holding, the precedence is today's: a fail is a fail.
 
-- [ ] **Step 1: Write the failing tests.** `t_loop.py`:
+- [x] **Step 1: Write the failing tests.** `t_loop.py`:
   - `refuses_forbidden_beneath_cwd` (§14.6): from `os.path.dirname(os.environ["XDG_STATE_HOME"])`, which
     holds the state, review-work, cxh, xreview and the snapshot home, `cmd_run` raises `Failed` naming
     `review-work`. No run directory appears, and no state file other than the lock files changes (listing
@@ -671,10 +671,10 @@ runs alone).
     `inconclusive`, and the reasons hold the fail's reason (`per-task … unrecovered while every pre-merge
     P0/P1 was recovered`) before the `coverage gate:` reason. A new row with the same runs and `NONE` still
     gives `fail`. This catches a precedence that lets a fail through a failing gate.
-- [ ] **Step 2: Run** `t_loop.py`, `t_inject.py` and `t_bar.py`. The new cases fail.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the three files. They pass. (`t_e2e.py` runs in the batch's full suite.)
-- [ ] **Step 5: Commit.** `Let run refuse a forbidden root beneath it and a failing coverage gate, and keep its verdict inconclusive`
+- [x] **Step 2: Run** `t_loop.py`, `t_inject.py` and `t_bar.py`. The new cases fail.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** the three files. They pass. (`t_e2e.py` runs in the batch's full suite.)
+- [x] **Step 5: Commit.** `Let run refuse a forbidden root beneath it and a failing coverage gate, and keep its verdict inconclusive`
 
 ### Task 9: `relocate-snapshot` (§14.3 a)
 
@@ -716,7 +716,7 @@ runs alone).
   - The `process-replay.py` docstring lists `relocate-snapshot` ("move the snapshot and rewrite the state's
     references to it") and that it holds run.lock alone.
 
-- [ ] **Step 1: Write the failing tests** (`t_relocate.py`, through the CLI module loaded as `t_e2e`
+- [x] **Step 1: Write the failing tests** (`t_relocate.py`, through the CLI module loaded as `t_e2e`
   loads it). The fixture state has:
   - a `branches.json` with two branches whose `objects` lie under OLD, and one with an original's objects;
   - two views, one with alternates under OLD and one with an original's;
@@ -738,10 +738,10 @@ runs alone).
   - `refuses`: both OLD and NEW existing, `_device` giving two devices, no `branches.json`, and `--to`
     inside `--from` each exit 1 with nothing changed.
   - `lock`: while `C.command_locks(state, "shared")` is held, the command exits 1 with nothing changed.
-- [ ] **Step 2: Run** `t_relocate.py`. It fails (unknown command).
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** it. It passes.
-- [ ] **Step 5: Commit.** `Add relocate-snapshot: move the snapshot and rewrite the state's references`
+- [x] **Step 2: Run** `t_relocate.py`. It fails (unknown command).
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** it. It passes.
+- [x] **Step 5: Commit.** `Add relocate-snapshot: move the snapshot and rewrite the state's references`
 
 ### Task 12: The pool's start check is tested below the token stop (plan review, round 1)
 
@@ -757,7 +757,7 @@ way.
 - Test: the same file, run as `./tests/xreview-replay.test.sh` (it passes when it prints no failing line
   and exits 0)
 
-- [ ] **Step 1: Rewrite the case** on a fresh state directory of its own (`unit21p`, beside `unit21`), whose
+- [x] **Step 1: Rewrite the case** on a fresh state directory of its own (`unit21p`, beside `unit21`), whose
   run files record nothing, so `Hm.spent(unit21p) == 0`. The case records what the pool submits by
   replacing `Hm.run_job` with a recorder that appends the job's label and returns `{}` (a finished job), and
   restores it afterwards. A `turn-start` count cannot show the pool's check: `review()` checks `spent_now`
@@ -767,20 +767,20 @@ way.
   - Control: with `FLIGHT` cleared and the same fresh state, the pool submits the job (the recorder holds
     its label). Without it the case cannot tell a pool that submits nothing at all.
   - `FLIGHT` is cleared afterwards, as today.
-- [ ] **Step 2: Show it bites** (nothing of this is committed). Make `run_pool`'s start check call `spent`
+- [x] **Step 2: Show it bites** (nothing of this is committed). Make `run_pool`'s start check call `spent`
   instead of `spent_now` in `.scripts/xreview-replay.py`; the new case fails and the control passes. Restore
   the file, check `git diff --quiet .scripts/xreview-replay.py`, and the case passes.
-- [ ] **Step 3: Commit.** `Test the pool's start check on a state below the token stop`
+- [x] **Step 3: Commit.** `Test the pool's start check on a state below the token stop`
 
 ### Finishing the code
 
-- [ ] `./tests/run.sh` (every default suite) and `./tests/run.sh xreview git-forge-guard wt-functions`
+- [x] `./tests/run.sh` (every default suite) and `./tests/run.sh xreview git-forge-guard wt-functions`
   (the heavy ones, as before every pre-merge review). Report passed/total.
-- [ ] Final whole-branch review (`sp-architect`) of this plan's commits against §14 and this plan, then its
+- [x] Final whole-branch review (`sp-architect`) of this plan's commits against §14 and this plan, then its
   fix wave.
-- [ ] Codex pre-merge review of the whole branch (`cross-review` skill, `--checkpoint pre-merge --diff
+- [x] Codex pre-merge review of the whole branch (`cross-review` skill, `--checkpoint pre-merge --diff
   main...replay-set`; the body names this plan's commits as the new ones), fixing every finding. Then the full and heavy suites again on the final commit.
-- [ ] Push `replay-set` (a plain `git push origin replay-set` in a call of its own).
+- [x] Push `replay-set` (a plain `git push origin replay-set` in a call of its own).
 
 ### Task 10: Relocate the kept state (operator step, run by the driver)
 
@@ -791,19 +791,19 @@ harness export are renamed on the same volume (`/System/Volumes/Data` holds both
 `~/.local/state`). Use `S=~/.local/state/process-replay/2026-11-03`, `OLD=/Users/michael/Code/.replay/snapshot`,
 and `H=~/.local/state/process-replay/harness-<sha7>` for the export of the reviewed tip.
 
-- [ ] **Step 1: Export the reviewed tip:** `mkdir -p "$H"`, then `git -C <checkout> archive <sha> | tar
+- [x] **Step 1: Export the reviewed tip:** `mkdir -p "$H"`, then `git -C <checkout> archive <sha> | tar
   -x -C "$H"`. This export is also the rerun's harness.
-- [ ] **Step 2: Nothing runs.** `pgrep -fl 'process-replay|xreview-replay'` prints nothing. If a
+- [x] **Step 2: Nothing runs.** `pgrep -fl 'process-replay|xreview-replay'` prints nothing. If a
   `memories-watch` runs (from `~/Code/.replay/harness-f0919ec`, or as a launchd job), stop and ask Michael
   to stop it, and say he restarts it in Step 6. Stop on anything else that is running.
-- [ ] **Step 3: Dry run:** `$H/.scripts/process-replay.py relocate-snapshot --state "$S" --from "$OLD"
+- [x] **Step 3: Dry run:** `$H/.scripts/process-replay.py relocate-snapshot --state "$S" --from "$OLD"
   --dry-run`. It must show the rename to `~/.local/state/process-replay/snapshot`. The counts measured
   2026-11-03 are: alternates in 6 views (chezmoi, curato, opsmaster, tagteam, VM.Inference, VM.Portal), 1
   each; `branches.json` 138 `objects` strings. Any other count: stop and report.
-- [ ] **Step 4: Move:** the same command without `--dry-run`. It prints `verified: …` and exits 0.
-- [ ] **Step 5: Move the old export** (ruling R4): `mv -n ~/Code/.replay/harness-f0919ec
+- [x] **Step 4: Move:** the same command without `--dry-run`. It prints `verified: …` and exits 0.
+- [x] **Step 5: Move the old export** (ruling R4): `mv -n ~/Code/.replay/harness-f0919ec
   ~/.local/state/process-replay/harness-f0919ec`. Then `test ! -e ~/Code/.replay/harness-f0919ec`.
-- [ ] **Step 6: Check, then restart the watcher.**
+- [x] **Step 6: Check, then restart the watcher.**
   - `ls -A ~/Code/.replay` lists no `snapshot` and no `harness-*`.
   - `fd -H -t d -g .git ~/Code/.replay` and `fd -H -t d -g objects ~/Code/.replay` print nothing: no copy
     of a repository is left.
@@ -827,10 +827,10 @@ and `H=~/.local/state/process-replay/harness-<sha7>` for the export of the revie
 The spec stays `In progress`: the rerun and its §11 results are still to come. Its Status line already
 names this plan (Global Constraints).
 
-- [ ] **Step 1:** Set this plan's Status to `Implemented (Codex pre-merge approved <receipt>; snapshot
+- [x] **Step 1:** Set this plan's Status to `Implemented (Codex pre-merge approved <receipt>; snapshot
   relocated <date>; next: the rerun of §14.5)`, and tick the boxes.
-- [ ] **Step 2: Commit.** `Mark the replay-set amendment 1 plan implemented`
-- [ ] **Step 3:** This commit follows the last pre-merge review, so dispatch a Codex pre-merge review
+- [x] **Step 2: Commit.** `Mark the replay-set amendment 1 plan implemented`
+- [x] **Step 3:** This commit follows the last pre-merge review, so dispatch a Codex pre-merge review
   (`cross-review` skill, `--diff main...replay-set`, the body naming this commit). Then push.
 
 ## After this plan: the rerun (§14.5)
@@ -930,3 +930,9 @@ These are the builder's calls on what §14 leaves open. The controller records a
   neither `--from` nor `--to`, or when an alternates line outside the new path names no directory (checked
   before anything moves, the dry run included); every alternates line under the new path must name a
   directory afterwards. A missing `--state` is left as the empty directory every command's CLI creates.
+- **R21, the watcher stayed up (Task 10 Step 2):** a `memories-watch` was running from
+  `~/Code/.replay/harness-f0919ec`. It reads its seed only when it starts (`register_seed`) and had its
+  modules loaded, so it was left running through both renames rather than stopped, and the watch log has no
+  gap; it polled on after the move. Restarted later, it takes the new paths: `$H/.scripts/process-replay.py
+  memories-watch --seed ~/.local/state/process-replay/snapshot/2026-11-02/codex-memories --seed-at
+  2026-11-02T13:21:43Z`, which finds its seed already registered.
