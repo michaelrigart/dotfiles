@@ -10,6 +10,10 @@
 # written first; that stays discipline, and no hook can observe it.
 #
 # Keyed by the edited file's checkout, never the hook's cwd (spec 2026-11-03 §3).
+# Path model: (1) the payload path, absolute against $PWD, is normalised lexically, the tool's view;
+# (2) its existing prefix is resolved physically, the missing tail appended; (3) a final symlink is
+# followed as the kernel does, physically, <=32 hops (`..` = physical parent, missing ends the walk,
+# `..` after missing fails open); (4) the checkout is the one holding that final path.
 #
 # INACTIVE by default: with no apply window open this exits immediately, which is every
 # ordinary edit. Anything unexpected — missing jq, unparseable payload, path outside the
@@ -54,20 +58,11 @@ path=$(printf '%s' "$payload" \
 [ -n "$path" ] || allow
 case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
 
-# The edited file's checkout, never the hook's cwd: the git toplevel of the nearest existing
-# ancestor of its directory (a Write into a new directory has no directory to enter yet), with
-# the missing tail appended. Both sides must be resolved before comparing: git reports a real
-# path, while a tool payload may carry the symlinked one (/var/folders vs /private/var/folders,
-# /tmp vs /private/tmp). Comparing them raw silently classifies in-repo files as outside it,
-# and the guard then allows everything — failing open in the one direction that matters.
-#
-# `..` has one model throughout: lexical, as the tool's own path normalisation and bash's logical
-# `cd` apply it. norm <absolute path> sets `npath` to the path with `.` and empty components
-# dropped and each `..` popping the component before it (never above `/`) - a stack in pure shell,
-# no subprocess. Only then is the path walked, so no `..` is left to be read two ways.
-#
-# resolve <absolute path> sets `cur` (the physical, existing directory the normalised path
-# reaches) and `miss` (the components still to be created, none of them `.` or `..`).
+# norm <absolute path> sets `npath` to the path with `.` and empty components dropped and each
+# `..` popping the component before it (never above `/`) - a stack in pure shell, no subprocess.
+# walk <start dir> <path> sets `cur` (the physical, existing directory reached) and `miss` (the
+# components after it that do not exist as directories). It changes this shell's directory, which
+# nothing later relies on.
 norm() {
   local c IFS=/
   npath=
@@ -80,31 +75,38 @@ norm() {
   done
   [ -n "$npath" ] || npath=/
 }
-resolve() {
-  local d p
-  norm "$1"; d=$npath; miss=
-  while [ ! -d "$d" ]; do
-    p=$(dirname "$d")
-    [ "$p" != "$d" ] || allow
-    miss="/$(basename "$d")$miss"; d=$p
+walk() {
+  local c IFS=/
+  cd -P -- "$1" 2>/dev/null || allow
+  miss=
+  for c in $2; do
+    case "$c" in
+      ""|.) ;;
+      ..)   [ -z "$miss" ] || allow             # the kernel fails (ENOENT) below a missing component
+            cd -P -- .. 2>/dev/null || allow ;;
+      *)    if [ -z "$miss" ] && [ -d "./$c" ]; then
+              cd -P -- "./$c" 2>/dev/null || allow
+            else
+              miss="$miss/$c"
+            fi ;;
+    esac
   done
-  cur=$(cd "$d" 2>/dev/null && pwd -P) || allow
-  [ -n "$cur" ] || allow
+  cur=$PWD
 }
 
-resolve "$path"
+norm "$path"
+walk / "$npath"
 abs="${cur%/}$miss"
-# A symlinked file belongs to its target's checkout, not to the link's directory. Follow a
-# chain up to 32 hops, the kernel's own limit (MAXSYMLINKS on macOS): a lower cap would allow a
-# chain the kernel still follows. Plain `readlink` is the one form every pinned PATH offers. A
-# loop or an unreadable link is unexpected, so it fails open like every other surprise.
+# Follow a chain up to 32 hops, the kernel's own limit (MAXSYMLINKS on macOS): a lower cap would
+# allow a chain the kernel still follows. Plain `readlink` is the one form every pinned PATH offers.
+# A link is the sole missing component, so `cur` is its own physical directory. A loop or an
+# unreadable link is unexpected, so it fails open like every other surprise.
 hops=0
 while [ -L "$abs" ]; do
   hops=$((hops + 1)); [ "$hops" -le 32 ] || allow
   target=$(readlink "$abs" 2>/dev/null) || allow
   [ -n "$target" ] || allow
-  case "$target" in /*) ;; *) target="$(dirname "$abs")/$target" ;; esac
-  resolve "$target"
+  case "$target" in /*) walk / "$target" ;; *) walk "$cur" "$target" ;; esac
   abs="${cur%/}$miss"
 done
 real=$cur

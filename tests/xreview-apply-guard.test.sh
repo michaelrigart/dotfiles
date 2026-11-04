@@ -194,6 +194,47 @@ is "L5: a 32-link chain ending at B's file is denied"  "$(edit "$A/src/c32-32")"
 is "L5: a chain past the kernel's limit is unexpected and fails open" "$(edit "$A/src/c33-33")" allow
 no_windows
 
+# --- M. The path model, one row per rule (see the guard's header). B/src/alink -> A/src from L4.
+# t <window: A|B|none> <path> <expect> <label> - one window open, one Edit, one verdict.
+t() {
+  no_windows; [ "$1" = none ] || window "${!1}"
+  is "$4" "$(edit "$2")" "$3"
+}
+ln -s alink/../src/untouched.txt "$B/src/evil"           # kernel: alink -> A/src, .. -> A: A/src/untouched.txt
+ln -s "$B/src/alink/../src/untouched.txt" "$B/src/evil-abs"
+ln -s alink/../src/in-diff.txt "$B/src/evil-diff"
+ln -s nope/../untouched.txt "$B/src/gap"                  # kernel: ENOENT at nope
+ln -s "$B/src/nope/../untouched.txt" "$B/src/gap-abs"
+ln -s alink/newdir/f.txt "$B/src/tail"                    # missing tail appended after the walk
+ln -s alink/../../repo/src/untouched.txt "$B/src/up2"     # two physical parents: A/src -> A -> $ROOT
+ln -s untouched.txt "$A/src/relnest"                      # relative text against the link's physical directory
+mkchain_up() {   # mkchain_up <prefix> <n>: <prefix>-1 -> A's file, <prefix>-k -> ../src/<prefix>-(k-1)
+  local i; ln -s "$A/src/untouched.txt" "$A/src/$1-1"
+  for ((i = 2; i <= $2; i++)); do ln -s "../src/$1-$((i - 1))" "$A/src/$1-$i"; done
+}
+mkchain_up m32 32; mkchain_up m33 33
+# rule 1: lexical, first
+t B "$B/src/nope/../alink/../untouched.txt" deny  "M1: .. after a symlinked directory is lexical (B's file)"
+t B "$B/src/./alink/../untouched.txt"       deny  "M1: . and .. are folded before anything is resolved"
+# rule 2: the existing prefix is physical, the missing tail is appended
+t A "$B/src/alink/untouched.txt"            deny  "M2: a symlinked directory in the prefix is entered physically"
+t B "$B/src/alink/untouched.txt"            allow "M2: and it is A's file, so B's window leaves it alone"
+t A "$B/src/alink/newdir/f.txt"             deny  "M2: the missing tail lands in A's checkout"
+# rule 3: the final symlink is followed physically
+t A "$B/src/evil"                           deny  "M3: relative text with .. through a symlinked directory lands in A (review case)"
+t A "$B/src/evil-abs"                       deny  "M3: absolute text with .. through a symlinked directory lands in A"
+t B "$B/src/evil"                           allow "M3: the same link is not B's file"
+t A "$B/src/evil-diff"                      allow "M3: the walk lands on A's file in the diff, not just anywhere in A"
+t A "$B/src/up2"                            deny  "M3: two .. climb two physical parents"
+t A "$B/src/alink/relnest"                  deny  "M3: relative text is taken against the link's physical directory"
+t A "$B/src/tail"                           deny  "M3: a missing component ends the walk and the rest is appended"
+t B "$B/src/gap"                            allow "M3: .. after a missing component (relative text) fails open"
+t B "$B/src/gap-abs"                        allow "M3: .. after a missing component (absolute text) fails open"
+t B "$A/src/m32-32"                         allow "M3: a 32-hop chain with .. in each hop is followed to A's file (B has no say)"
+t A "$A/src/m32-32"                         deny  "M3: ... and A's window denies it"
+t A "$A/src/m33-33"                         allow "M3: 33 hops is past the kernel's limit and fails open"
+no_windows
+
 git -C "$A" worktree remove --force "$SP" 2>/dev/null; git -C "$A" branch -D sp >/dev/null 2>&1
 git -C "$A" worktree remove --force "$B" 2>/dev/null; git -C "$A" worktree remove --force "$H" 2>/dev/null
 git -C "$A" branch -D b h >/dev/null 2>&1
