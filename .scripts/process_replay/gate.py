@@ -4,12 +4,14 @@ Every judge-present and judge-same question is keyed by what the judge sees: its
 sha256 of its input>. A question about a given state of the files is asked once; its answer serves every run and every round that
 asks the same; and no input is ever rewritten, or its answer set aside, by a later question, which has another id.
 
-The coverage gate: a per-task defect that leaves the injected tree gets one hand re-creation.
+The coverage gate: a per-task defect that leaves the injected tree gets one hand re-creation, made against the round's injected tree (the
+final tree with every other active group reverted and docs/superpowers pinned: its base). Its id is <defect>-<the first 12 hex digits of its
+base's tree id>, so a recreation made against another tree is another one, and a replay asks for the same.
 
-  recreate/<defect>.json, recreate/<defect>.brief.md   the finding, the fix and a plain copy of the final tree, and what to do with it
-  recreate/<defect>/done                               the agent's signal that it has edited recreate/<defect>/tree
-  recreated/<defect>.patch, .repair.patch              the final tree against the edited copy, and back
-  judge-same/<defect>-<digest>                         is the edit the same defect
+  recreate/<id>.json, recreate/<id>.brief.md   the finding, the fix and a plain copy of the base tree, and what to do with it
+  recreate/<id>/done                           the agent's signal that it has edited recreate/<id>/tree
+  recreated/<id>.patch, .repair.patch          the base tree against the edited copy, and back
+  judge-same/<defect>-<digest>                 is the edit the same defect
 """
 import hashlib
 import json
@@ -92,48 +94,55 @@ def validate(state, work, rev, d, counts):
     return jid, _verdict(ans)
 
 
-def tree_patches(work, final, tree_dir):
-    """(patch, reverse patch) between the final tree and the edited copy of it, outside docs/superpowers."""
+def tree_patches(work, base, tree_dir):
+    """(patch, reverse patch) between the tree of commit `base` and the edited copy of it, outside docs/superpowers."""
     tmp = tempfile.mkdtemp(prefix="inject-index.")
     try:
         gd = os.path.join(work, ".git")
         env = C.git_env({"GIT_INDEX_FILE": os.path.join(tmp, "index")})
-        base = ["git", "--git-dir", gd, "--work-tree", tree_dir] + scratch.NEUTRAL
+        git = ["git", "--git-dir", gd, "--work-tree", tree_dir] + scratch.NEUTRAL
         for argv in (["add", "-A", "-f", "--", "."], ["write-tree"]):
-            p = subprocess.run(base + argv, cwd=tree_dir, env=env, capture_output=True)
+            p = subprocess.run(git + argv, cwd=tree_dir, env=env, capture_output=True)
             if p.returncode != 0:
                 raise Failed("cannot read {}: {}".format(tree_dir, p.stderr.decode("utf-8", "replace").strip()))
         edited = p.stdout.decode().strip()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    old = C.git(work, "rev-parse", final + "^{tree}")
+    old = C.git(work, "rev-parse", base + "^{tree}")
     return P.diff(work, old, edited), P.diff(work, edited, old)
 
 
-def recreation(a, work, final, d, fix_text, counts):
-    """The one second attempt of a per-task defect: {kind, why, patch, reverse, wait, same}. kind is "agent" (the recreation is not
-    finished; wait: the defect), "judge" (judge-same has not answered; wait: its id), "unassessable", or "candidate" (patch: the final
-    tree against the edit; reverse: the patch that undoes it). same: the id of the judge-same question, once it is asked."""
+def recreation_id(did, tree):
+    """<defect>-<the first 12 hex digits of the tree id>: the recreation of `did` made against that tree."""
+    return "{}-{}".format(did, tree[:12])
+
+
+def recreation(a, work, base, d, fix_text, counts):
+    """The one second attempt of a per-task defect, made against commit `base` of `work`: {kind, why, patch, reverse, wait, same, rid}. kind
+    is "agent" (the recreation is not finished; wait: the defect), "judge" (judge-same has not answered; wait: its id), "unassessable", or
+    "candidate" (patch: base's tree against the edit; reverse: the patch that undoes it). same: the id of the judge-same question, once it
+    is asked. rid: the id of the recreation's files."""
     state = a.state
+    rid = recreation_id(d["id"], C.git(work, "rev-parse", base + "^{tree}"))
 
     def out(kind, why, patch=None, reverse=None, wait=None, same=None):
-        return {"kind": kind, "why": why, "patch": patch, "reverse": reverse, "wait": wait, "same": same}
+        return {"kind": kind, "why": why, "patch": patch, "reverse": reverse, "wait": wait, "same": same, "rid": rid}
 
-    brief = os.path.join(state, "recreate", d["id"] + ".json")
-    tree = os.path.join(state, "recreate", d["id"], "tree")
+    brief = os.path.join(state, "recreate", rid + ".json")
+    tree = os.path.join(state, "recreate", rid, "tree")
     if not os.path.exists(brief):
         if not os.path.isdir(tree):
-            scratch.export(os.path.join(work, ".git", "objects"), final, tree)
+            scratch.export(os.path.join(work, ".git", "objects"), base, tree)
         C.jsave(brief, {"finding": finding(d), "fix": C.cap(P.judge_text(fix_text), I.REPORT_CAP * 2), "tree": C.aliased(state, tree)})
-    text = os.path.join(state, "recreate", d["id"] + ".brief.md")
+    text = os.path.join(state, "recreate", rid + ".brief.md")
     if not os.path.exists(text):
         C.jsave(text, RECREATE_BRIEF.format(spec=C.aliased(state, brief), tree=C.aliased(state, tree),
-                                            done=C.aliased(state, os.path.join(state, "recreate", d["id"], "done"))))
-    if not os.path.exists(os.path.join(state, "recreate", d["id"], "done")):
+                                            done=C.aliased(state, os.path.join(state, "recreate", rid, "done"))))
+    if not os.path.exists(os.path.join(state, "recreate", rid, "done")):
         return out("agent", "the recreation is not finished", wait=d["id"])
-    mine = os.path.join(state, "recreated", d["id"])
+    mine = os.path.join(state, "recreated", rid)
     if not os.path.exists(mine + ".patch"):
-        patch, reverse = tree_patches(work, final, tree)
+        patch, reverse = tree_patches(work, base, tree)
         os.makedirs(os.path.dirname(mine), exist_ok=True)
         for suffix, body in ((".repair.patch", reverse), (".patch", patch)):     # each whole or absent: .patch existing means both are made
             C._write_if_changed(mine + suffix, P.to_bytes(body))

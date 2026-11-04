@@ -69,25 +69,27 @@ is_("validate: and the first question keeps its input and its answer: nothing is
 is_("validate: back on the first tree, the first answer serves", G.validate(STATE, WORK, F, D, counts), (jid, "unclear"))
 
 # ---- tree_patches, recreation
-TREE_DIR = os.path.join(STATE, "recreate", "d00000001", "tree")
 a_ = Namespace(state=STATE)
+RID = G.recreation_id("d00000001", TREE)
+is_("recreation_id: the defect and the first 12 hex digits of the base's tree id", RID, "d00000001-" + TREE[:12])
 got = G.recreation(a_, WORK, F, D, "FIX TEXT", counts)
-is_("recreation: before the agent signals it is finished, the recreation waits for the agent", (got["kind"], got["wait"]), ("agent", "d00000001"))
-brief = C.jload(os.path.join(STATE, "recreate", "d00000001.json"))
+is_("recreation: before the agent signals it is finished, the recreation waits for the agent", (got["kind"], got["wait"], got["rid"]), ("agent", "d00000001", RID))
+TREE_DIR = os.path.join(STATE, "recreate", RID, "tree")
+brief = C.jload(os.path.join(STATE, "recreate", RID + ".json"))
 is_("recreation: the brief is {finding, fix, tree}", (sorted(brief), brief["fix"]), (["finding", "fix", "tree"], "FIX TEXT"))
-ok("recreation: and the tree is a plain copy of the final tree", open(os.path.join(TREE_DIR, "src", "e.py")).read() == "line1\nline2 fixed\nline3\n"
+ok("recreation: and the tree is a plain copy of the base tree", open(os.path.join(TREE_DIR, "src", "e.py")).read() == "line1\nline2 fixed\nline3\n"
    and not os.path.exists(os.path.join(TREE_DIR, ".git")))
-text = open(os.path.join(STATE, "recreate", "d00000001.brief.md")).read()
+text = open(os.path.join(STATE, "recreate", RID + ".brief.md")).read()
 ok("recreation: the agent's brief names the three paths and what to do", brief["tree"] in text and "create an empty file" in text and "Do not use git" in text, text)
-first = open(os.path.join(STATE, "recreate", "d00000001.brief.md")).read()
+first = open(os.path.join(STATE, "recreate", RID + ".brief.md")).read()
 G.recreation(a_, WORK, F, D, "OTHER FIX TEXT", counts)
-is_("recreation: the briefs are written once", open(os.path.join(STATE, "recreate", "d00000001.brief.md")).read(), first)
-put(os.path.join(STATE, "recreate", "d00000001"), "done", "")
+is_("recreation: the briefs are written once", open(os.path.join(STATE, "recreate", RID + ".brief.md")).read(), first)
+put(os.path.join(STATE, "recreate", RID), "done", "")
 got = G.recreation(a_, WORK, F, D, "FIX TEXT", counts)
 is_("recreation: finished with nothing edited, it changed nothing", (got["kind"], got["why"]), ("unassessable", "the recreation changed nothing"))
 put(TREE_DIR, "src/e.py", "line1\nline2 BROKEN\nline3\n")
 put(TREE_DIR, "docs/superpowers/plans/p.md", "an edit of the docs\n")
-os.unlink(os.path.join(STATE, "recreated", "d00000001.patch"))
+os.unlink(os.path.join(STATE, "recreated", RID + ".patch"))
 real_to_bytes, made = G.P.to_bytes, []
 
 
@@ -105,15 +107,27 @@ except KeyboardInterrupt:
     pass
 G.P.to_bytes = real_to_bytes
 ok("recreation_atomic: a process killed while recreated/<d>.patch is written leaves no patch file: it is never read half-made (as 'changed nothing') "
-   "and cleanup, which keys on it, keeps the tree", not os.path.exists(os.path.join(STATE, "recreated", "d00000001.patch")))
+   "and cleanup, which keys on it, keeps the tree", not os.path.exists(os.path.join(STATE, "recreated", RID + ".patch")))
 got = G.recreation(a_, WORK, F, D, "FIX TEXT", counts)
 same = got["wait"]
 ok("recreation: an edit waits for judge-same, a question keyed by its input", got["kind"] == "judge" and same == G.question_id("d00000001", C.jload(os.path.join(STATE, "judge-same", same + ".json"))), got)
-ok("recreation: the patch is the final tree against the edit, outside docs/superpowers", "+line2 BROKEN" in open(os.path.join(STATE, "recreated", "d00000001.patch")).read()
-   and "docs/superpowers" not in open(os.path.join(STATE, "recreated", "d00000001.patch")).read())
+ok("recreation: the patch is the base tree against the edit, outside docs/superpowers", "+line2 BROKEN" in open(os.path.join(STATE, "recreated", RID + ".patch")).read()
+   and "docs/superpowers" not in open(os.path.join(STATE, "recreated", RID + ".patch")).read())
 C.jsave(os.path.join(STATE, "judge-same", same + ".answer.json"), {"answer": "no"})
 got = G.recreation(a_, WORK, F, D, "FIX TEXT", counts)
 is_("recreation: judge-same no is unassessable", (got["kind"], got["why"]), ("unassessable", "the judge did not find the same defect (no)"))
 C.jsave(os.path.join(STATE, "judge-same", same + ".answer.json"), {"answer": "yes"})
 got = G.recreation(a_, WORK, F, D, "FIX TEXT", counts)
 is_("recreation: judge-same yes gives the patch and the reverse patch", (got["kind"], "+line2 BROKEN" in got["patch"], "-line2 BROKEN" in got["reverse"]), ("candidate", True, True))
+
+# ---- a recreation made against a base: its patch is that base's tree against the edit
+put(R, "src/e.py", "line1\nline2 reverted\nline3\n")
+BASED = helpers.commit(R, "a base that reverted one line")
+git(WORK, "fetch", "-q", R, BASED)
+EDITED = os.path.join(ROOT, "based-copy")
+scratch.export(os.path.join(R, ".git", "objects"), BASED, EDITED)
+put(EDITED, "src/e.py", "line1\nline2 reverted\nline3 edited\n")
+patch, reverse = G.tree_patches(WORK, BASED, EDITED)
+ok("recreation_patches_against_base: an edit of a file the base already reverted shows only the edit",
+   "+line3 edited" in patch and "-line3\n" in patch and "line2 fixed" not in patch and "+line2 reverted" not in patch, patch)
+ok("recreation_patches_against_base: and the reverse patch undoes only it", "-line3 edited" in reverse and "+line3\n" in reverse and "line2 fixed" not in reverse, reverse)

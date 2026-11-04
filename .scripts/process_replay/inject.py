@@ -19,29 +19,35 @@ The fixpoint. A counted defect is in the tree by its revert (its group reverted)
            pass is remembered per tree id across runs, a failure or a timeout only within the run, so the next run checks again; on
            failure the newest step is left out: a trial, a recreation, then the latest fix's revert; a timeout is recorded and
            leaves nothing out); then docs/superpowers pinned to the plan commit.
-  locate   every member's repair (its group's patch, or the reverse of its recreation) is applied to that tree on a temporary index
-           (patches.locate). A group whose repair does not apply is merged with the oldest other group whose repair, applied
-           first, lets it apply (two fixes too close to revert apart are one group), else its members are out. Recreations on
-           trial are blamed for any repair that stops applying when they join.
+  locate   the steps of the tree (the reverted groups and the recreations) form units, one step each at first. Every unit's repair (its
+           steps' repairs, in the order that undoes the build) is applied to that tree on a temporary index (patches.locate), and its
+           members share the hunks. A unit whose repair does not apply tries each recreation unit in the tree, those on trial too, the
+           last applied first, with that unit's repair applied first: the first that lets it apply joins it (a sibling's recreation
+           changed the lines its context holds). A join changes no tree and is never undone. A unit no join helps is merged, if it
+           holds a group, with the oldest other group whose repair, applied first, lets it apply (two fixes too close to revert apart
+           are one group); with recreations on trial, those not in the unit are blamed; else its members are out.
   judge    judge-present for every member on that tree (or, while recreations are on trial, for those alone), keyed by what the
            judge sees (gate.py): a tree state already judged reuses its answer, and no question is ever overwritten. A member
-           answered no or unclear is out. A per-task defect that is out gets its one recreation (gate.recreation): when judge-same
-           accepts it, it joins on trial; when judge-present then finds it in the tree, it is in by its recreation. Not while its
-           group stays reverted for another member: a recreation is made against F, so its context holds lines that revert
-           changed and it cannot apply. It waits, and if the tree settles with the group still reverted it is unassessable.
+           answered no or unclear is out. A round whose answers are all in and in which no defect leaves is settled. In it, a
+           per-task defect that is out gets its one recreation (gate.recreation), made against the round's injected tree: the final
+           tree with the settled round's reverted groups reverted and docs/superpowers pinned, no recreation applied (recreation_base).
+           When judge-same accepts it, it joins on trial; when judge-present then finds it in the tree, it is in by its recreation. Not
+           while its group stays reverted for another member: it waits, and if the tree settles with the group still reverted it is
+           unassessable. A recreation that no longer applies once the tree changes under it is out for good.
   Rounds repeat until a round changes nothing. A round stops the fixpoint while any of its judge-present questions is unanswered,
   or, when it would end or take recreations on trial, while a recreation it could take is unfinished (judge-same unanswered, or
   no `done`); the next `inject` replays the same rounds from the answers on disk and goes on from there.
 
 Why it ends. Give each counted defect a stage: 0 in by revert, 1 out awaiting its recreation (per-task only), 2 on trial, 3 in by
 recreation, 4 out for good. A defect only ever moves to a higher stage: nothing that is out comes back by revert, and a recreation is
-tried once. Groups only ever merge. Every round that does not stop or finish moves a defect up a stage or merges two groups, so a
-branch with D counted defects and G groups settles in at most 4*D + G + 1 rounds (exceeding it raises Failed). Its questions are a
-function of the answers on disk, never overwritten, so every run replays the same rounds: there is nothing to alternate between.
+tried once. Groups only ever merge, and units only ever grow. Every round that does not stop or finish moves a defect up a stage or
+merges two groups; a join changes no tree and costs no round. So a branch with D counted defects and G groups settles in at most
+4*D + G + 1 rounds (exceeding it raises Failed). Its questions are a function of the answers on disk, never overwritten, so every run
+replays the same rounds: there is nothing to alternate between.
 
 The shipped tree is the fixpoint's last tree. check_invariant re-applies every repair to it and restores docs/superpowers: the result
 must be the final tree. Repairs (repairs/<defect>.patch) and hunks (where each repair applies in the shipped tree) are written only when
-the branch is complete.
+the branch is complete: a defect's group is its unit's id (the smallest id of its steps), and its repair and hunks are the unit's.
 
 Known limit: a group stays reverted while any member is in, so a member judged absent (of a split the judge could not make, or of
 two fixes too close to revert apart) still has its revert in the shipped tree, inside the group's repair. The invariant holds; a
@@ -351,7 +357,8 @@ class Fixpoint(object):
     """The injected tree of one branch and where each counted defect stands in it, settled by run() (see the module docstring).
 
     mode {defect: revert|trial|recreated} holds the defects in the tree; out {defect: (status, reason)} those that are not; tried the
-    per-task defects whose one recreation is used; left {defect: (status, reason)} why a defect last left by its revert."""
+    per-task defects whose one recreation is used; left {defect: (status, reason)} why a defect last left by its revert. A step is
+    ("grp", group id) or ("rec", defect); join links the steps of one unit."""
 
     def __init__(self, a, br, view, work, final, plan, defects, fix_text, counts, cargo_passed, questions):
         self.a, self.br, self.view, self.work, self.final, self.counts, self.questions = a, br, view, work, final, counts, questions
@@ -359,6 +366,7 @@ class Fixpoint(object):
         self.fix_text = fix_text
         self.groups = list(plan["groups"])
         self.mode, self.out, self.left, self.rec, self.tried = {}, {}, {}, {}, set()
+        self.join = {}
         self.passed, self.failed, self.cargo_checks = set(cargo_passed), {}, []
         self.notes, self.undone, self.rounds = [], 0, 0
         self.env = K.tool_env(a.state)
@@ -395,6 +403,55 @@ class Fixpoint(object):
 
     def trials(self):
         return sorted(d for d, m in self.mode.items() if m == TRIAL)
+
+    # -- units: the steps whose repairs must be applied together
+    def find(self, step):
+        while self.join.get(step, step) != step:
+            step = self.join[step]
+        return step
+
+    def link(self, one, other):
+        self.join[self.find(one)] = self.find(other)
+
+    def step_order(self):
+        """[(step, label, repair)] of every step in the tree, in the order that undoes the build: the recreations (last first), then
+        the groups, oldest fix first."""
+        return ([(("rec", did), did, self.rec[did][1]) for did in reversed(self.recreations())]
+                + [(("grp", g["id"]), g["id"], g["patch"]) for g in reversed(self.reverted())])
+
+    def units(self):
+        """[[(step, label, repair)]]: the units of the tree, in the order build applied their first step; each in step_order."""
+        order = self.step_order()
+        roots = list(collections.OrderedDict((self.find(s[0]), None) for s in reversed(order)))
+        return [[s for s in order if self.find(s[0]) == r] for r in roots]
+
+    def members(self, unit):
+        """The defects in the tree that a unit's steps stand for."""
+        groups = dict((g["id"], g) for g in self.groups)
+        return [m for kind, ident in (s[0] for s in unit) for m in
+                ([x for x in groups[ident]["members"] if self.mode.get(x) == REVERT] if kind == "grp" else [ident])]
+
+    def locate_unit(self, head, unit, cache):
+        key = tuple(s[0] for s in unit)
+        if key not in cache:
+            cache[key] = P.locate(self.work, head, "".join(s[2] for s in unit))
+        return cache[key]
+
+    def joined(self, head, unit, cache):
+        """True when a recreation unit of the tree lets this unit's repair apply, and the two are one unit now."""
+        order = self.step_order()
+        position = dict((s[0], n) for n, s in enumerate(order))
+        seen = set([self.find(unit[0][0])])
+        for did in reversed(self.recreations()):
+            root = self.find(("rec", did))
+            if root in seen:
+                continue
+            seen.add(root)
+            both = sorted(unit + [s for s in order if self.find(s[0]) == root], key=lambda s: position[s[0]])
+            if self.locate_unit(head, both, cache)[0] is not None:
+                self.link(unit[0][0], ("rec", did))
+                return True
+        return False
 
     # -- one round
     def build(self):
@@ -471,43 +528,68 @@ class Fixpoint(object):
         return verdict
 
     def locate(self, head):
-        """({defect: hunks}, None) when every repair applies to the tree at head, else (_, (step, why)): the first that does not, a
-        group or a recreated defect."""
-        located = {}
-        for g in self.reverted():
-            hunks, why = P.locate(self.work, head, g["patch"])
-            if hunks is None:
-                return located, (g, why)
-            located.update((m, hunks) for m in g["members"] if self.mode.get(m) == REVERT)
-        for did in self.recreations():
-            hunks, why = P.locate(self.work, head, self.rec[did][1])
-            if hunks is None:
-                return located, (did, why)
-            located[did] = hunks
-        return located, None
+        """({defect: hunks}, None) when every unit's repair applies to the tree at head, else (_, (unit, why)): the first that does not
+        and that no join helps. A join starts the pass again with the bigger unit."""
+        cache = {}
+        while True:
+            located = {}
+            for unit in self.units():
+                hunks, why = self.locate_unit(head, unit, cache)
+                if hunks is None:
+                    if self.joined(head, unit, cache):
+                        break
+                    return located, (unit, why)
+                located.update((m, hunks) for m in self.members(unit))
+            else:
+                return located, None
 
-    def resolve(self, head, step, why):
-        """The repair of `step` (a group, or a recreated defect) does not apply to the tree at head. In a round with recreations on
-        trial, the round before took every repair, so the trials broke it: they leave. Else a group is merged with the oldest other
-        reverted group whose repair, applied before it, lets it apply (two fixes too close to revert apart); failing that, or for a
-        recreation, its defects leave."""
+    def resolve(self, head, unit, why):
+        """The repair of `unit` does not apply to the tree at head, and no recreation joins it. If recreations are on trial and none is
+        in the unit, the trials broke it: they leave. Else the trials in it leave; failing that, its groups are merged with the oldest
+        other reverted group whose repair, applied before it, lets the unit apply (two fixes too close to revert apart); failing that,
+        the members of its groups leave, or, with no group in it, its recreations."""
         why = "its repair does not apply to the injected tree: " + why
-        trials = self.trials()
-        if trials and step not in trials:
+        trials, recs = self.trials(), [s[0][1] for s in unit if s[0][0] == "rec"]
+        if trials and not set(trials) & set(recs):
             for did in trials:
                 self.leave(did, "unassessable", "on trial, it stopped the repair of another defect from applying")
             return
-        if not isinstance(step, dict):
-            self.leave(step, "unassessable", why)
+        mine = [did for did in recs if did in trials]
+        if mine:
+            for did in mine:
+                self.leave(did, "unassessable", why)
             return
-        for h in sorted((x for x in self.reverted() if x is not step), key=lambda x: -x["pieces"][0]["rank"]):
-            both = merge_groups(step, h)
-            if P.locate(self.work, head, both["patch"])[0] is not None:
-                self.groups = sorted([x for x in self.groups if x is not step and x is not h] + [both], key=_group_order)
-                return
-        for m in step["members"]:
-            if self.mode.get(m) == REVERT:
-                self.leave(m, "dropped-revert", why)
+        by_id = dict((g["id"], g) for g in self.groups)
+        mine = [by_id[s[0][1]] for s in unit if s[0][0] == "grp"]
+        if not mine:
+            for did in recs:
+                self.leave(did, "unassessable", why)
+            return
+        inside = set(("grp", g["id"]) for g in mine)
+        for step in mine:
+            for h in sorted((x for x in self.reverted() if ("grp", x["id"]) not in inside), key=lambda x: -x["pieces"][0]["rank"]):
+                both = merge_groups(step, h)
+                if self.merge_applies(head, unit, step, h, both):
+                    self.groups = sorted([x for x in self.groups if x is not step and x is not h] + [both], key=_group_order)
+                    for old in (step, h):
+                        self.link(("grp", old["id"]), ("grp", both["id"]))
+                    self.link(unit[0][0], ("grp", both["id"]))
+                    return
+        for step in mine:
+            for m in step["members"]:
+                if self.mode.get(m) == REVERT:
+                    self.leave(m, "dropped-revert", why)
+
+    def merge_applies(self, head, unit, step, other, both):
+        """Does the repair of `unit` and of the unit `other` stands in, with the groups `step` and `other` merged into `both`, apply to the
+        tree at head."""
+        root = self.find(("grp", other["id"]))
+        together = unit + [s for s in self.step_order() if self.find(s[0]) == root]
+        by_id = dict((g["id"], g) for g in self.groups)
+        groups = [by_id[s[0][1]] for s in together if s[0][0] == "grp" and s[0][1] not in (step["id"], other["id"])] + [both]
+        recs = [s for s in self.step_order() if s[0][0] == "rec" and s in together]
+        text = "".join(s[2] for s in recs) + "".join(g["patch"] for g in sorted(groups, key=_group_order, reverse=True))
+        return P.locate(self.work, head, text)[0] is not None
 
     def judge(self, head, ids):
         """({defect: answer}, [ids of the questions still waiting]) of judge-present on the tree at head."""
@@ -526,15 +608,31 @@ class Fixpoint(object):
         g = self.group_of(did)
         return g is not None and any(self.mode.get(m) == REVERT for m in g["members"])
 
+    def recreation_base(self):
+        """The commit a recreation is made against: the final tree with the groups of reverted() reverted, as build reverted them (they
+        passed this round's checks), and docs/superpowers pinned, with no recreation applied. The work tree is left at the round's head."""
+        _clean(self.work, self.final)
+        for g in self.reverted():
+            why = _apply(self.work, [p["text"] for p in g["pieces"]], reverse=True)
+            if why:
+                raise Failed("branch {}: the revert of {} no longer applies: {}".format(self.br["id"], g["id"], why))
+        pin_docs(self.work, self.view, self.br["plan_commit"])
+        base = _commit(self.work, scratch.MESSAGE)
+        _clean(self.work, self.head)
+        return base
+
     def second_attempts(self):
         """Every per-task defect that is out, has not had its recreation and is not held: requested (once), then out for good, a
-        candidate, or waiting. ({defect: (patch, reverse)} of the candidates, {kind: [what waits]})."""
-        cands, waiting = {}, {"recreate": [], "judge-same": []}
+        candidate, or waiting. The recreations are made against the round's injected tree (recreation_base), built when the first is
+        due. ({defect: (patch, reverse)} of the candidates, {kind: [what waits]})."""
+        cands, waiting, base = {}, {"recreate": [], "judge-same": []}, None
         for did in sorted(self.out):
             if not self.task(did) or did in self.tried or self.held(did):
                 continue
-            got = G.recreation(self.a, self.work, self.final, self.defects[did], self.fix_text[did], self.counts)
-            self.questions.note("recreate", did, got["kind"] != "agent")
+            if base is None:
+                base = self.recreation_base()
+            got = G.recreation(self.a, self.work, base, self.defects[did], self.fix_text[did], self.counts)
+            self.questions.note("recreate", got["rid"], got["kind"] != "agent")
             if got["same"]:
                 self.questions.note("judge-same", got["same"], got["kind"] != "judge")
             if got["kind"] == "agent":
@@ -575,22 +673,20 @@ class Fixpoint(object):
                         self.leave(did, "unassessable", "the judge answered {} on the injected tree".format(answers[did]))
                 continue
             self.answers = answers
-            cands, more = self.second_attempts()
-            more["judge-present"] = waiting
             if waiting:
-                return self.wait(more)
+                return self.wait({"judge-present": waiting})
             gone = [d for d in sorted(answers) if answers[d] != "yes"]
             for did in gone:
                 self.leave(did, "not-present" if self.mode[did] == REVERT else "unassessable", "the judge answered {}".format(answers[did]))
             if gone:
                 continue
+            cands, more = self.second_attempts()
             if more["recreate"] or more["judge-same"]:
                 return self.wait(more)
             if not cands:
                 for did in [d for d in sorted(self.out) if self.task(d) and d not in self.tried and self.held(d)]:
                     self.tried.add(did)
-                    self.out[did] = ("unassessable", "its group's revert stays in the tree, so a recreation made against the final tree "
-                                                     "cannot apply")
+                    self.out[did] = ("unassessable", "its group's revert stays in the tree for another member")
                 return True
             for did, pair in sorted(cands.items()):
                 self.tried.add(did)
@@ -620,18 +716,18 @@ class Fixpoint(object):
         return self.out[did]
 
     def repair(self, did):
-        """(group, repair patch) of a defect in the tree, else (group, None)."""
+        """(unit id, unit repair patch) of a defect in the tree, else (group, None). A unit's id is the smallest id of its steps and its
+        repair is theirs, in steps() order."""
         mode, g = self.mode.get(did), self.group_of(did)
-        if mode == REVERT:
-            return g["id"], g["patch"]
-        if mode == RECREATED:
-            return did, self.rec[did][1]
-        return (g["id"] if g else did), None
+        if mode not in (REVERT, RECREATED):
+            return (g["id"] if g else did), None
+        step = ("grp", g["id"]) if mode == REVERT else ("rec", did)
+        unit = [u for u in self.units() if step in [s[0] for s in u]][0]
+        return min(s[1] for s in unit), "".join(s[2] for s in unit)
 
     def steps(self):
         """The repairs in the order that undoes the build: the recreations (last first), then the groups, oldest fix first."""
-        return ([(did, self.rec[did][1]) for did in reversed(self.recreations())]
-                + [(g["id"], g["patch"]) for g in reversed(self.reverted())])
+        return [(label, repair) for _step, label, repair in self.step_order()]
 
 
 # ------------------------------------------------------------------ one branch

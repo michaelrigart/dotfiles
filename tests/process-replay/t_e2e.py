@@ -463,7 +463,13 @@ scratches = [r["scratch"] for r in runs]
 ok("cleanup: control: the threads, scratches, work, views and staged items exist before",
    threads and all(os.path.isdir(s) for s in scratches) and os.path.isdir(os.path.join(STATE, "work"))
    and os.path.isdir(os.path.join(STATE, "views")) and all(os.path.isdir(os.path.join(C.items_root(), n)) for n in items.values()))
-CASE_D = inv["D"]["id"]
+def rid_of(state, did):
+    names = [n[:-5] for n in os.listdir(os.path.join(state, "recreate")) if n.startswith(did + "-") and n.endswith(".json")]
+    assert len(names) == 1, (did, names)
+    return names[0]
+
+
+CASE_D = rid_of(STATE, inv["D"]["id"])
 ok("cleanup: control: the recreation's working copy exists before", os.path.isdir(os.path.join(STATE, "recreate", CASE_D, "tree")))
 rc, out = cli("cleanup")
 is_("cleanup: exits 0", rc, 0)
