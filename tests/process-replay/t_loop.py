@@ -607,6 +607,13 @@ ok("revalidation_window_follows_shift: control: the injected file has 3000 lines
    len(git(w.work, "show", w.wc + ":src/big.py").split("\n")) == 3000 and [(h["start"], h["end"]) for h in inj["defects"]["dX"]["hunks"]] == [(1997, 2003)], inj["defects"]["dX"]["hunks"])
 inj["defects"]["dX"]["hunks"] = [{"file": "src/big.py", "start": 2000, "end": 2000, "new_start": 2000, "new_end": 2000}]
 C.jsave(os.path.join(w.state, "injected", w.bid + ".json"), inj)
+inv = C.jload(os.path.join(w.state, "inventory", w.bid + ".json"))
+for d in inv["defects"]:
+    if d["id"] == "dX":
+        d["line"] = None            # the finding names no line, so only the followed repair hunk can put the window at 2400
+C.jsave(os.path.join(w.state, "inventory", w.bid + ".json"), inv)
+ok("revalidation_window_follows_shift: control: X's finding gives no line, so the window comes from the repair anchor alone",
+   [d["line"] for d in C.jload(os.path.join(w.state, "inventory", w.bid + ".json"))["defects"] if d["id"] == "dX"] == [None])
 behave(lambda run, k: ("approve", []))
 go(w)
 drive(w, report=["found dY"])

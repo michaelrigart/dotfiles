@@ -666,6 +666,32 @@ for cmd in ("! cd /usr && cat .codex/x", "env cd /usr && cat .codex/x", "sudo cd
 for cmd in ("cd /usr && true | cd ~ && cat .codex/sessions/x", "cd /usr && { cd ~; } && cat .codex/sessions/x", "cd /usr && x=$(cd ~) && cat .codex/sessions/x",
             "cd /usr && if true; then cd ~; fi && cat .codex/sessions/x"):
     is_("cd_and: {!r} keeps a cd made inside the chain for what follows in it".format(cmd), forbid(cmd), [CX + " in t1"])
+# ---- round 3: stack entries and ~- in any cd (Codex P2, cold I2), loop conditions on a narrowed view (I1), eval and run-time command words (I2)
+RW = os.path.join(XSH, "review-work") + " in t1"
+is_("stack_entry: pushd /usr && cd +1 && cat ../other000/answer.json goes back to the scratch in zsh, beside another scratch (Codex P2)",
+    forbid("pushd /usr && cd +1 && cat ../other000/answer.json"), [RW])
+for cmd in ("cd /usr && cd +1 && cat .codex/x", "cd /usr && cd -1 && cat .codex/x", "cd /usr && cd ~+1 && cat .codex/x", "cd /usr && cd ~-1 && cat .codex/x",
+            "cd /usr && cd ~- && cat .codex/x", "cd /usr && cd ~-/ && cat .codex/x", "cd /usr && cd $OLDPWD && cat .codex/x"):
+    is_("stack_entry: {!r} from ~ may go back there".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
+is_("stack_entry: ... and bash's cd +1 is a directory named +1, which it adds", forbid("cd +1; cat ../../.codex/x", cwd=house + "/w"), [CX + " in t1"])
+is_("stack_entry: cd ~; cd /usr; cd ~- && cat .codex/sessions/x from the scratch reads ~/.codex (cold I2)", forbid("cd ~; cd /usr; cd ~- && cat .codex/sessions/x"),
+    [CX + " in t1"])
+is_("tilde_pwd: ~- in a path is any directory the tracker holds", forbid("cd ~ && cd /usr && cat ~-/.codex/sessions/x"), [CX + " in t1"])
+is_("tilde_pwd: ~+ is $PWD, in a path and in a cd that narrows", (forbid("cat ~+/.codex/x", cwd=house), forbid("cd ~/Code && cd ~+/Org && cat repo/x"),
+    forbid("cd /usr && cd ~+/lib && cat .codex/x", cwd=house)), ([CX + " in t1"], [house + "/Code/Org/repo in t1"], []))
+for cmd in ("cd /usr && while cat .codex/x; do cd ~; done", "cd /usr && until ! cat .codex/x; do cd ~; done", "cd /usr && while cat .codex/x; do cd -; done",
+            "cd /usr && for f in a; do cat .codex/x; cd ~; done", "f() { cd ~; }; cd /usr && while cat .codex/x; do f; done"):
+    is_("loop_narrowed: {!r} from ~ runs its condition again where the body went (cold I1)".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
+is_("loop_narrowed: ... while a loop that never moves stays where the chain led", forbid("cd /usr && while cat .codex/x; do true; done", cwd=house), [])
+for cmd in ("cd /usr && $(echo cd) && cat .codex/x", "cd /usr && `echo cd` && cat .codex/x", "C=cd; cd /usr && $C && cat .codex/x",
+            "cd /usr && ${X:-cd} && cat .codex/x", 'cd /usr && "$C" && cat .codex/x'):
+    is_("runtime_command: {!r} from ~ may be a cd back there (cold I2)".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
+for cmd in ('eval "cd ~" && cat .codex/sessions/x', "eval cd ~; cat .codex/sessions/x", "cd /usr && eval cd ~ && cat .codex/sessions/x",
+            "eval 'D=~/.codex'; cat $D/sessions/x", "eval 'cd ~'; ls -R ."):
+    ok("eval_script: {!r} runs its arguments in this shell (cold I2)".format(cmd), CX + " in t1" in forbid(cmd), forbid(cmd))
+is_("eval_script: ... and they are still words, so a pattern in them still counts (the docstring's limit)", forbid("eval 'rg ~/.codex/x src'"), [CX + " in t1"])
+is_("cd_monotone_cost: for d in a b; do cd $d && ls; cd ..; done from a scratch's root names review-work (M4, accepted: the second pass starts at ..)",
+    forbid("for d in a b; do cd $d && ls; cd ..; done"), [RW])
 is_("cd_monotone_cost: a subshell's cd outlives it", forbid("(cd ~/Code/Org) && cat repo/x"), [house + "/Code/Org/repo in t1"])
 is_("cd_monotone: a recursive search after a cd that may not run walks the starting directory", forbid("test -d /usr && cd /usr; ls -R .", cwd=house), ABOVE)
 is_("cd_monotone: cds that stay inside the scratch leave its own directories all it can be in", forbid("cd src; cat a.py; cd nosuch; cat b.py"), [])

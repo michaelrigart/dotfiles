@@ -45,16 +45,18 @@ option that gives it (-e, ag/ack -g, ack --match), rg's --replace, ag's -G, git 
 Grep's pattern; the substitutions inside one still run. Each token is resolved from every directory the command's cd tracker holds: the
 call's workdir (else the scratch) and every directory a cd or pushd before it in the command may lead to, wherever that cd stands
 (a branch, a loop, a subshell, a pipeline, a function body, sh -c, $( ), backticks) and whether it ran or failed. Nothing removes a
-directory, as an assignment adds a value and never hides one (spec 14.3 c): cd -, popd and a stack entry (-N, pushd +N) add nothing, a
-bare cd or pushd adds ~, and a cd to a substitution goes to a directory of that literal name. One exception, because it is sound: what
+directory, as an assignment adds a value and never hides one (spec 14.3 c): cd -, cd ~-, popd and a stack entry (-N, +N, ~+N, ~-N,
+pushd +N) add nothing (bash's cd +N also adds a directory of that name), a bare cd or pushd adds ~, a cd to a substitution goes to a
+directory of that literal name, and eval's arguments are a script run in this shell. One exception, because it is sound: what
 && joins to a cd runs only if that cd succeeded, so it is judged from where the cd leads alone (`cd src && cat ../x` reads the scratch's
 x), through further && links, when the cd is the shell's builtin (not after !, env, sudo or another wrapper, nor a function of the
 call named cd), opens its and-or list or follows &&, and has one operand the scan expands in full; a later cd in the chain narrows
-again, while a cd that may go back (cd -, popd, a stack entry, a bare pushd, an operand the scan cannot expand: "$D" may be - or empty,
-zsh's cd OLD NEW), a function of the call, `.`, source and eval widen it to every directory, and ||, ;, &, ;;, a newline and a closing )
-end it. A loop whose pass added a directory or a
-value is scanned once more, for what its next iteration reads from them. Tokens are read with ~, $HOME, $XDG_STATE_HOME, $XDG_DATA_HOME,
-$PWD (and $(pwd)) and, for Codex, $CODEX_HOME expanded, then two ways, ./.. collapsed first and symlinks first, each by its real path. A real path is forbidden when it lies
+again, while a cd that may go back (cd -, ~-, popd, a stack entry, a bare pushd, an operand the scan cannot expand: "$D" may be - or
+empty, zsh's cd OLD NEW), a function of the call, `.`, source, eval and a command word the scan cannot expand ($(echo cd), $C) widen it
+to every directory, and ||, ;, &, ;;, a newline and a closing ) end it. A loop whose pass added a directory or a value, or that opened in
+such a chain and moved (`cd /usr && while cat x; do cd ~; done`: its condition runs again from ~), is scanned once more with every
+directory, for what its next iteration reads. Tokens are read with ~, $HOME, $XDG_STATE_HOME, $XDG_DATA_HOME, $PWD (and $(pwd), ~+),
+$OLDPWD (~-: any directory the tracker holds, or the inherited one) and, for Codex, $CODEX_HOME expanded, then two ways, ./.. collapsed first and symlinks first, each by its real path. A real path is forbidden when it lies
 in a root at component boundaries (a glob component counts as whatever it can match; the original checkout's root also covers its wt
 siblings <dir>-*), unless it lies literally in one of the allowed subtrees. Allowed subtrees are judged after resolution, so
 <allowed>/../x is judged where it lands. A recursive search (rg, ag, ack, grep -r/-R, find, fd, tree, ls -R; the Grep and Glob
@@ -74,8 +76,10 @@ Known limits, not chased further. Missed: an unknown variable ($DIR/x stays lite
 time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
 command's directory is not moved), reads spread over separate calls (a cd in one call does not carry to the next), a cd - before any
 cd of the command (it goes to the inherited $OLDPWD, which the scan does not know), zsh's two-operand cd OLD NEW (taken as cd OLD), a cd
-that CDPATH, cdable_vars or zsh's named directories send elsewhere and cd -P through a symlink (the directory is taken as spelled and
-collapsed logically; none of these is set in this repository's shell configuration), aliases or
+that CDPATH, cdable_vars, auto_cd or zsh's named directories send elsewhere and cd -P through a symlink (the directory is taken as
+spelled and collapsed logically: none is set in this repository's shell configuration, and a call that sets one itself, as CDPATH=x,
+shopt -s cdable_vars, setopt cdablevars or auto_cd, or hash -d, is not modelled either), a cd assembled at run time ($(echo cd) ~:
+what follows it widens, but its directory is not added), aliases or
 functions defined earlier, a function's body run from another directory (it is read where it is defined), a loop's third and later
 iterations (`for i in 1 2 3; do cat x; cd ..; done` reads x from two of the three directories), brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
 glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it starts from /), a walk by any other command (cp -r,
@@ -88,10 +92,11 @@ though nothing is read: a chezmoi source or destination spelled with a variable 
 that an assignment runs, as in `false && SRC=x`, so an assignment adds a value and never hides one, spec 14.3 c), text that merely names a root (echo, a heredoc written to a file, a prose argument), what a command reads from a
 directory it does not run in: the starting directory after a cd that ran, past the && chain that follows it (`cd /tmp && true; cat .codex/x`
 from ~ names ~/.codex, as does `cd src && cat a; cd ../b && cat c` from a scratch's root: review-work), where a cd that failed, never ran, or ran in
-a subshell, a pipeline's side, sh -c or $( ) would have led (the scan does not prove which runs), and a loop's second pass that never runs;
+a subshell, a pipeline's side, sh -c or $( ) would have led (the scan does not prove which runs), and a loop's second pass that never runs
+(`for d in a b; do cd $d && ls; cd ..; done` from a scratch's root names review-work: the second pass starts from where cd .. led);
 more than MAX_CWDS directories in one command is a TOO_MANY leak; a command bash rejects as
 a syntax error (ls >#x cat ~/.codex/y, 2>#x), a search pattern inside
-a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS
+a script word other than sh -c's or a $( ) (ssh host '...'; eval's arguments are both a script and words), a grep option that takes a value but is missing from GREPS
 (its value is taken for the pattern, the pattern for a path), a depth-limited walk above a root (find ~ -maxdepth 1, tree -L 1 ~:
 the limit is not read), a glob * that matches a dot directory the shell would skip (~/* counts as naming ~/.codex), a function body
 that never runs (it is read where it is defined, its assignments and cds included), and a command nested more than MAX_DEPTH levels
@@ -579,12 +584,14 @@ def judge(parts, bounds):
 
 
 def _tilde(token, values):
-    """`token` with a leading ~ or ~/ spelled ${HOME}, so that it takes every value $HOME has (one that `values` lacks: the user's home);
-    ~user is that user's home."""
+    """`token` with a leading ~ or ~/ spelled ${HOME}, so that it takes every value $HOME has (one that `values` lacks: the user's home),
+    ~+ spelled ${PWD} and ~- ${OLDPWD}; ~user is that user's home."""
     if not token.startswith("~"):
         return token
     if "HOME" in values and re.match(r"~(/|\Z)", token):
         return "${HOME}" + token[1:]
+    if re.match(r"~[+-](/|\Z)", token):
+        return ("${PWD}" if token[1] == "+" else "${OLDPWD}") + token[2:]
     return os.path.expanduser(token)
 
 
@@ -940,6 +947,7 @@ class _Scan(object):
         self.values = dict((k, list(v)) for k, v in values.items())
         self.union = []             # the cd tracker of the command being scanned: every directory it may reach (script())
         self.functions = set()      # the names of the functions the call defines, whose bodies may cd
+        self.moves = 0              # cds and widening commands scanned so far: a loop whose pass moved may start its next pass elsewhere
 
     def assign(self, words, end=None):
         """The literal assignments among `words[:end]` (NAME=value, no $ or backtick in the value once its quotes are removed): each adds its value to the variable for what the call does next, never
@@ -958,8 +966,10 @@ class _Scan(object):
                     self.values[name].append(v)
 
     def variables(self, cwds):
-        """The variables a path may spell from `cwds`: $PWD is the directories the cd tracker holds, and any value assigned to it."""
-        return dict(self.values, PWD=list(dict.fromkeys(list(cwds) + self.values.get("PWD", []))))
+        """The variables a path may spell from `cwds`: $PWD is those directories, and any value assigned to it; $OLDPWD (~-) is any directory
+        the command's cd tracker holds, or the one the shell inherited (LITERAL: its spelling stays)."""
+        return dict(self.values, PWD=list(dict.fromkeys(list(cwds) + self.values.get("PWD", []))),
+                    OLDPWD=[LITERAL] + list(dict.fromkeys(list(self.union) + [v for v in self.values.get("OLDPWD", []) if v is not LITERAL])))
 
     def resolved(self, token, cwds):
         """The real paths (as components) a path-like token names from each directory of `cwds`: expanded, joined, then read both ways,
@@ -1015,17 +1025,20 @@ class _Scan(object):
         """A cd, pushd or popd (`eff`: its words, redirections dropped; `prefix`: the words before it) adds every directory its operand may
         lead to from every directory of `cwds` (no operand: ~, as zsh's pushd does with one directory on its stack) to the cd tracker
         (self.union) and to `cwds`, and never removes one, whether the cd runs or fails. More than MAX_CWDS directories is a TOO_MANY leak.
-        It returns where what && joins to it may run: WIDEN for a cd that may go back to any directory the tracker holds: popd, cd -, a
-        stack entry (-N, pushd +N), a bare pushd, an operand the scan cannot expand in full ("$D" may be - or empty), zsh's cd OLD NEW and a
-        function of the call named so; the directories it leads to when it is the shell's builtin (NARROWS before it) with one operand
-        (pushd: no option, which may be -n); else None (a cd behind a wrapper or ! does not move this shell, or it did not succeed)."""
+        It returns where what && joins to it may run: WIDEN for a cd that may go back to any directory the tracker holds: popd, cd -, ~-, a
+        stack entry (-N, +N, ~+N, ~-N: zsh's cd takes +N as one too, bash's a directory of that name), a bare pushd, an operand the scan
+        cannot expand in full ("$D" may be - or empty), zsh's cd OLD NEW and a function of the call named so; the directories it leads to
+        when it is the shell's builtin (NARROWS before it) with one operand (pushd: no option, which may be -n); else None (a cd behind a
+        wrapper or ! does not move this shell, or it did not succeed). Every call counts as a move (self.moves)."""
+        self.moves += 1
         base, i = os.path.basename(eff[0]), 1
         while i < len(eff) and eff[i].startswith("-") and eff[i] != "-" and not re.match(r"-\d+\Z", eff[i]):
             i += 1
             if eff[i - 1] == "--":
                 break
         target = eff[i] if i < len(eff) else "~"
-        if base == "popd" or target == "-" or re.match(r"-\d+\Z", target) or (base == "pushd" and re.match(r"\+\d+\Z", target)):
+        if (base == "popd" or target == "-" or re.match(r"-\d+\Z|~[+-]\d+(/|\Z)", target)
+                or (base == "pushd" and re.match(r"\+\d+\Z", target))):
             return WIDEN
         led = self.dirs(target, cwds)
         for held in [self.union] + ([cwds] if cwds is not self.union else []):
@@ -1035,7 +1048,8 @@ class _Scan(object):
                         self.found.add(TOO_MANY.format(target))
                         break
                     held.append(d)
-        if (base == "pushd" and i >= len(eff)) or i + 1 < len(eff) or base in self.functions or self.unexpanded(target, cwds):
+        if ((base == "pushd" and i >= len(eff)) or i + 1 < len(eff) or base in self.functions or self.unexpanded(target, cwds)
+                or re.match(r"\+\d+\Z", target)):
             return WIDEN
         builtin = all(ASSIGNMENT.match(w) or w in NARROWS for w in prefix)
         return led if builtin and not (base == "pushd" and i > 1) and len(led) <= MAX_CWDS else None
@@ -1063,8 +1077,10 @@ class _Scan(object):
         sh -c, and the roots of a recursive search, from `cwds`, the directories it may run in. Its assignments, its command and that
         command's operands are read from its words without the redirections (_plain), wherever these stand. When `running`, a command
         that is a TOOLS word of a root (chezmoi) reads that root unless its paths say otherwise (_chezmoi): `original` adds the root's label,
-        `paths` makes each path a search root. A heredoc body is not `running`: its paths are read and its commands are not run.
-        It returns what cd() returns for a cd, WIDEN for a function the call defines, `.`, source and eval (which may cd), else None."""
+        `paths` makes each path a search root. A heredoc body is not `running`: its paths are read and its commands are not run. eval's
+        arguments, joined, are a script run in this shell (its cds are the command's), and still words.
+        It returns what cd() returns for a cd; WIDEN for a function the call defines, `.`, source, eval and a command word the scan cannot
+        expand ($(echo cd), $C, ${X:-cd}), any of which may cd; else None."""
         keep = _plain(words)
         argv = [words[k] for k in keep]
         eff = _effective(argv)
@@ -1080,6 +1096,8 @@ class _Scan(object):
                     self.script(eff[j + 1], cwds, depth + 1, running)
                     skip.add(keep[at + j + 1])
                     break
+        if base == "eval" and len(eff) > 1:
+            self.script(" ".join(eff[1:]), cwds, depth + 1, running)
         for i, w in enumerate(words):
             if i not in skip:
                 self.word(w, cwds, depth, running)
@@ -1098,7 +1116,8 @@ class _Scan(object):
                 self.search(token, cwds)
         if base in ("cd", "pushd", "popd"):
             return self.cd(eff, cwds, argv[:at])
-        if base in self.functions or base in (".", "source", "eval"):
+        if base in self.functions or base in (".", "source", "eval") or (eff and self.unexpanded(eff[0], cwds)):
+            self.moves += 1
             return WIDEN
         return None
 
@@ -1111,8 +1130,9 @@ class _Scan(object):
         one that may go back, a function of the call, `.`, source or eval, widen to the tracker); ||, ;, &, ;;, newlines and a closing )
         end that and judge what follows from the whole tracker. An unquoted $( ) or backtick substitution is a command of its own that
         leaves one word in its place (an unclosed one runs to the end). A loop (LOOPS ... done) whose pass added a directory or a variable's
-        value is scanned once more from its first word, so a read before that cd or assignment is judged as the next iteration makes it;
-        there is no third pass. Then its heredoc bodies, as text (not `running`), from the whole tracker. `running` passes down into sh -c
+        value, or that opened on a narrowed view and moved (a cd or a widening command, even to a directory already held), is scanned once
+        more from its first word with the whole tracker, so its condition and a read before that cd or assignment are judged as the next
+        iteration makes them; there is no third pass. Then its heredoc bodies, as text (not `running`), from the whole tracker. `running` passes down into sh -c
         and $( ). A command nested deeper than MAX_DEPTH is not followed: it is a leak (TOO_DEEP)."""
         if depth > MAX_DEPTH:
             self.found.add(TOO_DEEP.format(_excerpt(command)))
@@ -1125,7 +1145,8 @@ class _Scan(object):
         if not isinstance(command, str):
             return
         bodies, simple, before, start, cur = [], [], None, 0, cwds
-        loops, again = [], set()        # the open loops (the index of their first word, what held() was there), and the loops scanned twice
+        loops, again = [], set()        # the open loops (the index of their first word, held() and self.moves there, whether they opened on a
+                                        # narrowed view), and the loops scanned twice
         toks = _tokens(_logical(command, bodies)) + [";"]
         i = 0
         while i < len(toks):
@@ -1156,10 +1177,10 @@ class _Scan(object):
                     cur = list(led)                             # what && joins to it runs only where the cd led
                 for w in simple:                    # the keywords that lead it: a loop opens or closes
                     if w in LOOPS:
-                        loops.append((start, self.held()))
+                        loops.append((start, self.held(), self.moves, cur is not self.union))
                     elif w == "done" and loops:
-                        at, held = loops.pop()
-                        if at not in again and self.held() > held:
+                        at, held, moves, narrowed = loops.pop()
+                        if at not in again and (self.held() > held or (narrowed and self.moves > moves)):
                             again.add(at)
                             i, cur = at, self.union
                             break
