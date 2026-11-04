@@ -261,6 +261,16 @@ for files the review never saw.
   the pre-merge gate from any checkout of the repository.
 - The line numbers cited above hold at main 2d70049.
 
+**Facts corrected (2026-11-04, Task 8 attempt 1).**
+- The snapshot holds `wt` but none of its helpers: it leaves out every function whose name starts
+  with a single `_` (measured: 200 plain names, 4 `__` names, 0 `_x` names). So in an agent's shell
+  `wt`, `dev`, `wt-prepare`, `wt-rm` and the `chezmoi` wrapper break at their first helper.
+- The `chezmoi` wrapper then fails open: `edit -a` is not refused.
+- **Remedy, a ruling inside this design.** A public `functions-reload <helper>` loader. Each of those
+  functions checks for its first helper, and if it is missing, reloads the file and re-runs itself.
+- A PATH wrapper alone, as the plan's miss list suggested, would not be reached, because the
+  snapshot's function shadows it.
+
 ## Testing
 
 - **Focused suites:**
