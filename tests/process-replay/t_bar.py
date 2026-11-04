@@ -79,6 +79,10 @@ TABLE = [
     ("coverage_waiting: every run passing, a branch still waiting: inconclusive", [BASE], two("c1", ALL_R), {"unassessable_task": [], "waiting": ["bx"]}, "inconclusive"),
     ("coverage_waiting: an empty waiting list is a settled gate: pass", [BASE], two("c1", ALL_R), {"unassessable_task": [], "waiting": []}, "pass"),
     ("coverage_waiting: a cases.json without the key (an older state) is a settled gate: pass", [BASE], two("c1", ALL_R), {"unassessable_task": []}, "pass"),
+    ("coverage_waiting_override_inconclusive: a fail under an unsettled gate is inconclusive", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")),
+     {"unassessable_task": [], "waiting": ["bx"]}, "inconclusive"),
+    ("coverage_waiting_settled: the same runs with nothing waiting are a fail", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")),
+     {"unassessable_task": [], "waiting": []}, "fail"),
     ("coverage_gate_holds: the same runs with the gate holding are a fail", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), NONE, "fail"),
     ("a void run with no replacement is not assessable: no pass", [BASE], [run("c1", "a", ALL_R), run("c1", "b", sts(t1="p", t2="p", q1="p", q2="p"), end="void", voids=2)],
      NONE, "inconclusive"),
@@ -118,6 +122,12 @@ ok("coverage_gate_override_inconclusive: the reasons hold the fail (both runs) b
 
 got = bar.bar([BASE], two("c1", ALL_R), {"unassessable_task": [], "waiting": ["bx", "by"]})
 ok("coverage_waiting: the reasons say the gate is not settled and name the waiting branches", any(r.startswith("coverage gate: not settled") and "bx, by" in r for r in got["reasons"]), got["reasons"])
+
+got = bar.bar([BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), {"unassessable_task": [], "waiting": ["bx"]})
+fail_at = [i for i, r in enumerate(got["reasons"]) if "unrecovered while every pre-merge P0/P1 was recovered" in r]
+wait_at = [i for i, r in enumerate(got["reasons"]) if r.startswith("coverage gate: not settled")]
+ok("coverage_waiting_override_inconclusive: the reasons hold the fail (both runs) before the not-settled reason",
+   len(fail_at) == 2 and len(wait_at) == 1 and max(fail_at) < wait_at[0], got["reasons"])
 
 # ---- runs_per_case: report expects as many runs as `run` makes; the count lives in common.RUNS and nowhere else
 C.RUNS = 3

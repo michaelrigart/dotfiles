@@ -333,7 +333,7 @@ def ensure_runs(ctx, runs):
 
 def add_args_run(ap):
     ap.add_argument("--despite-coverage-gate", action="store_true",
-                    help="run although the coverage gate fails, for the recovery evidence; the verdict stays inconclusive. Only on Michael's request")
+                    help="run although the coverage gate fails or is not settled, for the recovery evidence; the verdict stays inconclusive. Only on Michael's request")
 
 
 def _near(cwd, wall):

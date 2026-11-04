@@ -895,3 +895,32 @@ These are the builder's calls on what §14 leaves open. The controller records a
   inconclusive even when a run fails, as §4.3 ("§4 is inconclusive") and §14.5 ("the verdict stays
   inconclusive") say. This reverses the completed plan's "a fail stays a fail" for the gate; §14.5 names the
   verdict of a run started despite the gate. The fail's reasons stay in the report, first.
+- **R14, a gate that is not settled (§14.5, Task 8 review):** while a branch still waits, the gate has not
+  passed. `inject` records the waiting branches as `coverage.waiting` in `cases.json` (outside every digest),
+  `run` refuses as it refuses a failing gate (the same `--despite-coverage-gate` override), and `bar` treats
+  it as R13 treats a failing gate: no pass, and a fail is inconclusive until the gate settles. A dry-run
+  `inject` prints `coverage gate: not computed (dry run)`.
+- **R15, where `run` may start (§14.3 a, Task 7 review):** besides a forbidden root beneath its working
+  directory, `run` refuses a working directory that is itself inside a forbidden root or a sibling worktree
+  of one, since relative text read there would void honest rounds in the same way.
+- **R16, the leak scan fails closed past what it can read (§14.3 c, Task 3 review rounds 1–5):** a value
+  that is not literal (a backtick or `$( )`, glued or not) adds nothing; a glued substitution is scanned in
+  place, and the word and command around it stay whole; past `MAX_DEPTH` the call gets a `TOO_DEEP` leak
+  label; a quoted or escaped operator is a word, not a separator; a `#` inside a word is text; `~` follows an
+  assigned `HOME`; `declare`, `local`, `typeset` and `readonly` assign as `export` does. Each was found by a
+  review and closed with tests and a differential against the scan before this plan; none hides a hit the
+  scan found before.
+- **R17, chezmoi options the scan cannot place (§14.3 b, Task 4 review):** an unknown option followed by a
+  source, destination or `--version` flag (a short cluster holding `S` or `D` included), and a source or
+  destination still holding `$` or a backtick after expansion, read the original.
+- **R18, recreations (§14.4, Task 5 review):** joins are pairwise, as group merges are, so a repair that
+  needs two recreations at once joins neither (a listed limit). A unit that fails with no merge drops its
+  groups' members; its recreations stay and go out for good at the next build if they no longer apply.
+- **R19, the window input (§14.2, Task 6 review):** a window built from located hunks includes git's three
+  context lines; `cut_inputs` counts every judge-present question that fell back, in every round and run;
+  presence locates the fix in the finding's own file only.
+- **R20, relocate-snapshot's checks (§14.3 a, Task 9 review):** tips are verified for candidate records only,
+  through the current views before anything moves and again after; the move is refused when the state names
+  neither `--from` nor `--to`, or when an alternates line outside them names no directory; every alternates
+  line under the new path must name a directory afterwards. A missing `--state` is left as the empty
+  directory every command's CLI creates.
