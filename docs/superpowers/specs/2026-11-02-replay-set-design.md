@@ -598,9 +598,9 @@ snapshot; a periodic snapshot is offered, not decided.
    brief's file tools, or stops and reports the denial.
 
 These four leave the two largest causes untouched: 27 recreations that do not apply to the
-injected tree after §14.4, and 20 unclear answers on files shown whole or in windows. Neither is
-analysed here. While they stand, the gate fails again, and three cases fall short of §4.1 even on a
-pass.
+injected tree after §14.4, and 17 of the 20 unclear answers on the injected tree, whose inputs
+recorded no cut (files shown whole or in windows). Neither is analysed here. While they stand, the
+gate fails again, and three cases fall short of §4.1 even on a pass.
 
 **§5 and §6.** §5 was not run. §6 continues: the memories watcher Michael started on 2026-11-03
 keeps taking snapshots, §6 runs once about 10 cases have accrued (around 2026-11-10), and any
