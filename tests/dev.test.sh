@@ -339,6 +339,9 @@ eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
 MOCK_FZF_SELECT="ViuMore/curato" run_dev "curato"
 eq "$(<$LAYOUT_ARG)" "$R2" "A5 a picker selection resolves to the chosen repo"
 
+run_dev "--no-focus '$R1'"
+eq "$(<$LAYOUT_ARG)" "--no-focus $R1" "A6 a leading --no-focus reaches layout.sh first for a primary checkout"
+
 # --- B: linked worktrees route through Herdr's native worktree mode ---------
 print -r -- "-- B: linked worktree routing"
 WT="$CODE/Netronix/curato-feature"
@@ -349,6 +352,10 @@ run_dev "'$WT'"
 rc_is 0 "B1 a linked worktree is accepted"
 eq "$(<$LAYOUT_ARG)" "--worktree $R1 ${WT:A}" \
   "B1 the checkout is opened through the primary repo's Herdr worktree group"
+
+run_dev "--no-focus '$WT'"
+eq "$(<$LAYOUT_ARG)" "--no-focus --worktree $R1 ${WT:A}" \
+  "B3 a leading --no-focus reaches layout.sh before the worktree mode"
 
 mkdir -p "$WT/src/deep"
 run_dev "'$WT/src/deep'"

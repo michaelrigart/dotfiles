@@ -2215,6 +2215,31 @@ OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- '' | wt-prompt 2>&1)"; RC=$?
 rc_is 1 "an empty popup branch cancels without creating anything"
 has "cancelled" "the empty prompt reports cancellation"
 
+# --no-focus is Michael's driver mode: wt forwards it through dev to layout.sh, and only
+# when it was given.
+setup
+run "$REPO" wt --no-focus feature/nf main
+rc_is 0 "T --no-focus: wt accepts the flag before the branch"
+[[ -d "$HOME/Code/Org/repo-feature-nf" ]] && _pass "T --no-focus: the checkout is created at the sibling path" \
+                                          || _fail "T --no-focus: the checkout is created at the sibling path"
+grep -Fxq -- "--no-focus --worktree $REPO $HOME/Code/Org/repo-feature-nf" "$DLOG" \
+  && _pass "T --no-focus: layout.sh gets the flag before the mode" \
+  || _fail "T --no-focus: layout.sh gets the flag before the mode ($(<$DLOG))"
+
+setup
+run "$REPO" wt feature/plain
+grep -Fxq -- "--worktree $REPO $HOME/Code/Org/repo-feature-plain" "$DLOG" \
+  && _pass "T --no-focus: a plain wt passes layout.sh no flag" \
+  || _fail "T --no-focus: a plain wt passes layout.sh no flag ($(<$DLOG))"
+
+setup
+run "$REPO" wt --no-focus
+rc_is 1 "T --no-focus: the flag alone is a usage error"
+has "usage: wt [--no-focus] <branch> [start-point]" "T --no-focus: the usage names the flag"
+[[ -e "$HOME/Code/Org/repo---no-focus" ]] && _fail "T --no-focus: the flag is not taken for a branch name" \
+                                          || _pass "T --no-focus: the flag is not taken for a branch name"
+eq "$(<$DLOG)" "" "T --no-focus: layout.sh is never invoked after the usage error"
+
 # Opening an ordinary wt-created checkout through dev must add the same lock. Otherwise
 # `dev <worktree>` would be the unguarded alternate entrance to native Herdr removal.
 setup
