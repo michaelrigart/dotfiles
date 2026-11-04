@@ -32,10 +32,10 @@ setopt local_options no_unset pipe_fail no_bg_nice
 # outside it because nvim is expensive to start: alt+e creates it through --make-tab.
 # Nothing validates an existing workspace's shape.
 MANAGED_TABS=(agents editor runtime)
+EAGER_TABS=(agents runtime)
 
 # HL_NO_FOCUS is set only by --no-focus; an inherited value is ignored.
 HL_NO_FOCUS=
-EAGER_TABS=(agents runtime)
 # The Codex pane command lives in one file beside this script, read here and by xreview.
 # The reasoning for its flags is in that file.
 CODEX_CMD="$(grep -v '^[[:space:]]*#' "${0:A:h}/codex-pane-command" 2>/dev/null | grep . | head -1)"
@@ -482,7 +482,7 @@ main() {
     repo="${repo:A}"
   else
     mode=path
-    repo="${1:?usage: layout.sh <repo-path>}"
+    repo="${1:?usage: layout.sh [--no-focus] <repo-path>}"
     [[ -d "$repo" ]] || die "no such directory: $repo"
     repo="${repo:A}"
   fi

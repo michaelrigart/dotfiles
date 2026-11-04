@@ -1262,9 +1262,12 @@ run_layout "export HERDR_ENV=1; mock_panes '/nowhere'" --no-focus "$R1"
 rc_is 0 "Q1 a build with --no-focus succeeds"
 logged "workspace create --cwd $R1 --label Netronix/curato --no-focus" "Q1 the workspace is still built"
 logged "pane run w7:p3 claude" "Q1 claude still starts"
-logged "codex" "Q1 codex still starts"
+logged "pane run w7:p9 codex" "Q1 codex still starts"
 unlogged "workspace focus" "Q1 the new workspace is not focused"
 unlogged "tab focus" "Q1 the agents tab is not focused"
+
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'" "$R1" --no-focus
+logged "workspace focus w7" "Q1b --no-focus after the path is not the flag, so the build still focuses"
 
 run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1" --no-focus "$R1"
 rc_is 0 "Q2 an existing workspace with --no-focus succeeds"
