@@ -1254,3 +1254,37 @@ is_("glued_substitution: a glued tool word still runs it (_runs)", (leaked(fc("c
 quoted = K._Scan(fwall, {})
 quoted.script('T="`date`"', [SCR])
 is_("backtick_value_adds_nothing: a backtick that stays inside double quotes adds no value", quoted.values, {})
+
+# ---- fix round 4: past MAX_DEPTH the scan fails closed; an unquoted parenthesis is a token of its own
+DEEP = " (nested deeper than the scan follows) in t1"
+for label, cmd in (("five deep, glued", "echo a$(b$(c$(d$(e$(cat ~/.codex/x)))))"),
+                   ("six deep, not glued", "echo $(echo $(echo $(echo $(echo $(echo $(cat ~/.codex/x))))))"),
+                   ("five deep, a search only the innermost scan sees", "echo $(echo $(echo $(echo $(echo $(rg foo ~)))))"),
+                   ("sh -c, then four deep", "sh -c 'echo $(echo $(echo $(echo $(rg foo ~))))'")):
+    got = leaked(fc(cmd), OWNWALL, cwd="/work/s")
+    ok("depth_fails_closed: {} is a leak ({})".format(label, cmd), any(x.endswith(DEEP) for x in got), got)
+for label, cmd, want in (("four deep, glued", "echo a$(b$(c$(d$(cat ~/.codex/x))))", [CXN]),
+                         ("four deep, not glued", "echo $(echo $(echo $(echo $(cat ~/.codex/x))))", [CXN]),
+                         ("four deep, a search", "echo $(echo $(echo $(echo $(rg foo ~))))", [CXN, CHN])):
+    is_("depth_fails_closed: {} resolves to its real hit only".format(label), leaked(fc(cmd), OWNWALL, cwd="/work/s"), want)
+
+for glued, spaced, want in (("echo a$(b);rg foo ~", "echo a$(b) ; rg foo ~", [CXN, CHN]), ("echo a$(b)|rg foo ~", "echo a$(b) | rg foo ~", [CXN, CHN]),
+                            ("echo a$(b)&&rg foo ~", "echo a$(b) && rg foo ~", [CXN, CHN]),
+                            ("x=a$(b);cd ~/.local/share; cat chezmoi/x", "x=a$(b) ; cd ~/.local/share; cat chezmoi/x", [CHN]),
+                            ("echo a$(b)|&rg foo ~", "echo a$(b) |& rg foo ~", [CXN, CHN]), ("echo a$(b)||rg foo ~", "echo a$(b) || rg foo ~", [CXN, CHN]),
+                            ("echo a$(b$(c));rg foo ~", "echo a$(b$(c) ) ; rg foo ~", [CXN, CHN]),
+                            ("cat ~/.codex/x $(echo $(b))", "cat ~/.codex/x $(echo $(b) )", [CXN]), ("(true)&&rg foo ~", "(true) && rg foo ~", [CXN, CHN])):
+    is_("closing_paren: {} names what its spaced twin {} names".format(glued, spaced),
+        (leaked(fc(glued), OWNWALL, cwd="/work/s"), leaked(fc(spaced), OWNWALL, cwd="/work/s")), (want, want))
+is_("closing_paren: the command after a glued ); runs (_runs)", (leaked(fc("echo a$(b);chezmoi diff"), CHZ), leaked(fc("(true)&&chezmoi diff"), CHZ)), (CHZN, CHZN))
+for cmd in ("true;(cd ~/.local/share; cat chezmoi/x)", "true|(cd ~/.local/share; cat chezmoi/x)", "true&&(cd ~/.local/share; cat chezmoi/x)",
+            "diff <(cd ~/.local/share; cat chezmoi/x) y"):
+    is_("opening_paren: {} names what `true ; (cd ...)` names".format(cmd), leaked(fc(cmd), OWNWALL, cwd="/work/s"), [CHN])
+is_("opening_paren: a subshell glued to ; runs its command (_runs)", leaked(fc("true;(chezmoi diff)"), CHZ), CHZN)
+for cmd in ('rg ");" ~', "grep -r ');' ~", 'rg "))" ~'):
+    is_("closing_paren: a quoted {} stays a search pattern, not an operator".format(cmd), leaked(fc(cmd), OWNWALL, cwd="/work/s"), [CXN, CHN])
+is_("closing_paren: an unquoted parenthesis is a token of its own", K._tokens(K._logical("echo a$(b)|&rg ~;(x))")),
+    ["echo", "a$", "(", "b", ")", "|&", "rg", "~", ";", "(", "x", ")", ")"])
+is_("closing_paren: ... a quoted one stays in its word", K._tokens(K._logical('rg ");" "(x" ~')), ["rg", ");", "(x", "~"])
+for cmd, want in (('cat ~/.codex/x $(echo "(")', [CXN]), ("cat ~/.codex/x a$(b", [CXN]), ('rg foo ~ $(echo "(")', [CXN, CHN])):
+    is_("unclosed_substitution: {} still scans the command around it".format(cmd), leaked(fc(cmd), OWNWALL, cwd="/work/s"), want)

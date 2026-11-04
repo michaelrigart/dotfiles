@@ -64,7 +64,8 @@ pipe, as BSD grep does); for running a TOOLS word, a command assembled at run ti
 though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a search pattern inside
 a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS
 (its value is taken for the pattern, the pattern for a path), a depth-limited walk above a root (find ~ -maxdepth 1, tree -L 1 ~:
-the limit is not read), and a glob * that matches a dot directory the shell would skip (~/* counts as naming ~/.codex). A
+the limit is not read), a glob * that matches a dot directory the shell would skip (~/* counts as naming ~/.codex), and a
+command nested more than MAX_DEPTH levels deep in sh -c, $( ), backticks and heredoc bodies (it is not followed: TOO_DEEP). A
 pipeline's cd is kept for what follows it (a subshell ends only at parentheses).
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
@@ -373,6 +374,7 @@ MAX_CWDS = 4            # directories one cd may lead to (a variable with severa
 MAX_EXPANSIONS = 16
 LITERAL = object()      # in a variable's values: it may also hold what the scan does not know, so its spelling stays
 TOO_MANY = "{} (more values than the scan expands)"
+TOO_DEEP = "{} (nested deeper than the scan follows)"
 _PIECE = re.compile(r"[^\s\"'`;|&<>()\\:,={}]+")
 _GLOB = re.compile(r"[*?\[]")
 _SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
@@ -550,6 +552,7 @@ def _logical(command, bodies=None):
     """`command` as one line: unquoted newlines become `;` (a backslash-newline is a continuation), an unquoted
     comment (a # that starts a word, to the end of its line) and heredoc bodies are dropped (appended to `bodies` when it is a list),
     and a backtick substitution becomes $( ... ) (glued to the text before it, as T=~/`date` is T=~/$(date)), so every command sits at a command position. A here-string (<<<) is not a heredoc.
+    An unquoted ( or ) stands apart, so shlex never groups it with an operator beside it (as in `);`, `))` or `;(`); a quoted one stays in its word.
     A word of digits glued to < or > (2>x, 1<x) is an fd: it is marked with FD_MARK, so that once tokenised it still differs from a
     number standing on its own before a redirection (-C 2 >x)."""
     out, quote, i, backtick = [], None, 0, False
@@ -586,6 +589,8 @@ def _logical(command, bodies=None):
         elif ch == "`":
             out.append(" ) " if backtick else ("$(" if out and out[-1][-1:] not in " \t\n;&|()<>" else " $( "))
             backtick = not backtick
+        elif ch in "()":
+            out.append(" " + ch + " ")
         elif ch == "\n":
             line = "".join(out)
             out.append(" ; ")
@@ -946,8 +951,10 @@ class _Scan(object):
     def script(self, command, cwds, depth=0):
         """A shell command (a string, or an argv list): its simple commands left to right, each from the directories a cd tracker holds
         (cd X &&, ;, ||, |, newlines; cd - goes back; a subshell's cd ends with it), an unquoted $( ) or backtick substitution as a
-        command of its own that leaves one word in its place, then its heredoc bodies from every directory it visited."""
+        command of its own that leaves one word in its place (an unclosed one runs to the end), then its heredoc bodies from every
+        directory it visited. A command nested deeper than MAX_DEPTH is not followed: it is a leak (TOO_DEEP)."""
         if depth > MAX_DEPTH:
+            self.found.add(TOO_DEEP.format(command))
             return
         if isinstance(command, (list, tuple)):
             self.simple([str(x) for x in command], cwds, depth)          # a lone cd (or cd -) moves nothing after it
@@ -964,10 +971,10 @@ class _Scan(object):
             i += 1
             if tok.endswith("$") and i < len(toks) and toks[i] == "(":
                 j, level = i + 1, 1
-                while j < len(toks) and level:
+                while j < len(toks) - 1 and level:         # never the closing ; that ends the last simple command
                     level += {"(": 1, ")": -1}.get(toks[j], 0)
                     j += 1
-                inner = " ".join(t if t in SEPARATORS else shlex.quote(t) for t in toks[i + 1:j - 1])
+                inner = " ".join(t if t in SEPARATORS else shlex.quote(t) for t in toks[i + 1:j - 1 if not level else j])
                 self.script(inner, cur, depth + 1)
                 simple.append(tok[:-1] + "$(" + inner + ")")
                 i = j
