@@ -690,7 +690,7 @@ on, a test against a real `chezmoi` shows that `managed` and `source-path` read 
 source state. A subcommand that fails the test loses the exemption. Both failed it (the amendment
 plan's ruling R3): with a `.chezmoiremove` in the source, as every October dotfiles scratch has had
 since 2026-08-31, `managed` and `source-path` read the destination too. No subcommand is exempt, and
-the destination is always read as a search root.
+the destination is always read as a search root *(accepted by Michael, 2026-11-04)*.
 
 **(c) Literal assignments add values within a call.** A variable assigned a literal value in a tool
 call (`NAME=value`, or `export NAME=value`) may hold that value wherever the same call uses it later
