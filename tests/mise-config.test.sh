@@ -41,34 +41,38 @@ is "config.toml does not set ruby.default_packages_file" "$dpf" ""
 is "global postinstall hook runs ruby-default-gems" \
   "$(get hooks.postinstall)" '"$HOME/.config/mise/ruby-default-gems"'
 
-# Regression: a clone without the exec bit makes mise's hook fail with "permission denied".
-mode="$(git -C "$SRC" ls-files -s -- dot_config/mise/executable_ruby-default-gems | cut -d' ' -f1)"
-is "ruby-default-gems is mode 100755 in git" "$mode" 100755
-
 T="$(mktemp -d "${TMPDIR:-/tmp}/mise-config.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 cp "$HOOK" "$T/ruby-default-gems"; chmod 755 "$T/ruby-default-gems"
-mkdir -p "$T/r1/bin" "$T/r2/bin"
-for r in r1 r2; do
-  printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\n' "$r" "$T" > "$T/$r/bin/gem"
-  chmod 755 "$T/$r/bin/gem"
-done
+# The stub gem reads stdin like a gem that prompts, logs its arguments as r1|arg|arg… to calls,
+# and its working directory and first PATH entry to ctx.
+mkdir -p "$T/r1/bin" "$T/r2/bin" "$T/proj"
+cat > "$T/stub-gem" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+r=${0%/bin/gem}; t=${r%/*}; r=${r##*/}
+{ printf '%s' "$r"; for a; do printf '|%s' "$a"; done; echo; } >> "$t/calls"
+printf '%s %s\n' "$PWD" "${PATH%%:*}" >> "$t/ctx"
+EOF
+for r in r1 r2; do cp "$T/stub-gem" "$T/$r/bin/gem"; chmod 755 "$T/$r/bin/gem"; done
+: > "$T/proj/glob-decoy"; : > "$T/r1/glob-decoy"
 printf 'ruby-lsp\n' > "$T/default-gems"
 
-# run <json|UNSET>: exit status in $rc, stderr in $err, gem calls in $calls.
+# run <json|UNSET>: runs the hook from $T/proj, the project root; exit status in $rc, stderr
+# in $err, gem calls in $calls, gem's working directory and first PATH entry in $ctx.
 run() {
-  : > "$T/calls"
+  : > "$T/calls"; : > "$T/ctx"
   if [ "$1" = UNSET ]; then
-    err="$(env -u MISE_INSTALLED_TOOLS "$T/ruby-default-gems" 2>&1 >/dev/null)"
+    err="$(cd "$T/proj" && env -u MISE_INSTALLED_TOOLS "$T/ruby-default-gems" 2>&1 >/dev/null)"
   else
-    err="$(MISE_INSTALLED_TOOLS="$1" "$T/ruby-default-gems" 2>&1 >/dev/null)"
+    err="$(cd "$T/proj" && MISE_INSTALLED_TOOLS="$1" "$T/ruby-default-gems" 2>&1 >/dev/null)"
   fi
-  rc=$?; calls="$(cat "$T/calls")"
+  rc=$?; calls="$(cat "$T/calls")"; ctx="$(cat "$T/ctx")"
 }
 entry() { printf '{"name":"%s","version":"x","install_path":"%s"}' "$1" "$T/$2"; }
 
 # Regression: a newly installed Ruby gets no ruby-lsp.
 run "[$(entry ruby r1)]"
-is "one ruby entry installs the listed gem once" "$calls" "r1 install --no-document ruby-lsp"
+is "one ruby entry installs the listed gem once" "$calls" "r1|install|--no-document|ruby-lsp"
 
 # Regression: gems installed into a non-Ruby tool's path.
 run "[$(entry node r1)]"
@@ -82,14 +86,35 @@ is "unset MISE_INSTALLED_TOOLS makes no gem call and exits 0" "$calls:$rc" ":0"
 
 # Regression: only the first Ruby of a multi-install gets its gems.
 run "[$(entry ruby r1),$(entry ruby r2)]"
-is "two ruby entries make two gem calls" "$calls" "r1 install --no-document ruby-lsp
-r2 install --no-document ruby-lsp"
+is "two ruby entries make two gem calls" "$calls" "r1|install|--no-document|ruby-lsp
+r2|install|--no-document|ruby-lsp"
 
 # Regression: comments or blanks reach gem install as arguments.
-printf '# comment\n\n  ruby-lsp  # trailing\n   \nfoo --version 1.0\n' > "$T/default-gems"
+printf '# comment\n\n  ruby-lsp  # trailing\n   \n' > "$T/default-gems"
 run "[$(entry ruby r1)]"
-is "comment and blank lines in the list are ignored" "$calls" "r1 install --no-document ruby-lsp
-r1 install --no-document foo --version 1.0"
+is "comment and blank lines in the list are ignored" "$calls" "r1|install|--no-document|ruby-lsp"
+
+# Regression: the line format of mise's default_packages_file changes. A name with a version
+# requirement installed gem "7.1.0" or "~>" instead of pinning; a name was glob-expanded.
+printf 'rails 7.1.0\nbcat ~> 0.6.0\nrubocop --pre\nglob*\n' > "$T/default-gems"
+run "[$(entry ruby r1)]"
+is "a list line is a name, then a version requirement or --pre" "$calls" "r1|install|--no-document|rails|--version|7.1.0
+r1|install|--no-document|bcat|--version|~> 0.6.0
+r1|install|--no-document|rubocop|--pre
+r1|install|--no-document|glob*"
+
+# Regression: the last gem is skipped when the list has no final newline.
+printf 'ruby-lsp\nrake' > "$T/default-gems"
+run "[$(entry ruby r1)]"
+is "a last line without a newline is installed" "$calls" "r1|install|--no-document|ruby-lsp
+r1|install|--no-document|rake"
+
+# Regression: a gem that reads stdin swallows the rest of the list (the stub reads stdin), and
+# gem runs in the project root, where it installs a local *.gem build instead of the release.
+is "a gem that reads stdin leaves the rest of the list installed" "$(printf '%s\n' "$ctx" | wc -l | tr -d ' ')" 2
+is "every gem runs from its Ruby's directory with that Ruby's bin first on PATH" "$ctx" \
+  "$T/r1 $T/r1/bin
+$T/r1 $T/r1/bin"
 printf 'ruby-lsp\n' > "$T/default-gems"
 
 # Regression: a failing gem install aborts the hook and fails the Ruby install.

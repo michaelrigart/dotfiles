@@ -1,6 +1,8 @@
 # Gems installed into every Ruby mise installs. Read by ruby-default-gems, the global
 # postinstall hook in config.toml, from beside that script, so it stays XDG-compliant
-# instead of living at ~/.default-gems. One `gem install` argument list per line.
+# instead of living at ~/.default-gems. One gem per line, as mise's default_packages_file read
+# it: a name, optionally followed by a version requirement (`rails 7.1.0`, `bcat ~> 0.6.0`) or
+# `--pre`.
 #
 # ruby-lsp: the Neovim LSP. It's deliberately NOT in any project Gemfile — it builds its
 # own composed bundle at runtime — so it has to exist per-Ruby. Listing it here means new

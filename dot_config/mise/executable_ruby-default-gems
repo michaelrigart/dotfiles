@@ -22,13 +22,24 @@ paths="$(printf '%s' "$MISE_INSTALLED_TOOLS" |
   exit 0
 }
 
+# The hook runs in the project root, but gem runs in the Ruby's own directory with its bin first
+# on PATH: `gem install` also installs matching *.gem files from its working directory.
 printf '%s\n' "$paths" | while IFS= read -r ruby; do
   [ -n "$ruby" ] || continue
-  sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' "$list" | while IFS= read -r gems; do
-    [ -n "$gems" ] || continue
-    # shellcheck disable=SC2086
-    "$ruby/bin/gem" install --no-document $gems </dev/null >/dev/null ||
-      echo "ruby-default-gems: gem install $gems failed for $ruby" >&2
-  done
+  sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' "$list" |
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      name=${line%%[[:space:]]*}
+      rest=${line#"$name"}
+      rest=${rest#"${rest%%[![:space:]]*}"}
+      case $rest in
+        '') set -- ;;
+        --pre) set -- --pre ;;
+        *) set -- --version "$rest" ;;
+      esac
+      (cd "$ruby" && PATH="$ruby/bin:$PATH" "$ruby/bin/gem" install --no-document "$name" "$@") \
+        </dev/null >/dev/null ||
+        echo "ruby-default-gems: gem install $line failed for $ruby" >&2
+    done
 done
 exit 0
