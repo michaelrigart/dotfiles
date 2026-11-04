@@ -15,6 +15,7 @@ original repository, ~/.claude/projects or ~/.codex.
   pending        list what waits for an agent: judge inputs, final reviews, recreations
   home           the replay Codex homes and their daemon
   memories-watch watch the Codex memories directory and snapshot it on change
+  relocate-snapshot  move the snapshot and rewrite the state's references to it
 
 Usage: process-replay.py <command> [--state DIR] [--dry-run] [--snapshot-root DIR] [--projects-dir DIR]
                          [--max-tokens N] [--budget SECS] [command flags]
@@ -27,7 +28,7 @@ $XDG_STATE_HOME/process-replay/snapshot/2026-11-02.
 
 Locks (process_replay.common.command_locks), each held from the command's entry to its exit: `run` shares <state>/run.lock
 with `match`, `pending`, `report`, `home` (but --login-cmd) and `cases --plans`, and holds <state>/runner.lock alone;
-`snapshot`, `cases`, `inject` and `cleanup` hold run.lock alone. `run`, `cleanup` and `home` also hold the replay daemons'
+`snapshot`, `cases`, `inject`, `cleanup` and `relocate-snapshot` hold run.lock alone. `run`, `cleanup` and `home` also hold the replay daemons'
 lock; memories-watch holds none. A dry run that writes nothing takes no lock. A command that finds a lock held in a mode that conflicts
 with its own exits 1, naming it, before it has changed anything.
 
@@ -53,6 +54,7 @@ COMMANDS = {
     "pending": ("common", "cmd_pending"),
     "home": ("codexhome", "cmd_home"),
     "memories-watch": ("memwatch", "cmd_memories_watch"),
+    "relocate-snapshot": ("relocate", "cmd_relocate_snapshot"),
 }
 SNAPSHOT_DAY = "2026-11-02"
 

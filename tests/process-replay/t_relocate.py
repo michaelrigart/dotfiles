@@ -1,0 +1,270 @@
+"""relocate-snapshot: rename the snapshot directory and rewrite the state's references to it (spec 14.3 a, ruling R10).
+
+Every case builds its own synthetic state under a temporary directory: views whose alternates name a fixture snapshot, a
+branches.json, and records that mention the snapshot's path as recorded text (a run's `leak` verdict and prose, reviews.json, a
+copied transcript), which a relocation must leave alone. The command is driven through the CLI module, in this process.
+"""
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import helpers
+from helpers import git, is_, ok, put
+
+helpers.setup()
+from process_replay import common as C  # noqa: E402
+from process_replay import relocate as R  # noqa: E402
+
+spec = importlib.util.spec_from_file_location("process_replay_cli", os.path.join(helpers.SCRIPTS, "process-replay.py"))
+CLI = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(CLI)
+
+
+def cli(*argv):
+    """(exit status, output) of `process-replay.py relocate-snapshot <argv>` run in this process."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        rc = CLI.main(["relocate-snapshot"] + list(argv))
+    return rc, out.getvalue()
+
+
+def read(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+class Fx:
+    """One synthetic state: OLD holds 2026-11-02/chezmoi/objects (a copy of a fixture repository's), NEW does not exist yet."""
+
+    def __init__(self):
+        self.root = helpers.tmp_root()
+        self.old = os.path.join(self.root, "under-claude-projects", "snapshot")
+        self.new = os.path.join(self.root, "state-home", "process-replay", "snapshot")
+        self.state = os.path.join(self.root, "state")
+        self.day = os.path.join(self.old, "2026-11-02")
+        repo = helpers.make_repo(self.root, "chezmoi")
+        put(repo, "a.txt", "one\n")
+        self.tip = helpers.commit(repo, "one")
+        self.gitdir = os.path.join(repo, ".git")
+        os.makedirs(os.path.join(self.day, "chezmoi"))
+        shutil.copytree(os.path.join(self.gitdir, "objects"), os.path.join(self.day, "chezmoi", "objects"))
+        other = helpers.make_repo(self.root, "other")
+        put(other, "b.txt", "two\n")
+        self.tip2 = helpers.commit(other, "two")
+        self.gitdir2 = os.path.join(other, ".git")
+        # two views: one reads OLD's objects, one an original's
+        self.view = C.view(self.state, self.gitdir, self.day)
+        self.view2 = C.view(self.state, self.gitdir2, self.day)
+        self.objects = os.path.join(self.day, "chezmoi", "objects")
+        branch = lambda i, objects, view, tip: {"id": i, "repo": self.gitdir, "objects": objects, "view": view, "final_tip": tip,
+                                                "branch": "b-" + i, "candidate": True}
+        self.branches = {"branches": [branch("b1", self.objects, self.view, self.tip), branch("b2", self.objects, self.view, self.tip),
+                                      branch("b3", os.path.join(self.gitdir2, "objects"), self.view2, self.tip2)],
+                         "ambiguous_reviews": [], "unresolved_ranges": 0, "off_branch_ranges": 0}
+        C.jsave(os.path.join(self.state, "branches.json"), self.branches)
+        self.records = {
+            "runs/case1/ab12cd34/state.json": json.dumps({"leak": [self.old], "findings": [{"summary": "it read {}/2026-11-02 once".format(self.old)}]}),
+            "reviews.json": json.dumps({"groups": [{"note": "snapshot at " + self.old}]}),
+            "transcripts/x.jsonl": json.dumps({"text": "cat {}/2026-11-02/chezmoi/objects/info".format(self.old)}) + "\n",
+        }
+        for rel, text in self.records.items():
+            put(self.state, rel, text)
+        put(self.state, "run.lock", "")       # so a refused command leaves the listing as it found it
+
+    def args(self, *extra, to=True):
+        return ["--state", self.state, "--from", self.old] + (["--to", self.new] if to else []) + list(extra)
+
+    def alt(self, view):
+        return read(os.path.join(view, "objects", "info", "alternates")).decode()
+
+    def branches_doc(self):
+        return json.load(open(os.path.join(self.state, "branches.json")))
+
+    def untouched(self):
+        return {rel: read(os.path.join(self.state, rel)) for rel in self.records}
+
+    def snap(self):
+        return (helpers.listing(self.state), helpers.listing(self.old) if os.path.exists(self.old) else None,
+                os.path.exists(os.path.dirname(self.new)), os.path.exists(self.new))
+
+
+# ---------------------------------------------------------------- the two rewriting rules
+doc = {"objects": "/o/snap/2026-11-02/x", "list": ["/o/snap", "/o/snapper", "/o/snap-x/y", "see /o/snap/a in prose"],
+       "nested": {"/o/snap/k": [{"p": "/o/snap/deep"}], "n": 3, "none": None, "t": True}}
+new_doc, n = R.rewrite_value(doc, "/o/snap", "/n/snap")
+is_("rewrite_value: strings that are the path or lie under it get the new prefix, nothing else", new_doc, {
+    "objects": "/n/snap/2026-11-02/x", "list": ["/n/snap", "/o/snapper", "/o/snap-x/y", "see /o/snap/a in prose"],
+    "nested": {"/n/snap/k": [{"p": "/n/snap/deep"}], "n": 3, "none": None, "t": True}})
+is_("rewrite_value: it counts the strings rewritten, keys included", n, 4)
+is_("rewrite_value: it does not change its argument", doc["objects"], "/o/snap/2026-11-02/x")
+is_("rewrite_value: a value with nothing to rewrite is counted 0", R.rewrite_value({"a": ["/o/other"]}, "/o/snap", "/n/snap"), ({"a": ["/o/other"]}, 0))
+text = "/o/snap/2026-11-02/chezmoi/objects\n# /o/snap/note\n/o/snapper/objects\n/o/snap\r\n/elsewhere/objects"
+is_("rewrite_alternates: the rule per line, line endings kept", R.rewrite_alternates(text, "/o/snap", "/n/snap"),
+    ("/n/snap/2026-11-02/chezmoi/objects\n# /o/snap/note\n/o/snapper/objects\n/n/snap\r\n/elsewhere/objects", 2))
+is_("rewrite_alternates: no trailing newline is not added", R.rewrite_alternates("/o/snap/x", "/o/snap", "/n/snap"), ("/n/snap/x", 1))
+is_("rewrite_alternates: empty text", R.rewrite_alternates("", "/o/snap", "/n/snap"), ("", 0))
+
+# ---------------------------------------------------------------- dry_run_changes_nothing
+f = Fx()
+before = f.snap()
+rc, out = cli(*f.args("--dry-run"))
+is_("dry_run_changes_nothing: exit 0", rc, 0)
+ok("dry_run_changes_nothing: it prints 1 view and 2 objects", "1 in views' alternates, 2 in branches.json" in out and "would rewrite 3 references" in out, out)
+ok("dry_run_changes_nothing: it names the rename", "would rename: {} -> {}".format(f.old, f.new) in out, out)
+is_("dry_run_changes_nothing: the listings of the state and of OLD are unchanged and NEW does not exist", f.snap(), before)
+ok("dry_run_changes_nothing: no verification claim", "verified:" not in out, out)
+with C.command_locks(f.state, "exclusive"):
+    rc, out = cli(*f.args("--dry-run"))
+is_("dry_run_changes_nothing: a dry run takes no lock, so one held does not stop it", rc, 0)
+
+# ---------------------------------------------------------------- moves_and_rewrites
+f = Fx()
+ino = os.stat(f.old).st_ino
+recorded = f.untouched()
+rc, out = cli(*f.args())
+is_("moves_and_rewrites: exit 0", rc, 0)
+ok("moves_and_rewrites: it prints the rename, the counts and the verification", "rename: {} -> {}".format(f.old, f.new) in out
+   and "rewrote 3 references (1 in views' alternates, 2 in branches.json)" in out
+   and "verified: no reference to {} remains in the views or branches.json; every rewritten view resolves its branches' final tips".format(f.old) in out, out)
+ok("moves_and_rewrites: OLD is gone", not os.path.exists(f.old))
+is_("moves_and_rewrites: NEW is OLD's directory (a rename, not a copy)", os.stat(f.new).st_ino, ino)
+is_("moves_and_rewrites: the alternates name NEW", f.alt(f.view), os.path.join(f.new, "2026-11-02", "chezmoi", "objects") + "\n")
+is_("moves_and_rewrites: a view of an original's objects is as it was", f.alt(f.view2), os.path.join(f.gitdir2, "objects") + "\n")
+b = f.branches_doc()["branches"]
+is_("moves_and_rewrites: the two branches' objects name NEW", [x["objects"] for x in b[:2]], [os.path.join(f.new, "2026-11-02", "chezmoi", "objects")] * 2)
+is_("moves_and_rewrites: a branch of an original's objects is as it was", b[2]["objects"], os.path.join(f.gitdir2, "objects"))
+is_("moves_and_rewrites: nothing else in branches.json changed", [dict(x, objects=None) for x in b], [dict(x, objects=None) for x in f.branches["branches"]])
+is_("moves_and_rewrites: the run record (leak and prose), reviews.json and the transcript are byte-identical", f.untouched(), recorded)
+ok("moves_and_rewrites: the view resolves the branch's final tip through NEW",
+   C.git_ok(f.view, "cat-file", "-e", f.tip + "^{commit}"))
+ok("moves_and_rewrites: no scratch file is left beside what it wrote", not [n for n in os.listdir(f.state) if ".tmp" in n]
+   and not [n for n in os.listdir(os.path.join(f.view, "objects", "info")) if ".tmp" in n])
+
+# a file is written only when it changed: the view of an original's objects keeps its mtime
+f = Fx()
+m_view2 = os.stat(os.path.join(f.view2, "objects", "info", "alternates")).st_mtime_ns
+cli(*f.args())
+is_("moves_and_rewrites: a file with nothing to rewrite is not written", os.stat(os.path.join(f.view2, "objects", "info", "alternates")).st_mtime_ns, m_view2)
+
+# ---------------------------------------------------------------- the default destination
+f = Fx()
+f.new = os.path.join(C.snapshot_home())
+rc, out = cli(*f.args(to=False))
+is_("default_to: --to defaults to the snapshot home", (rc, os.path.isdir(os.path.join(C.snapshot_home(), "2026-11-02", "chezmoi", "objects"))), (0, True))
+ok("default_to: and the alternates name it", f.alt(f.view).startswith(C.snapshot_home() + "/2026-11-02/"), f.alt(f.view))
+try:
+    cli("--state", f.state)
+    required = False
+except SystemExit as e:
+    required = e.code == 2
+ok("from_required: there is no legacy path in code, so --from is required", required)
+
+# ---------------------------------------------------------------- resumes
+f = Fx()
+os.makedirs(os.path.dirname(f.new))
+os.rename(f.old, f.new)
+rc, out = cli(*f.args())
+ok("resumes: a state renamed but not rewritten is rewritten, and says it was already moved", rc == 0 and "already moved" in out
+   and "rewrote 3 references" in out and "verified:" in out, out)
+is_("resumes: the alternates name NEW", f.alt(f.view), os.path.join(f.new, "2026-11-02", "chezmoi", "objects") + "\n")
+rc, out = cli(*f.args())
+ok("resumes: a second run prints already moved, rewrites 0 and exits 0", rc == 0 and "already moved" in out and "rewrote 0 references" in out
+   and "verified:" in out, out)
+
+f = Fx()
+cli(*f.args())
+os.rename(f.new, f.old)                 # rewritten but not renamed
+ino = os.stat(f.old).st_ino
+rc, out = cli(*f.args())
+ok("resumes: a state rewritten but not renamed is renamed, rewriting 0", rc == 0 and "rename: " in out and "already moved" not in out
+   and "rewrote 0 references" in out and os.stat(f.new).st_ino == ino and not os.path.exists(f.old), out)
+
+# a write that dies midway: the rerun finishes
+f = Fx()
+real_jsave = C.jsave
+def failing_jsave(path, data):
+    raise OSError(28, "No space left on device")
+C.jsave = failing_jsave
+try:
+    rc, out = cli(*f.args())
+finally:
+    C.jsave = real_jsave
+ok("resumes: a failed write of branches.json is a refusal that names the file, not a traceback", rc == 1 and "branches.json" in out, out)
+ok("resumes: the directory has moved and the views were rewritten, branches.json still names OLD",
+   not os.path.exists(f.old) and os.path.isdir(f.new) and f.alt(f.view).startswith(f.new) and f.branches_doc()["branches"][0]["objects"].startswith(f.old))
+rc, out = cli(*f.args())
+ok("resumes: a rerun finishes the job (rewrites only branches.json) and verifies", rc == 0 and "already moved" in out
+   and "rewrote 2 references (0 in views' alternates, 2 in branches.json)" in out and "verified:" in out, out)
+is_("resumes: branches.json names NEW", f.branches_doc()["branches"][0]["objects"], os.path.join(f.new, "2026-11-02", "chezmoi", "objects"))
+
+# ---------------------------------------------------------------- refuses
+def refused(name, fx, argv, want):
+    before = fx.snap()
+    recorded = fx.untouched()
+    bj = read(os.path.join(fx.state, "branches.json")) if os.path.exists(os.path.join(fx.state, "branches.json")) else None
+    rc, out = cli(*argv)
+    ok("refuses: {} exits 1 naming why".format(name), rc == 1 and want in out, (rc, out))
+    is_("refuses: {} changes nothing".format(name), (fx.snap(), fx.untouched(),
+        read(os.path.join(fx.state, "branches.json")) if bj is not None else None), (before, recorded, bj))
+
+f = Fx()
+os.makedirs(f.new)
+refused("both OLD and NEW existing", f, f.args(), "both")
+f = Fx()
+shutil.rmtree(f.old)
+refused("neither OLD nor NEW existing", f, f.args(), "neither")
+f = Fx()
+real_device = R._device
+R._device = lambda p: 1 if p == f.old else 2
+try:
+    refused("two devices", f, f.args(), "volume")
+finally:
+    R._device = real_device
+f = Fx()
+os.unlink(os.path.join(f.state, "branches.json"))
+refused("no branches.json", f, f.args(), "branches.json")
+f = Fx()
+refused("--to inside --from", f, ["--state", f.state, "--from", f.old, "--to", os.path.join(f.old, "inner")], "inside")
+f = Fx()
+refused("--from inside --to", f, ["--state", f.state, "--from", os.path.join(f.old, "2026-11-02"), "--to", f.old], "inside")
+f = Fx()
+refused("the same path", f, ["--state", f.state, "--from", f.old, "--to", f.old], "inside")
+f = Fx()
+os.symlink(f.old, f.old + "-link")
+refused("a symlink for --from", f, ["--state", f.state, "--from", f.old + "-link", "--to", f.new], "not a directory")
+
+# a view the real device check passes: the temp directory is one volume
+f = Fx()
+ok("device: the real _device finds the nearest existing ancestor's device",
+   R._device(os.path.join(f.new, "deeper")) == os.stat(f.root).st_dev == R._device(f.old))
+
+# ---------------------------------------------------------------- lock
+f = Fx()
+with C.command_locks(f.state, "shared"):
+    before = f.snap()
+    rc, out = cli(*f.args())
+    ok("lock: while the state is held shared the command exits 1 naming the lock", rc == 1 and "run.lock" in out, (rc, out))
+    is_("lock: and changes nothing", f.snap(), before)
+
+# ---------------------------------------------------------------- verification
+f = Fx()
+b = f.branches_doc()
+b["branches"][1]["final_tip"] = "0" * 40
+C.jsave(os.path.join(f.state, "branches.json"), b)
+rc, out = cli(*f.args())
+ok("verify: a branch whose final tip does not resolve is named, exit 1, no verified line", rc == 1 and "b2" in out and "verified:" not in out, (rc, out))
+ok("verify: the move itself stands, so a rerun does not move it again", not os.path.exists(f.old) and os.path.isdir(f.new))
+
+f = Fx()
+real_write = C.XR.write_whole
+C.XR.write_whole = lambda path, data: None if path.endswith("alternates") else real_write(path, data)     # a write that does not land
+try:
+    rc, out = cli(*f.args())
+finally:
+    C.XR.write_whole = real_write
+ok("verify: a reference to OLD left in a view is named, exit 1, no verified line", rc == 1 and "alternates" in out and f.old in out and "verified:" not in out, (rc, out))
