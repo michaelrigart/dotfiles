@@ -390,6 +390,22 @@ warn_pane_unwatched() { # warn_pane_unwatched <pane>: pane_resume's one failure 
   pane_screen "$1" >&2
 }
 
+warn_pane_map_untrusted() { # Codex skips a SessionStart hook it does not trust, so the pane-map
+  # hook (the pane-to-thread link behind the live view) can be silently off after a changed
+  # definition, a fresh machine or a shifted hook index. Only the live view is at stake, never
+  # the review, so this warns and a status that cannot be read stays silent. It always
+  # succeeds: under errexit a failed write to a closed stderr must not stop the dispatch.
+  local st
+  st="$(xreview-rpc hooks-status 2>/dev/null)" || return 0
+  case "$st" in
+    ""|trusted|managed) ;;
+    missing) printf 'xreview: the herdr-codex-pane-map hook is not installed; run chezmoi apply\n' >&2 || true ;;
+    disabled) printf 'xreview: the herdr-codex-pane-map hook is disabled; run /hooks in a Codex pane and enable it\n' >&2 || true ;;
+    *) printf 'xreview: the herdr-codex-pane-map hook is %s; run /hooks in a Codex pane and trust it\n' "$st" >&2 || true ;;
+  esac
+  return 0
+}
+
 epoch_now() { # a wall-clock reading as plain seconds with a '.' radix, never the locale's
   # own decimal separator (N1: under e.g. nl_BE, $EPOCHREALTIME itself is "S,ssssss", which
   # `LC_ALL=C awk` then truncates at the comma to whole seconds) and never unset (bash < 5
@@ -1253,6 +1269,7 @@ cmd_dispatch() {
   codex-daemon ensure || die "the Codex daemon is not running; no review was started"
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
   xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
+  warn_pane_map_untrusted
   # With fit or delta on the decision depends on the thread (its context, its turns), and
   # reading them takes time: all of it is done BEFORE the pane is looked at, so the observation
   # that pane_free's ctrl+c acts on is as fresh as it ever was.

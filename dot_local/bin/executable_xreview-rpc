@@ -15,6 +15,10 @@ tests' fake daemon cannot listen on one.
   thread-start    --cwd DIR                                  prints the new thread's id
   thread-status   --thread ID                               {"loaded", "status", "running"}
   thread-resolve  --prefix PREFIX                            prints the one loaded thread id starting with PREFIX
+  hooks-status                                               prints trusted|modified|untrusted|managed|disabled|missing
+                                                             for the herdr-codex-pane-map.py hook; nothing and exit 1 when
+                                                             the method is refused or the answer unreadable, exit 5 when
+                                                             the daemon is unreachable (budget 5 s in all)
   turn-start      --thread ID --input FILE --schema FILE [--known FILE] [--cwd DIR]   prints the turn id
   turn-wait       --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
                   [--report FILE]    on exit 0 or 4, writes {"turn", "compacted": bool|null}
@@ -568,6 +572,74 @@ def cmd_thread_resolve(c, a):
     else:
         err(f"{len(matches)} loaded threads start with {a.prefix}: {' '.join(matches)}")
     return 1
+
+
+PANE_MAP_HOOK = "herdr-codex-pane-map.py"
+# hooks-status is advisory and dispatch discards its stderr, so a daemon that stalls must cost
+# seconds, not the 30 s call default: connect, initialize and hooks/list share one deadline.
+HOOKS_STATUS_BUDGET = 5.0
+HOOKS_STATUS_CALL = 3.0
+
+
+TRUST_STATUSES = ("managed", "untrusted", "trusted", "modified")
+
+
+def hooks_listed(answer):
+    """Every hook of a hooks/list answer, or ValueError when the answer is not the documented
+    shape: result a dict, data a list of dicts, each with a hooks list of dicts whose command,
+    when present, is a string and whose enabled, when present, is a boolean. Checked before
+    anything is matched, so "no pane-map hook" is only ever said of a readable answer."""
+    result = answer.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+        raise ValueError("result is not a dict holding a data list")
+    hooks = []
+    for entry in result["data"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+            raise ValueError("a data entry is not a dict holding a hooks list")
+        for h in entry["hooks"]:
+            if not isinstance(h, dict):
+                raise ValueError("a hook is not a dict")
+            if "command" in h and not isinstance(h["command"], str):
+                raise ValueError("a hook's command is not a string")
+            if "enabled" in h and not isinstance(h["enabled"], bool):
+                raise ValueError("a hook's enabled is not a boolean")
+            hooks.append(h)
+    return hooks
+
+
+def pane_map_statuses(answer):
+    """The status of every listed hook that runs the pane-map script, in listed order. A hook
+    switched off reads disabled, whatever its trust. Raises ValueError for an unreadable
+    answer, and for a matched hook whose trustStatus is not one Codex defines."""
+    found = []
+    for h in hooks_listed(answer):
+        if PANE_MAP_HOOK not in h.get("command", ""):
+            continue
+        status = h.get("trustStatus")
+        if status not in TRUST_STATUSES:
+            raise ValueError(f"unknown trustStatus {status!r}")
+        found.append("disabled" if h.get("enabled") is False else status)
+    return found
+
+
+def cmd_hooks_status(c, a):
+    """The trust status Codex reports for the pane-map hook: trusted, modified, untrusted,
+    managed or disabled, or missing when no listed hook runs it. Codex skips a hook it does
+    not trust, and nothing else says so. Several matches (a stale copy beside the live one)
+    read as passing when any one passes, else as the first. An error or an answer of another
+    shape prints nothing."""
+    r = c.call("hooks/list", {"cwds": [os.path.expanduser("~")]}, timeout=HOOKS_STATUS_CALL)
+    if "error" in r:
+        err("hooks/list refused: " + json.dumps(r["error"]))
+        return 1
+    try:
+        found = pane_map_statuses(r)
+    except ValueError as e:
+        err(f"hooks/list refused: unreadable answer ({e})")
+        return 1
+    passing = [s for s in found if s in ("trusted", "managed")]
+    print((passing or found or ["missing"])[0])
+    return 0
 
 
 def cmd_thread_archive(c, a):
@@ -1198,6 +1270,7 @@ def main(argv=None):
     for name in ("thread-status", "thread-archive"):
         sub.add_parser(name).add_argument("--thread", required=True)
     sub.add_parser("thread-resolve").add_argument("--prefix", required=True)
+    sub.add_parser("hooks-status")
     p = sub.add_parser("turn-start")
     p.add_argument("--thread", required=True)
     p.add_argument("--input", required=True)
@@ -1233,7 +1306,7 @@ def main(argv=None):
             err(f"invalid prefix: {a.prefix}")
             return 2
     try:
-        c = Client()
+        c = Client(time.monotonic() + HOOKS_STATUS_BUDGET if a.cmd == "hooks-status" else None)
     except (Unreachable, Closed) as e:
         err(f"Codex daemon unreachable: {e}")
         return 5
@@ -1246,6 +1319,8 @@ def main(argv=None):
             return cmd_thread_status(c, a)
         if a.cmd == "thread-resolve":
             return cmd_thread_resolve(c, a)
+        if a.cmd == "hooks-status":
+            return cmd_hooks_status(c, a)
         if a.cmd == "turn-start":
             return cmd_turn_start(c, a)
         if a.cmd == "thread-turns":

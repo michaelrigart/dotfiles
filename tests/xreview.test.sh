@@ -233,6 +233,9 @@ while [ "$#" -gt 0 ]; do
                --cwd) cwd="$2"; shift ;; --turn) turn="$2"; shift ;; --report) report="$2"; shift ;; esac; shift
 done
 case "$cmd" in
+  # HOOKS_STATUS: what the pane-map hook's trust status reads (unset: nothing), printed even when
+  # HOOKS_STATUS_RC makes the command exit non-zero afterwards.
+  hooks-status) [ -z "${HOOKS_STATUS:-}" ] || echo "$HOOKS_STATUS"; exit "${HOOKS_STATUS_RC:-0}" ;;
   health) [ -n "${RPC_SWITCH_BRANCH_EARLY:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_EARLY" 2>/dev/null
           [ -z "${RPC_HEALTH_FAIL:-}" ] || exit 5; exit 0 ;;
   thread-start) [ -n "${RPC_START_THREAD_FAIL:-}" ] && exit 1
@@ -365,7 +368,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
         SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE ENSURE_MARK \
-        ENSURE_WRITES_CONF
+        ENSURE_WRITES_CONF HOOKS_STATUS HOOKS_STATUS_RC
   export NEW_UUID="$U1"
   packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
@@ -681,6 +684,36 @@ is "T3 the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 tur
 is "T3 and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T3 the round was still consumed" "$(bash "$XREVIEW" round)" 1
+
+echo "PM. a pane-map hook Codex does not trust only warns; the review still runs"
+for st in modified untrusted missing disabled; do
+  case "$st" in
+    missing)  fix="not installed; run chezmoi apply" ;;
+    disabled) fix="disabled; run /hooks in a Codex pane and enable it" ;;
+    *)        fix="$st; run /hooks in a Codex pane and trust it" ;;
+  esac
+  fresh
+  out="$(HOOKS_STATUS=$st bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "PM $st dispatch still exits 0" "$rc" 0
+  is "PM $st the turn still starts" "$(called "xreview-rpc turn-start --thread $U1")" 1
+  is "PM $st one line names the hook, its status and the fix" \
+     "$(printf '%s' "$out" | grep -cx "xreview: the herdr-codex-pane-map hook is $fix")" 1
+done
+for st in trusted managed ""; do
+  fresh
+  out="$(HOOKS_STATUS=$st bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "PM '${st:-nothing}' dispatch exits 0 and says nothing about the hook" \
+     "$rc/$(printf '%s' "$out" | grep -c 'pane-map')" "0/0"
+done
+fresh
+out="$(HOOKS_STATUS=modified HOOKS_STATUS_RC=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "PM a failing hooks-status stays silent whatever it printed, and the review runs" \
+   "$rc/$(printf '%s' "$out" | grep -c 'pane-map')/$(called "xreview-rpc turn-start --thread $U1")" "0/0/1"
+is "PM the status is read once per dispatch" "$(called 'xreview-rpc hooks-status')" 1
+fresh
+out="$(HOOKS_STATUS=modified bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&-)"; rc=$?
+is "PM a warning that cannot be written (stderr closed) does not stop the dispatch" \
+   "$rc/$(called "xreview-rpc turn-start --thread $U1")" "0/1"
 
 echo "D. pane_resume must not type into a live TUI (fix round 2/D)"
 fresh

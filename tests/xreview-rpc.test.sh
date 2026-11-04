@@ -135,6 +135,65 @@ is "a refused thread/start exits 1" "$?" 1
 XREVIEW_RPC_STDIO=false rpc thread-start --cwd /tmp/repo 2>/dev/null
 is "an unreachable daemon exits 5" "$?" 5
 
+echo "B3. hooks-status"
+PM_CMD="/usr/bin/python3 /Users/x/.codex/herdr-codex-pane-map.py"
+hook() { # hook <command> <trustStatus> [enabled]: one entry of hooks/list
+  jq -nc --arg c "$1" --arg s "$2" --argjson e "${3:-true}" \
+    '{key:"k:session_start:0:0",currentHash:"sha256:a",trustStatus:$s,enabled:$e,command:$c}'
+}
+hooks_scenario() { # hooks_scenario <hook-json>...: a hooks/list answer with exactly these hooks, in order
+  jq -nc --argjson h "$(printf '%s\n' "$@" | jq -sc .)" '{responses:{"hooks/list":{result:{data:[{cwd:"/h",hooks:$h}]}}}}'
+}
+refused_with() { # refused_with <label> <scenario-json>: rc 1, nothing on stdout, one "hooks/list refused" line
+  scenario "$2"
+  rpc hooks-status >"$T/out" 2>"$T/err"; rc=$?
+  is "$1 exits 1 with nothing on stdout" "$rc/$(cat "$T/out")" "1/"
+  is "$1 says so in one stderr line" \
+     "$(grep -c '^xreview-rpc: hooks/list refused' "$T/err")/$(wc -l < "$T/err" | tr -d ' ')" "1/1"
+}
+for st in trusted modified untrusted managed; do
+  scenario "$(hooks_scenario "$(hook /bin/true trusted)" "$(hook "$PM_CMD" $st)")"
+  is "the pane-map hook's $st status is printed alone" "$(rpc hooks-status)" "$st"
+done
+is "hooks/list is asked about the home directory" "$(params hooks/list | jq -c .cwds)" "[\"$HOME\"]"
+scenario "$(hooks_scenario "$(hook "$PM_CMD" trusted false)")"
+is "a switched-off hook reads disabled, whatever its trust" "$(rpc hooks-status)" disabled
+scenario "$(hooks_scenario "$(hook /bin/other-hook modified)")"
+is "no pane-map hook among the hooks is missing" "$(rpc hooks-status)" missing
+scenario '{"responses":{"hooks/list":{"result":{"data":[]}}}}'
+is "an empty hooks/list is missing" "$(rpc hooks-status)" missing
+scenario "$(hooks_scenario "$(hook "$PM_CMD" modified)" "$(hook "$PM_CMD" trusted)")"
+is "a stale copy listed before a trusted one is not a warning" "$(rpc hooks-status)" trusted
+scenario "$(hooks_scenario "$(hook "$PM_CMD" trusted false)" "$(hook "$PM_CMD" managed)")"
+is "a disabled copy beside a managed one is not a warning" "$(rpc hooks-status)" managed
+scenario "$(hooks_scenario "$(hook "$PM_CMD" untrusted)" "$(hook "$PM_CMD" modified)")"
+is "with no passing copy the first one is reported" "$(rpc hooks-status)" untrusted
+refused_with "an RPC error" '{"responses":{"hooks/list":{"error":{"code":-32601,"message":"unknown method"}}}}'
+for shape in '"result":"x"' '"result":{"data":{"a":1}}' '"result":{"data":"x"}' '"result":{"data":["x"]}' \
+             '"result":{"data":[[{"command":"c"}]]}' '"result":{"data":[{"hooks":{"a":1}}]}' \
+             '"result":{"data":[{"hooks":[null]}]}' '"result":{"data":[{"hooks":["x"]}]}' \
+             '"result":{"data":[{"hooks":[{"command":7,"trustStatus":"trusted"}]}]}' \
+             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py"}]}]}' \
+             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py","trustStatus":""}]}]}' \
+             '"result":{"data":{}}' '"result":{"data":[{"hooks":{}}]}' '"result":{"data":[{}]}' \
+             '"result":{"data":[{"hooks":[{"command":["herdr-codex-pane-map.py"],"trustStatus":"trusted"}]}]}' \
+             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py","trustStatus":"trusted","enabled":"false"}]}]}' \
+             '"result":{"data":[{"hooks":[{"command":"herdr-codex-pane-map.py","trustStatus":"weird"}]}]}'; do
+  refused_with "a malformed answer ($shape)" "{\"responses\":{\"hooks/list\":{$shape}}}"
+done
+XREVIEW_RPC_STDIO=false rpc hooks-status >"$T/out" 2>/dev/null; rc=$?
+is "an unreachable daemon exits 5 with nothing on stdout" "$rc/$(cat "$T/out")" "5/"
+scenario '{"silent":["hooks/list"]}'
+t0=$SECONDS
+rpc hooks-status >"$T/out" 2>/dev/null; rc=$?
+is "a daemon that never answers hooks/list gives up within the budget, silent and non-zero" \
+   "$([ "$rc" -ne 0 ] && echo nonzero)/$(cat "$T/out")/$([ $((SECONDS - t0)) -le 5 ] && echo in-budget)" "nonzero//in-budget"
+scenario '{"silent":["initialize"]}'
+t0=$SECONDS
+rpc hooks-status >"$T/out" 2>/dev/null; rc=$?
+is "and one that never answers initialize is bounded the same way" \
+   "$rc/$(cat "$T/out")/$([ $((SECONDS - t0)) -le 5 ] && echo in-budget)" "5//in-budget"
+
 echo "C. thread-status"
 scenario '{"responses":{"thread/read":{"result":{"thread":{"status":{"type":"active","activeFlags":[]}}}}}}'
 is "an active thread is loaded and running" "$(rpc thread-status --thread th | jq -c '[.loaded,.running]')" '[true,true]'
