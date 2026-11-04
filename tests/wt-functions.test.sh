@@ -2234,11 +2234,13 @@ grep -Fxq -- "--worktree $REPO $HOME/Code/Org/repo-feature-plain" "$DLOG" \
 
 setup
 run "$REPO" wt --no-focus
-rc_is 1 "T --no-focus: the flag alone is a usage error"
+# rc, directory and DLOG assertions are controls: git rejects that branch name, so the old code
+# passes them too. Only the usage assertion catches the regression.
+rc_is 1 "T --no-focus: control: the flag alone is a usage error"
 has "usage: wt [--no-focus] <branch> [start-point]" "T --no-focus: the usage names the flag"
-[[ -e "$HOME/Code/Org/repo---no-focus" ]] && _fail "T --no-focus: the flag is not taken for a branch name" \
-                                          || _pass "T --no-focus: the flag is not taken for a branch name"
-eq "$(<$DLOG)" "" "T --no-focus: layout.sh is never invoked after the usage error"
+[[ -e "$HOME/Code/Org/repo---no-focus" ]] && _fail "T --no-focus: control: the flag is not taken for a branch name" \
+                                          || _pass "T --no-focus: control: the flag is not taken for a branch name"
+eq "$(<$DLOG)" "" "T --no-focus: control: layout.sh is never invoked after the usage error"
 
 # Opening an ordinary wt-created checkout through dev must add the same lock. Otherwise
 # `dev <worktree>` would be the unguarded alternate entrance to native Herdr removal.
