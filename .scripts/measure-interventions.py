@@ -7,6 +7,10 @@ records mechanically is counted here; whether a human turn was AVOIDABLE stays a
 hand-labelling pass.
 
     .scripts/measure-interventions.py [--days 14] [--projects-dir ~/.claude/projects]
+                                      [--exclude-project PATH ...]
+
+The replay's driving session (run from ~/Code/.replay) is always left out; each
+--exclude-project PATH leaves out another working directory's sessions the same way.
 
 Prints one JSON object. Streams every file line by line and keeps only per-file state, the
 set of entry uuids already counted and one small record per human turn and per xreview
@@ -301,12 +305,24 @@ def scan_file(path, scope, cutoff, totals, counted):
     return seen
 
 
-def measure(projects_dir, days, now=None):
+def project_key(path):
+    """How Claude Code names a project dir: every character outside [A-Za-z0-9] becomes -."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def excluded(project, keys):
+    """A project dir is left out when it is a key or lies under one (key + "-" + more)."""
+    return any(project == key or project.startswith(key + "-") for key in keys)
+
+
+def measure(projects_dir, days, now=None, exclude=()):
     now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
     cutoff = now - days * 86400
     totals = Totals()
     counted = set()                 # every entry uuid already counted, across files
     for project in sorted(os.listdir(projects_dir)):
+        if excluded(project, exclude):
+            continue
         pdir = os.path.join(projects_dir, project)
         if not os.path.isdir(pdir):
             continue
@@ -329,6 +345,7 @@ def measure(projects_dir, days, now=None):
     return {
         "window_days": days,
         "since": datetime.datetime.fromtimestamp(cutoff, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "excluded_projects": list(exclude),
         "sessions": totals.sessions,
         "human_turns": {"total": totals.human_total, "after_first": totals.human_after_first,
                         "queued": totals.human_queued},
@@ -352,12 +369,16 @@ def main(argv=None):
     ap.add_argument("--days", type=int, default=14, help="window size in days (default 14)")
     ap.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                     help="Claude Code transcript root (default ~/.claude/projects)")
+    ap.add_argument("--exclude-project", action="append", default=[], metavar="PATH",
+                    help="leave this working directory's sessions out, beside ~/Code/.replay")
     args = ap.parse_args(argv)
     if args.days <= 0:
         ap.error("--days must be positive")
     if not os.path.isdir(args.projects_dir):
         ap.error("no such directory: " + args.projects_dir)
-    json.dump(measure(args.projects_dir, args.days), sys.stdout, indent=2)
+    paths = ["~/Code/.replay"] + args.exclude_project
+    exclude = list(dict.fromkeys(project_key(os.path.abspath(os.path.expanduser(p))) for p in paths))
+    json.dump(measure(args.projects_dir, args.days, exclude=exclude), sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
 

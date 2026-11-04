@@ -277,6 +277,59 @@ PY
   is '.autonomous_stretch.minutes.p90 == 1.9' true "$fork_name: a stretch keeps its original's duration"
 done
 
+# The replay's driving session runs from ~/Code/.replay and must never count (spec §7.3).
+# Claude Code names a project dir by turning every character outside [A-Za-z0-9] into "-".
+key_of() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+write_session() { # write_session <project dir> [collects]: a human turn, that many xreview collects, a subagent interrupt
+  mkdir -p "$1/sess-r/subagents"
+  /usr/bin/python3 - "$1" "${2:-1}" <<'PY'
+import datetime, json, os, sys, time
+proj = sys.argv[1]
+t0 = time.time() - 3600
+def ts(m):
+    return datetime.datetime.fromtimestamp(t0 + m * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def human(m, text):
+    return {"type": "user", "timestamp": ts(m), "origin": {"kind": "human"}, "message": {"role": "user", "content": text}}
+main = [human(0, "drive"), {"type": "assistant", "timestamp": ts(1), "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "id": "r%d" % i, "name": "Bash", "input": {"command": "xreview collect xr-1 60"}}
+    for i in range(int(sys.argv[2]))]}}]
+with open(os.path.join(proj, "sess-r.jsonl"), "w") as fh:
+    for e in main:
+        fh.write(json.dumps(e) + "\n")
+with open(os.path.join(proj, "sess-r", "subagents", "agent-1.jsonl"), "w") as fh:
+    fh.write(json.dumps(human(2, "brief")) + "\n")
+    # subagent scope counts interrupts, so this pins that an excluded project's subagents are skipped
+    fh.write(json.dumps({"type": "user", "timestamp": ts(3), "message": {"role": "user", "content": [
+        {"type": "text", "text": "[Request interrupted by user]"}]}}) + "\n")
+PY
+}
+FAKEHOME="$ROOT/home"
+REPLAY_KEY="$(key_of "$FAKEHOME/Code/.replay")"
+EXC="$ROOT/exclude/projects"
+for k in "$REPLAY_KEY" "$REPLAY_KEY-state" "${REPLAY_KEY}x" "-Users-x-Code-demo" "-some-other-path"; do
+  case "$k" in "${REPLAY_KEY}x") write_session "$EXC/$k" 2 ;; *) write_session "$EXC/$k" ;; esac
+done
+run_exc() { OUT="$(HOME="$FAKEHOME" /usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$EXC" "$@" 2>&1)"; }
+
+run_exc
+is '.sessions'              3   "excludes_replay_by_default: the replay project and its -state subdir add no session"
+is '.human_turns.total'     3   "excludes_replay_by_default: nor a human turn"
+is '.xreview.collects'      4   "excludes_replay_by_default: nor an xreview call"
+is '.interrupts.subagent'   3   "excludes_replay_by_default: nor its subagents' interrupts"
+is '.excluded_projects == ["'"$REPLAY_KEY"'"]' true "reports_exclusions: the JSON lists the excluded keys"
+# collects: demo 1 + other 1 + <key>x 2 = 4; a kept -state would make 5, a dropped <key>x 2
+is '.xreview.collects'      4   "excludes_replay_subdirs_only: <key>-state is excluded, <key>x is not"
+
+run_exc --exclude-project /some/other/path --exclude-project "$ROOT/more"
+is '.sessions'              2   "extra_exclusion: --exclude-project /some/other/path drops that path's project"
+is '.excluded_projects | length' 3 "extra_exclusion: the option is repeatable and adds keys beside the default"
+is '.excluded_projects | index("'"$REPLAY_KEY"'") != null' true "extra_exclusion: the default stays excluded"
+
+# a trailing slash names the same directory; the default given again is listed once
+run_exc --exclude-project /some/other/path/ --exclude-project "$FAKEHOME/Code/.replay"
+is '.sessions'              2   "extra_exclusion: a trailing-slash path still drops its project"
+is '.excluded_projects | length' 2 "reports_exclusions: a repeated key is listed once"
+
 out="$(/usr/bin/python3 "$SCRIPT" --days 0 --projects-dir "$ROOT/projects" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && _pass "--days 0 is a usage error" || _fail "--days 0 is a usage error" "rc=$rc"
 out="$(/usr/bin/python3 "$SCRIPT" --projects-dir "$ROOT/nope" 2>&1)"; rc=$?
