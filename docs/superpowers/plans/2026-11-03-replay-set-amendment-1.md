@@ -838,6 +838,10 @@ names this plan (Global Constraints).
 This is not part of this plan, and Michael starts it. In a session rooted at `~/Code/.replay`, with `H` from
 Task 10 and `S` the kept state, every command is `$H/.scripts/process-replay.py <command> --state "$S"`:
 
+0. Michael's call: run `cases --open <the kept state's N>` first, and loop on it as Part B step 3 does. Only
+   `cases` writes presence inputs, so without it §14.2's windows never reach presence at the round-1 tip and
+   the kept presence answers on cut files stand. `cases` re-reads the xreview ledgers, so check that the
+   opened count stays the kept N and that no new candidate appears.
 1. Run `inject`, dispatch what `pending` lists (judges, and recreations under the new rids), and run `inject`
    again. Repeat until it prints neither "answers wait" nor the hint to open more (completed plan, Part B
    step 4). Read its `coverage gate:` line.
@@ -917,10 +921,12 @@ These are the builder's calls on what §14 leaves open. The controller records a
   needs two recreations at once joins neither (a listed limit). A unit that fails with no merge drops its
   groups' members; its recreations stay and go out for good at the next build if they no longer apply.
 - **R19, the window input (§14.2, Task 6 review):** a window built from located hunks includes git's three
-  context lines; `cut_inputs` counts every judge-present question that fell back, in every round and run;
-  presence locates the fix in the finding's own file only.
+  context lines; presence locates the fix in the finding's own file only. `cut_inputs` counts one record per
+  question id: validation ids are digests of their input, so every round's cut input counts; presence and
+  revalidation ids are rewritten in place, so they count the latest input, and a windowed input removes its
+  record.
 - **R20, relocate-snapshot's checks (§14.3 a, Task 9 review):** tips are verified for candidate records only,
   through the current views before anything moves and again after; the move is refused when the state names
-  neither `--from` nor `--to`, or when an alternates line outside them names no directory; every alternates
-  line under the new path must name a directory afterwards. A missing `--state` is left as the empty
-  directory every command's CLI creates.
+  neither `--from` nor `--to`, or when an alternates line outside the new path names no directory (checked
+  before anything moves, the dry run included); every alternates line under the new path must name a
+  directory afterwards. A missing `--state` is left as the empty directory every command's CLI creates.

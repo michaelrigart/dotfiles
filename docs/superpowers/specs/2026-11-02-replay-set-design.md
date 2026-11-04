@@ -687,7 +687,10 @@ the original dotfiles":
 
 This reverses §13's ruling of the same day *(Michael, 2026-11-03)*. Before the exemption is relied
 on, a test against a real `chezmoi` shows that `managed` and `source-path` read nothing outside the
-source state. A subcommand that fails the test loses the exemption.
+source state. A subcommand that fails the test loses the exemption. Both failed it (the amendment
+plan's ruling R3): with a `.chezmoiremove` in the source, as every October dotfiles scratch has had
+since 2026-08-31, `managed` and `source-path` read the destination too. No subcommand is exempt, and
+the destination is always read as a search root.
 
 **(c) Literal assignments add values within a call.** A variable assigned a literal value in a tool
 call (`NAME=value`, or `export NAME=value`) may hold that value wherever the same call uses it later
@@ -701,7 +704,9 @@ points.
 
 Against this run's transcripts: (a) alone clears 66ad81cc (a rescan with its scratch as the cwd names
 nothing). By inspection, (a) to (c) together clear 7f3b624a's four `chezmoi` calls. 3819843a still
-voids on its `git -C ~/.local/share/chezmoi log` and `ls ~/.claude/skills`.
+voids on its `git -C ~/.local/share/chezmoi log` and `ls ~/.claude/skills`. Under R3 (end of (b)),
+7f3b624a's `chezmoi --source <scratch> managed` calls still name the original through the default
+destination, so 7f3b624a still voids; only its `chezmoi --version` calls are cleared.
 
 ### 14.4 Recreations made against the injected tree (item 4)
 
