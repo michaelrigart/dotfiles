@@ -77,7 +77,8 @@ CODEX_HOME, which may also hold what the scan cannot see, so `SRC=x; chezmoi -S 
 value) read the original.
 Known limits, not chased further. Missed: an unknown variable ($DIR/x stays literal, and so does a cd to it), a path built at run
 time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
-command's directory is not moved), reads spread over separate calls (a cd in one call does not carry to the next), a cd - before any
+command's directory is not moved), a symlink the same call creates before it cds through it (physical targets are resolved when the
+scan runs), reads spread over separate calls (a cd in one call does not carry to the next), a cd - before any
 cd of the command (it goes to the inherited $OLDPWD, which the scan does not know), zsh's two-operand cd OLD NEW (taken as cd OLD), a cd
 that CDPATH, cdable_vars, auto_cd or zsh's named directories send elsewhere (the directory is taken as spelled: none is set in this
 repository's shell configuration, and a call that sets one itself, as CDPATH=x, shopt -s cdable_vars, setopt cdablevars or auto_cd, or
