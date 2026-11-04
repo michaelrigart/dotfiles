@@ -1,0 +1,34 @@
+#!/bin/sh
+# Installs the gems listed in default-gems (beside this script) into every Ruby mise has
+# just installed. mise runs it as the global [hooks] postinstall, with MISE_INSTALLED_TOOLS
+# set to a JSON array of what that install produced. A tool-level postinstall would not fire
+# for project-pinned Rubies or for `mise exec`'s auto-installs; the global hook does.
+# A failed gem install only warns, so a Ruby too old for a listed gem still installs.
+
+list="$(dirname "$0")/default-gems"
+[ -s "$list" ] || exit 0
+[ -n "${MISE_INSTALLED_TOOLS:-}" ] || exit 0
+
+if [ -x /usr/bin/jq ]; then jq=/usr/bin/jq
+elif command -v jq >/dev/null 2>&1; then jq=jq
+else
+  echo "ruby-default-gems: jq not found, skipping default gems" >&2
+  exit 0
+fi
+
+paths="$(printf '%s' "$MISE_INSTALLED_TOOLS" |
+  "$jq" -r '.[] | select(.name == "ruby") | .install_path' 2>/dev/null)" || {
+  echo "ruby-default-gems: cannot parse MISE_INSTALLED_TOOLS, skipping default gems" >&2
+  exit 0
+}
+
+printf '%s\n' "$paths" | while IFS= read -r ruby; do
+  [ -n "$ruby" ] || continue
+  sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' "$list" | while IFS= read -r gems; do
+    [ -n "$gems" ] || continue
+    # shellcheck disable=SC2086
+    "$ruby/bin/gem" install --no-document $gems </dev/null >/dev/null ||
+      echo "ruby-default-gems: gem install $gems failed for $ruby" >&2
+  done
+done
+exit 0
