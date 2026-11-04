@@ -9,7 +9,8 @@ words: a verdict names what the scan saw then.
 It refuses, before anything changes, when the state has no branches.json, when either path lies inside the other, when both
 directories exist or neither does, when the state lies inside either, when the move would cross a volume, when the state names
 neither directory (--from is spelled differently from the recorded paths) and when a candidate branch's final tip does not resolve
-through its view now, and when a view's alternates line outside both directories names none. The state is held exclusively, and a refusal for want of a branches.json takes no lock. The CLI itself makes a
+through its view now, and when a view's alternates line outside the new directory names none (a line under the old one is
+checked while the old directory is there). The state is held exclusively, and a refusal for want of a branches.json takes no lock. The CLI itself makes a
 missing --state directory (empty) before any command runs; this command leaves it so. A rename done and a rewrite that failed is
 finished by running the command again: with the old directory gone and the new one there, it only rewrites.
 It ends by checking three things: no string with the old prefix is left in those files, every alternates line of the views under the new directory names
