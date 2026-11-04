@@ -28,6 +28,9 @@ export XDG_CONFIG_HOME="${HOME}/.config"
 export XDG_DATA_HOME="${HOME}/.local/share"
 export XDG_STATE_HOME="${HOME}/.local/state"
 export XDG_BIN_HOME="${HOME}/.local/bin"
+# Before zshenv exists: op learns the 1Password app integration is on from the app's
+# group-container settings, which macOS 27.2 may refuse the terminal (see zshenv).
+export OP_BIOMETRIC_UNLOCK_ENABLED=true
 
 echo ""
 log_info "========== Starting macOS Provision =========="
