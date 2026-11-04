@@ -7,10 +7,14 @@ string that is the old path, or lies under it, is rewritten. Run records, copied
 words: a verdict names what the scan saw then.
 
 It refuses, before anything changes, when the state has no branches.json, when either path lies inside the other, when both
-directories exist or neither does, and when the move would cross a volume. The state is held exclusively. A rename done and a
-rewrite that failed is finished by running the command again: with the old directory gone and the new one there, it only rewrites.
-It ends by checking two things: no string with the old prefix is left in those files, and every branch whose objects now lie under
-the new directory resolves its final tip through its view.
+directories exist or neither does, when the state lies inside either, when the move would cross a volume, when the state names
+neither directory (--from is spelled differently from the recorded paths) and when a candidate branch's final tip does not resolve
+through its view now. The state is held exclusively, and a refusal for want of a branches.json takes no lock. The CLI itself makes a
+missing --state directory (empty) before any command runs; this command leaves it so. A rename done and a rewrite that failed is
+finished by running the command again: with the old directory gone and the new one there, it only rewrites.
+It ends by checking three things: no string with the old prefix is left in those files, every alternates line of every view names an
+existing directory, and every candidate branch whose objects now lie under the new directory resolves its final tip through its view
+(a branch that is not a candidate may carry a tip that is gone, and is not checked).
 """
 import glob
 import os
@@ -99,17 +103,40 @@ def _alternates(state):
 
 def _scan(state, old, new):
     """What rewriting the state's references would do: ([(rel, path, text, n)] for the views' alternates, (path, doc, n) for
-    branches.json). Reads only."""
-    views = []
+    branches.json, the original doc, the number of references to `new` already there). Reads only."""
+    views, already = [], 0
     for path in _alternates(state):
-        text, n = rewrite_alternates(_read(path), old, new)
-        views.append((os.path.relpath(path, state), path, text, n))
+        text = _read(path)
+        already += rewrite_alternates(text, new, new)[1]
+        new_text, n = rewrite_alternates(text, old, new)
+        views.append((os.path.relpath(path, state), path, new_text, n))
     path = os.path.join(state, "branches.json")
-    doc = C.jload(path)
-    if not isinstance(doc, dict):
+    orig = C.jload(path)
+    if not isinstance(orig, dict):
         raise Failed("{} is not a JSON object: not a state to relocate".format(path))
-    doc, n = rewrite_value(doc, old, new)
-    return views, (path, doc, n)
+    already += rewrite_value(orig, new, new)[1]
+    doc, n = rewrite_value(orig, old, new)
+    return views, (path, doc, n), orig, already
+
+
+def _tips(doc, root):
+    """[(branch id, view, final tip)] of the candidate records of `doc` whose objects lie under `root`. A record that is not a candidate
+    may carry the raw tip of a transcript that is gone (inventory.examine), and is not checked."""
+    out = []
+    for b in doc.get("branches") or []:
+        if not isinstance(b, dict) or b.get("candidate") is not True:
+            continue
+        objects = b.get("objects")
+        if isinstance(objects, str) and _inside(objects, root):
+            out.append((b.get("id"), b.get("view"), b.get("final_tip")))
+    return out
+
+
+def _resolve(tips):
+    """Failed naming the first of `tips` that does not resolve through its view."""
+    for bid, view, tip in tips:
+        if not isinstance(view, str) or not isinstance(tip, str) or C.git_run(view, ["cat-file", "-e", tip + "^{commit}"]).returncode != 0:
+            raise Failed("branch {} does not resolve its final tip {} through its view {}".format(bid, tip, view))
 
 
 def _write(path, data, how):
@@ -139,31 +166,35 @@ def _rename(old, new):
 
 
 def _verify(state, old, new):
-    views, (bpath, _doc, bn) = _scan(state, old, new)
+    """The number of final tips checked; Failed naming the first thing that does not hold."""
+    views, (bpath, _doc, bn), orig, _already = _scan(state, old, new)
     for rel, _path, _text, n in views:
         if n:
             raise Failed("verification failed: {} still has {} reference(s) to {}".format(rel, n, old))
     if bn:
         raise Failed("verification failed: {} still has {} reference(s) to {}".format(bpath, bn, old))
-    checked = 0
-    for b in (C.jload(bpath) or {}).get("branches") or []:
-        objects = b.get("objects") if isinstance(b, dict) else None
-        if not isinstance(objects, str) or not _inside(objects, new):
-            continue
-        view, tip = b.get("view"), b.get("final_tip")
-        if not isinstance(view, str) or not isinstance(tip, str) or C.git_run(view, ["cat-file", "-e", tip + "^{commit}"]).returncode != 0:
-            raise Failed("verification failed: branch {} does not resolve its final tip {} through its view {}".format(b.get("id"), tip, view))
-        checked += 1
-    return checked
+    for rel, path, _text, _n in views:
+        objects = os.path.dirname(os.path.dirname(path))
+        for line in _read(path).splitlines():
+            if line.strip() and not line.startswith("#") and not os.path.isdir(os.path.join(objects, line)):
+                raise Failed("verification failed: {} names {}, which is not a directory".format(rel, line))
+    tips = _tips(orig, new)
+    try:
+        _resolve(tips)
+    except Failed as e:
+        raise Failed("verification failed: {}".format(e))
+    return len(tips)
 
 
-@C.locked(lambda a: None if a.dry_run else "exclusive")
+@C.locked(lambda a: None if a.dry_run or not os.path.isfile(os.path.join(a.state, "branches.json")) else "exclusive")
 def cmd_relocate_snapshot(a):
     old, new, state = os.path.abspath(a.from_dir), os.path.abspath(a.to_dir), a.state
     if not os.path.isfile(os.path.join(state, "branches.json")):
         raise Failed("{} is not a state: it has no branches.json".format(state))
     if _inside(new, old) or _inside(old, new):
         raise Failed("{} and {} lie inside one another (or are one): nothing is moved".format(old, new))
+    if _inside(state, old) or _inside(state, new):
+        raise Failed("the state {} lies inside {} or {}: the move would carry it away: nothing is moved".format(state, old, new))
     has_old, has_new = os.path.lexists(old), os.path.lexists(new)
     if has_old and has_new:
         raise Failed("both {} and {} exist: nothing is moved".format(old, new))
@@ -174,8 +205,14 @@ def cmd_relocate_snapshot(a):
             raise Failed("{} is not a directory (a link is not followed): nothing is moved".format(old))
         if _device(old) != _device(os.path.dirname(new)):
             raise Failed("{} and {} are on different volumes: a rename cannot cross one, and nothing is copied".format(old, os.path.dirname(new)))
-    views, (bpath, bdoc, bn) = _scan(state, old, new)
+    views, (bpath, bdoc, bn), orig, already = _scan(state, old, new)
     vn = sum(n for _rel, _path, _text, n in views)
+    if has_old and vn + bn == 0 and already == 0:
+        raise Failed("nothing in {} names {} or {}: check how --from is spelled against the recorded paths (for instance a symlinked parent directory)"
+                     ": nothing is moved".format(state, old, new))
+    before = _tips(orig, old)
+    if has_old:
+        _resolve(before)            # through the views as they are: a tip that will not resolve is caught before anything moves
     dry = a.dry_run
     C.say(("would rename: {} -> {}" if dry else "rename: {} -> {}").format(old, new) if has_old else
           "already moved: {} is there and {} is gone".format(new, old))
@@ -185,6 +222,7 @@ def cmd_relocate_snapshot(a):
     if bn:
         C.say("  branches.json: {}".format(bn))
     C.say("{} {} references ({} in views' alternates, {} in branches.json)".format("would rewrite" if dry else "rewrote", vn + bn, vn, bn))
+    C.say("final tips to check: {}".format(len(before) + len(_tips(orig, new))))
     if dry:
         return 0
     if has_old:

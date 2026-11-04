@@ -74,7 +74,6 @@ class Fx:
         }
         for rel, text in self.records.items():
             put(self.state, rel, text)
-        put(self.state, "run.lock", "")       # so a refused command leaves the listing as it found it
 
     def args(self, *extra, to=True):
         return ["--state", self.state, "--from", self.old] + (["--to", self.new] if to else []) + list(extra)
@@ -88,8 +87,9 @@ class Fx:
     def untouched(self):
         return {rel: read(os.path.join(self.state, rel)) for rel in self.records}
 
-    def snap(self):
-        return (helpers.listing(self.state), helpers.listing(self.old) if os.path.exists(self.old) else None,
+    def snap(self, strict=False):
+        """What a refusal must leave as it found it. run.lock, made by the lock a command holds, is left out unless `strict`."""
+        return ([r for r in helpers.listing(self.state) if strict or r[0] != "run.lock"], helpers.listing(self.old) if os.path.exists(self.old) else None,
                 os.path.exists(os.path.dirname(self.new)), os.path.exists(self.new))
 
 
@@ -115,6 +115,7 @@ before = f.snap()
 rc, out = cli(*f.args("--dry-run"))
 is_("dry_run_changes_nothing: exit 0", rc, 0)
 ok("dry_run_changes_nothing: it prints 1 view and 2 objects", "1 in views' alternates, 2 in branches.json" in out and "would rewrite 3 references" in out, out)
+ok("dry_run_changes_nothing: it prints how many tips it will check", "final tips to check: 2" in out, out)
 ok("dry_run_changes_nothing: it names the rename", "would rename: {} -> {}".format(f.old, f.new) in out, out)
 is_("dry_run_changes_nothing: the listings of the state and of OLD are unchanged and NEW does not exist", f.snap(), before)
 ok("dry_run_changes_nothing: no verification claim", "verified:" not in out, out)
@@ -131,6 +132,7 @@ is_("moves_and_rewrites: exit 0", rc, 0)
 ok("moves_and_rewrites: it prints the rename, the counts and the verification", "rename: {} -> {}".format(f.old, f.new) in out
    and "rewrote 3 references (1 in views' alternates, 2 in branches.json)" in out
    and "verified: no reference to {} remains in the views or branches.json; every rewritten view resolves its branches' final tips".format(f.old) in out, out)
+ok("moves_and_rewrites: it prints how many tips it checked", "final tips to check: 2" in out and "checked 2 final tips" in out, out)
 ok("moves_and_rewrites: OLD is gone", not os.path.exists(f.old))
 is_("moves_and_rewrites: NEW is OLD's directory (a rename, not a copy)", os.stat(f.new).st_ino, ino)
 is_("moves_and_rewrites: the alternates name NEW", f.alt(f.view), os.path.join(f.new, "2026-11-02", "chezmoi", "objects") + "\n")
@@ -203,13 +205,13 @@ ok("resumes: a rerun finishes the job (rewrites only branches.json) and verifies
 is_("resumes: branches.json names NEW", f.branches_doc()["branches"][0]["objects"], os.path.join(f.new, "2026-11-02", "chezmoi", "objects"))
 
 # ---------------------------------------------------------------- refuses
-def refused(name, fx, argv, want):
-    before = fx.snap()
+def refused(name, fx, argv, want, strict=False):
+    before = fx.snap(strict)
     recorded = fx.untouched()
     bj = read(os.path.join(fx.state, "branches.json")) if os.path.exists(os.path.join(fx.state, "branches.json")) else None
     rc, out = cli(*argv)
     ok("refuses: {} exits 1 naming why".format(name), rc == 1 and want in out, (rc, out))
-    is_("refuses: {} changes nothing".format(name), (fx.snap(), fx.untouched(),
+    is_("refuses: {} changes nothing".format(name), (fx.snap(strict), fx.untouched(),
         read(os.path.join(fx.state, "branches.json")) if bj is not None else None), (before, recorded, bj))
 
 f = Fx()
@@ -227,7 +229,7 @@ finally:
     R._device = real_device
 f = Fx()
 os.unlink(os.path.join(f.state, "branches.json"))
-refused("no branches.json", f, f.args(), "branches.json")
+refused("no branches.json", f, f.args(), "branches.json", strict=True)       # strict: not even a run.lock
 f = Fx()
 refused("--to inside --from", f, ["--state", f.state, "--from", f.old, "--to", os.path.join(f.old, "inner")], "inside")
 f = Fx()
@@ -252,13 +254,39 @@ with C.command_locks(f.state, "shared"):
     is_("lock: and changes nothing", f.snap(), before)
 
 # ---------------------------------------------------------------- verification
+def with_branches(fx, edit):
+    b = fx.branches_doc()
+    edit(b["branches"])
+    C.jsave(os.path.join(fx.state, "branches.json"), b)
+
+
 f = Fx()
-b = f.branches_doc()
-b["branches"][1]["final_tip"] = "0" * 40
-C.jsave(os.path.join(f.state, "branches.json"), b)
+with_branches(f, lambda bs: bs[1].update(final_tip="0" * 40))
+before = f.snap(strict=True)
+rc, out = cli(*f.args("--dry-run"))
+ok("tip_dry_run: a candidate whose final tip cannot resolve makes the dry run refuse, naming the branch", rc == 1 and "b2" in out, (rc, out))
+is_("tip_dry_run: and nothing changed", f.snap(strict=True), before)
+before_loose = f.snap()
 rc, out = cli(*f.args())
-ok("verify: a branch whose final tip does not resolve is named, exit 1, no verified line", rc == 1 and "b2" in out and "verified:" not in out, (rc, out))
-ok("verify: the move itself stands, so a rerun does not move it again", not os.path.exists(f.old) and os.path.isdir(f.new))
+ok("tip_before_move: the real run refuses too, before anything moves", rc == 1 and "b2" in out and "verified:" not in out
+   and os.path.isdir(f.old) and not os.path.exists(f.new), (rc, out))
+is_("tip_before_move: and nothing changed", f.snap(), before_loose)
+
+f = Fx()
+with_branches(f, lambda bs: bs.extend([
+    {"id": "n1", "repo": f.gitdir, "objects": f.objects, "view": f.view, "final_tip": "deadbeef" * 5, "candidate": False, "why": "a round tip is gone"},
+    {"id": "n2", "repo": f.gitdir, "objects": f.objects, "view": f.view, "final_tip": None, "candidate": False, "why": "no branch name"}]))
+rc, out = cli(*f.args())
+ok("tip_not_candidate: a record that is not a candidate may carry a tip that is gone or None; the move succeeds and counts only candidates",
+   rc == 0 and "checked 2 final tips" in out and "verified:" in out, (rc, out))
+is_("tip_not_candidate: the non-candidate's objects were rewritten like the others", f.branches_doc()["branches"][3]["objects"], os.path.join(f.new, "2026-11-02", "chezmoi", "objects"))
+
+f = Fx()                                # after a resume nothing can be checked first: the post-move check names the branch
+os.makedirs(os.path.dirname(f.new))
+os.rename(f.old, f.new)
+with_branches(f, lambda bs: bs[1].update(final_tip="0" * 40))
+rc, out = cli(*f.args())
+ok("tip_after_resume: a candidate whose tip does not resolve is named by the verification", rc == 1 and "verification failed" in out and "b2" in out and "verified:" not in out, (rc, out))
 
 f = Fx()
 real_write = C.XR.write_whole
@@ -268,3 +296,65 @@ try:
 finally:
     C.XR.write_whole = real_write
 ok("verify: a reference to OLD left in a view is named, exit 1, no verified line", rc == 1 and "alternates" in out and f.old in out and "verified:" not in out, (rc, out))
+
+# ---------------------------------------------------------------- a spelling of --from the state does not use
+f = Fx()
+lnk = os.path.join(f.root, "lnk")
+os.symlink(os.path.dirname(f.old), lnk)
+before = f.snap()
+rc, out = cli("--state", f.state, "--from", os.path.join(lnk, "snapshot"), "--to", f.new)
+ok("spelling: --from through a symlinked parent matches no recorded path and is refused", rc == 1 and "spelled" in out and "verified:" not in out, (rc, out))
+is_("spelling: and nothing changed", f.snap(), before)
+ok("spelling: the views still read OLD's objects", C.git_ok(f.view, "cat-file", "-e", f.tip + "^{commit}") and os.path.isdir(f.old))
+
+f = Fx()
+cli(*f.args())
+put(f.view, "objects/info/alternates", "/does/not/exist/objects\n")
+rc, out = cli(*f.args())
+ok("verify_alternates: a view whose alternates line is not a directory fails a rerun that rewrote nothing", rc == 1 and "not a directory" in out and "verified:" not in out, (rc, out))
+
+# ---------------------------------------------------------------- a missing state or one without branches.json takes no lock
+missing = os.path.join(helpers.tmp_root(), "no-such-state")
+f = Fx()
+rc, out = cli("--state", missing, "--from", f.old, "--to", f.new)
+ok("no_state: a missing --state is refused", rc == 1 and "branches.json" in out, (rc, out))
+is_("no_state: the CLI leaves its empty directory and the command adds no file to it (no run.lock)", os.listdir(missing), [])
+ok("no_state: OLD is where it was", os.path.isdir(f.old) and not os.path.exists(f.new))
+
+# ---------------------------------------------------------------- the state may not lie inside what moves
+f = Fx()
+inner = os.path.join(f.old, "st")
+os.makedirs(inner)
+shutil.copy(os.path.join(f.state, "branches.json"), inner)
+put(inner, "run.lock", "")               # this state is inside OLD, so the lock file a held lock makes would show in OLD's listing
+refused("--state inside --from", f, ["--state", inner, "--from", f.old, "--to", f.new], "state")
+ok("state_inside: OLD is still there", os.path.isdir(f.old) and not os.path.exists(f.new))
+f = Fx()
+ns = os.path.join(f.root, "ns")
+os.makedirs(os.path.join(ns, "st"))
+shutil.copy(os.path.join(f.state, "branches.json"), os.path.join(ns, "st"))
+rc, out = cli("--state", os.path.join(ns, "st"), "--from", f.old, "--to", ns)
+ok("state_inside: --state inside --to is refused", rc == 1 and "state" in out and os.path.isdir(f.old), (rc, out))
+
+# ---------------------------------------------------------------- a failed rename removes the parents it made
+f = Fx()
+f.new = os.path.join(f.root, "p1", "p2", "p3", "snapshot")
+real_rename = os.rename
+def failing_rename(src, dst):
+    raise OSError(18, "Invalid cross-device link")
+R.os.rename = failing_rename
+try:
+    rc, out = cli(*f.args())
+finally:
+    R.os.rename = real_rename
+ok("rename_fails: a failed rename is a refusal naming it", rc == 1 and "cannot rename" in out, (rc, out))
+ok("rename_fails: the parents it made are gone and OLD is intact", not os.path.exists(os.path.join(f.root, "p1")) and os.path.isdir(f.old), os.listdir(f.root))
+f = Fx()
+os.makedirs(os.path.join(f.root, "p1"))
+f.new = os.path.join(f.root, "p1", "p2", "snapshot")
+R.os.rename = failing_rename
+try:
+    rc, out = cli(*f.args())
+finally:
+    R.os.rename = real_rename
+ok("rename_fails: a parent that was there before stays", rc == 1 and os.path.isdir(os.path.join(f.root, "p1")) and not os.path.exists(os.path.join(f.root, "p1", "p2")), os.listdir(f.root))
