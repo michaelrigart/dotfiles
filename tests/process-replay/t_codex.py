@@ -1385,6 +1385,15 @@ for cmd in ("chezmoi --pager --version diff -D {SCR}", "chezmoi diff --pager --s
             "chezmoi --pager -S {SCR} -D {SCR}/h diff", "chezmoi --pager --destination {SCR}/h -S {SCR} diff", "chezmoi -x --version", "chezmoi -x -S {SCR} -D {SCR}/h diff",
             "chezmoi -xS {SCR} -D {SCR}/h diff", "chezmoi -xD{SCR}/h -S {SCR} diff", "chezmoi diff -x --source-path -D {SCR}"):
     is_("unknown_swallows_a_flag: {} reads the original (the unknown option may have taken the flag as its value)".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
+for cmd in ("chezmoi diff --no-pager --pager -vS {SCR} -D {SCR}", "chezmoi --pager -vS {SCR} -D {SCR}/h diff", "chezmoi diff --pager -nD {SCR}/h -S {SCR}",
+            "chezmoi diff --pager -vS {SCR} -D {SCR}/h", "chezmoi -x -vS {SCR} -D {SCR}/h diff",
+            "chezmoi -x -nD {SCR}/h -S {SCR} diff", "chezmoi diff --pager -vS{SCR} -D {SCR}/h", "chezmoi diff --pager -nD{SCR}/h -S {SCR}",
+            "chezmoi diff --pager -vS={SCR} -D {SCR}/h", "chezmoi --pager -vnS {SCR} -D {SCR}/h diff", "chezmoi diff -x -vSD {SCR}"):
+    is_("unknown_swallows_a_cluster: {} reads the original (the unknown option may have taken the short cluster as its value)".format(cmd),
+        leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
+for cmd in ("chezmoi --pager -v -S {SCR} -D {SCR}/h diff", "chezmoi --pager=less --source {SCR} -D {SCR}/h diff", "chezmoi --pager less --source {SCR} -D {SCR}/h diff",
+            "chezmoi diff --pager -nv -S {SCR} -D {SCR}/h", "chezmoi diff --pager -nv --source {SCR} -D {SCR}/h", "chezmoi -x -v -S {SCR} -D {SCR}/h diff"):
+    is_("unknown_swallows_a_cluster: {} names no original (the next word is no source or destination flag)".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), [])
 for cmd in ("chezmoi -S {SCR} -D \"$D\" diff", "chezmoi -S {SCR} -D $TMPDIR/h diff", "chezmoi -S {SCR} -D \"$(echo ~)\" diff", "chezmoi -S {SCR} -D `echo ~` diff",
             "chezmoi -S \"$S\" -D {SCR}/h managed", "chezmoi -S \"$S\" managed", "chezmoi --source=$S --destination={SCR}/h managed", "D=$(echo {SCR}/h); chezmoi -S {SCR} -D \"$D\" diff",
             "chezmoi -S {SCR}/$X -D {SCR}/h managed"):

@@ -67,7 +67,7 @@ glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it s
 rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working directory; it is taken to read the
 pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff, or a --source built that way), a heredoc fed to a shell
 (sh <<EOF), find -exec, and a long xargs option with a separate value (--max-args 1); for chezmoi, an unknown option that takes a
-value and swallows a word other than a source, destination or --version flag (it is read as the subcommand or an operand). Counted
+value and swallows a word other than a source, destination or --version flag or a short cluster holding S or D (it is read as the subcommand or an operand). Counted
 though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a command bash rejects as
 a syntax error (ls >#x cat ~/.codex/y, 2>#x), a search pattern inside
 a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS
@@ -336,8 +336,10 @@ CHEZMOI_VALUED = ("--age-recipient", "--age-recipient-file", "--cache", "--color
                   "--use-builtin-git", "-W", "--working-tree")
 CHEZMOI_FLAGS = ("--debug", "-n", "--dry-run", "--error-on-conflict", "--force", "--interactive", "-k", "--keep-going", "--less-interactive", "--no-pager",
                  "--no-tty", "-R", "--refresh-externals", "--skip-secrets", "--source-path", "--use-builtin-diff", "-v", "--verbose")
-# A word that an unknown option, if it takes a value, would swallow: a source, a destination or --version.
-CHEZMOI_SWALLOWED = ("-S", "--source", "-D", "--destination", "--version")
+# A word that an unknown option, if it takes a value, would swallow: a long source or destination flag, --version, or a short cluster that holds
+# an S or a D (-S, -vS, -nD, -vS=x: pflag hands the cluster whole to the unknown option).
+CHEZMOI_SWALLOWED = ("--source", "--destination", "--version")
+_SHORT_SD = re.compile(r"-[^-]*[SD]")
 SHELLS = ("sh", "bash", "zsh", "dash")
 KEYWORDS = ("if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done", "esac")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
@@ -747,11 +749,17 @@ def _plain(eff):
     return keep
 
 
+def _swallowed(word):
+    """Whether `word` is a flag an unknown option that takes a value would hide: see CHEZMOI_SWALLOWED."""
+    return word.startswith(CHEZMOI_SWALLOWED) or _SHORT_SD.match(word) is not None
+
+
 def _chezmoi(plain):
     """What a chezmoi call (`plain`: its effective words, redirections dropped) reads, as (kind, roots). `none`: --version before any operand, or
     the subcommand help, which read nothing. `original`: no -S/--source anywhere (-Sx, -S=x and --source=x too), so it reads the checkout it
-    finds: the original; also a source flag with no value, and an unknown option followed by a source, destination or --version flag, which
-    the option may take as its value (pflag gives a value-taking flag the next word, whatever it starts with). `paths`: the call names its
+    finds: the original; also a source flag with no value, and an unknown option followed by a source, destination or --version flag, or a short
+    cluster holding an S or a D (-vS, -nD), which the option may take as its value (pflag gives a value-taking flag the next word, whatever it
+    starts with, and hands a cluster to it whole). `paths`: the call names its
     source, so `roots` are every source value and the destination (the last -D/--destination, else ~), each read as a search root, because
     chezmoi walks them. No subcommand is exempt from the destination: with a .chezmoiremove in the source, managed and source-path read it
     too (R3, t_codex.py real_chezmoi_source_only)."""
@@ -771,7 +779,7 @@ def _chezmoi(plain):
                 if not eq:
                     value, i = plain[i] if i < len(plain) else None, i + 1
             elif name not in CHEZMOI_FLAGS:
-                if not eq and i < len(plain) and plain[i].startswith(CHEZMOI_SWALLOWED):
+                if not eq and i < len(plain) and _swallowed(plain[i]):
                     return "original", []
                 unknown = unknown or sub is None
                 continue
@@ -788,7 +796,7 @@ def _chezmoi(plain):
                     break
                 if flag not in CHEZMOI_FLAGS:
                     rest = word[j + 1:]
-                    if "S" in rest or "D" in rest or (not rest and i < len(plain) and plain[i].startswith(CHEZMOI_SWALLOWED)):
+                    if "S" in rest or "D" in rest or (not rest and i < len(plain) and _swallowed(plain[i])):
                         return "original", []
                     unknown = unknown or sub is None
                     break
