@@ -1,6 +1,9 @@
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from argparse import Namespace
@@ -1332,3 +1335,119 @@ is_("quoted_operator: an argv word that reads as an operator is a word (a list c
 is_("quoted_operator: ... and an argv ( still opens find's group (it walks .)", leaked(fc(["find", "(", "-name", "x", ")"]), OWNWALL, cwd=house), [CXN, CHN])
 for cmd in ("echo $(rg foo > out)", "echo $(rg foo < /dev/null)", "echo $(rg foo 2>/dev/null)", "echo a$(rg foo >out)", "x=$(grep -r foo > /dev/null); ls"):
     is_("quoted_operator: a real redirection inside $( ) stays one, so the search still walks . ({})".format(cmd), leaked(fc(cmd), OWNWALL, cwd=house), [CXN, CHN])
+
+# ---- chezmoi is judged by the paths it names (spec 14.3 b, Task 4)
+CHW = CHZ + [house + "/.claude"]
+CLN = house + "/.claude in t1"
+for cmd in ("chezmoi --version", "chezmoi help", "chezmoi help diff", "chezmoi --source ~ --version", "chezmoi --color on help diff", "chezmoi -vn help"):
+    is_("version_and_help: {} reads nothing".format(cmd), leaked(fc(cmd), CHZ), [])
+is_("version_and_help: --version after the subcommand is no exemption", leaked(fc("chezmoi diff --version"), CHZ), CHZN)
+is_("version_and_help: help as the value of a flag is no subcommand", leaked(fc("chezmoi --config help diff"), CHZ), CHZN)
+for cmd in ("chezmoi --source {SCR} managed", "chezmoi -S {SCR} managed", "chezmoi --source={SCR} source-path x", "chezmoi -S. managed",
+            'SRC={SCR}; chezmoi --source "$SRC" managed', "export SRC={SCR}; chezmoi -S $SRC managed", "chezmoi -S={SCR} managed", "chezmoi -vS {SCR} managed",
+            "chezmoi -nS{SCR} managed", "chezmoi --no-tty --no-pager --source {SCR} --config {SCR}/c.toml --cache {SCR}/k --persistent-state {SCR}/p managed",
+            "chezmoi --refresh-externals --source {SCR} managed", "chezmoi --refresh-externals=always --source {SCR} managed",
+            "chezmoi --source {SCR} --destination ~ managed", "chezmoi --source {SCR} managed --path-style absolute",
+            "sh -c 'chezmoi --source {SCR} managed'", "echo $(chezmoi --source {SCR} managed)", "echo `chezmoi -S {SCR} managed`",
+            "cd {SCR} && chezmoi -S . managed", "env A=1 chezmoi --source {SCR} managed", "xargs chezmoi --source {SCR} source-path < list"):
+    is_("source_into_scratch_managed: {} reads only the scratch".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), [])
+is_("source_into_scratch_managed: an argv list is read the same", leaked(fc(["chezmoi", "--source", SCR, "managed"]), CHZ), [])
+for cmd in ("chezmoi --source {SCR} diff", "chezmoi -S {SCR} status", "chezmoi --source {SCR} apply --dry-run", "chezmoi --source {SCR} --destination {SCR}/h --destination ~ diff"):
+    is_("default_destination_search_root: {} reads ~ and so the original".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
+for cmd in ("chezmoi --source {SCR} --destination {SCR}/home diff", "chezmoi -S {SCR} -D{SCR}/home diff", "chezmoi -S {SCR} -D {SCR}/home status",
+            "chezmoi --source {SCR} --destination ~ --destination {SCR}/home diff", "chezmoi --source {SCR} --destination={SCR}/home diff"):
+    is_("default_destination_search_root: {} names no original".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), [])
+for cmd in ("chezmoi --source ~/.local/share/chezmoi managed", "chezmoi --source ~ managed", "chezmoi -S ~/.local/share managed", "chezmoi --source={SCR} --source ~ managed"):
+    is_("source_judged: {} reads the original".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ, cwd=house + "/.local/state/review-work/scratch/x"), CHZN)
+for cmd in ("chezmoi managed", "chezmoi --destination {SCR} managed", "chezmoi source-path", "chezmoi -D{SCR} managed", "chezmoi --source '' managed", "chezmoi --source",
+            "chezmoi managed -S", "chezmoi --source-path managed", "chezmoi --config {SCR}/c.toml managed"):
+    is_("no_source_reads_original: {} reads the original".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
+for cmd in ("chezmoi --frobnicate --source {SCR} managed", "chezmoi -x --source {SCR} managed",
+            "chezmoi --source {SCR} --frobnicate managed"):
+    is_("unknown_option: {} keeps the destination, so it reads ~".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
+is_("unknown_option: ... with the destination named in the scratch, the unknown option leaves nothing to read",
+    leaked(fc("chezmoi --frobnicate --source {0} --destination {0}/h managed".format(SCR)), CHZ), [])
+is_("unknown_option: ... an unknown option after the subcommand does not", leaked(fc("chezmoi --source {} managed --frobnicate".format(SCR)), CHZ), [])
+is_("unknown_option: --color on is a known option with a value", leaked(fc("chezmoi --color on --source {} managed".format(SCR)), CHZ), [])
+for cmd in ("chezmoi --source {SCR} source-path ~/.local/share/chezmoi/dot_x", "chezmoi --source {SCR} managed ~/.local/share/chezmoi",
+            "chezmoi --source {SCR} --config ~/.local/share/chezmoi/c.toml managed", "chezmoi --source {SCR} --cache ~/.local/share/chezmoi managed",
+            "chezmoi --source {SCR} --persistent-state ~/.local/share/chezmoi/p managed"):
+    is_("source_judged: {} names the original in another word".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
+is_("source_judged: --config into ~/.claude is a read of it", leaked(fc("chezmoi --source {} --config ~/.claude/c.toml managed".format(SCR)), CHW), [CLN])
+is_("records_2026_11_03: 7f3b624a's calls, --version and a source in the scratch, are clean",
+    (leaked(fc("chezmoi --version"), CHW), leaked(fc("chezmoi --source {} managed".format(SCR)), CHW)), ([], []))
+is_("records_2026_11_03: 3819843a's calls, git -C on the original and ls of ~/.claude/skills, still leak",
+    (leaked(fc("git -C ~/.local/share/chezmoi log"), CHW), leaked(fc("ls ~/.claude/skills"), CHW)), (CHZN, [CLN]))
+is_("flags_after_subcommand: managed --source <scratch> reads only the scratch", leaked(fc("chezmoi managed --source {}".format(SCR)), CHZ), [])
+is_("flags_after_subcommand: diff -S <scratch> still reads ~", leaked(fc("chezmoi diff -S {}".format(SCR)), CHZ), CHZN)
+is_("flags_after_subcommand: managed -S <scratch> --destination ~ reads only the scratch", leaked(fc("chezmoi managed -S {} --destination ~".format(SCR)), CHZ), [])
+is_("flags_after_subcommand: diff --source <scratch> -D <scratch>/h reads neither", leaked(fc("chezmoi diff --source {0} -D {0}/h".format(SCR)), CHZ), [])
+for cmd in ("ls x$(cd ~/.local/share) chezmoi", "echo chezmoi$(true) x$(true) chezmoi diff", "ls a`true` chezmoi diff"):
+    is_("glued_word_not_a_command: {} does not run chezmoi".format(cmd), leaked(fc(cmd), CHZ), [])
+is_("glued_word_not_a_command: ... a tool word with a glued substitution is still the command", leaked(fc("chezmoi$(true) --source {} managed".format(SCR)), CHZ), [])
+is_("glued_word_not_a_command: ... and without a source it reads the original", leaked(fc("chezmoi$(true) managed"), CHZ), CHZN)
+is_("heredoc_not_run: a heredoc body is not run", leaked(fc("cat <<EOF\nchezmoi diff\nEOF"), CHZ), [])
+is_("heredoc_not_run: ... sh -c inside it is not run either", leaked(fc("cat <<EOF\nsh -c 'chezmoi diff'\nEOF"), CHZ), [])
+is_("running_passes_down: sh -c and $( ) run it", (leaked(fc("sh -c 'echo $(chezmoi diff)'"), CHZ), leaked(fc("echo $(sh -c 'chezmoi diff')"), CHZ)), (CHZN, CHZN))
+is_("running_passes_down: _Scan.script(running=False) runs no tool word, even inside sh -c and $( )",
+    [sorted(s.found) for s in [K._Scan(K.wall(CHZ), {})] for _ in [s.script("sh -c 'echo $(chezmoi diff)'; chezmoi diff", [SCR], running=False)]], [[]])
+is_("runs_is_gone: the old command-position scan has no caller left", hasattr(K, "_runs"), False)
+
+
+# ---- real_chezmoi_source_only: the exemption holds only if a real chezmoi, run on a source, reads no destination (spec 14.3 b)
+def real_chezmoi_source_only():
+    binary = shutil.which("chezmoi")
+    if not binary:
+        ok("real_chezmoi_source_only: a chezmoi is on PATH, so the exemption is shown", False, "no chezmoi on PATH: the exemption is not shown")
+        return
+    work = tempfile.mkdtemp(prefix="chezmoi-probe-", dir=ROOT)
+    dest = os.path.join(work, "dest")
+    try:
+        src, cfg, cache, state = (os.path.join(work, x) for x in ("src", "chezmoi.toml", "cache", "state.boltdb"))
+        put(src, "dot_bashrc", "export A=1\n")
+        put(src, "private_dot_config/app/settings.toml", "k = 1\n")
+        put(dest, ".bashrc", "export A=1\n")
+        os.makedirs(cache)
+        open(cfg, "w").close()
+        env = dict(os.environ, HOME=os.path.join(work, "home"), XDG_CONFIG_HOME=os.path.join(work, "xdg"), XDG_CACHE_HOME=os.path.join(work, "xcache"))
+        env.pop("CHEZMOI_SOURCE_DIR", None)
+        os.makedirs(env["HOME"])
+        version = subprocess.run([binary, "--version"], capture_output=True, text=True, env=env, timeout=60).stdout.strip()
+        probes = {"managed": [], "source-path": [dest + "/.bashrc"]}
+
+        def run(sub):
+            cmd = [binary, "--source", src, "--destination", dest, "--config", cfg, "--cache", cache, "--persistent-state", state, "--no-tty", "--no-pager", sub]
+            p = subprocess.run(cmd + probes.get(sub, []), capture_output=True, text=True, env=env, timeout=60)
+            return p.returncode, p.stdout, p.stderr
+
+        def twice(sub):
+            readable = run(sub)
+            os.chmod(dest, 0)
+            try:
+                return readable, run(sub)
+            finally:
+                os.chmod(dest, 0o755)
+
+        for sub in K.SOURCE_ONLY:
+            if sub not in probes:
+                ok("real_chezmoi_source_only: {} has a probe".format(sub), False, "add it to probes")
+                continue
+            a, b = twice(sub)
+            ok("real_chezmoi_source_only: {} ({}) exits 0 with the same output whether the destination is readable or at mode 000".format(sub, version),
+               a[0] == 0 and b[0] == 0 and a[1] == b[1], (a, b))
+        a, b = twice("status")
+        ok("real_chezmoi_source_only: the control (status) differs when the destination is at mode 000, so the probe can see a read",
+           a != b and (a[0] != b[0] or a[1] != b[1] or a[2] != b[2]), (a, b))
+    finally:
+        if os.path.isdir(dest):
+            os.chmod(dest, 0o755)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+real_chezmoi_source_only()
+
+# ---- carried from Task 3: a TOO_DEEP label holds no internal mark
+marked = leaked(fc("echo $(echo $(echo $(echo $(echo $(rg '|' ~ 2>/dev/null)))))"), OWNWALL, cwd="/work/s")
+ok("deep_label: a TOO_DEEP label holds neither OP_MARK nor FD_MARK", any(x.endswith(DEEP) for x in marked) and not any(c in x for x in marked for c in (K.OP_MARK, K.FD_MARK)), marked)
+is_("deep_label: ... and _excerpt drops them from a command rebuilt from tokens", K._excerpt("rg '|" + K.OP_MARK + "' 2" + K.FD_MARK + " > /dev/null"), "rg '|' 2 > /dev/null")
+is_("counted_not_read: ls >#x cat ~/.codex/y (a syntax error in bash) is still scanned, as the docstring says", (leaked(fc("ls >#x cat ~/.codex/y"), OWNWALL, cwd="/work/s"), leaked(fc("ls 2>#x cat ~/.codex/y"), OWNWALL, cwd="/work/s")), ([CXN], [CXN]))

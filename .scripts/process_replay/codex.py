@@ -50,18 +50,24 @@ siblings <dir>-*), unless it lies literally in one of the allowed subtrees. Allo
 <allowed>/../x is judged where it lands. A recursive search (rg, ag, ack, grep -r/-R, find, fd, tree, ls -R; the Grep and Glob
 tools) also reads every root beneath its own root, which is resolved like any path, the working directory when it names none
 (redirections and their targets are not operands); rg, ag, ack and grep in a pipe read the pipe. A repo-specific tool that reads
-the checkout without naming it (TOOLS: chezmoi for the chezmoi source) is a leak when run as a command (_runs: at a command position
-after a newline, && || ; | & ( ) { ! then do else, in $( ) and backticks, under env, sudo, command, xargs, timeout, nice and
-`mise exec --`; command -v, which, type and hash only look it up).
+the checkout without naming it (TOOLS: chezmoi for the chezmoi source) is judged by the paths it names when it is run as a command (the
+effective command of a simple command, looking through env, sudo, command, xargs, timeout, nice and `mise exec --`, sh -c, $( ) and backticks;
+command -v, which, type and hash only look it up; a heredoc body is not run): _chezmoi reads `--version` and `help` as reading nothing, a call
+with no -S/--source as reading the original, and a call that gives a source (the flags may stand before or after the subcommand) as reading its
+paths: each source and the destination (-D/--destination, default ~) is a search root, since chezmoi walks them, and --config, --cache and
+--persistent-state are words judged as paths. The destination is left out only for `managed` and `source-path` after known options only, which
+a test against a real chezmoi shows read no destination (t_codex.py real_chezmoi_source_only).
 Known limits, not chased further. Missed: an unknown variable ($DIR/x stays literal, and so does a cd to it), a path built at run
 time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
 command's directory is not moved), reads spread over separate calls (a cd in one call does not carry to the next), aliases or
 functions defined earlier, a function's body run from another directory (it is read where it is defined), a loop body that runs a use again after a later assignment, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
 glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it starts from /), a walk by any other command (cp -r,
 rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working directory; it is taken to read the
-pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff), a heredoc fed to a shell
-(sh <<EOF), find -exec, and a long xargs option with a separate value (--max-args 1). Counted
-though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a search pattern inside
+pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff, or a --source built that way), a heredoc fed to a shell
+(sh <<EOF), find -exec, and a long xargs option with a separate value (--max-args 1); for chezmoi, an unknown option that takes a
+value and so swallows a --source after it (the destination stays, so an explicit one in the scratch hides the read). Counted
+though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a command bash rejects as
+a syntax error (ls >#x cat ~/.codex/y, 2>#x), a search pattern inside
 a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS
 (its value is taken for the pattern, the pattern for a path), a depth-limited walk above a root (find ~ -maxdepth 1, tree -L 1 ~:
 the limit is not read), a glob * that matches a dot directory the shell would skip (~/* counts as naming ~/.codex), a function body
@@ -322,6 +328,13 @@ def weekly_hold(home, live=None):
 
 # Checkouts a tool reads without naming them: a checkout named <key> directly in the XDG data home is read by running these words.
 TOOLS = {"chezmoi": ("chezmoi",)}
+# chezmoi v2.74.0's persistent flags (`chezmoi help`), which may stand before or after the subcommand: those that take a value, and those that do not.
+CHEZMOI_VALUED = ("--age-recipient", "--age-recipient-file", "--cache", "--color", "-c", "--config", "--config-format", "-D", "--destination", "--mode",
+                  "-o", "--output", "--override-data", "--override-data-file", "--persistent-state", "--progress", "-S", "--source", "--use-builtin-age",
+                  "--use-builtin-git", "-W", "--working-tree")
+CHEZMOI_FLAGS = ("--debug", "-n", "--dry-run", "--error-on-conflict", "--force", "--interactive", "-k", "--keep-going", "--less-interactive", "--no-pager",
+                 "--no-tty", "-R", "--refresh-externals", "--skip-secrets", "--source-path", "--use-builtin-diff", "-v", "--verbose")
+SOURCE_ONLY = ("managed", "source-path")     # subcommands that read the source and not the destination (tested against a real chezmoi: t_codex.py)
 SHELLS = ("sh", "bash", "zsh", "dash")
 KEYWORDS = ("if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done", "esac")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
@@ -636,8 +649,8 @@ def _word(text):
 
 
 def _excerpt(command):
-    """The start of a command (a string, or an argv list) on one line, at most EXCERPT characters ("..." marks a cut)."""
-    text = " ".join((command if isinstance(command, str) else " ".join(str(x) for x in command)).split())
+    """The start of a command (a string, or an argv list) on one line, at most EXCERPT characters ("..." marks a cut), without OP_MARK and FD_MARK."""
+    text = " ".join((command if isinstance(command, str) else " ".join(str(x) for x in command)).replace(OP_MARK, "").replace(FD_MARK, "").split())
     return text if len(text) <= EXCERPT else text[:EXCERPT] + "..."
 
 
@@ -678,46 +691,6 @@ def _effective(words):
         else:
             return words
     return []
-
-
-def _runs(command, words):
-    """Whether the shell command `command` (a string, or an argv list) runs one of `words` as a command: the first
-    word of a command, where a command starts at the beginning, after a newline, && || ; | & ( ) { then do else !,
-    in $( ) and backticks, after wrappers (command/env/sudo/xargs/timeout/nice/mise exec --), and looking through
-    `sh -c '...'`. A word that is only an argument, a path component, inside a quoted string, or looked up
-    (command -v, which, type, hash) does not count."""
-    if isinstance(command, (list, tuple)):
-        argv = [str(x) for x in command]
-        if len(argv) >= 3 and os.path.basename(argv[0]) in SHELLS and any(re.match(r"-[a-z]*c[a-z]*\Z", x) for x in argv[1:-1]):
-            return _runs(argv[-1], words)
-        command = " ".join(shlex.quote(x) for x in argv)
-    if not isinstance(command, str):
-        return False
-    simple, current = [], []
-    toks = _tokens(_logical(command))
-    for k, tok in enumerate(toks):
-        glued = tok.endswith("$") and tok != "$" and toks[k + 1:k + 2] == ["("]
-        if glued:
-            current.append(tok[:-1])
-        if tok in SEPARATORS or glued:
-            simple.append(current)
-            current = []
-        else:
-            current.append(tok)
-    simple.append(current)
-    for cmd in simple:
-        eff = _effective(cmd)
-        if eff and os.path.basename(eff[0]) in words:
-            return True
-        if eff and os.path.basename(eff[0]) in SHELLS:
-            for j in range(1, len(eff) - 1):
-                if re.match(r"-[a-z]*c[a-z]*\Z", eff[j]) and _runs(eff[j + 1], words):
-                    return True
-        for tok in cmd:                            # "$(chezmoi diff)" inside a quoted word
-            for inner in _substitutions(tok):
-                if _runs(inner, words):
-                    return True
-    return False
 
 
 def _parse(eff, short, longs, i=1):
@@ -769,6 +742,51 @@ def _plain(eff):
             keep.append(i)
             i += 1
     return keep
+
+
+def _chezmoi(plain):
+    """What a chezmoi call (`plain`: its effective words, redirections dropped) reads, as (kind, roots). `none`: --version before any operand, or
+    the subcommand help, which read nothing. `original`: no -S/--source anywhere (-Sx, -S=x and --source=x too), so it reads the checkout it
+    finds: the original. `paths`: the call names its source, so `roots` are every source value and the destination (the last -D/--destination,
+    else ~), each read as a search root, because chezmoi walks them. The destination is left out only for a subcommand of SOURCE_ONLY that
+    follows nothing but known options: after an unknown one the subcommand cannot be told. A source flag with no value reads the original."""
+    sources, dests, sub, unknown, ended, i = [], [], None, False, False, 1
+    while i < len(plain):
+        word = plain[i]
+        i += 1
+        if ended or not word.startswith("-") or word == "-":
+            sub = word if sub is None else sub
+        elif word == "--":
+            ended = True
+        elif word == "--version" and sub is None:
+            return "none", []
+        elif word.startswith("--"):
+            name, eq, value = word.partition("=")
+            if name in CHEZMOI_VALUED:
+                if not eq:
+                    value, i = plain[i] if i < len(plain) else None, i + 1
+            elif name not in CHEZMOI_FLAGS:
+                unknown = unknown or sub is None
+                continue
+            (sources if name == "--source" else dests if name == "--destination" else []).append(value)
+        else:
+            for j in range(1, len(word)):
+                flag = "-" + word[j]
+                if flag in CHEZMOI_VALUED:
+                    rest = word[j + 1:]
+                    value = rest[1:] if rest[:1] == "=" else rest
+                    if not rest:
+                        value, i = plain[i] if i < len(plain) else None, i + 1
+                    (sources if flag == "-S" else dests if flag == "-D" else []).append(value)
+                    break
+                if flag not in CHEZMOI_FLAGS:
+                    unknown = unknown or sub is None
+                    break
+    if sub == "help" and not unknown:
+        return "none", []
+    if not sources or not all(sources):
+        return "original", []
+    return "paths", sources + ([] if sub in SOURCE_ONLY and not unknown else [dests[-1] if dests and dests[-1] else "~"])
 
 
 def _grep(eff):
@@ -930,17 +948,19 @@ class _Scan(object):
             for piece in _pieces(word):
                 self.path(piece, cwds)
 
-    def word(self, word, cwds, depth):
+    def word(self, word, cwds, depth, running=True):
         """A word's pieces, and the commands of its substitutions ("$(cat x)" or `cat x` in a quoted word; $(pwd) is $PWD)."""
         word = _PWD.sub("${PWD}", word)
         for inner in _substitutions(word):
-            self.script(inner, cwds, depth + 1)
+            self.script(inner, cwds, depth + 1, running)
         for piece in _pieces(_SUBST.sub(" ", word)):
             self.path(piece, cwds)
 
-    def simple(self, words, cwds, depth, piped=False):
+    def simple(self, words, cwds, depth, piped=False, running=True):
         """One simple command (`piped`: it reads a pipe): every word but a search pattern, the script of sh -c, and the roots of a
-        recursive search, from `cwds`; the directories it leaves the cd tracker in."""
+        recursive search, from `cwds`; the directories it leaves the cd tracker in. When `running`, a command that is a TOOLS word of a root
+        (chezmoi) reads that root unless its paths say otherwise (_chezmoi): `original` adds the root's label, `paths` makes each path a search
+        root. A heredoc body is not `running`: its paths are read and its commands are not run."""
         eff = _effective(words)
         at = len(words) - len(eff)
         self.assign(words, at)
@@ -953,17 +973,23 @@ class _Scan(object):
         if base in SHELLS:
             for j in range(1, len(eff) - 1):
                 if re.match(r"-[a-z]*c[a-z]*\Z", eff[j]):
-                    self.script(eff[j + 1], cwds, depth + 1)
+                    self.script(eff[j + 1], cwds, depth + 1, running)
                     skip.add(at + j + 1)
                     break
         for i, w in enumerate(words):
             if i not in skip:
-                self.word(w, cwds, depth)
+                self.word(w, cwds, depth, running)
             else:                                   # a pattern names no path, but the shell still runs its substitutions
                 for inner in _substitutions(w):
-                    self.script(inner, cwds, depth + 1)
+                    self.script(inner, cwds, depth + 1, running)
         for root in _searched(plain, piped):
             self.search(root, cwds)
+        tool = os.path.basename(plain[0].split("$(", 1)[0]) if running and plain else ""        # chezmoi$(true) is chezmoi, x$(...) chezmoi is not
+        if tool and any(tool in root.words for root in self.bounds.roots):
+            kind, named_roots = _chezmoi(plain)
+            self.found.update(root.label for root in self.bounds.roots if kind == "original" and tool in root.words)
+            for token in named_roots:
+                self.search(token, cwds)
         if base not in ("cd", "pushd"):
             return cwds
         args = [w for w in plain[1:] if w == "-" or not w.startswith("-")]
@@ -971,16 +997,17 @@ class _Scan(object):
             return self.dirs("~", cwds)
         return _BACK if args[0] == "-" else (self.dirs(args[0], cwds) or cwds)
 
-    def script(self, command, cwds, depth=0):
+    def script(self, command, cwds, depth=0, running=True):
         """A shell command (a string, or an argv list): its simple commands left to right, each from the directories a cd tracker holds
         (cd X &&, ;, ||, |, newlines; cd - goes back; a subshell's cd ends with it), an unquoted $( ) or backtick substitution as a
         command of its own that leaves one word in its place (an unclosed one runs to the end), then its heredoc bodies from every
-        directory it visited. A command nested deeper than MAX_DEPTH is not followed: it is a leak (TOO_DEEP)."""
+        directory it visited, as text (not `running`). `running` passes down into sh -c and $( ). A command nested deeper than MAX_DEPTH is not
+        followed: it is a leak (TOO_DEEP)."""
         if depth > MAX_DEPTH:
             self.found.add(TOO_DEEP.format(_excerpt(command)))
             return
         if isinstance(command, (list, tuple)):
-            self.simple([_word(str(x)) for x in command], cwds, depth)   # a lone cd (or cd -) moves nothing after it
+            self.simple([_word(str(x)) for x in command], cwds, depth, running=running)   # a lone cd (or cd -) moves nothing after it
             return
         if not isinstance(command, str):
             return
@@ -998,7 +1025,7 @@ class _Scan(object):
                     level += {"(": 1, ")": -1}.get(toks[j], 0)
                     j += 1
                 inner = " ".join(t if t in SEPARATORS + REDIRECTS else shlex.quote(t) for t in toks[i + 1:j - 1 if not level else j])
-                self.script(inner, cur, depth + 1)
+                self.script(inner, cur, depth + 1, running)
                 simple.append(tok[:-1] + "$(" + inner + ")")
                 i = j
                 continue
@@ -1006,7 +1033,7 @@ class _Scan(object):
                 simple.append(tok)
                 continue
             if simple:
-                new = self.simple(simple, cur, depth, piped=before in ("|", "|&"))
+                new = self.simple(simple, cur, depth, piped=before in ("|", "|&"), running=running)
                 if new is _BACK:
                     cur, prev = prev, cur
                 elif new is not cur:
@@ -1020,21 +1047,18 @@ class _Scan(object):
                 cur, prev = stack.pop()
         for body in bodies:
             for where in dict.fromkeys(visited):
-                self.script(body, list(where), depth + 1)
+                self.script(body, list(where), depth + 1, False)
 
 
 def named(bounds, cwd, commands=(), texts=(), paths=(), values=None, searches=()):
     """The labels of the forbidden roots of `bounds` that one tool call names: `commands` are its shell commands (strings or argv lists),
     `texts` its other free text, `paths` its path fields, `searches` the roots of the recursive searches it makes (_Scan.search), relative
     ones starting at `cwd` (absolute, else none is resolved); `values` adds variables (_values). Running a root's TOOLS word as a
-    command (_runs) counts as reading that root."""
+    command counts as reading that root, unless its paths say otherwise (_chezmoi)."""
     scan = _Scan(bounds, _values(values))
     cwds = [cwd] if isinstance(cwd, str) and cwd.startswith("/") else []
     for command in commands:
         scan.script(command, cwds)
-        for root in bounds.roots:
-            if root.words and _runs(command, root.words):
-                scan.found.add(root.label)
     for text in texts:
         scan.text(text, cwds)
     for path in paths:
