@@ -28,6 +28,16 @@ def paths_of(d):
     return names
 
 
+def reader(work, rev):
+    """`read(path)` for files_input: the text of `path` in the tree at `rev` of `work`, or None when it is absent there."""
+    def read(path):
+        try:
+            return C.git(work, "show", "{}:{}".format(rev, path), raw=True).decode("utf-8", "replace")
+        except C.Failed:
+            return None
+    return read
+
+
 def _line(n):
     return isinstance(n, int) and not isinstance(n, bool) and n >= 1
 
@@ -111,7 +121,8 @@ def note_cut(state, jid, site, cut):
 
 
 def count_cuts(state):
-    """{site: inputs} for each site: the questions recorded as having a file cut from the top."""
+    """{site: inputs} for each site: the questions recorded as having a file cut from the top. A record is kept for every question asked, in
+    every round and run, so an input a later round replaced still counts."""
     out = dict((s, 0) for s in SITES)
     folder = os.path.join(state, CUTS)
     for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:

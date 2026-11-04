@@ -47,12 +47,7 @@ def finding(d):
 def files_input(work, rev, d, hunks):
     """([{path, text}], cut): the finding's file, then the files its fix changes, as `rev` has them, shown by excerpts.files_input around
     the repair's `hunks` (located in that tree) and the finding's line; `cut` names the files cut from the top for want of an anchor."""
-    def read(path):
-        try:
-            return C.git(work, "show", "{}:{}".format(rev, path), raw=True).decode("utf-8", "replace")
-        except Failed:
-            return None
-    return E.files_input(E.paths_of(d), read, E.anchors(finding(d), hunks))
+    return E.files_input(E.paths_of(d), E.reader(work, rev), E.anchors(finding(d), hunks))
 
 
 def question_id(prefix, doc):

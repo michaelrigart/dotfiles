@@ -370,13 +370,7 @@ def _files(run, did, ctx):
     """([{path, text}], cut): the finding's file and the files of its fix as the scratch tree at HEAD has them, windowed around the
     repair's followed hunks and the finding's line (excerpts)."""
     d = _defect(ctx, run, did)
-
-    def read(path):
-        try:
-            return C.git(run["scratch"], "show", "HEAD:" + path, raw=True).decode("utf-8", "replace")
-        except Failed:
-            return None
-    return E.files_input(E.paths_of(d), read, E.anchors(d, _anchors(run, did)))
+    return E.files_input(E.paths_of(d), E.reader(run["scratch"], "HEAD"), E.anchors(d, _anchors(run, did)))
 
 
 def _open_valid(ctx, run, ids):

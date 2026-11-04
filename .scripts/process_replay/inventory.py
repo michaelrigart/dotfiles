@@ -148,6 +148,7 @@ class Repo(C.Reader):
     def __init__(self, state, gitdir, root):
         C.Reader.__init__(self, state, gitdir, root)
         self._groups = {}
+        self._located = {}
 
 
 # ------------------------------------------------------------------ task groups
@@ -416,13 +417,24 @@ def plan_commit(repo, entries, scope):
 
 
 # ------------------------------------------------------------------ judge inputs and the defects they decide
+def _located_in(repo, chain, i, name):
+    """[{file, start, end}]: where the hunks of round i's fix (the change from tip i to tip i+1) that touch `name` sit at the round 1 tip.
+    Only that file's section is located (a presence input shows no other file), once per (round, file) for the repository."""
+    key = (chain[0]["tip"], chain[i]["tip"], chain[i + 1]["tip"], name)
+    if key not in repo._located:
+        secs = P.parse_patch(P.fix_patch(repo.view, chain[i]["tip"], chain[i + 1]["tip"]))
+        mine = P.select(secs, set(item for item in P.item_list(secs) if secs[item[0]]["file"] == name))
+        repo._located[key] = E.located(repo.view, chain[0]["tip"], mine) if mine else []
+    return repo._located[key]
+
+
 def _presence_files(repo, chain, i, f, jid, state):
     """[{path, text}] for the file a finding of round i names, as the round 1 tip has it: whole, or as windows around the finding's line
-    and the hunks of its fix (the change from tip i to tip i+1) located at that tip. The input is recorded when the file was cut from
-    the top for want of an anchor."""
+    and the hunks of its fix in that file, located at that tip. The input is recorded when the file was cut from the top for want of an
+    anchor."""
     name = C.norm(f.get("file"))
     tip = chain[0]["tip"]
-    marks = E.anchors(f, E.located(repo.view, tip, P.fix_patch(repo.view, chain[i]["tip"], chain[i + 1]["tip"])))
+    marks = E.anchors(f, _located_in(repo, chain, i, name) if name else [])
     files, cut = E.files_input([name] if name else [], lambda p: repo.file(tip, p), marks)
     E.note_cut(state, jid, "presence", cut)
     return files

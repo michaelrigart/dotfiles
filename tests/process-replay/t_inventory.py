@@ -587,10 +587,40 @@ ok("presence_window: and the window is no fallback", not os.path.exists(os.path.
 is_("presence_short_unchanged: a finding in a short file is [{path, text}], the whole file as the round-1 tip has it",
     ps["files"], [{"path": "small.py", "text": "s = 1\ns = 3\n"}])
 ok("presence_short_unchanged: and no fallback is recorded for it", not os.path.exists(os.path.join(PSTATE, "cuts", "judge-present", "xr-pre-2-1.json")))
+DIGEST = os.path.join(PSTATE, "judge-present", "xr-pre-2-1.digest")
+digest_before = open(DIGEST).read() if os.path.exists(DIGEST) else None
+answers(PSTATE, "judge-present", "xr-pre-2-1", {"answer": "yes"})
+run_cases(PSTATE, PGROUPS)
+ok("presence_short_unchanged: answered and run again, its .digest mark is as it was and its answer is kept, with no stale set-aside",
+   digest_before is not None and open(DIGEST).read() == digest_before and C.jload(os.path.join(PSTATE, "judge-present", "xr-pre-2-1.answer.json")) == {"answer": "yes"}
+   and not [n for n in os.listdir(os.path.join(PSTATE, "judge-present")) if n.startswith("xr-pre-2-1.stale-")], (digest_before, os.listdir(os.path.join(PSTATE, "judge-present"))))
 is_("presence_fallback: a fix that does not apply at the round-1 tip, the finding giving no line, is cut from the top",
     (len(pf["files"]), pf["files"][0]["path"], pf["files"][0]["text"].startswith("line 0001 "), pf["files"][0]["text"].endswith("[truncated]\n")), (1, "long2.py", True, True))
 is_("presence_fallback: and it is recorded under the presence site", C.jload(os.path.join(PSTATE, "cuts", "judge-present", "xr-pre-2-2.json")), {"site": "presence", "files": ["long2.py"]})
 is_("presence_fallback: the count is one presence input", I.E.count_cuts(PSTATE), {"presence": 1, "validation": 0, "revalidation": 0})
+
+seen_files = []
+real_located = I.E.located
+I.E.located = lambda repo, rev, patch: seen_files.append(sorted(I.P.files_of(patch))) or real_located(repo, rev, patch)
+for n in range(3):
+    for suffix in (".json", ".digest", ".answer.json"):
+        if os.path.exists(os.path.join(PSTATE, "judge-present", "xr-pre-2-%d%s" % (n, suffix))):
+            os.unlink(os.path.join(PSTATE, "judge-present", "xr-pre-2-%d%s" % (n, suffix)))
+run_cases(PSTATE, PGROUPS)
+I.E.located = real_located
+is_("presence_locates_own_file_only: each finding's fix is located as its own file's section alone, though the fix changes three files",
+    sorted(seen_files), [["big.py"], ["long2.py"], ["small.py"]])
+is_("presence_locates_own_file_only: and the windows are as before", (C.jload(os.path.join(PSTATE, "judge-present", "xr-pre-2-0.json")) == pw,
+                                                                      C.jload(os.path.join(PSTATE, "judge-present", "xr-pre-2-2.json")) == pf), (True, True))
+memo_repo = I.Repo(PSTATE, PG, NO_SNAPSHOT)
+memo_chain = [{"tip": PRK1}, {"tip": PRK2}, {"tip": PRK3}]
+del seen_files[:]
+I.E.located = lambda repo, rev, patch: seen_files.append(1) or real_located(repo, rev, patch)
+first = I._located_in(memo_repo, memo_chain, 1, "big.py")
+again = I._located_in(memo_repo, memo_chain, 1, "big.py")
+I.E.located = real_located
+is_("presence_locates_own_file_only: asked again for the same round and file, the answer is remembered", (again == first, len(seen_files), bool(first)), (True, 1, True))
+is_("presence_locates_own_file_only: a file the fix does not change has no hunk", I._located_in(memo_repo, memo_chain, 1, "note.txt"), [])
 
 
 # ================================================================ rewritten commits join by patch id; --open stages the candidates
