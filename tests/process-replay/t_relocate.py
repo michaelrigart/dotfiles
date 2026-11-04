@@ -331,6 +331,20 @@ os.makedirs(gone)
 rc, out = cli(*f.args())
 ok("dead_alternate: once the directory is there the move goes through", rc == 0 and "verified:" in out, (rc, out))
 
+# a view whose alternates line lies under OLD but names a directory that does not exist: caught before the move, not after a complete move
+f = Fx()
+dead = os.path.join(f.old, "2026-11-02", "gone", "objects")
+put(f.state, "views/dead-under-old.git/objects/info/alternates", dead + "\n")
+before = f.snap(strict=True)
+rc, out = cli(*f.args("--dry-run"))
+ok("dead_under_old: the dry run refuses, naming the view", rc == 1 and "views/dead-under-old.git" in out and dead in out, (rc, out))
+is_("dead_under_old: and changes nothing", f.snap(strict=True), before)
+before = f.snap()
+rc, out = cli(*f.args())
+ok("dead_under_old: the real run refuses too, naming the view", rc == 1 and "views/dead-under-old.git" in out and "verified:" not in out, (rc, out))
+ok("dead_under_old: OLD has not moved", os.path.isdir(f.old) and not os.path.exists(f.new))
+is_("dead_under_old: and nothing changed", f.snap(), before)
+
 # ---------------------------------------------------------------- a missing state or one without branches.json takes no lock
 missing = os.path.join(helpers.tmp_root(), "no-such-state")
 f = Fx()

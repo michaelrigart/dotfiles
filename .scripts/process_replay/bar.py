@@ -1,7 +1,8 @@
 """`report`: the per-run pass bar (spec 4.6), the per-task reviewer's October cost, and the plan-checkpoint section.
 
 Reads <state>/cases.json, runs/<case>/<label>/state.json, inventory/<branch>.json, injected/<branch>.json, branches.json,
-cuts/judge-present/ (the judge-present inputs that fell back to the cut from the top, counted per site) and reviews.json, and writes
+cuts/judge-present/ (the judge-present inputs that fell back to the cut from the top, counted per site: validation every round's input,
+presence and revalidation the latest input per id; see excerpts.count_cuts) and reviews.json, and writes
 report.md and report.json beside them (with --dry-run it prints the report and writes nothing).
 
 bar(cases, runs, coverage) takes each case with the inventory records of its defects attached as case["info"] ({id: defect}), because

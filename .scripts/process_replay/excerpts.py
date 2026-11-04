@@ -110,9 +110,10 @@ def files_input(names, read, marks):
 
 
 def note_cut(state, jid, site, cut):
-    """Record that the question `jid` at `site` showed `cut` from the top for want of an anchor. The record follows the latest input: with
-    nothing cut, an older record of `jid` is removed (a loop question's id is not keyed by its input, and an inventory input is rewritten
-    in place)."""
+    """Record that the question `jid` at `site` showed `cut` from the top for want of an anchor. The record is keyed by `jid`, so what it
+    counts depends on the id: a validation id is keyed by the input's content, so each round's cut input keeps its own record; a presence id
+    (an inventory input rewritten in place) and a revalidation id (a loop question) name one input at a time, so the latest input replaces the
+    record, and one with nothing cut removes it."""
     path = os.path.join(state, CUTS, jid + ".json")
     if cut:
         C.jsave(path, {"site": site, "files": list(cut)})
@@ -121,8 +122,9 @@ def note_cut(state, jid, site, cut):
 
 
 def count_cuts(state):
-    """{site: inputs} for each site: the questions recorded as having a file cut from the top. A record is kept for every question asked, in
-    every round and run, so an input a later round replaced still counts."""
+    """{site: inputs} for each site: the records of questions that had a file cut from the top. Validation counts every round's cut input
+    (content-digest ids, so a replaced input keeps its record). Presence and revalidation count the latest input per id: the record is
+    rewritten in place, and an input later shown in windows removes it. The sites therefore do not count alike."""
     out = dict((s, 0) for s in SITES)
     folder = os.path.join(state, CUTS)
     for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:

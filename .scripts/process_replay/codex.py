@@ -67,7 +67,8 @@ glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it s
 rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working directory; it is taken to read the
 pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff, or a --source built that way), a heredoc fed to a shell
 (sh <<EOF), find -exec, and a long xargs option with a separate value (--max-args 1); for chezmoi, an unknown option that takes a
-value and swallows a word other than a source, destination or --version flag or a short cluster holding S or D (it is read as the subcommand or an operand). Counted
+value and swallows a word other than a source, destination or --version flag or a short cluster holding S or D (it is read as the subcommand or an operand); and, for
+chezmoi, what the source's own templates (include, output, stat), run_ scripts and externals read at run time under a scratch -S/-D, which is judged by those paths only. Counted
 though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a command bash rejects as
 a syntax error (ls >#x cat ~/.codex/y, 2>#x), a search pattern inside
 a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS

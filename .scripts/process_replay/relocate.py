@@ -221,6 +221,8 @@ def cmd_relocate_snapshot(a):
                      ": nothing is moved".format(state, old, new))
     # a line that names neither OLD nor NEW does not depend on the move, so one that is dead now would fail the verification after it
     _alternates_exist(views, lambda line: not _inside(line, old) and not _inside(line, new))
+    if has_old:         # a line under OLD is checked where it is now; with OLD gone it can only be checked after the move, in the verification
+        _alternates_exist(views, lambda line: _inside(line, old))
     before = _tips(orig, old)
     if has_old:
         _resolve(before)            # through the views as they are: a tip that will not resolve is caught before anything moves
