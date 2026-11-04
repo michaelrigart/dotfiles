@@ -666,8 +666,12 @@ def _runs(command, words):
     if not isinstance(command, str):
         return False
     simple, current = [], []
-    for tok in _tokens(_logical(command)):
-        if tok in SEPARATORS:
+    toks = _tokens(_logical(command))
+    for k, tok in enumerate(toks):
+        glued = tok.endswith("$") and tok != "$" and toks[k + 1:k + 2] == ["("]
+        if glued:
+            current.append(tok[:-1])
+        if tok in SEPARATORS or glued:
             simple.append(current)
             current = []
         else:
@@ -958,14 +962,14 @@ class _Scan(object):
         while i < len(toks):
             tok = toks[i]
             i += 1
-            if tok == "$" and i < len(toks) and toks[i] == "(":
+            if tok.endswith("$") and i < len(toks) and toks[i] == "(":
                 j, level = i + 1, 1
                 while j < len(toks) and level:
                     level += {"(": 1, ")": -1}.get(toks[j], 0)
                     j += 1
                 inner = " ".join(t if t in SEPARATORS else shlex.quote(t) for t in toks[i + 1:j - 1])
                 self.script(inner, cur, depth + 1)
-                simple.append("$(" + inner + ")")
+                simple.append(tok[:-1] + "$(" + inner + ")")
                 i = j
                 continue
             if tok not in SEPARATORS:

@@ -1239,3 +1239,18 @@ is_("backtick_value_adds_nothing: an empty prefix assignment on a substitution's
 for label, cmd in (("a value built from an assigned HOME through a variable", "HOME=~/.local/share; D=~; cat $D/chezmoi/x"),
                    ("a ~/.. path after HOME was assigned twice", "HOME=~/.local/share; HOME=~/x; cat ~/../chezmoi/y")):
     is_("tilde_sees_home: {} (the assignment side)".format(label), leaked(fc(cmd), CHZ), CHZN)
+
+# ---- glued substitutions keep their word and their command whole (fix round 3)
+CXN, CHN = house + "/.codex in t1", house + "/.local/share/chezmoi in t1"
+for cmd, want in (("cat ~/.codex%s", [CXN]), ("cat ~/.local/share/chezmoi%s", [CHN]), ("rg --max-count=%s foo ~/.local/share", [CHN]),
+                  ("grep -rn --include=%s foo ~", [CXN, CHN]), ("ls -R --color=%s ~", [CXN, CHN]), ("tree -I=%s ~/.local/share", [CHN]),
+                  ("cd ~/.local/share && cat chezmoi%s/x", [CHN]), ("env A=b%s rg foo ~", [CXN, CHN]), ("A=b%s rg foo ~", [CXN, CHN]),
+                  ("echo a%s", [])):
+    for form, sub in (("backtick", "`printf /x`"), ("$( )", "$(printf /x)")):
+        is_("glued_substitution: {} with a {} glued to its word".format(cmd % "<sub>", form), leaked(fc(cmd % sub), OWNWALL, cwd="/work/s"), want)
+is_("glued_substitution: the inner command of a glued substitution is scanned (backtick)", leaked(fc("echo a`cat ~/.codex/x`c"), OWNWALL, cwd="/work/s"), [CXN])
+is_("glued_substitution: ... and of a glued $( ) nested in another", leaked(fc("echo a$(echo b$(cat ~/.codex/x))"), OWNWALL, cwd="/work/s"), [CXN])
+is_("glued_substitution: a glued tool word still runs it (_runs)", (leaked(fc("chezmoi`true` diff"), CHZ), leaked(fc("echo a$(chezmoi diff)"), CHZ), leaked(fc("echo a`chezmoi diff`"), CHZ)), (CHZN,) * 3)
+quoted = K._Scan(fwall, {})
+quoted.script('T="`date`"', [SCR])
+is_("backtick_value_adds_nothing: a backtick that stays inside double quotes adds no value", quoted.values, {})
