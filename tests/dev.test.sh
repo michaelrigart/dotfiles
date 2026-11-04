@@ -357,6 +357,37 @@ run_dev "--no-focus '$WT'"
 eq "$(<$LAYOUT_ARG)" "--no-focus --worktree $R1 ${WT:A}" \
   "B3 a leading --no-focus reaches layout.sh before the worktree mode"
 
+# Claude Code's shell snapshot keeps no function named _x, so dev meets its helpers missing.
+# Source the file, drop every single-underscore function, and point XDG_CONFIG_HOME at a copy of
+# the file under test, so the reload loads it and never the deployed ~/.config/zsh/functions.
+SNAPXDG="$ROOTTMP/snap-xdg"
+mkdir -p "$SNAPXDG/zsh"; ln -sf "$FUNCS" "$SNAPXDG/zsh/functions"
+run_dev_snap() {
+  mock_reset
+  export LAYOUT_ARG="$(mktemp "${TMPROOT%/}/larg.XXXXXX")"
+  export FZFLOG="$(mktemp "${TMPROOT%/}/fzflog.XXXXXX")"
+  OUT="$(HOME="$ROOTTMP" XDG_CONFIG_HOME="${SNAP_XDG:-$SNAPXDG}" DEV_LAYOUT="$LSTUB" zsh -c "
+    source '$FUNCS'; unfunction -m '_[^_]*'; dev $1" 2>&1)"; RC=$?
+}
+
+# Catches dev dying with "command not found: _wt_git" when the snapshot drops its helpers.
+run_dev_snap "--no-focus '$R1'"
+rc_is 0 "B4 snapshot: dev --no-focus reloads its helpers and succeeds"
+hasnt "command not found" "B4 snapshot: no helper is reported missing"
+eq "$(<$LAYOUT_ARG)" "--no-focus $R1" "B4 snapshot: the call reaches layout.sh with its flag"
+
+# The linked-worktree path needs _wt_primary and _wt_prepare_for_herdr too.
+run_dev_snap "--no-focus '$WT'"
+rc_is 0 "B5 snapshot: a linked worktree reloads its helpers and succeeds"
+hasnt "command not found" "B5 snapshot: no helper is reported missing"
+eq "$(<$LAYOUT_ARG)" "--no-focus --worktree $R1 ${WT:A}" "B5 snapshot: layout.sh gets the worktree mode"
+
+# A file that cannot define the helper fails once, with the loader's message; it never loops.
+SNAP_XDG="$ROOTTMP/snap-empty" run_dev_snap "--no-focus '$R1'"
+rc_is 1 "B6 snapshot: a missing functions file fails with status 1"
+has "did not define _wt_git" "B6 snapshot: the loader says what is missing"
+eq "$(<$LAYOUT_ARG)" "" "B6 snapshot: layout.sh is never invoked"
+
 mkdir -p "$WT/src/deep"
 run_dev "'$WT/src/deep'"
 rc_is 0 "B2 a directory inside a linked worktree is accepted"

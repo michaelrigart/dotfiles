@@ -110,6 +110,18 @@ tsh() {
   fi
 }
 
+# functions-reload <name> — source this file again and check that it defined <name>. Claude
+# Code's shell snapshot keeps only functions whose names do not start with a single "_", so an
+# agent's shell has the public functions below without their _helpers. Each public function
+# calls this when its first helper is missing, then re-runs itself on the file's definitions.
+# This file holds only function definitions, so sourcing it from inside a function is safe.
+functions-reload() {
+  local file="${XDG_CONFIG_HOME:-$HOME/.config}/zsh/functions"
+  [[ -r $file ]] && source "$file" && (( $+functions[$1] )) && return 0
+  print -ru2 -- "functions-reload: $file did not define $1."
+  return 1
+}
+
 # dev — open (or return to) a project in its Herdr workspace. Resolve an argument to
 # a repository under ~/Code, then hand that path to layout.sh: a primary checkout
 # opens as an ordinary workspace, a linked one through native worktree mode.
@@ -126,6 +138,7 @@ tsh() {
 # Resolution only. Everything about Herdr lives in layout.sh.
 dev() {
   emulate -L zsh
+  (( $+functions[_wt_git] )) || { functions-reload _wt_git && dev "$@"; return }
   setopt local_options null_glob extended_glob
 
   local -a focus=()
@@ -941,6 +954,7 @@ _wt_mise_reopen_carry() {
 # never touches a Herdr workspace, so it may run while the target is live.
 wt-prepare() {
   emulate -L zsh
+  (( $+functions[_wt_primary] )) || { functions-reload _wt_primary && wt-prepare "$@"; return }
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-prepare <branch>"; return 1; }
   local slug="${branch//\//-}" main common dest
@@ -1031,6 +1045,7 @@ _wt_create_or_prepare() {
 # The `wt` command itself: create or reopen through the locked lifecycle above, then
 # open the checkout as a native Herdr worktree workspace.
 wt() {
+  (( $+functions[_wt_create_or_prepare] )) || { functions-reload _wt_create_or_prepare && wt "$@"; return }
   local -a focus=()
   [[ "${1-}" == --no-focus ]] && { focus=( --no-focus ); shift }
   [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt [--no-focus] <branch> [start-point]"; return 1; }
@@ -1477,6 +1492,7 @@ _wt_rm_registration() {
 # trap is installed.
 wt-rm() {
   emulate -L zsh
+  (( $+functions[_wt_q] )) || { functions-reload _wt_q && wt-rm "$@"; return }
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-rm <branch>"; return 1; }
   local slug="${branch//\//-}" qb main common dest rel_dir=""
@@ -1760,6 +1776,7 @@ chezmoi() {
   # The caller's options (SH_GLOB, KSH_ARRAYS, EXTENDED_GLOB, NO_GLOB...) would break the
   # patterns and array indexing below, so every wrapper function runs under zsh's defaults.
   emulate -L zsh
+  (( $+functions[_chezmoi_help] )) || { functions-reload _chezmoi_help && chezmoi "$@"; return }
   local -a args=("$@")
   local sub=${1:-} a i
   if _chezmoi_help "$@"; then

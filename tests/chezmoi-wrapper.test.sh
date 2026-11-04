@@ -180,6 +180,21 @@ fresh; chezmoi edit x >/dev/null 2>&1
 grep -q '^ARGS edit x$' $LOG 2>/dev/null && grep -qx WORKTREE $LOG && _pass "plain edit passes through" || _fail "plain edit" "$(cat $LOG 2>/dev/null)"
 fresh; chezmoi edit -i x >/dev/null 2>&1
 grep -q '^ARGS edit -i x$' $LOG 2>/dev/null && _pass "edit -i (--include) is not --init and passes through" || _fail "edit -i" "$(cat $LOG 2>/dev/null)"
+
+# Claude Code's shell snapshot keeps no function named _x: the wrapper is there, its helpers are
+# not. snap runs chezmoi in that shape, with XDG_CONFIG_HOME pointing at the file under test so the
+# reload never reads the deployed one. XDGNONE has no zsh/functions at all.
+mkdir -p $T/xdg/zsh $T/xdgnone; ln -s $FUNCS $T/xdg/zsh/functions
+snap() { ( export XDG_CONFIG_HOME=${SNAPXDG:-$T/xdg}; unfunction -m '_[^_]*'; chezmoi "$@" ) }
+# Catches the wrapper failing open: with _chezmoi_help missing, edit -a ran the real chezmoi.
+fresh; err=$(snap edit -a x 2>&1 >/dev/null); rc=$?
+(( rc == 1 )) && [[ $err == *"edit --apply is refused"* ]] && [[ $err != *"command not found"* ]] && [[ ! -e $LOG ]]   && _pass "snapshot: chezmoi edit -a is refused, the stub never runs"   || _fail "snapshot: chezmoi edit -a is refused" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+# Catches the help check being skipped when its helper is missing: -h would reach chezmoi as is.
+fresh; err=$(snap edit -h 2>&1 >/dev/null); rc=$?
+(( rc == 0 )) && [[ $err != *"command not found"* ]] && grep -q '^ARGS help edit$' $LOG 2>/dev/null   && _pass "snapshot: chezmoi edit -h takes the help path"   || _fail "snapshot: chezmoi edit -h takes the help path" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+# A file that cannot define the helper fails once with the loader's message, never loops, never runs chezmoi.
+fresh; err=$(SNAPXDG=$T/xdgnone snap edit x 2>&1 >/dev/null); rc=$?
+(( rc == 1 )) && [[ $err == *"did not define _chezmoi_help"* ]] && [[ ! -e $LOG ]]   && _pass "snapshot: a missing functions file fails with status 1 and the stub never runs"   || _fail "snapshot: a missing functions file fails closed" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
 refused "init" "chezmoi apply --init"
 refused "init $T/origin.git" "chezmoi apply --init"
 refused "update --apply=false" "update-only flags are not supported"
