@@ -458,9 +458,9 @@ os.makedirs(OWN, exist_ok=True)
 BRANCH = {"repo": house + "/Code/Org/repo/.git"}
 fwall = K.forbidden(FSTATE, BRANCH, [OWN])
 mwall = K.forbidden(FSTATE, BRANCH, [OWN], memwatch=True)
-is_("forbidden: the roots, by the path they are reported as: the checkout, the state, review-work, the snapshot, October's answers, xreview, cxh",
+is_("forbidden: the roots, by the path they are reported as: the checkout, the state, review-work, the snapshot home, the running harness, October's answers, xreview, cxh",
     [r.label for r in fwall.roots],
-    [house + "/Code/Org/repo", FSTATE, os.path.join(XSH, "review-work"), house + "/Code/.replay/snapshot", house + "/.codex",
+    [house + "/Code/Org/repo", FSTATE, os.path.join(XSH, "review-work"), os.path.join(XSH, "process-replay", "snapshot"), helpers.SRC, house + "/.codex",
      house + "/.claude", os.path.join(XSH, "xreview"), os.path.join(XSH, "cxh")])
 is_("forbidden: only the checkout has wt siblings", [r.label for r in fwall.roots if r.siblings], [house + "/Code/Org/repo"])
 is_("forbidden: the run's own directories are allowed, as real paths, then the instructions in ~/.codex and ~/.claude", fwall.allowed,
@@ -485,7 +485,7 @@ os.symlink(FSTATE, ALIAS)
 os.symlink(house + "/Code/Org/repo", os.path.join(OWN, "evil"))
 for label, text in (("the original checkout", "cat ~/Code/Org/repo/src/a.py"), ("a wt sibling of it", "cat ~/Code/Org/repo-feat/x"),
                     ("the state directory", "cat {}/inventory/b.json".format(FSTATE)),
-                    ("the snapshot root", "ls ~/Code/.replay/snapshot/2026-11-02"), ("October's codex sessions", "rg -n x ~/.codex/sessions/2026"),
+                    ("the snapshot root", "ls $XDG_STATE_HOME/process-replay/snapshot/2026-11-02"), ("October's codex sessions", "rg -n x ~/.codex/sessions/2026"),
                     ("October's archived codex sessions", "ls $HOME/.codex/archived_sessions"), ("October's memories", "cat ~/.codex/memories/MEMORY.md"),
                     ("the Claude transcripts", "ls ~/.claude/projects"), ("the xreview ledgers", "cat $XDG_STATE_HOME/xreview/ledgers/k/reviews.jsonl"),
                     ("the xreview ledgers by path", "cat {}/xreview/ledgers/k/reviews.jsonl".format(XSH)),
@@ -544,7 +544,28 @@ for label, text in (("rg over . from its own scratch", "rg foo ."), ("find . fro
                     ("rg over its own scratch by absolute path", "rg foo {}".format(OWN))):
     is_("search: {} is not a leak".format(label), forbid(text), [])
 is_("search: an ancestor search reports every root beneath it", forbid("rg foo ~/Code"),
-    sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", house + "/Code/.replay/snapshot")))
+    sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo",)))
+
+# ---- the snapshot's home, every harness export, and beneath (spec 14.3 a, R4)
+EXPORT = os.path.join(XSH, "process-replay", "harness-abc1234")
+put(EXPORT, "dot_claude/x", "x\n")
+ewall = K.forbidden(FSTATE, BRANCH, [OWN])
+is_("exports_forbidden: a harness export under $XDG_STATE_HOME/process-replay is a root, after the running harness",
+    [r.label for r in ewall.roots if r.label in (EXPORT, helpers.SRC)], [helpers.SRC, EXPORT])
+is_("exports_forbidden: reading a file in it is a leak labelled that directory", forbid("cat {}/dot_claude/x".format(EXPORT), wall=ewall), [EXPORT + " in t1"])
+is_("exports_forbidden: ... and reading the running harness's own root is a leak", forbid("cat {}/.scripts/process-replay.py".format(helpers.SRC)), [helpers.SRC + " in t1"])
+is_("exports_forbidden: ... but a file that is no export, beside them, is not", forbid("cat {}/process-replay/other/x".format(XSH), wall=ewall), [])
+shutil.rmtree(EXPORT)
+is_("snapshot_new_home: the snapshot under $XDG_STATE_HOME/process-replay is a leak", forbid("ls $XDG_STATE_HOME/process-replay/snapshot/2026-11-02"),
+    [os.path.join(XSH, "process-replay", "snapshot") + " in t1"])
+is_("old_home_no_root: ~/Code/.replay/snapshot, where the snapshot used to live, is no root", forbid("ls ~/Code/.replay/snapshot"), [])
+is_("beneath_cwd: from the state home it names review-work, the snapshot home, xreview and cxh",
+    sorted(K.beneath(XSH, fwall)), sorted(os.path.join(XSH, x) for x in ("review-work", "process-replay/snapshot", "xreview", "cxh")))
+is_("beneath_cwd: from a fresh empty directory it names nothing", K.beneath(tempfile.mkdtemp(dir=ROOT), fwall), [])
+is_("beneath_cwd: a root at the working directory counts", K.beneath(FSTATE, fwall), [FSTATE])
+is_("beneath_cwd: from the home directory it names the checkout, ~/.codex and ~/.claude",
+    sorted(K.beneath(house, fwall)), sorted([house + "/Code/Org/repo", house + "/.codex", house + "/.claude"]))
+is_("beneath_cwd: a directory inside a root names nothing (the root is above it, not beneath)", K.beneath(os.path.join(FSTATE, "x"), fwall), [])
 
 # ---- the review of the rewrite (eaceea4): I-1, M-1, M-2, M-3, M-5, M-6
 CX, CL = house + "/.codex", house + "/.claude"
@@ -583,7 +604,7 @@ for label, cmd, want in (("a cd to a computed directory does not go to $HOME", "
                          ("$(pwd) is the tracked directory", 'rg foo "$(pwd)"; cat `pwd`/src/a.py', []),
                          ("cd - returns to the previous directory, its own scratch", "cd ~ && cd - && rg foo", [])):
     is_("cwd: {} (M-3)".format(label), forbid(cmd), want)
-ABOVE = sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", house + "/Code/.replay/snapshot", CX, CL))
+ABOVE = sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", CX, CL))
 is_("cwd: ... and a second cd - goes back again, above every root under $HOME", forbid("cd ~ && cd - && cd - && rg foo"), ABOVE)
 is_("cwd: $PWD after a cd above a root is that directory", forbid('cd ~ && rg foo "$PWD"'), ABOVE)
 is_("cwd: ... and so is $(pwd)", forbid('cd ~ && rg foo "$(pwd)"'), ABOVE)

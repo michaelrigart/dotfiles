@@ -235,7 +235,7 @@ ok("leak_scan: and so is the scratch root", leaks_of(["ls {}/scratch".format(rev
 ok("leak_scan: its own staged directory and its own scratch are not (a file, the directory, a relative path from the scratch)",
    leaks_of(["cat {}/package.diff".format(own), "ls {}".format(own), "ls {}".format(run["scratch"]), "cat src/a0.py", "git diff HEAD~1..HEAD"], name="allowed") == [])
 ok("leak_scan: a Glob inside its own directory is not", leaks_of(calls=[("Glob", {"pattern": own + "/*.diff"})], name="globown") == [])
-for n, (label, cmd) in enumerate((("the snapshot root", "ls ~/Code/.replay/snapshot"), ("October's Codex rollouts", "rg -n x ~/.codex/sessions"),
+for n, (label, cmd) in enumerate((("the snapshot root", "ls $XDG_STATE_HOME/process-replay/snapshot/2026-11-02"), ("October's Codex rollouts", "rg -n x ~/.codex/sessions"),
                                  ("October's Codex memories", "cat ~/.codex/memories/MEMORY.md"), ("the Claude transcripts", "ls ~/.claude/projects"),
                                  ("the xreview ledgers", "cat $XDG_STATE_HOME/xreview/ledgers/k/reviews.jsonl"))):
     ok("leak_scan: a final reviewer reading {} is a leak".format(label), leaks_of([cmd], name="root{}".format(n)) != [], cmd)
@@ -333,9 +333,15 @@ def at_cwd(cwd, calls, name):
     return F.leaks(a, run, branch, os.path.join(PROJECTS, KEY, "s-" + name, "subagents", "agent-%s.jsonl" % jid))
 
 
-is_("search: a Grep without a path from ~/Code/.replay (the driver's directory, above the snapshot) is a leak",
-    at_cwd(REPLAY, [("Grep", {"pattern": "defect"})], "s-replay"), [os.path.expanduser("~/Code/.replay/snapshot")])
-is_("search: ... and so is a Bash rg with no path there", at_cwd(REPLAY, [("Bash", {"command": "rg -n defect"})], "s-replay2"), [os.path.expanduser("~/Code/.replay/snapshot")])
+is_("search: a Grep without a path from ~/Code/.replay (the driver's directory, no longer above the snapshot) is clean (14.6)",
+    at_cwd(REPLAY, [("Grep", {"pattern": "defect"})], "s-replay"), [])
+is_("search: ... and so is a Bash rg with no path there", at_cwd(REPLAY, [("Bash", {"command": "rg -n defect"})], "s-replay2"), [])
+SED, TAR = "sed -E 's/:\\s*/ /' notes.md", "tar --include='*/SKILL.md' -cf o.tar ."
+is_("search: the 66ad81cc false positives (a sed script, a tar pattern) from ~/Code/.replay are clean", at_cwd(REPLAY, [("Bash", {"command": SED}), ("Bash", {"command": TAR})], "s-66ad"), [])
+PRSTATE = os.path.join(os.environ["XDG_STATE_HOME"], "process-replay")
+os.makedirs(PRSTATE, exist_ok=True)
+is_("search: the same sed from $XDG_STATE_HOME/process-replay, which holds the snapshot, names the snapshot home (the matcher is unchanged, the layout is the fix)",
+    at_cwd(PRSTATE, [("Bash", {"command": SED})], "s-66ad2"), [os.path.join(PRSTATE, "snapshot")])
 is_("search: a Glob of one literal file in the home directory, without a path, walks nothing: clean",
     leaks_of(calls=[("Glob", {"pattern": os.path.expanduser("~/notes.txt")})], name="s-literal"), [])
 is_("search: a Grep or Glob without a path from its own scratch is clean, and so is rg .",

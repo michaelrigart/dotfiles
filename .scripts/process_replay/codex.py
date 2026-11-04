@@ -383,11 +383,11 @@ GIT_WITH_ARG = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config
 # What a replayed reviewer must not read, besides the original checkout: where October's answers live (spec 7.1), the live Codex and
 # Claude homes whole (sessions, memories and their sqlite stores, histories, file-history, transcripts, and the deployed copies of the
 # dotfiles), but for the instructions in them, which every reviewer is given anyway (INSTRUCTIONS), unless the original is the
-# chezmoi source, whose later state they are (forbidden()).
+# chezmoi source, whose later state they are (forbidden()). The snapshot (C.snapshot_home()) and the harness's exports (exports())
+# are roots of their own, under $XDG_STATE_HOME/process-replay.
 ANSWERS = ("~/.codex", "~/.claude")
 INSTRUCTIONS = ("~/.codex/skills", "~/.codex/plugins", "~/.codex/rules", "~/.codex/AGENTS.md",
                 "~/.claude/plugins", "~/.claude/skills", "~/.claude/agents", "~/.claude/CLAUDE.md")
-SNAPSHOT = "~/Code/.replay/snapshot"
 OWN_HOME = ("skills", "plugins", "rules", "AGENTS.md")     # what a replay home gives its reviewer to read (finding A)
 PATH_MAX = 4096
 MAX_DEPTH = 4           # nested sh -c, $( ) and heredocs followed
@@ -475,12 +475,28 @@ def deployed(branch):
     return bool(_tool_words(os.path.dirname(checkout) if os.path.basename(checkout) == ".git" else checkout))
 
 
+def exports():
+    """The harness copies a reviewer must not read: the running harness's own root, then every existing directory
+    $XDG_STATE_HOME/process-replay/harness-* (sorted). The checkout is one root (a copy of this repository under the state home is another)
+    because either holds the harness's code, its tests and the dotfiles' later state."""
+    base = os.path.join(L.state_home(), "process-replay")
+    return [C.harness_root()] + sorted(p for p in glob.glob(os.path.join(glob.escape(base), "harness-*")) if os.path.isdir(p))
+
+
+def beneath(cwd, bounds):
+    """The labels of the roots of `bounds` whose real path is `cwd`'s real path or lies below it (at component boundaries): the
+    forbidden roots a recursive search from `cwd` would walk into. A root above `cwd`, or beside it, is not named."""
+    here = _parts(_real(os.path.abspath(cwd)) or "")
+    return [root.label for root in bounds.roots if root.parts[:len(here)] == here]
+
+
 def forbidden(state, branch, allowed, snapshot_root=None, memwatch=None, home=None, memories=False):
     """The wall of a replayed reviewer (a Codex round, a §6 arm, or the final reviewer and its subagents; spec 7.1, 13), for leaks()
     and final.transcript_leaks(). Its roots: the original checkout (branch["repo"], with its wt siblings and the harness worktrees
     inside it), its objects and view; the state directory (by its real path, which its aliases resolve to); $XDG_STATE_HOME/
-    review-work (every scratch, the staged items and the state's alias links); the snapshot root (SNAPSHOT, and `snapshot_root` when
-    given); the live Codex and Claude homes, where October's answers live (ANSWERS); $XDG_STATE_HOME/xreview; $XDG_STATE_HOME/cxh
+    review-work (every scratch, the staged items and the state's alias links); the snapshot home (C.snapshot_home(), and `snapshot_root`
+    when given); every harness export and the running harness's own root (exports()); the live Codex and Claude homes, where October's
+    answers live (ANSWERS); $XDG_STATE_HOME/xreview; $XDG_STATE_HOME/cxh
     (the replay homes, whose rollouts are other runs' work); and for a §6 run (`memwatch`: the watcher's directory, or True for the usual one) $XDG_STATE_HOME/process-replay/memwatch.
     `allowed` are the reviewer's own subtrees: its scratch, and for a final reviewer its staged item, its own transcripts and its
     session's tool-results/. A Codex reviewer passes its replay `home`: own_home(home, `memories`) is allowed too (`memories`: a §6
@@ -488,8 +504,8 @@ def forbidden(state, branch, allowed, snapshot_root=None, memwatch=None, home=No
     ~/.codex and ~/.claude and the home's copies of them are that repository's later state: neither is allowed, an arm's memories are."""
     state_home = L.state_home()
     roots = [p for p in (branch.get("objects"), branch.get("view"), state) if isinstance(p, str) and p]
-    roots += [os.path.join(state_home, "review-work"), SNAPSHOT] + ([snapshot_root] if snapshot_root else [])
-    roots += list(ANSWERS) + [os.path.join(state_home, "xreview"), os.path.join(state_home, "cxh")]
+    roots += [os.path.join(state_home, "review-work"), C.snapshot_home()] + ([snapshot_root] if snapshot_root else [])
+    roots += exports() + list(ANSWERS) + [os.path.join(state_home, "xreview"), os.path.join(state_home, "cxh")]
     if memwatch:
         roots.append(os.path.join(state_home, "process-replay", "memwatch"))
         if isinstance(memwatch, str):

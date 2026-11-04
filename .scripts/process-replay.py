@@ -22,13 +22,14 @@ Usage: process-replay.py <command> [--state DIR] [--dry-run] [--snapshot-root DI
 Each command's module is imported only when it runs. Its flags come from its module's
 add_args_<command>(parser) (dashes as underscores), else add_args(parser), when it has one.
 --dry-run starts no daemon and no turn, and writes nothing but judge inputs and briefs.
-The default state directory is $XDG_STATE_HOME/process-replay/<date>.
+The default state directory is $XDG_STATE_HOME/process-replay/<date>, and the default --snapshot-root
+$XDG_STATE_HOME/process-replay/snapshot/2026-11-02.
 
 Locks (process_replay.common.command_locks), each held from the command's entry to its exit: `run` shares <state>/run.lock
 with `match`, `pending`, `report`, `home` (but --login-cmd) and `cases --plans`, and holds <state>/runner.lock alone;
 `snapshot`, `cases`, `inject` and `cleanup` hold run.lock alone. `run`, `cleanup` and `home` also hold the replay daemons'
-lock; memories-watch holds none. A dry run that writes nothing takes no lock. A command that finds a lock held exits 1,
-naming it, before it has changed anything.
+lock; memories-watch holds none. A dry run that writes nothing takes no lock. A command that finds a lock held in a mode that conflicts
+with its own exits 1, naming it, before it has changed anything.
 
 Written for /usr/bin/python3 (3.9).
 """
@@ -53,7 +54,13 @@ COMMANDS = {
     "home": ("codexhome", "cmd_home"),
     "memories-watch": ("memwatch", "cmd_memories_watch"),
 }
-SNAPSHOT_ROOT = "~/Code/.replay/snapshot/2026-11-02"
+SNAPSHOT_DAY = "2026-11-02"
+
+
+def snapshot_root_default():
+    """The snapshot of October's objects: <snapshot home>/2026-11-02 (common.snapshot_home)."""
+    from process_replay import common
+    return os.path.join(common.snapshot_home(), SNAPSHOT_DAY)
 
 
 def usage():
@@ -76,7 +83,7 @@ def main(argv):
     ap = argparse.ArgumentParser(prog="process-replay " + command)
     ap.add_argument("--state", default=common.state_default())
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--snapshot-root", default=os.path.expanduser(SNAPSHOT_ROOT))
+    ap.add_argument("--snapshot-root", default=snapshot_root_default())
     ap.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"))
     ap.add_argument("--max-tokens", type=int, default=100000000)
     ap.add_argument("--budget", type=float, default=3600)

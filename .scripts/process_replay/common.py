@@ -28,7 +28,7 @@ Locks (command_locks, declared on each command with `locked`). Every command tha
 entry to its exit: exclusively, or shared with the commands that may run beside it; process-replay's `run` shares it with `match`,
 `pending` and `report` and holds <state>/runner.lock alone, so one `run` goes at a time. A command that touches a replay daemon or
 the shared login then holds the replay daemons' lock (codexhome.session) to its exit as well. command_locks takes them in that order,
-and every take is non-blocking: a lock another process holds is a refusal at once, never a wait, so no two commands deadlock.
+and every take is non-blocking: a lock held in a conflicting mode is a refusal at once, never a wait, so no two commands deadlock.
 """
 import contextlib
 import fcntl
@@ -197,6 +197,18 @@ def state_default():
     return os.path.join(L.state_home(), "process-replay", date.today().isoformat())
 
 
+def snapshot_home():
+    """Where the object snapshot lives: $XDG_STATE_HOME/process-replay/snapshot, beside the states and the harness exports, never under
+    the directory the driving session runs from (spec 14.3 a)."""
+    return os.path.join(L.state_home(), "process-replay", "snapshot")
+
+
+def harness_root():
+    """The running harness's own root: the checkout, or the export under $XDG_STATE_HOME/process-replay/harness-<commit>, that holds
+    these scripts."""
+    return os.path.dirname(SCRIPTS)
+
+
 # ------------------------------------------------------------------ turns that belong to no run
 PROBES = "probes.json"
 
@@ -300,8 +312,8 @@ def command_locks(state, mode, daemon=False):
          mode None takes no state lock (a dry run that writes nothing, a command that never touches a state).
       2. the replay daemons' lock (codexhome.session), when `daemon` is true, or a function that returns true once the state lock is held
          (it may read the state). Taken before anything reads the daemon marker and held across every step until the command ends.
-    Nothing else takes either lock, so this is the one order there is. Each take is non-blocking: a lock another command holds is a
-    Failed at once (and nothing of the command has run), never a wait."""
+    Nothing else takes either lock, so this is the one order there is. Each take is non-blocking: a lock held in a mode that conflicts
+    with this one is a Failed at once (and nothing of the command has run), never a wait."""
     if mode is not None and mode not in LOCK_MODES:
         raise Failed("not a lock mode: {!r}".format(mode))
     fds = []

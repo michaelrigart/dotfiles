@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import re
@@ -40,6 +41,17 @@ ok("xr_reused: loaded once, under one module name", sys.modules.get("xreview_rep
 os.environ["XDG_STATE_HOME"] = os.path.join(ROOT, "xdg")
 sd = C.state_default()
 ok("state_default: $XDG_STATE_HOME/process-replay/<date>", re.fullmatch(re.escape(os.path.join(ROOT, "xdg", "process-replay")) + r"/\d{4}-\d\d-\d\d", sd), sd)
+
+# ---- snapshot_home_and_harness_root
+is_("snapshot_home_and_harness_root: the snapshot lives at $XDG_STATE_HOME/process-replay/snapshot", C.snapshot_home(),
+    os.path.join(ROOT, "xdg", "process-replay", "snapshot"))
+is_("snapshot_home_and_harness_root: the harness root is the checkout (or export) the running code lives in", C.harness_root(), helpers.SRC)
+_spec = importlib.util.spec_from_file_location("process_replay_cli", os.path.join(helpers.SCRIPTS, "process-replay.py"))
+CLI = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(CLI)
+is_("snapshot_home_and_harness_root: the CLI's default snapshot root is that home joined with 2026-11-02", CLI.snapshot_root_default(),
+    os.path.join(C.snapshot_home(), "2026-11-02"))
+
 taken = set()
 labels = [C.label(taken) for _ in range(300)]
 ok("label: 8 hex, unique, recorded in the set", all(re.fullmatch(r"[0-9a-f]{8}", x) for x in labels) and len(set(labels)) == 300
