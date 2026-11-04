@@ -9,6 +9,10 @@ set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 RV="$SRC/dot_local/bin/executable_review"
 [ -f "$RV" ] || { echo "missing script under test: $RV" >&2; exit 2; }
+# The names the script's bare-run check looks for; read from it so the test cannot drift.
+REQ_SKILL=$(sed -n 's/^bare_skill=\([^;]*\);.*/\1/p' "$RV"); REQ_AGENT=$(sed -n 's/.*; bare_agent=\(.*\)$/\1/p' "$RV")
+[ -n "$REQ_SKILL" ] && [ -n "$REQ_AGENT" ] || { echo "cannot read bare_skill/bare_agent from $RV" >&2; exit 2; }
+export REQ_SKILL REQ_AGENT
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -47,7 +51,14 @@ hooks() {
   printf '%s\n' '{"type":"system","subtype":"hook_response","hook_name":"SessionStart"}'
   printf '%s\n' 'this line is not json'
 }
-init() { printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"$1\",\"session_id\":\"sess-123\",\"model\":\"claude-opus-5-5\",\"permissionMode\":\"auto\"}"; }
+# init <apiKeySource> [skills json] [agents json]: the defaults are what a normal run lists (the
+# global cross-review skill and sp-* agents); a --bare run lists only the built-ins.
+init() {
+  local sk=${2-"[\"code-review\",\"$REQ_SKILL\",\"merge-request\"]"} ag=${3-"[\"claude\",\"Explore\",\"sp-reviewer\",\"$REQ_AGENT\"]"}
+  printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"$1\",\"session_id\":\"sess-123\",\"model\":\"claude-opus-5-5\",\"permissionMode\":\"auto\",\"skills\":$sk,\"agents\":$ag}"
+}
+# okres: a success result, so a run that aborts at init fails only because of the check, not for lack of a result.
+okres() { printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.5,"session_id":"sess-123"}'; }
 asst() { printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking at the code"},{"type":"tool_use","name":"Bash","input":{"command":"ls -la\nsecond line"}}]}}'; }
 case "${STUB_CLAUDE_MODE:-ok}" in
   ok)
@@ -72,6 +83,16 @@ case "${STUB_CLAUDE_MODE:-ok}" in
     hooks; init ANTHROPIC_API_KEY; asst; echo "boom" >&2; exit 3 ;;
   badsource)
     hooks; init none; exec sleep 20 ;;
+  bare)
+    hooks; init ANTHROPIC_API_KEY '["code-review","simplify"]' '["claude","Explore","general-purpose"]'; asst; okres ;;
+  noskill)
+    hooks; init ANTHROPIC_API_KEY '["code-review","simplify"]'; asst; okres ;;
+  noagent)
+    hooks; init ANTHROPIC_API_KEY "[\"$REQ_SKILL\"]" '["claude","Explore"]'; asst; okres ;;
+  nolists)
+    printf '%s\n' '{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY","session_id":"sess-123"}'; asst; okres ;;
+  rawlists)
+    hooks; init ANTHROPIC_API_KEY "$STUB_SKILLS" "$STUB_AGENTS"; asst; okres ;;
   noinit)
     hooks; asst ;;
   hang)
@@ -96,7 +117,16 @@ if [ "$1" = "+%Y-%m-%d-%H%M%S" ] && [ -n "${STUB_DATE_STAMP:-}" ]; then
 fi
 exec /bin/date "$@"
 EOF
-chmod 755 "$SD/bin/op" "$SD/bin/osascript" "$SD/bin/claude" "$SD/bin/date" "$RV"
+command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
+# jq shim: with STUB_JQ_FAIL set, a jq call that passes --arg (the bare check) fails with exit 5.
+# It hands everything else to the real jq by name with its own directory off PATH (a mise shim
+# resolves by name, so exec'ing a path to it would not work).
+cat > "$SD/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${STUB_JQ_FAIL:-}" ]; then for a in "$@"; do [ "$a" = --arg ] && exit 5; done; fi
+exec env PATH="${PATH#"$STUB_DIR/bin:"}" jq "$@"
+EOF
+chmod 755 "$SD/bin/op" "$SD/bin/osascript" "$SD/bin/claude" "$SD/bin/date" "$SD/bin/jq" "$RV"
 
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/seed" 2>/dev/null
@@ -141,6 +171,14 @@ ok() {
   local l=$1; shift
   if "$@"; then _pass "$l"; else _fail "$l" "rc=$rc out=$(head -c 400 "$T/out") err=$(head -c 400 "$T/err")"; fi
 }
+
+rc=0; : > "$T/out"; : > "$T/err"
+# The bare-run check needs these in a normal run's init; a rename in the source tree must fail here, not at run time.
+has_line() { grep -qx -- "$2" "$1"; }
+ok "the agent the bare check needs exists" test -f "$SRC/dot_claude/agents/$REQ_AGENT.md"
+ok "the agent file declares that name" has_line "$SRC/dot_claude/agents/$REQ_AGENT.md" "name: $REQ_AGENT"
+ok "the skill the bare check needs exists" test -f "$SRC/dot_claude/skills/$REQ_SKILL/SKILL.md"
+ok "the skill file declares that name" has_line "$SRC/dot_claude/skills/$REQ_SKILL/SKILL.md" "name: $REQ_SKILL"
 
 run "$MAIN" ok bogus;               ok "an unknown word is a usage error (exit 2)" rc_is 2
 ok "the usage goes to stderr" has "$T/err" "usage: review"
@@ -386,6 +424,57 @@ ok "a wrong credential source exits 1" rc_is 1
 ok "the wrong source status names it" has "$(file_of -general.md)" "Status: aborted: Claude would have used none, not the API key"
 ok "the wrong source returns before claude's sleep ends" test "$elapsed" -lt 12
 ok "the wrong source never reaches the model output" lacks "$T/out" "Looking at the code"
+
+run "$WT" bare
+ok "a bare-looking init aborts (exit 1)" rc_is 1
+ok "the bare status says the run looks bare" has "$(file_of -general.md)" "Status: aborted: the run looks bare"
+ok "the bare status names the missing skill" has "$(file_of -general.md)" "skill $REQ_SKILL"
+ok "the bare status names the missing agent" has "$(file_of -general.md)" "agent $REQ_AGENT"
+ok "the bare status says what did not load" has "$(file_of -general.md)" "global instructions, hooks and skills"
+ok "the bare abort is shown on stdout" has "$T/out" "the run looks bare"
+ok "a bare run never reaches the model output" lacks "$T/out" "Looking at the code"
+run "$WT" bare --fix
+ok "a bare --fix run aborts too (exit 1)" rc_is 1
+ok "the bare --fix status names the cause" has "$(file_of -general-fix.md)" "the run looks bare"
+run "$WT" noskill
+ok "an init without the cross-review skill aborts (exit 1)" rc_is 1
+ok "the missing skill is named alone" has "$(file_of -general.md)" "missing skill $REQ_SKILL)"
+run "$WT" noagent
+ok "an init without the sp-standard agent aborts (exit 1)" rc_is 1
+ok "the missing agent is named alone" has "$(file_of -general.md)" "missing agent $REQ_AGENT)"
+run "$WT" nolists
+ok "an init with no skills or agents lists aborts (exit 1)" rc_is 1
+ok "an init with no lists names both" has "$(file_of -general.md)" "skill $REQ_SKILL, agent $REQ_AGENT"
+good_sk="[\"$REQ_SKILL\"]"; good_ag="[\"$REQ_AGENT\"]"
+# A list field of the wrong type must not pass: a string containing the name would match jq's
+# substring index, and a number, boolean or object makes a naive index fail without aborting.
+for bad in "\"xx-$REQ_SKILL-xx\"" 5 true "{\"k\":\"$REQ_SKILL\"}"; do
+  export STUB_SKILLS=$bad STUB_AGENTS=$good_ag
+  run "$WT" rawlists
+  ok "skills given as $bad aborts (exit 1)" rc_is 1
+  ok "skills given as $bad is reported missing" has "$(file_of -general.md)" "missing skill $REQ_SKILL)"
+  ok "skills given as $bad never reaches the model output" lacks "$T/out" "Looking at the code"
+done
+for bad in "\"xx-$REQ_AGENT-xx\"" 5 true "{\"k\":\"$REQ_AGENT\"}"; do
+  export STUB_SKILLS=$good_sk STUB_AGENTS=$bad
+  run "$WT" rawlists
+  ok "agents given as $bad aborts (exit 1)" rc_is 1
+  ok "agents given as $bad is reported missing" has "$(file_of -general.md)" "missing agent $REQ_AGENT)"
+  ok "agents given as $bad never reaches the model output" lacks "$T/out" "Looking at the code"
+done
+export STUB_SKILLS=$good_sk STUB_AGENTS=$good_ag
+run "$WT" rawlists
+ok "well-formed lists holding both names complete (exit 0)" rc_is 0
+unset STUB_SKILLS STUB_AGENTS
+export STUB_JQ_FAIL=1
+run "$WT" ok
+unset STUB_JQ_FAIL
+ok "a check that cannot read the init event aborts (exit 1)" rc_is 1
+ok "the unreadable-init status says so" has "$(file_of -general.md)" "Status: aborted: the init event could not be read"
+ok "an unreadable init never reaches the model output" lacks "$T/out" "Looking at the code"
+run "$WT" ok
+ok "a normal init (global skill and agents listed) completes (exit 0)" rc_is 0
+ok "a normal init is reported completed" has "$(file_of -general.md)" "Status: completed"
 
 STUB_CLAUDE_MODE=hang
 n=$((n + 1)); STATE="$T/state/$n"; DIR="$STATE/review/acme-portal"; export XDG_STATE_HOME="$STATE"

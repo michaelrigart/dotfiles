@@ -9,7 +9,8 @@
 # it is read from 1Password (REVIEW_OP_REF, default op://Private/cc-review-api-key/credential)
 # and reaches claude only through its environment: never argv, never a file. The stream is
 # checked for the credential claude reports at init and the run is aborted unless it is the
-# API key. Output lands in ${XDG_STATE_HOME:-~/.local/state}/review/<repo slug>/<stamp>-<label>.{md,log,jsonl,err};
+# API key, or if init lacks the global cross-review skill or sp-standard agent (a --bare run,
+# which would skip the global instructions and hooks). Output lands in ${XDG_STATE_HOME:-~/.local/state}/review/<repo slug>/<stamp>-<label>.{md,log,jsonl,err};
 # --last prints the newest report's path and --list lists them (neither needs op or claude).
 # A claude that ignores TERM is killed after REVIEW_KILL_GRACE seconds (default 10).
 # Exit 0 completed, 1 stopped/incomplete/aborted/interrupted/key failure, 2 usage or refusal.
@@ -61,6 +62,8 @@ while [ "$#" -gt 0 ]; do
 done
 if [ "$((last + list))" -gt 0 ] && [ "$argc" -ne 1 ]; then usage_err "--last and --list take no other argument"; fi
 if [ "$help" = 1 ]; then usage; exit 0; fi
+# A normal run's init lists these (dot_claude/skills/cross-review, dot_claude/agents/sp-standard.md); a bare one does not.
+bare_skill=cross-review; bare_agent=sp-standard
 grace=${REVIEW_KILL_GRACE:-10}
 [[ $grace =~ ^[1-9][0-9]*$ ]] || refuse "REVIEW_KILL_GRACE must be a positive integer, not: $grace"
 [ "$((want_s + want_p + want_a + want_c + want_u + want_g))" -gt 0 ] || want_g=1
@@ -207,6 +210,21 @@ while [ "$status" != interrupted ] && { IFS= read -r line || [ -n "$line" ]; }; 
       sid=$(printf '%s\n' "$line" | jq -r '.session_id // ""')
       if [ "$ak" != ANTHROPIC_API_KEY ]; then
         status="aborted: Claude would have used ${ak:-an unknown credential}, not the API key"
+        stop_claude; break
+      fi
+      # --bare (the future default for -p) skips CLAUDE.md, hooks, skills and subagents, and init lists
+      # neither CLAUDE.md nor hooks, so the global skill and agent it does list stand in for them.
+      if ! missing=$(printf '%s\n' "$line" | jq -r --arg s "$bare_skill" --arg a "$bare_agent" '
+        def listed($n): type == "array" and any(.[]; . == $n);
+        [
+          (if (.skills | listed($s)) then empty else "skill " + $s end),
+          (if (.agents | listed($a)) then empty else "agent " + $a end)
+        ] | join(", ")'); then
+        status="aborted: the init event could not be read, so the run cannot be checked for the global skills and agents"
+        stop_claude; break
+      fi
+      if [ -n "$missing" ]; then
+        status="aborted: the run looks bare (missing $missing): the global instructions, hooks and skills were probably not loaded"
         stop_claude; break
       fi
       init_ok=1 ;;
