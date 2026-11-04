@@ -309,9 +309,27 @@ ok("spelling: the views still read OLD's objects", C.git_ok(f.view, "cat-file", 
 
 f = Fx()
 cli(*f.args())
-put(f.view, "objects/info/alternates", "/does/not/exist/objects\n")
+put(f.view, "objects/info/alternates", os.path.join(f.new, "2026-11-02", "gone", "objects") + "\n")
 rc, out = cli(*f.args())
-ok("verify_alternates: a view whose alternates line is not a directory fails a rerun that rewrote nothing", rc == 1 and "not a directory" in out and "verified:" not in out, (rc, out))
+ok("verify_alternates: a line under NEW that names no directory fails the verification of a rerun that rewrote nothing",
+   rc == 1 and "verification failed" in out and "not a directory" in out and "verified:" not in out, (rc, out))
+
+# a view of an original's objects that is already gone: caught before the move, in the dry run too
+f = Fx()
+gone = os.path.join(f.root, "nowhere", "gone", ".git", "objects")
+put(f.state, "views/gone.git/objects/info/alternates", gone + "\n")
+before = f.snap(strict=True)
+rc, out = cli(*f.args("--dry-run"))
+ok("dead_alternate: the dry run refuses, naming the view", rc == 1 and "views/gone.git" in out and gone in out, (rc, out))
+is_("dead_alternate: and changes nothing", f.snap(strict=True), before)
+before = f.snap()
+rc, out = cli(*f.args())
+ok("dead_alternate: the real run refuses too, naming the view, before anything moves", rc == 1 and "views/gone.git" in out, (rc, out))
+ok("dead_alternate: OLD has not moved", os.path.isdir(f.old) and not os.path.exists(f.new))
+is_("dead_alternate: and nothing changed", f.snap(), before)
+os.makedirs(gone)
+rc, out = cli(*f.args())
+ok("dead_alternate: once the directory is there the move goes through", rc == 0 and "verified:" in out, (rc, out))
 
 # ---------------------------------------------------------------- a missing state or one without branches.json takes no lock
 missing = os.path.join(helpers.tmp_root(), "no-such-state")

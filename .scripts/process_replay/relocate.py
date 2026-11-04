@@ -9,11 +9,11 @@ words: a verdict names what the scan saw then.
 It refuses, before anything changes, when the state has no branches.json, when either path lies inside the other, when both
 directories exist or neither does, when the state lies inside either, when the move would cross a volume, when the state names
 neither directory (--from is spelled differently from the recorded paths) and when a candidate branch's final tip does not resolve
-through its view now. The state is held exclusively, and a refusal for want of a branches.json takes no lock. The CLI itself makes a
+through its view now, and when a view's alternates line outside both directories names none. The state is held exclusively, and a refusal for want of a branches.json takes no lock. The CLI itself makes a
 missing --state directory (empty) before any command runs; this command leaves it so. A rename done and a rewrite that failed is
 finished by running the command again: with the old directory gone and the new one there, it only rewrites.
-It ends by checking three things: no string with the old prefix is left in those files, every alternates line of every view names an
-existing directory, and every candidate branch whose objects now lie under the new directory resolves its final tip through its view
+It ends by checking three things: no string with the old prefix is left in those files, every alternates line of the views under the new directory names
+an existing directory, and every candidate branch whose objects now lie under the new directory resolves its final tip through its view
 (a branch that is not a candidate may carry a tip that is gone, and is not checked).
 """
 import glob
@@ -165,6 +165,16 @@ def _rename(old, new):
         raise Failed("cannot rename {} to {}: {}".format(old, new, e))
 
 
+def _alternates_exist(views, wanted):
+    """Failed naming the first alternates line of `views` for which `wanted(line)` and that names no directory. Relative lines are
+    read against the view's objects directory, as git does; blank and # lines are not lines."""
+    for rel, path, _text, _n in views:
+        objects = os.path.dirname(os.path.dirname(path))
+        for line in _read(path).splitlines():
+            if line.strip() and not line.startswith("#") and wanted(line) and not os.path.isdir(os.path.join(objects, line)):
+                raise Failed("{} names {}, which is not a directory".format(rel, line))
+
+
 def _verify(state, old, new):
     """The number of final tips checked; Failed naming the first thing that does not hold."""
     views, (bpath, _doc, bn), orig, _already = _scan(state, old, new)
@@ -173,11 +183,10 @@ def _verify(state, old, new):
             raise Failed("verification failed: {} still has {} reference(s) to {}".format(rel, n, old))
     if bn:
         raise Failed("verification failed: {} still has {} reference(s) to {}".format(bpath, bn, old))
-    for rel, path, _text, _n in views:
-        objects = os.path.dirname(os.path.dirname(path))
-        for line in _read(path).splitlines():
-            if line.strip() and not line.startswith("#") and not os.path.isdir(os.path.join(objects, line)):
-                raise Failed("verification failed: {} names {}, which is not a directory".format(rel, line))
+    try:
+        _alternates_exist(views, lambda line: _inside(line, new))
+    except Failed as e:
+        raise Failed("verification failed: {}".format(e))
     tips = _tips(orig, new)
     try:
         _resolve(tips)
@@ -210,6 +219,8 @@ def cmd_relocate_snapshot(a):
     if has_old and vn + bn == 0 and already == 0:
         raise Failed("nothing in {} names {} or {}: check how --from is spelled against the recorded paths (for instance a symlinked parent directory)"
                      ": nothing is moved".format(state, old, new))
+    # a line that names neither OLD nor NEW does not depend on the move, so one that is dead now would fail the verification after it
+    _alternates_exist(views, lambda line: not _inside(line, old) and not _inside(line, new))
     before = _tips(orig, old)
     if has_old:
         _resolve(before)            # through the views as they are: a tip that will not resolve is caught before anything moves
