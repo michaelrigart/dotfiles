@@ -42,7 +42,8 @@ NAME=x and a path inside an inline script count), a short option's glued value (
 paths). A search pattern is not a path: grep's, rg's, ag's, ack's or git grep's first operand or the value of the option that gives
 it (-e, ag/ack -g, ack --match), rg's --replace, ag's -G, git log's (show, diff, ...) -S, -G and --grep values, and a Grep's pattern;
 the substitutions inside one still run. Each token is resolved from the directory a left-to-right cd tracker holds (the call's
-workdir, else the scratch; `cd X &&` and `;` move it, cd - goes back, a subshell's cd ends with it, a cd to a substitution goes to
+workdir, else the scratch; `cd X &&` and `;` move it, cd - goes back, a subshell's cd ends with it, a cd that may not run or may fail (any cd not directly followed by &&,
+or after && or ||, or in an if, while, until, for or case body) leaves both directories for what follows it, but for what && joins to it, a cd to a substitution goes to
 a directory of that literal name), with ~, $HOME, $XDG_STATE_HOME, $XDG_DATA_HOME, $PWD (and $(pwd)) and, for Codex, $CODEX_HOME
 expanded, then read two ways, ./.. collapsed first and symlinks first, each by its real path. A real path is forbidden when it lies
 in a root at component boundaries (a glob component counts as whatever it can match; the original checkout's root also covers its wt
@@ -57,7 +58,8 @@ command -v, which, type and hash only look it up; a heredoc body is not run, but
 before or after the subcommand) as reading its paths: each source and the destination (-D/--destination, default ~) is a search root, since chezmoi
 walks them, and --config, --cache and --persistent-state are words judged as paths. No subcommand is exempt from the destination: with a
 .chezmoiremove in the source (this repository's has one), managed and source-path read it too (R3; t_codex.py real_chezmoi_source_only). A source or
-destination the scan cannot expand ($X, $(...)) and an unknown option followed by a source, destination or --version flag (which it may take as its
+destination the scan cannot expand ($X, $(...), or a variable it does not know in full: one assigned in the call that is not HOME, XDG_*, PWD or
+CODEX_HOME, which may also hold what the scan cannot see, so `SRC=x; chezmoi -S "$SRC" -D x/h managed` is read as the original) and an unknown option followed by a source, destination or --version flag (which it may take as its
 value) read the original.
 Known limits, not chased further. Missed: an unknown variable ($DIR/x stays literal, and so does a cd to it), a path built at run
 time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
@@ -69,7 +71,10 @@ pipe, as BSD grep does); for running a TOOLS word, a command assembled at run ti
 (sh <<EOF), find -exec, and a long xargs option with a separate value (--max-args 1); for chezmoi, an unknown option that takes a
 value and swallows a word other than a source, destination or --version flag or a short cluster holding S or D (it is read as the subcommand or an operand); and, for
 chezmoi, what the source's own templates (include, output, stat), run_ scripts and externals read at run time under a scratch -S/-D, which is judged by those paths only. Counted
-though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a command bash rejects as
+though nothing is read: a chezmoi source or destination spelled with a variable the call assigns, even a literal one (the scan does not prove
+that an assignment runs, as in `false && SRC=x`, so an assignment adds a value and never hides one, spec 14.3 c), text that merely names a root (echo, a heredoc written to a file, a prose argument), what a command reads from the
+starting directory after a cd that never ran or failed (`false && cd X; cat y`, `cd X; cat y`, a branch not taken: the scan does not prove which runs, and
+more than MAX_CWDS directories is a TOO_MANY leak), a command bash rejects as
 a syntax error (ls >#x cat ~/.codex/y, 2>#x), a search pattern inside
 a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS
 (its value is taken for the pattern, the pattern for a path), a depth-limited walk above a root (find ~ -maxdepth 1, tree -L 1 ~:
@@ -407,6 +412,15 @@ _VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
 
 Root = collections.namedtuple("Root", "label parts siblings words")
 Wall = collections.namedtuple("Wall", "roots allowed")
+
+
+COMPOUND_OPEN = ("if", "while", "until", "for", "case")
+COMPOUND_CLOSE = ("fi", "done", "esac")
+
+
+def _join(*groups):
+    """The directories of `groups` once each, in order."""
+    return list(dict.fromkeys(d for g in groups for d in g))
 
 
 def _parts(path):
@@ -967,9 +981,16 @@ class _Scan(object):
                     self.found.add(root.label)
 
     def unexpanded(self, token, cwds):
-        """Whether `token` still holds a $ or a backtick once the variables the scan knows by value are expanded: a path it cannot name."""
-        known = dict((k, [v for v in vs if v is not LITERAL]) for k, vs in self.variables(cwds).items())
-        return any("$" in t or "`" in t for t in _expand(token, dict((k, vs) for k, vs in known.items() if vs))[0])
+        """Whether `token` still holds a $ or a backtick once the variables the scan knows are expanded: a path it cannot name. A variable
+        whose values hold LITERAL keeps its spelling, so it is not known: an assignment adds a value and never hides the unknown one
+        (spec 14.3 c), whether or not it looks like it runs (`false && SRC=x` does not)."""
+        return any("$" in t or "`" in t for t in _expand(token, self.variables(cwds))[0])
+
+    def limit(self, dirs, command):
+        """`dirs` (the directories a command may run in, after a cd that may not have run) cut to MAX_CWDS, with the TOO_MANY leak when it cuts."""
+        if len(dirs) > MAX_CWDS:
+            self.found.add(TOO_MANY.format(_excerpt(command)))
+        return dirs[:MAX_CWDS]
 
     def dirs(self, target, cwds):
         """The directories `cd target` leads to from `cwds` (logical: ./.. collapsed as cd does)."""
@@ -1041,7 +1062,8 @@ class _Scan(object):
 
     def script(self, command, cwds, depth=0, running=True):
         """A shell command (a string, or an argv list): its simple commands left to right, each from the directories a cd tracker holds
-        (cd X &&, ;, ||, |, newlines; cd - goes back; a subshell's cd ends with it), an unquoted $( ) or backtick substitution as a
+        (cd X &&, ;, ||, |, newlines; cd - goes back; a subshell's cd ends with it; a cd not joined to the next command by && leaves both directories, see the module
+docstring), an unquoted $( ) or backtick substitution as a
         command of its own that leaves one word in its place (an unclosed one runs to the end), then its heredoc bodies from every
         directory it visited, as text (not `running`). `running` passes down into sh -c and $( ). A command nested deeper than MAX_DEPTH is not
         followed: it is a leak (TOO_DEEP)."""
@@ -1055,6 +1077,7 @@ class _Scan(object):
             return
         bodies, stack, simple, before = [], [], [], None
         cur = prev = list(cwds)
+        seen, maybe, frames = list(cur), False, []     # the directories the current and-or list has been in, whether a cd in it may not have run, and the open compound commands (case?, start, seen)
         visited = [tuple(cur)]
         toks = _tokens(_logical(command, bodies)) + [";"]
         i = 0
@@ -1075,18 +1098,42 @@ class _Scan(object):
                 simple.append(tok)
                 continue
             if simple:
+                head = simple[0]
+                if head in COMPOUND_OPEN:
+                    frames.append([head == "case", cur, list(cur)])
+                elif head in ("else", "elif") and frames:
+                    cur = frames[-1][1]
+                started = cur
                 new = self.simple(simple, cur, depth, piped=before in ("|", "|&"), running=running)
                 if new is _BACK:
                     cur, prev = prev, cur
                 elif new is not cur:
                     cur, prev = new, cur
+                if cur != started and head not in COMPOUND_CLOSE and (before in ("&&", "||") or tok != "&&"):
+                    maybe = True                            # a cd that may not have run, or may have failed (only && says it did not): what follows may be in either directory
+                seen = _join(seen, cur)
+                for frame in frames:
+                    frame[2] = _join(frame[2], cur)
+                if head in COMPOUND_CLOSE and frames:       # a body that may not have run (or ran any number of times): either way
+                    cur = self.limit(frames.pop()[2], command)
+                    seen = _join(seen, cur)
                 visited.append(tuple(cur))
                 simple = []
+            if tok == "||" or (tok in ("|", "|&") and maybe):
+                maybe, cur = True, self.limit(seen, command)     # what follows runs if the last failed, or beside a cd (a pipe's side is a subshell)
+            elif tok == "(":
+                stack.append((cur, prev, seen, maybe, [list(f) for f in frames]))
+                seen, maybe = list(cur), False
+            elif tok == ")" and stack:                      # a subshell's cd ends with it
+                cur, prev, seen, maybe, frames = stack.pop()
+            elif tok in (";", ";;", "&"):
+                if maybe:
+                    cur = self.limit(seen, command)
+                if tok == ";;" and frames and frames[-1][0]:
+                    cur = frames[-1][1]                     # the next case branch starts where the case did
+                seen, maybe = list(cur), False
+                visited.append(tuple(cur))
             before = tok
-            if tok == "(":
-                stack.append((cur, prev))
-            elif tok == ")" and stack:
-                cur, prev = stack.pop()
         for body, quoted in bodies:
             for where in dict.fromkeys(visited):
                 self.script(body, list(where), depth + 1, False)

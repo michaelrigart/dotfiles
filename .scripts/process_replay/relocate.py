@@ -7,7 +7,8 @@ string that is the old path, or lies under it, is rewritten. Run records, copied
 words: a verdict names what the scan saw then.
 
 It refuses, before anything changes, when the state has no branches.json, when either path lies inside the other, when both
-directories exist or neither does, when the state lies inside either, when the move would cross a volume, when the state names
+directories exist or neither does, when the state lies inside either (as spelled or by real path: a
+symlink to a state inside one would dangle after the move; the same real-path comparison applies to --from and --to), when the move would cross a volume, when the state names
 neither directory (--from is spelled differently from the recorded paths) and when a candidate branch's final tip does not resolve
 through its view now, and when a view's alternates line outside the new directory names none (a line under the old one is
 checked while the old directory is there). The state is held exclusively, and a refusal for want of a branches.json takes no lock. The CLI itself makes a
@@ -36,6 +37,12 @@ def add_args_relocate_snapshot(ap):
 def _inside(path, root):
     """`path` is `root` or lies under it."""
     return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _nested(path, root):
+    """`path` lies inside `root` (or is it) as spelled or by its real path: a symlink into the tree is inside it, and a rename of the tree
+    would leave the link dangling. Only the checks that guard the move use this; the rewrite keeps to the spellings the state records."""
+    return _inside(path, root) or _inside(os.path.realpath(path), os.path.realpath(root))
 
 
 def _swap(s, old, new):
@@ -201,9 +208,9 @@ def cmd_relocate_snapshot(a):
     old, new, state = os.path.abspath(a.from_dir), os.path.abspath(a.to_dir), a.state
     if not os.path.isfile(os.path.join(state, "branches.json")):
         raise Failed("{} is not a state: it has no branches.json".format(state))
-    if _inside(new, old) or _inside(old, new):
+    if _nested(new, old) or _nested(old, new):
         raise Failed("{} and {} lie inside one another (or are one): nothing is moved".format(old, new))
-    if _inside(state, old) or _inside(state, new):
+    if _nested(state, old) or _nested(state, new):
         raise Failed("the state {} lies inside {} or {}: the move would carry it away: nothing is moved".format(state, old, new))
     has_old, has_new = os.path.lexists(old), os.path.lexists(new)
     if has_old and has_new:

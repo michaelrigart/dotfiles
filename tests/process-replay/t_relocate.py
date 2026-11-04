@@ -368,6 +368,28 @@ shutil.copy(os.path.join(f.state, "branches.json"), os.path.join(ns, "st"))
 rc, out = cli("--state", os.path.join(ns, "st"), "--from", f.old, "--to", ns)
 ok("state_inside: --state inside --to is refused", rc == 1 and "state" in out and os.path.isdir(f.old), (rc, out))
 
+# a symlink resolves inside what moves: the lexical check passes, the rename would leave the link dangling and the rerun could not find branches.json
+for where, label in (("old", "--from"), ("new", "--to")):
+    f = Fx()
+    if where == "new":
+        os.makedirs(f.new)
+    root = f.old if where == "old" else f.new
+    inner = os.path.join(root, "st")
+    os.makedirs(inner)
+    shutil.copy(os.path.join(f.state, "branches.json"), inner)
+    put(inner, "run.lock", "")
+    link = os.path.join(f.root, "ext-link-" + where)
+    os.symlink(inner, link)
+    if where == "new":
+        shutil.rmtree(f.old)            # the move is done as far as the rename: the state symlink would be carried off all the same
+    refused("--state a symlink to a state inside {}".format(label), f, ["--state", link, "--from", f.old, "--to", f.new], "the state")
+    ok("state_symlink: {} is still there, and the link still resolves".format(label), os.path.isdir(root) and os.path.isfile(os.path.join(link, "branches.json")))
+f = Fx()
+alias = os.path.join(f.root, "alias-old")
+os.symlink(f.old, alias)
+refused("--to a symlink into --from", f, ["--state", f.state, "--from", f.old, "--to", os.path.join(alias, "inner")], "inside")
+refused("--from a symlink into --to's tree", f, ["--state", f.state, "--from", os.path.join(alias, "2026-11-02"), "--to", f.old], "inside")
+
 # ---------------------------------------------------------------- a failed rename removes the parents it made
 f = Fx()
 f.new = os.path.join(f.root, "p1", "p2", "p3", "snapshot")

@@ -623,6 +623,29 @@ is_("cwd: ... and a second cd - goes back again, above every root under $HOME", 
 is_("cwd: $PWD after a cd above a root is that directory", forbid('cd ~ && rg foo "$PWD"'), ABOVE)
 is_("cwd: ... and so is $(pwd)", forbid('cd ~ && rg foo "$(pwd)"'), ABOVE)
 is_("cwd: a subshell's cd leaves cd - where it was before the subshell (N-2)", forbid("cd ~ && cd /usr && (cd /var) && cd - && rg x"), ABOVE)
+# ---- a cd that may not run leaves the tracker in both directories; a cd in a subshell does not outlive it; && keeps the new one only (spec 14.3 c)
+for cmd in ("false && cd /usr; cat .codex/x", "cd /usr || true; cat .codex/x", "if true; then cd /usr; fi; cat .codex/x",
+            "(cd /usr); cat .codex/x", "cd /usr || cat .codex/x", "true && cd /usr || cat .codex/x", "true || cd /usr\ncat .codex/x", "true && (cd /usr); cat .codex/x",
+            "if true; then cd /usr; else cat .codex/x; fi", "if false; then true; elif true; then cd /usr; else cat .codex/x; fi", "case x in a) cd /usr;; b) cat .codex/x;; esac",
+            "for d in a; do cd /usr; done; cat .codex/x", "while false; do cd /usr; done; cat .codex/x", "until true; do cd /usr; done; cat .codex/x",
+            "if true; then if true; then cd /usr; fi; fi; cat .codex/x", "true && cd /usr && cd /var; cat .codex/x", "echo $(true && cd /usr; cat .codex/x)",
+            "sh -c 'false && cd /usr; cat .codex/x'",
+            "cd /nonexistent; cat .codex/x", "cd /usr; cat .codex/x", "cd /usr\ncat .codex/x", "cd /usr | cat .codex/x", "(cd /usr; cat .codex/x)",
+            "if true; then cd /usr; cat .codex/x; fi", "cd /usr && cd /var; cat .codex/x", "cd /usr; cd /var; cat .codex/x"):
+    is_("cd_may_not_run: {!r} still reads from the starting directory".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
+for cmd in ("cd /usr && cat .codex/x", "true && cd /usr && cat .codex/x", "(cd /usr && cat .codex/x)", 
+            "cd /usr && cd /var && cat .codex/x",
+            "for d in a; do cd /usr && cat .codex/x; done", "case x in a) cd /usr && cat .codex/x;; esac", "cd /usr && cat .codex/x || true"):
+    is_("cd_may_not_run: {!r} is judged from the new directory only".format(cmd), forbid(cmd, cwd=house), [])
+is_("cd_may_not_run: a recursive search after one walks the starting directory, so every root under it", forbid("test -d /usr && cd /usr; ls -R .", cwd=house),
+    sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", CX, CL)))
+is_("cd_fails: a cd followed by ; may have failed, so a scratch cwd's own directories are all it can be", forbid("cd src; cat a.py; cd nosuch; cat b.py"), [])
+is_("cd_fails: ... and && says the cd ran, so only the new directory is judged", forbid("cd /usr && cat .codex/x", cwd=house), [])
+is_("cd_may_not_run: ... and after a cd that ran it walks only the new one", forbid("cd /usr && ls -R .", cwd=house), [])
+is_("cd_may_not_run: a cd that may not run still adds the new directory (what it reaches from there is judged)", forbid("false && cd ~/.codex; cat x", cwd=OWN), [CX + " in t1"])
+many = "; ".join("true && cd /{}".format(d) for d in ("usr", "var", "bin", "sbin", "etc")) + "; cat x"
+got = forbid(many, cwd=house)
+ok("cd_may_not_run: more directories than MAX_CWDS is the TOO_MANY leak, not a silent cut", len(got) == 1 and "more values than the scan expands" in got[0], got)
 for label, cmd in (("git log -G", "git log -G '~/.codex/memories' --oneline"), ("git log --grep", "git log --grep ~/.codex/sessions"),
                    ("git log --grep=", "git log --grep=$XDG_STATE_HOME/xreview"), ("git log -S glued", "git log -S'$XDG_STATE_HOME/xreview'"),
                    ("git diff -S", "git diff -S ~/.claude/projects HEAD~1"), ("git grep -e", "git grep -n -e ~/.codex/memories"),
@@ -1390,8 +1413,7 @@ for cmd in ("chezmoi --source {SCR} managed", "chezmoi -S {SCR} managed", "chezm
     is_("source_into_scratch_managed: {} reads the original through the default destination (R3)".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
 is_("source_into_scratch_managed: an argv list is read the same", leaked(fc(["chezmoi", "--source", SCR, "managed"]), CHZ), CHZN)
 for cmd in ("chezmoi --source {SCR} --destination {SCR}/h managed", "chezmoi -S {SCR} -D {SCR}/h managed", "chezmoi --source={SCR} --destination={SCR}/h source-path x",
-            "chezmoi -S. -D. managed", 'SRC={SCR}; chezmoi --source "$SRC" --destination "$SRC/h" managed', "export SRC={SCR}; chezmoi -S $SRC -D$SRC/h managed",
-            "chezmoi -S={SCR} -D={SCR}/h managed", "chezmoi -vS {SCR} -D {SCR}/h managed", "sh -c 'chezmoi --source {SCR} --destination {SCR}/h managed'",
+            "chezmoi -S. -D. managed", "chezmoi -S={SCR} -D={SCR}/h managed", "chezmoi -vS {SCR} -D {SCR}/h managed", "sh -c 'chezmoi --source {SCR} --destination {SCR}/h managed'",
             "echo $(chezmoi --source {SCR} -D {SCR}/h managed)", "echo `chezmoi -S {SCR} -D {SCR}/h managed`", "cd {SCR} && chezmoi -S . -D . managed",
             "env A=1 chezmoi --source {SCR} -D {SCR}/h managed", "xargs chezmoi --source {SCR} -D {SCR}/h source-path < list",
             "chezmoi managed --source {SCR} --destination {SCR}/h", "chezmoi --source {SCR} --destination ~ -D {SCR}/h managed",
@@ -1433,8 +1455,15 @@ for cmd in ("chezmoi -S {SCR} -D \"$D\" diff", "chezmoi -S {SCR} -D $TMPDIR/h di
             "chezmoi -S \"$S\" -D {SCR}/h managed", "chezmoi -S \"$S\" managed", "chezmoi --source=$S --destination={SCR}/h managed", "D=$(echo {SCR}/h); chezmoi -S {SCR} -D \"$D\" diff",
             "chezmoi -S {SCR}/$X -D {SCR}/h managed"):
     is_("unexpanded_path: {} reads the original (a value the scan cannot expand)".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
-for cmd in ("D={SCR}/h; chezmoi -S {SCR} -D \"$D\" diff", "export S={SCR}; chezmoi -S \"$S\" -D \"${{S}}/h\" managed", "chezmoi -S {SCR} -D \"$PWD/h\" diff", "chezmoi -S {SCR} -D \"$(pwd)/h\" diff"):
+for cmd in ("chezmoi -S {SCR} -D \"$PWD/h\" diff", "chezmoi -S {SCR} -D \"$(pwd)/h\" diff", "cd {SCR} && chezmoi -S . -D \"$PWD/h\" diff",
+            "chezmoi -S {SCR} -D \"$HOME/h\" diff"):
     is_("unexpanded_path: {} is expanded, so it names the scratch only".format(cmd), leaked(fc(cmd.format(SCR=SCR)), CHZ), [])
+for cmd in ("false && SRC={SCR}; chezmoi -S \"$SRC\" -D {SCR}/h managed", "SRC={SCR}; chezmoi -S \"$SRC\" -D {SCR}/h diff", "SRC={SCR}; chezmoi --source \"$SRC\" --destination \"$SRC/h\" managed",
+            "export SRC={SCR}; chezmoi -S $SRC -D$SRC/h managed", "D={SCR}/h; chezmoi -S {SCR} -D \"$D\" diff", "export S={SCR}; chezmoi -S \"$S\" -D \"${{S}}/h\" managed",
+            "true || D={SCR}/h; chezmoi -S {SCR} -D \"$D\" diff", "if false; then D={SCR}/h; fi; chezmoi -S {SCR} -D \"$D\" managed"):
+    is_("conditional_assignment: {} reads the original (an unknown variable keeps its spelling, an assignment adds a value and never hides one, spec 14.3 c)".format(cmd),
+        leaked(fc(cmd.format(SCR=SCR)), CHZ), CHZN)
+is_("conditional_assignment: ... as it is without the assignment (the variable the reviewer inherited)", leaked(fc('chezmoi -S "$SRC" -D {}/h managed'.format(SCR)), CHZ), CHZN)
 for cmd in ("chezmoi --source {SCR} source-path ~/.local/share/chezmoi/dot_x", "chezmoi --source {SCR} -D {SCR}/h managed ~/.local/share/chezmoi",
             "chezmoi --source {SCR} -D {SCR}/h --config ~/.local/share/chezmoi/c.toml managed", "chezmoi --source {SCR} -D {SCR}/h --cache ~/.local/share/chezmoi managed",
             "chezmoi --source {SCR} -D {SCR}/h --persistent-state ~/.local/share/chezmoi/p managed"):
