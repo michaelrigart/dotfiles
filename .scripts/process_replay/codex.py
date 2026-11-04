@@ -56,7 +56,7 @@ after a newline, && || ; | & ( ) { ! then do else, in $( ) and backticks, under 
 Known limits, not chased further. Missed: an unknown variable ($DIR/x stays literal, and so does a cd to it), a path built at run
 time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
 command's directory is not moved), reads spread over separate calls (a cd in one call does not carry to the next), aliases or
-functions defined earlier (and an assignment inside a function body), a loop body that runs a use again after a later assignment, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
+functions defined earlier, a function's body run from another directory (it is read where it is defined), a loop body that runs a use again after a later assignment, brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
 glued to more text (`pwd`/x and $(pwd)/x split into two words, so ../ after it starts from /), a walk by any other command (cp -r,
 rsync, tar, du, a script's os.walk), GNU grep -r with no operand in a pipe (it walks the working directory; it is taken to read the
 pipe, as BSD grep does); for running a TOOLS word, a command assembled at run time ($(which chezmoi) diff), a heredoc fed to a shell
@@ -64,8 +64,9 @@ pipe, as BSD grep does); for running a TOOLS word, a command assembled at run ti
 though nothing is read: text that merely names a root (echo, a heredoc written to a file, a prose argument), a search pattern inside
 a script word other than sh -c's or a $( ) (eval '...', ssh host '...'), a grep option that takes a value but is missing from GREPS
 (its value is taken for the pattern, the pattern for a path), a depth-limited walk above a root (find ~ -maxdepth 1, tree -L 1 ~:
-the limit is not read), a glob * that matches a dot directory the shell would skip (~/* counts as naming ~/.codex), and a
-command nested more than MAX_DEPTH levels deep in sh -c, $( ), backticks and heredoc bodies (it is not followed: TOO_DEEP). A
+the limit is not read), a glob * that matches a dot directory the shell would skip (~/* counts as naming ~/.codex), a function body
+that never runs (it is read where it is defined, its assignments and cds included), and a command nested more than MAX_DEPTH levels
+deep in sh -c, $( ), backticks and heredoc bodies (it is not followed: TOO_DEEP, which quotes its first EXCERPT characters). A
 pipeline's cd is kept for what follows it (a subshell ends only at parentheses).
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
@@ -332,6 +333,8 @@ WRAPPERS = ("exec", "time", "nohup", "stdbuf", "ionice", "setsid", "builtin", "n
 SEPARATORS = ("&&", "||", ";", "|", "|&", ";;", "&", "(", ")", "$")
 REDIRECTS = (">", ">>", "<", "<<", "<<<", ">&", "<&", "&>", "&>>", ">|", "<>")    # operators shlex gives; each takes the next word
 FD_MARK = "\x01"       # _logical's mark on an fd number glued to < or > (2>x), which shlex would part from it like a spaced word
+OP_MARK = "\x02"       # _logical's mark on a quoted or escaped operator character ('|', \;): the word it is in never reads as an operator
+_OPERATOR_CHARS = frozenset("".join(SEPARATORS + REDIRECTS))
 # Searches whose first operand is a pattern, not a path: the short option letters and the long options that take a separate value.
 # rg, ag and ack are recursive; grep only with -r, -R or -d recurse; git grep searches its repository, not a root it is given.
 GREPS = {"grep": ("efmABCDd", ("regexp", "file", "max-count", "after-context", "before-context", "context", "devices", "directories",
@@ -375,6 +378,7 @@ MAX_EXPANSIONS = 16
 LITERAL = object()      # in a variable's values: it may also hold what the scan does not know, so its spelling stays
 TOO_MANY = "{} (more values than the scan expands)"
 TOO_DEEP = "{} (nested deeper than the scan follows)"
+EXCERPT = 60            # characters of the command a TOO_DEEP label quotes
 _PIECE = re.compile(r"[^\s\"'`;|&<>()\\:,={}]+")
 _GLOB = re.compile(r"[*?\[]")
 _SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
@@ -554,26 +558,30 @@ def _logical(command, bodies=None):
     and a backtick substitution becomes $( ... ) (glued to the text before it, as T=~/`date` is T=~/$(date)), so every command sits at a command position. A here-string (<<<) is not a heredoc.
     An unquoted ( or ) stands apart, so shlex never groups it with an operator beside it (as in `);`, `))` or `;(`); a quoted one stays in its word.
     A word of digits glued to < or > (2>x, 1<x) is an fd: it is marked with FD_MARK, so that once tokenised it still differs from a
-    number standing on its own before a redirection (-C 2 >x)."""
-    out, quote, i, backtick = [], None, 0, False
+    number standing on its own before a redirection (-C 2 >x). A quoted run of operator characters ('|', ";;") and an escaped one (\;)
+    are marked with OP_MARK, which shlex keeps but would otherwise lose with the quote, so _tokens can tell them from operators."""
+    out, quote, i, backtick, opened = [], None, 0, False, 0
     n = len(command)
     while i < n:
         ch = command[i]
         if quote:
+            if ch == quote:
+                body = command[opened:i].replace("\\", "")
+                if body and set(body) <= _OPERATOR_CHARS:
+                    out.append(OP_MARK)
+                quote = None
             out.append(ch)
             if ch == "\\" and quote == '"' and i + 1 < n:
                 out.append(command[i + 1])
                 i += 1
-            elif ch == quote:
-                quote = None
         elif ch == "\\" and i + 1 < n:
             if command[i + 1] == "\n":
                 i += 1
             else:
-                out.append(ch + command[i + 1])
+                out.append(ch + command[i + 1] + (OP_MARK if command[i + 1] in _OPERATOR_CHARS else ""))
                 i += 1
         elif ch in "'\"":
-            quote = ch
+            quote, opened = ch, i + 1
             out.append(ch)
         elif ch == "#" and (not out or out[-1][-1:] in (" ", "\t", "\n", ";", "&", "|", "(")):
             while i < n and command[i] != "\n":
@@ -609,13 +617,28 @@ def _logical(command, bodies=None):
 
 
 def _tokens(line):
-    """The shell words and operators of a _logical() line, quotes removed."""
+    """The shell words and operators of a _logical() line, quotes removed. A word with a quoted or escaped operator character loses
+    its OP_MARK, unless the _word rule keeps it because the word reads as an operator. _logical has dropped the comments, so a #
+    left in a word is text (shlex would end the line there)."""
     lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
-        return list(lexer)
+        toks = list(lexer)
     except ValueError:
-        return line.split()
+        toks = line.split()
+    return [_word(t.replace(OP_MARK, "")) if OP_MARK in t else t for t in toks]
+
+
+def _word(text):
+    """`text` taken as a word: one that reads as an operator (SEPARATORS, REDIRECTS) carries OP_MARK, so it never splits a command."""
+    return text + OP_MARK if text in SEPARATORS + REDIRECTS else text
+
+
+def _excerpt(command):
+    """The start of a command (a string, or an argv list) on one line, at most EXCERPT characters ("..." marks a cut)."""
+    text = " ".join((command if isinstance(command, str) else " ".join(str(x) for x in command)).split())
+    return text if len(text) <= EXCERPT else text[:EXCERPT] + "..."
 
 
 def _skip(words, base):
@@ -812,7 +835,7 @@ def _searched(eff, piped):
         while i < len(eff) and eff[i] in FIND_GLOBAL:
             i += 1
         roots = []
-        while i < len(eff) and not (eff[i].startswith("-") or eff[i] in ("!", "(")):
+        while i < len(eff) and not (eff[i].startswith("-") or eff[i] in ("!", "(" + OP_MARK)):
             roots.append(eff[i])
             i += 1
         return roots or ["."]
@@ -954,10 +977,10 @@ class _Scan(object):
         command of its own that leaves one word in its place (an unclosed one runs to the end), then its heredoc bodies from every
         directory it visited. A command nested deeper than MAX_DEPTH is not followed: it is a leak (TOO_DEEP)."""
         if depth > MAX_DEPTH:
-            self.found.add(TOO_DEEP.format(command))
+            self.found.add(TOO_DEEP.format(_excerpt(command)))
             return
         if isinstance(command, (list, tuple)):
-            self.simple([str(x) for x in command], cwds, depth)          # a lone cd (or cd -) moves nothing after it
+            self.simple([_word(str(x)) for x in command], cwds, depth)   # a lone cd (or cd -) moves nothing after it
             return
         if not isinstance(command, str):
             return
@@ -974,7 +997,7 @@ class _Scan(object):
                 while j < len(toks) - 1 and level:         # never the closing ; that ends the last simple command
                     level += {"(": 1, ")": -1}.get(toks[j], 0)
                     j += 1
-                inner = " ".join(t if t in SEPARATORS else shlex.quote(t) for t in toks[i + 1:j - 1 if not level else j])
+                inner = " ".join(t if t in SEPARATORS + REDIRECTS else shlex.quote(t) for t in toks[i + 1:j - 1 if not level else j])
                 self.script(inner, cur, depth + 1)
                 simple.append(tok[:-1] + "$(" + inner + ")")
                 i = j

@@ -1288,3 +1288,47 @@ is_("closing_paren: an unquoted parenthesis is a token of its own", K._tokens(K.
 is_("closing_paren: ... a quoted one stays in its word", K._tokens(K._logical('rg ");" "(x" ~')), ["rg", ");", "(x", "~"])
 for cmd, want in (('cat ~/.codex/x $(echo "(")', [CXN]), ("cat ~/.codex/x a$(b", [CXN]), ('rg foo ~ $(echo "(")', [CXN, CHN])):
     is_("unclosed_substitution: {} still scans the command around it".format(cmd), leaked(fc(cmd), OWNWALL, cwd="/work/s"), want)
+
+# ---- fix round 5: a quoted or escaped operator is a word; a function body is read where it is defined; a TOO_DEEP label is short
+twin = leaked(fc("rg x ~"), OWNWALL, cwd="/work/s")
+is_("quoted_operator: the unquoted-pattern twin rg x ~ names both roots", twin, [CXN, CHN])
+for sep in K.SEPARATORS:
+    for form in ("rg '{}' ~", 'rg "{}" ~', "rg -F '{}' ~"):
+        is_("quoted_operator: {} names what rg x ~ names".format(form.format(sep)), leaked(fc(form.format(sep)), OWNWALL, cwd="/work/s"), twin)
+    is_("quoted_operator: a real cd after rg '{}' is followed".format(sep),
+        leaked(fc("rg '{}' x && cd ~/.local/share && cat chezmoi/x".format(sep)), OWNWALL, cwd="/work/s"), [CHN])
+for op in K.REDIRECTS:
+    is_("quoted_operator: a quoted redirection rg '{}' ~ names what rg x ~ names".format(op), leaked(fc("rg '{}' ~".format(op)), OWNWALL, cwd="/work/s"), twin)
+for op in "|;&()$<>":
+    is_("quoted_operator: an escaped rg \\{} ~ names what rg x ~ names".format(op), leaked(fc("rg \\{} ~".format(op)), OWNWALL, cwd="/work/s"), twin)
+is_("quoted_operator: two quoted halves of && are one word", leaked(fc('rg "&""&" ~'), OWNWALL, cwd="/work/s"), twin)
+is_("quoted_operator: a # after an escaped | is no comment, so the next command is scanned", leaked(fc("echo \\|#x; rg foo ~"), OWNWALL, cwd="/work/s"), twin)
+for label, cmd in (("&&", "echo x&&rg foo ~"), ("||", "echo x||rg foo ~"), (";", "echo x;rg foo ~"), ("|", "echo x|rg foo ~"), ("|&", "echo x|&rg foo ~"),
+                   ("&", "echo x&rg foo ~"), ("( )", "(rg foo ~)"), ("$( )", "echo $(rg foo ~)"), (";;", "case x in a) rg foo ~;; esac"),
+                   ("a redirection", "rg foo ~ >out 2>&1")):
+    is_("quoted_operator: an unquoted {} still splits ({})".format(label, cmd), leaked(fc(cmd), OWNWALL, cwd="/work/s"), [CXN, CHN])
+is_("quoted_operator: find's escaped and quoted ( open a group, not a root (it walks .)",
+    (leaked(fc("find \\( -name x \\)"), OWNWALL, cwd=house), leaked(fc("find '(' -name x ')'"), OWNWALL, cwd=house)), ([CXN, CHN],) * 2)
+is_("quoted_operator: find -exec ... \; keeps its root", leaked(fc("find ~/.local/share -name x -exec cat {} \;"), OWNWALL, cwd="/work/s"), [CHN])
+is_("quoted_operator: a quoted ; inside a longer sh -c word still separates the inner commands",
+    leaked(fc("bash -c \"cd /tmp\"';'\"rg foo ~\""), OWNWALL, cwd="/work/s"), [CXN, CHN])
+is_("quoted_operator: an escaped $ inside an unquoted sh -c word still expands in the inner shell", leaked(fc("bash -lc cat\\ \\$HOME/.codex/x"), OWNWALL, cwd="/work/s"), [CXN])
+is_("quoted_operator: only a word that reads as an operator keeps the mark", K._tokens(K._logical("rg '|' \; \"&\"\"&\" a|b x';'y")),
+    ["rg", "|" + K.OP_MARK, ";" + K.OP_MARK, "&&" + K.OP_MARK, "a", "|", "b", "x;y"])
+is_("function_body: an assignment in a body that never runs is read where it is defined",
+    leaked(fc("f() { local D=~/.local/share; }; cat $D/chezmoi/x"), CHZ), CHZN)
+got = leaked(fc("echo " + "$(" * 300 + "cat ~/.codex/x" + ")" * 300), OWNWALL, cwd="/work/s")
+ok("deep_label: a 300-deep command is still a leak, and its label is short", any(x.endswith(DEEP) for x in got) and max(len(x) for x in got) <= 200, got)
+deep = K._Scan(fwall, {})
+deep.script(["cat", "x"], [SCR], depth=K.MAX_DEPTH + 1)
+deep.script("a\n" + "b" * 500, [SCR], depth=K.MAX_DEPTH + 1)
+is_("deep_label: a list command is quoted as its words, not a repr, and a long one is cut to one line",
+    sorted(deep.found), sorted(["cat x (nested deeper than the scan follows)", "a " + "b" * (K.EXCERPT - 2) + "... (nested deeper than the scan follows)"]))
+for cmd in ("echo a#b; cat ~/.codex/x", "curl http://h/p#frag; cat ~/.codex/x", "git log --format=%h#%s; cat ~/.codex/x", "cat ~/.codex/x; echo a#b"):
+    is_("mid_word_hash: a # inside a word is text, so the rest of the line is scanned ({})".format(cmd), leaked(fc(cmd), OWNWALL, cwd="/work/s"), [CXN])
+is_("mid_word_hash: a comment that starts a word still ends the line", leaked(fc("ls # cat ~/.codex/x"), OWNWALL, cwd="/work/s"), [])
+is_("quoted_operator: an argv word that reads as an operator is a word (a list command has no shell operators)",
+    (leaked(fc(["rg", ">", "~"]), OWNWALL, cwd="/work/s"), leaked(fc(["rg", "|", "~"]), OWNWALL, cwd="/work/s")), (twin, twin))
+is_("quoted_operator: ... and an argv ( still opens find's group (it walks .)", leaked(fc(["find", "(", "-name", "x", ")"]), OWNWALL, cwd=house), [CXN, CHN])
+for cmd in ("echo $(rg foo > out)", "echo $(rg foo < /dev/null)", "echo $(rg foo 2>/dev/null)", "echo a$(rg foo >out)", "x=$(grep -r foo > /dev/null); ls"):
+    is_("quoted_operator: a real redirection inside $( ) stays one, so the search still walks . ({})".format(cmd), leaked(fc(cmd), OWNWALL, cwd=house), [CXN, CHN])
