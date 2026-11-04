@@ -75,7 +75,8 @@ TABLE = [
     ("censoring_blocks_pass: a censored per-task defect is not recovered", [BASE], two("c1", sts(t1="r", t2="c", q1="r", q2="r")), NONE, "inconclusive"),
     ("task_p2_unrecovered_inconclusive", [BASE], two("c1", sts(t1="r", t2="u", q1="r", q2="r")), NONE, "inconclusive"),
     ("coverage_gate: unassessable per-task defects make a pass inconclusive", [BASE], two("c1", ALL_R), HELD, "inconclusive"),
-    ("coverage_gate: a fail stays a fail", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), HELD, "fail"),
+    ("coverage_gate_override_inconclusive: a fail under a failing gate is inconclusive", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), HELD, "inconclusive"),
+    ("coverage_gate_holds: the same runs with the gate holding are a fail", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), NONE, "fail"),
     ("a void run with no replacement is not assessable: no pass", [BASE], [run("c1", "a", ALL_R), run("c1", "b", sts(t1="p", t2="p", q1="p", q2="p"), end="void", voids=2)],
      NONE, "inconclusive"),
     ("an errored run is not assessable: no pass", [BASE], [run("c1", "a", ALL_R), run("c1", "b", ALL_R, end="error")], NONE, "inconclusive"),
@@ -104,6 +105,13 @@ for name, cases, runs, coverage, want in TABLE:
     got = bar.bar(cases, runs, coverage)
     is_(name, got["status"], want)
     ok(name + " (reasons are strings, one at least)", got["reasons"] and all(isinstance(r, str) for r in got["reasons"]), got["reasons"])
+
+# ---- coverage_gate_override_inconclusive: the fail's reasons stay in the report, ahead of the gate's
+got = bar.bar([BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), HELD)
+fail_at = [i for i, r in enumerate(got["reasons"]) if "unrecovered while every pre-merge P0/P1 was recovered" in r]
+gate_at = [i for i, r in enumerate(got["reasons"]) if r.startswith("coverage gate:")]
+ok("coverage_gate_override_inconclusive: the reasons hold the fail (both runs) before the coverage gate's",
+   len(fail_at) == 2 and len(gate_at) == 1 and max(fail_at) < gate_at[0], got["reasons"])
 
 # ---- runs_per_case: report expects as many runs as `run` makes; the count lives in common.RUNS and nowhere else
 C.RUNS = 3

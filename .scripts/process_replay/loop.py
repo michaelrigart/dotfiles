@@ -15,6 +15,11 @@ A run takes an injected tree through the final whole-branch review, then the Cod
 `run` advances every run as far as it can without a Claude answer; `match` applies the answers only and starts no round.
 Both are idempotent: with nothing new answered, no state file changes.
 
+`run` first checks two things (preflight), a dry run too, and changes nothing when either refuses: the coverage gate must hold
+(cases.json's coverage.unassessable_task empty) unless --despite-coverage-gate is given, under which §4 stays inconclusive (bar); and no
+forbidden root may lie beneath, around or beside (a wt sibling of) its working directory, because a final reviewer resolves relative
+text from there (spec 14.3 a, 14.5). `match` and `cleanup` check neither.
+
 The run state is the Shared record of the plan, plus: base_tip (the scratch commit holding the injected tree), repairs
 ({defect: {repair: patch path, group, hunks}}, from injected/<branch>.json when the run was made; the patch is the run's own copy,
 runs/<case>/<label>/repairs/<defect>.patch, which a later `inject` leaves alone), judging (what the run
@@ -71,6 +76,8 @@ class Ctx(object):
         doc = jload(os.path.join(a.state, "cases.json"))
         if not isinstance(doc, dict) or not isinstance(doc.get("cases"), list):
             raise Failed("no cases.json in {}: run inject first".format(a.state))
+        coverage = doc.get("coverage") if isinstance(doc.get("coverage"), dict) else {}
+        self.unassessable = [str(d) for d in coverage.get("unassessable_task") or []]        # the coverage gate fails while this is not empty
         self.cases = dict((c["id"], c) for c in doc["cases"] if isinstance(c, dict) and isinstance(c.get("id"), str))
         branches = jload(os.path.join(a.state, "branches.json")) or {}
         self.branches = dict((b["id"], b) for b in branches.get("branches") or [] if isinstance(b, dict) and isinstance(b.get("id"), str))
@@ -321,6 +328,45 @@ def ensure_runs(ctx, runs):
             runs.append(start_run(ctx, case, label))
             made = True
     return made
+
+
+def add_args_run(ap):
+    ap.add_argument("--despite-coverage-gate", action="store_true",
+                    help="run although the coverage gate fails, for the recovery evidence; the verdict stays inconclusive. Only on Michael's request")
+
+
+def _near(cwd, wall):
+    """The labels of the wall's roots that lie beneath `cwd`, contain it, or are the original's wt sibling it stands in (the scan's own
+    judgement of the path). An unreadable working directory is every root."""
+    if cwd is None:
+        return [root.label for root in wall.roots]
+    under = set(K.beneath(cwd, wall))
+    here = tuple(x for x in os.path.realpath(cwd).split(os.sep) if x)
+    return [root.label for root in wall.roots if root.label in under or K.judge(here, K.Wall([root], [])) is not None]
+
+
+def preflight(a, ctx):
+    """What `run` checks before it touches anything, a dry run included (spec 14.3 a, 14.5): the coverage gate and the working directory.
+    Raises Failed, having changed nothing."""
+    held = ctx.unassessable
+    if held and not getattr(a, "despite_coverage_gate", False):
+        raise Failed("run refuses: the coverage gate fails: {} per-task defect(s) are unassessable ({}), so §4 is inconclusive whatever the runs show. "
+                     "Give Michael the report; run with --despite-coverage-gate only on his request (the verdict stays inconclusive)".format(
+                         len(held), ", ".join(held)))
+    branches = [ctx.branches[c["branch"]] for _cid, c in sorted(ctx.cases.items()) if c.get("branch") in ctx.branches]
+    snap = getattr(a, "snapshot_root", None)
+    labels = []
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = None
+    for branch in branches or [{}]:
+        labels += _near(cwd, K.forbidden(a.state, branch, [], snap))
+    if labels:
+        raise Failed("run refuses: forbidden root(s) beneath its working directory {}: {}. A final reviewer resolves relative text from there; "
+                     "run it from a directory with none beneath it".format(cwd or "(unreadable)", ", ".join(dict.fromkeys(labels))))
+    if held:
+        say("the coverage gate fails ({} unassessable): running anyway for the recovery evidence; §4 stays inconclusive".format(len(held)))
 
 
 def add_args_match(ap):
@@ -747,8 +793,8 @@ def _summary(ctx, runs):
             len(old), ", ".join(sorted(old))))
 
 
-def _drive(a, rounds):
-    ctx = Ctx(a)
+def _drive(a, rounds, ctx=None):
+    ctx = ctx or Ctx(a)
     if a.dry_run:
         runs = runs_of(a)
         for cid, case in sorted(ctx.cases.items()):
@@ -781,7 +827,9 @@ def _drive(a, rounds):
 
 @C.locked(lambda a: None if a.dry_run else "run", daemon=lambda a: not a.dry_run)
 def cmd_run(a):
-    return _drive(a, True)
+    ctx = Ctx(a)
+    preflight(a, ctx)
+    return _drive(a, True, ctx)
 
 
 @C.locked(lambda a: None if a.dry_run else "shared")

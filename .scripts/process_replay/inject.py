@@ -59,7 +59,8 @@ reviewer who reports it finds a defect that is not in the case's list.
 Writes injected/<branch>.json and cases.json, and per kind of item it asks for (judge-split, judge-present, judge-same, recreate) a
 manifest <kind>/needed.json, {owned: every id it has asked for, needed: the ids it waits on now}: `pending` leaves out an item inject
 asked for and no longer needs (one an earlier inventory, a branch now beyond the limit, or a cargo result since changed led to).
-`inject` is run again after each judge phase; it reads what has answered and goes on.
+`inject` is run again after each judge phase; it reads what has answered and goes on. It ends by saying what `run` will make of the coverage
+gate: passes, fails (run refuses without --despite-coverage-gate), or not settled while a branch waits.
 """
 import collections
 import os
@@ -927,11 +928,23 @@ def cmd_inject(a):
             C.say("warning: branch {}: a syntax check was skipped: {}".format(b["id"], tool))
     if unassessable:
         C.say("per-task defects unassessable after the second attempt: " + ", ".join(sorted(set(unassessable))))
+    C.say(coverage_line(unassessable, states["waiting"]))
     if states["waiting"]:
         C.say("answers wait: run `process-replay.py pending`, then `process-replay.py inject` again")
     if hint:
         C.say("fewer than {} branches qualify or wait, and candidates remain: open more with `process-replay.py cases --open {}`".format(MAX_CASES, hint))
     return 0
+
+
+def coverage_line(unassessable, waiting):
+    """What `run` will make of the coverage gate (spec 14.5): a defect already unassessable fails it whatever else waits; with none, a waiting
+    branch leaves it unsettled."""
+    held = len(set(unassessable))
+    if held:
+        return "coverage gate: fails: {} per-task defect(s) unassessable; run refuses without --despite-coverage-gate".format(held)
+    if waiting:
+        return "coverage gate: not settled (answers wait)"
+    return "coverage gate: passes"
 
 
 def more_to_open(candidates, outcome, total, per_repo):

@@ -1,3 +1,4 @@
+import argparse
 import difflib
 import io
 import json
@@ -25,6 +26,7 @@ from process_replay.common import Failed  # noqa: E402
 
 XR, L = C.XR, C.L
 ROOT = helpers.tmp_root()
+os.chdir(helpers.tmp_root())        # the suite's own cwd is the checkout, a forbidden root: `run` refuses to start from there
 SNAPSHOTS = os.path.join(ROOT, "snapshots")
 PROJECTS = os.path.join(ROOT, "projects")
 PLAN = "docs/superpowers/plans/2026-10-20-x.md"
@@ -1662,6 +1664,76 @@ try:
 except Failed as e:
     got = str(e)
 ok("cases: without cases.json run says to run inject first", "cases.json" in got and "inject" in got, got)
+
+# ================================================================== run's refusals (spec 14.3 a, 14.5)
+def refusal(fn, *args, **kw):
+    try:
+        fn(*args, **kw)
+    except Failed as e:
+        return str(e)
+    return None
+
+
+def unlocked(state):
+    """The state's files with their mtimes, less the lock files a command takes before it refuses."""
+    return dict((k, v) for k, v in snap(state).items() if not k.endswith(".lock"))
+
+
+def go_from(where, w, **kw):
+    """`go` with `where` as the working directory (the suite's own is restored)."""
+    here = os.getcwd()
+    os.chdir(where)
+    try:
+        return go(w, **kw)
+    finally:
+        os.chdir(here)
+
+
+w = World("beneath")
+behave(lambda run, k: ("approve", []))
+before, made = unlocked(w.state), len(PREP)
+holder = os.path.dirname(os.environ["XDG_STATE_HOME"])
+for dry in (False, True):
+    got = refusal(go_from, holder, w, dry_run=dry)
+    ok("refuses_forbidden_beneath_cwd: from the directory holding the state, review-work, cxh and xreview, run{} raises Failed naming review-work".format(
+        " (dry)" if dry else ""), got is not None and "review-work" in got and "beneath its working directory" in got and holder in got, got)
+ok("refuses_forbidden_beneath_cwd: no run directory appears and no state file but the locks changes", not os.path.exists(os.path.join(w.state, "runs"))
+   and before == unlocked(w.state) and len(PREP) == made, sorted(set(before) ^ set(unlocked(w.state))))
+go_from(helpers.tmp_root(), w)
+ok("refuses_forbidden_beneath_cwd: from a fresh empty temp directory the runs start", len(w.runs()) == 2, [r["label"] for r in w.runs()])
+
+w = World("sib")
+sibling = w.orig + "-sib2"
+os.makedirs(sibling)
+os.makedirs(os.path.join(w.orig, "src", "deeper"), exist_ok=True)
+before = unlocked(w.state)
+for what, where in (("a sibling worktree of a forbidden checkout", sibling), ("the checkout itself", w.orig), ("a directory inside it", os.path.join(w.orig, "src", "deeper"))):
+    got = refusal(go_from, where, w)
+    ok("refuses_forbidden_beneath_cwd: from {}, run raises Failed naming the checkout".format(what), got is not None and w.orig in got and "--despite" not in got, got)
+ok("refuses_forbidden_beneath_cwd: and makes no run", not os.path.exists(os.path.join(w.state, "runs")) and before == unlocked(w.state))
+os.makedirs(w.orig + "x")
+ok("refuses_forbidden_beneath_cwd: a directory merely named like the checkout is no sibling worktree of it", refusal(go_from, w.orig + "x", w) is None and len(w.runs()) == 2)
+
+w = World("gate")
+behave(lambda run, k: ("approve", []))
+edit(os.path.join(w.state, "cases.json"), lambda d: d["coverage"].update(unassessable_task=["d00000099"]))
+before, made = unlocked(w.state), len(PREP)
+for dry in (False, True):
+    got = refusal(go, w, dry_run=dry)
+    ok("refuses_failed_gate: a failing gate stops run{}".format(" (dry)" if dry else ""), got is not None and "--despite-coverage-gate" in got and "1 per-task defect(s) are unassessable (d00000099)" in got
+       and "§4 is inconclusive" in got, got)
+ok("refuses_failed_gate: and no run is made", not os.path.exists(os.path.join(w.state, "runs")) and before == unlocked(w.state) and len(PREP) == made)
+text = go(w, despite_coverage_gate=True)
+ok("refuses_failed_gate: with the option the runs start, and run says §4 stays inconclusive", len(w.runs()) == 2 and "§4 stays inconclusive" in text, text)
+cases_ = C.jload(os.path.join(w.state, "cases.json"))
+ok("refuses_failed_gate: and the report's verdict is inconclusive", report_of(w)["bar"]["status"] == "inconclusive" and cases_["coverage"]["unassessable_task"] == ["d00000099"])
+text = go(w, dry_run=True, despite_coverage_gate=True)
+ok("refuses_failed_gate: a dry run with the option goes ahead too", "§4 stays inconclusive" in text, text)
+
+ap = argparse.ArgumentParser()
+P.add_args_run(ap)
+ok("option_parses: --despite-coverage-gate is True when given and False without", ap.parse_args(["--despite-coverage-gate"]).despite_coverage_gate is True
+   and ap.parse_args([]).despite_coverage_gate is False)
 
 # ================================================================== cleanup
 w = World("clean")

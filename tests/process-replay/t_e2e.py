@@ -23,6 +23,7 @@ from process_replay import common as C  # noqa: E402
 
 XR = C.XR
 ROOT = helpers.tmp_root()
+os.chdir(helpers.tmp_root())        # `run` refuses to start from the checkout, a forbidden root
 STATE_HOME = os.environ["XDG_STATE_HOME"]
 ORIGINAL_HOME = os.environ["CODEX_HOME"]
 PROJECTS = os.path.join(ROOT, "projects")

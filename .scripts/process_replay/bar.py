@@ -5,7 +5,8 @@ cuts/judge-present/ (the judge-present inputs that fell back to the cut from the
 report.md and report.json beside them (with --dry-run it prints the report and writes nothing).
 
 bar(cases, runs, coverage) takes each case with the inventory records of its defects attached as case["info"] ({id: defect}), because
-the class, severity and summary of a defect are not in the run states. Precedence: fail > pass > inconclusive.
+the class, severity and summary of a defect are not in the run states. Precedence: fail > pass > inconclusive,
+except that a failing coverage gate makes every verdict inconclusive (spec 4.3, 14.5): the fails stay in the reasons, first.
 
   assessable  the run ended approve, rounds or stalled, recovered at least 80% of its pre-merge class and censored at most 25% of its
               per-task class (counted defects, P0-P2).
@@ -144,10 +145,10 @@ def bar(cases, runs, coverage):
         blocks.append("coverage gate: per-task defects unassessable after the second attempt: {}".format(", ".join(held)))
     if not cases:
         blocks.append("there are no cases")
-    if fails:
+    if fails and not held:
         status, reasons = "fail", fails
     elif blocks:
-        status, reasons = "inconclusive", blocks
+        status, reasons = "inconclusive", fails + blocks     # under a failing gate the fails stay in the report, first
     else:
         status, reasons = "pass", ["every run of every case is assessable and every per-task defect was recovered in every run"]
     return {"status": status, "assessable": assessable, "reasons": reasons, "unrecovered_task": unrecovered, "uncounted_task": uncounted, "no_pre_cases": no_pre,

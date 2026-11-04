@@ -559,6 +559,18 @@ e = examined(S9, "bconf0001")
 ok("qualify: fewer than two assessable per-task defects disqualifies, though no P0/P1 is lost", e["qualified"] is False and "two" in e["why"] and cases(S9)["cases"] == [], e)
 is_("coverage_gate: a P2 is listed too", cases(S9)["coverage"], {"unassessable_task": ["d0000000e"]})
 
+# coverage_line: what inject says of the gate run will read
+rc, out = run(S5)
+ok("coverage_line: a complete branch with no unassessable defect says the gate passes", "coverage gate: passes" in out and "coverage gate: fails" not in out, out)
+rc, out = run(S6)
+ok("coverage_line: a branch with an unassessable defect says the gate fails, with the count and the option",
+   "coverage gate: fails: 1 per-task defect(s) unassessable; run refuses without --despite-coverage-gate" in out and "coverage gate: passes" not in out, out)
+S6w = conf_state("w-conf-wait")
+rc, out = run(S6w)
+ok("coverage_line: a waiting branch says the gate is not settled", "coverage gate: not settled (answers wait)" in out and "coverage gate: passes" not in out, out)
+rc, out = run(S6w, dry=True)
+ok("coverage_line: a dry run says it too", "coverage gate: not settled (answers wait)" in out, out)
+
 # a group whose second piece does not revert leaves the tree as it found it
 DX = dfx("d00000011", "task", "P1", [(TC, FE), (FE, FF)], "src/f.py", files=["src/e.txt", "src/f.py"])
 S10b = setup_state("w-partial", [CONF], {"bconf0001": [DX, dfx("d00000012", "task", "P2", [(BC, TC)], "src/f.py"),
