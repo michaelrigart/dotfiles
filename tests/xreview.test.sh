@@ -3431,6 +3431,15 @@ done
 out="$(bash "$XREVIEW" apply -x 2>&1)"; rc=$?
 is "CK6 apply -x refuses as an unsafe identifier, and writes no window" \
    "$rc/$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/none"
+out="$(bash "$XREVIEW" apply xr-a/b 2>&1)"; rc=$?
+is "CK6 apply xr-a/b refuses as an unsafe identifier (only assert_id catches it), and writes no window"    "$rc/$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/none"
+# turns/ holds .targets, .shown, .slices, .merged and .known files beside each record, so a dotted
+# name passes -f and the id check; a nonce is xr-<epoch>-<hex> and never has a dot.
+fresh; rm -rf "$(ckstate)"; mkdir -p "$(ckstate)/turns"; : > "$(ckstate)/turns/xr-1-a.targets"
+out="$(bash "$XREVIEW" apply xr-1-a.targets 2>&1)"; rc=$?
+is "CK6 apply xr-1-a.targets refuses with the usage, not as another checkout, and writes no window"    "$rc/$(printf '%s' "$out" | grep -c 'nonces start with xr-')/$(printf '%s' "$out" | grep -c 'another checkout')/$([ -e "$STATE/applying" ] && echo opened || echo none)" "1/1/0/none"
+out="$(bash "$XREVIEW" collect xr-1-a.targets 2>&1)"; rc=$?
+is "CK5 collect xr-1-a.targets refuses with the usage, not as another checkout"    "$rc/$(printf '%s' "$out" | grep -c 'nonces start with xr-')/$(printf '%s' "$out" | grep -c 'another checkout')" "1/1/0"
 fresh; rm -rf "$(ckstate)"; export PANE_CWD="$CK"
 mkdir -p "$STATE" "$(ckstate)"; echo "$U2" > "$STATE/review-thread"; echo "$U3" > "$(ckstate)/review-thread"
 bash "$XREVIEW" -C "$CK" round --reset >/dev/null 2>&1

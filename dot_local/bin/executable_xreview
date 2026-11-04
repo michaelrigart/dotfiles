@@ -145,6 +145,16 @@ is_safe_id() {
   return 0
 }
 
+# A nonce is xr-<epoch>-<hex>. turns/ also holds <nonce>.targets, .shown, .slices, .merged and
+# .known files, which pass the id check and -f, so a dot is never part of a nonce.
+is_nonce() {
+  case "$1" in
+    *.*) return 1 ;;
+    xr-*) return 0 ;;
+  esac
+  return 1
+}
+
 # pane_root - the directory whose Codex pane serves this repository (spec 2026-10-01 §4.2). A
 # harness worktree (<W>/.claude/worktrees/<name>) is served by the registered worktree W that
 # holds it - the main checkout, or a wt sibling with its own pane - and the longest such W
@@ -876,10 +886,7 @@ cmd_apply() {
   fi
   [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
   assert_id "$1"
-  case "$1" in
-    xr-*) ;;
-    *) die "usage: xreview apply <nonce> | xreview apply --done - nonces start with xr-" ;;
-  esac
+  is_nonce "$1" || die "usage: xreview apply <nonce> | xreview apply --done - nonces start with xr-"
   if [ ! -f "$dir/turns/$1" ] && other="$(nonce_elsewhere "$1")"; then
     die "$1 was dispatched from another checkout (its state is $other); run apply with the -C it was dispatched with"
   fi
@@ -1924,10 +1931,7 @@ cmd_collect() {
         dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started compacted=null shown \
         collect_trap sliced=0
   started="$(epoch_now)"
-  case "$nonce" in
-    xr-*) ;;
-    *) die "usage: xreview collect <nonce> [budget] - nonces start with xr-" ;;
-  esac
+  is_nonce "$nonce" || die "usage: xreview collect <nonce> [budget] - nonces start with xr-"
   # The budget is whole seconds only; anything else is a usage error, never a failed
   # review (F24) - this must be checked before any daemon call, not left to xreview-rpc's
   # own argparse to reject with a different, misleading exit code.
