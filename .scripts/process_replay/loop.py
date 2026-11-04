@@ -16,7 +16,7 @@ A run takes an injected tree through the final whole-branch review, then the Cod
 Both are idempotent: with nothing new answered, no state file changes.
 
 `run` first checks two things (preflight), a dry run too, and changes nothing when either refuses: the coverage gate must hold
-(cases.json's coverage.unassessable_task empty) unless --despite-coverage-gate is given, under which §4 stays inconclusive (bar); and no
+(cases.json's coverage.unassessable_task and coverage.waiting empty: neither failing nor waiting on a branch) unless --despite-coverage-gate is given, under which §4 stays inconclusive (bar); and no
 forbidden root may lie beneath, around or beside (a wt sibling of) its working directory, because a final reviewer resolves relative
 text from there (spec 14.3 a, 14.5). `match` and `cleanup` check neither.
 
@@ -78,6 +78,7 @@ class Ctx(object):
             raise Failed("no cases.json in {}: run inject first".format(a.state))
         coverage = doc.get("coverage") if isinstance(doc.get("coverage"), dict) else {}
         self.unassessable = [str(d) for d in coverage.get("unassessable_task") or []]        # the coverage gate fails while this is not empty
+        self.waiting = [str(b) for b in coverage.get("waiting") or []]        # and is not settled while this is (an older cases.json has none)
         self.cases = dict((c["id"], c) for c in doc["cases"] if isinstance(c, dict) and isinstance(c.get("id"), str))
         branches = jload(os.path.join(a.state, "branches.json")) or {}
         self.branches = dict((b["id"], b) for b in branches.get("branches") or [] if isinstance(b, dict) and isinstance(b.get("id"), str))
@@ -346,13 +347,18 @@ def _near(cwd, wall):
 
 
 def preflight(a, ctx):
-    """What `run` checks before it touches anything, a dry run included (spec 14.3 a, 14.5): the coverage gate and the working directory.
-    Raises Failed, having changed nothing."""
-    held = ctx.unassessable
-    if held and not getattr(a, "despite_coverage_gate", False):
+    """What `run` checks before it touches anything, a dry run included (spec 14.3 a, 14.5): the coverage gate (it must pass: not fail and not
+    wait on a branch) and the working directory. Raises Failed, having changed nothing."""
+    held, waiting = ctx.unassessable, ctx.waiting
+    despite = getattr(a, "despite_coverage_gate", False)
+    if held and not despite:
         raise Failed("run refuses: the coverage gate fails: {} per-task defect(s) are unassessable ({}), so §4 is inconclusive whatever the runs show. "
                      "Give Michael the report; run with --despite-coverage-gate only on his request (the verdict stays inconclusive)".format(
                          len(held), ", ".join(held)))
+    if waiting and not despite:
+        raise Failed("run refuses: the coverage gate is not settled: branch(es) {} still wait for answers, and a later inject may fail the gate after "
+                     "the §4 Codex budget is spent. Answer what `process-replay.py pending` lists and run `inject` again; run with "
+                     "--despite-coverage-gate only on Michael's request (the verdict stays inconclusive)".format(", ".join(waiting)))
     branches = [ctx.branches[c["branch"]] for _cid, c in sorted(ctx.cases.items()) if c.get("branch") in ctx.branches]
     snap = getattr(a, "snapshot_root", None)
     labels = []
@@ -363,10 +369,13 @@ def preflight(a, ctx):
     for branch in branches or [{}]:
         labels += _near(cwd, K.forbidden(a.state, branch, [], snap))
     if labels:
-        raise Failed("run refuses: forbidden root(s) beneath its working directory {}: {}. A final reviewer resolves relative text from there; "
-                     "run it from a directory with none beneath it".format(cwd or "(unreadable)", ", ".join(dict.fromkeys(labels))))
+        raise Failed("run refuses: forbidden root(s) at, beneath, around or beside its working directory {}: {}. A final reviewer resolves relative "
+                     "text from there; run it from a directory outside every forbidden root and with none beneath it".format(
+                         cwd or "(unreadable)", ", ".join(dict.fromkeys(labels))))
     if held:
         say("the coverage gate fails ({} unassessable): running anyway for the recovery evidence; §4 stays inconclusive".format(len(held)))
+    if waiting:
+        say("the coverage gate is not settled (branch(es) {} wait): running anyway for the recovery evidence; §4 stays inconclusive".format(", ".join(waiting)))
 
 
 def add_args_match(ap):

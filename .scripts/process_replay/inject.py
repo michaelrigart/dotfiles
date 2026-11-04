@@ -60,7 +60,8 @@ Writes injected/<branch>.json and cases.json, and per kind of item it asks for (
 manifest <kind>/needed.json, {owned: every id it has asked for, needed: the ids it waits on now}: `pending` leaves out an item inject
 asked for and no longer needs (one an earlier inventory, a branch now beyond the limit, or a cargo result since changed led to).
 `inject` is run again after each judge phase; it reads what has answered and goes on. It ends by saying what `run` will make of the coverage
-gate: passes, fails (run refuses without --despite-coverage-gate), or not settled while a branch waits.
+gate: passes, fails or is not settled while a branch waits (`run` refuses both without --despite-coverage-gate; a dry run computes nothing). cases.json's
+coverage holds unassessable_task and waiting (the waiting branches' ids, sorted).
 """
 import collections
 import os
@@ -891,6 +892,7 @@ def cmd_inject(a):
             total += 1
             per_repo[br["repo"]] += 1
     out_cases, examined, unassessable = [], [], []
+    waiting = sorted(b["id"] for b in ranked if outcome[b["id"]]["state"] == "waiting")        # the coverage gate is not settled while any branch is
     for b in records:
         o = outcome.get(b["id"])
         if o is None:
@@ -910,7 +912,7 @@ def cmd_inject(a):
                               "original_rounds": len(b.get("rounds") or []), "work_commit": o["work_commit"]})
     hint = more_to_open(candidates, outcome, total, per_repo)
     if not a.dry_run:
-        C.jsave(os.path.join(a.state, "cases.json"), {"cases": out_cases, "examined": examined, "coverage": {"unassessable_task": sorted(set(unassessable))}})
+        C.jsave(os.path.join(a.state, "cases.json"), {"cases": out_cases, "examined": examined, "coverage": {"unassessable_task": sorted(set(unassessable)), "waiting": waiting}})
         questions.save(a.state)
     states = collections.Counter(o["state"] for o in outcome.values())
     C.say("branches: {} candidate(s), {} opened; qualified {}, waiting {}, disqualified {}, beyond the limit {}".format(
@@ -928,7 +930,7 @@ def cmd_inject(a):
             C.say("warning: branch {}: a syntax check was skipped: {}".format(b["id"], tool))
     if unassessable:
         C.say("per-task defects unassessable after the second attempt: " + ", ".join(sorted(set(unassessable))))
-    C.say(coverage_line(unassessable, states["waiting"]))
+    C.say(coverage_line(unassessable, waiting, a.dry_run))
     if states["waiting"]:
         C.say("answers wait: run `process-replay.py pending`, then `process-replay.py inject` again")
     if hint:
@@ -936,14 +938,16 @@ def cmd_inject(a):
     return 0
 
 
-def coverage_line(unassessable, waiting):
+def coverage_line(unassessable, waiting, dry_run=False):
     """What `run` will make of the coverage gate (spec 14.5): a defect already unassessable fails it whatever else waits; with none, a waiting
-    branch leaves it unsettled."""
+    branch leaves it unsettled, and `run` refuses that too. A dry run settles no branch, so it computes nothing."""
+    if dry_run:
+        return "coverage gate: not computed (dry run)"
     held = len(set(unassessable))
     if held:
         return "coverage gate: fails: {} per-task defect(s) unassessable; run refuses without --despite-coverage-gate".format(held)
     if waiting:
-        return "coverage gate: not settled (answers wait)"
+        return "coverage gate: not settled (answers wait); run refuses without --despite-coverage-gate"
     return "coverage gate: passes"
 
 

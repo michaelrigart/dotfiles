@@ -292,7 +292,7 @@ is_("qualify: the branch is a case with every present defect", [(c["branch"], so
                                                           for c in cs["cases"]], [("bmain0001", sorted(IDS), WC, 1, MAIN["repo"])])
 is_("qualify: the case id", cs["cases"][0]["id"], "cmain0001")
 is_("qualify: examined and coverage", (examined(S1, "bmain0001")["qualified"], examined(S1, "bmain0001")["why"], cs["coverage"]),
-    (True, None, {"unassessable_task": []}))
+    (True, None, {"unassessable_task": [], "waiting": []}))
 # idempotent
 before = (open(os.path.join(S1, "injected", "bmain0001.json")).read(), open(os.path.join(S1, "cases.json")).read())
 run(S1)
@@ -370,7 +370,7 @@ say(S3b, "d0000000d", "no")
 run(S3b)
 e = examined(S3b, "bmain0001")
 ok("qualify: a pre-merge P1 that is not shown present disqualifies the branch", e["qualified"] is False and "P1" in e["why"] and cases(S3b)["cases"] == [], e)
-ok("coverage_gate: nothing to recreate while every per-task defect is assessable", wanted(S3b) == [] and cases(S3b)["coverage"] == {"unassessable_task": []})
+ok("coverage_gate: nothing to recreate while every per-task defect is assessable", wanted(S3b) == [] and cases(S3b)["coverage"] == {"unassessable_task": [], "waiting": []})
 DD2 = dict(DD, severity="P2")
 S3c = main_state("w-p2", [DA, DB, DC, DD2])
 run(S3c)
@@ -504,7 +504,7 @@ is_("coverage_gate: a recreated defect's hunks locate the reverse patch in the f
     [{"file": "src/e.txt", "start": 1, "end": 3, "new_start": 1, "new_end": 3}])
 cs = cases(S5)
 is_("qualify: a recreated defect counts as assessable", (len(cs["cases"]), sorted(cs["cases"][0]["defects"]), cs["coverage"]),
-    (1, ["d0000000e", "d0000000f", "d0000000g"], {"unassessable_task": []}))
+    (1, ["d0000000e", "d0000000f", "d0000000g"], {"unassessable_task": [], "waiting": []}))
 
 # judge-same no
 S6 = conf_state("w-conf-no")
@@ -517,7 +517,7 @@ r = inj(S6, "bconf0001")
 cs = cases(S6)
 is_("coverage_gate: judge-same no leaves it unassessable", r["defects"]["d0000000e"]["status"], "unassessable")
 is_("coverage_gate: listed in coverage.unassessable_task, and the branch does not qualify", (cs["coverage"], cs["cases"]),
-    ({"unassessable_task": ["d0000000e"]}, []))
+    ({"unassessable_task": ["d0000000e"], "waiting": []}, []))
 ok("coverage_gate: nothing is applied to the tree", show(r["work"], r["work_commit"], "src/e.txt") + "\n" == FINAL_E)
 
 # the recreation touches what another revert changed: it is made against the round's tree, so it applies, and the other fix's repair joins it
@@ -557,7 +557,7 @@ run(S9)
 recreate(S9, {"src/e.txt": "line1\nline2 something else\nline3\n"}, "no")
 e = examined(S9, "bconf0001")
 ok("qualify: fewer than two assessable per-task defects disqualifies, though no P0/P1 is lost", e["qualified"] is False and "two" in e["why"] and cases(S9)["cases"] == [], e)
-is_("coverage_gate: a P2 is listed too", cases(S9)["coverage"], {"unassessable_task": ["d0000000e"]})
+is_("coverage_gate: a P2 is listed too", cases(S9)["coverage"], {"unassessable_task": ["d0000000e"], "waiting": []})
 
 # coverage_line: what inject says of the gate run will read
 rc, out = run(S5)
@@ -568,8 +568,12 @@ ok("coverage_line: a branch with an unassessable defect says the gate fails, wit
 S6w = conf_state("w-conf-wait")
 rc, out = run(S6w)
 ok("coverage_line: a waiting branch says the gate is not settled", "coverage gate: not settled (answers wait)" in out and "coverage gate: passes" not in out, out)
-rc, out = run(S6w, dry=True)
-ok("coverage_line: a dry run says it too", "coverage gate: not settled (answers wait)" in out, out)
+is_("coverage_waiting: inject records the waiting branches in cases.json, sorted", cases(S6w)["coverage"], {"unassessable_task": [], "waiting": ["bconf0001"]})
+is_("coverage_waiting: and none when nothing waits (passing and failing gates)", (cases(S5)["coverage"]["waiting"], cases(S6)["coverage"]["waiting"]), ([], []))
+for name, st in (("a complete state that passes", S5), ("a complete state that fails", S6), ("a state that waits", S6w)):
+    rc, out = run(st, dry=True)
+    ok("coverage_line: a dry run over {} computes nothing and says so".format(name), "coverage gate: not computed (dry run)" in out
+       and "coverage gate: passes" not in out and "coverage gate: fails" not in out and "not settled" not in out, out)
 
 # a group whose second piece does not revert leaves the tree as it found it
 DX = dfx("d00000011", "task", "P1", [(TC, FE), (FE, FF)], "src/f.py", files=["src/e.txt", "src/f.py"])
@@ -774,7 +778,7 @@ ok("coverage_gate: and says why it cannot qualify while it waits for the recreat
 recreate(S19, {"src/e.txt": "line1\nline2 something else\nline3\n"}, "no")
 cs = cases(S19)
 is_("coverage_gate: the outcome is counted in coverage.unassessable_task although the branch cannot qualify", (cs["coverage"], cs["cases"]),
-    ({"unassessable_task": ["d0000000e"]}, []))
+    ({"unassessable_task": ["d0000000e"], "waiting": []}, []))
 ok("coverage_gate: and the branch ends disqualified for the pre-merge P1", "not shown present" in examined(S19, "bconf0001")["why"], examined(S19, "bconf0001"))
 
 # ================================================================ lines another revert shifted; a recreation that breaks a repair
@@ -841,7 +845,7 @@ is_("hunks: and the first change, which sits above, is at the top", r["defects"]
     [{"file": "s.txt", "start": 1, "end": 3, "new_start": 1, "new_end": 6}])
 cs = cases(S21)
 is_("revalidate: the branch qualifies with all three", ([sorted(c["defects"]) for c in cs["cases"]], cs["coverage"]),
-    ([["d00000051", "d00000052", "d00000053", "dpreshi"]], {"unassessable_task": []}))
+    ([["d00000051", "d00000052", "d00000053", "dpreshi"]], {"unassessable_task": [], "waiting": []}))
 S22 = shift_state("w-shift-no")
 r = shift_recreate(S22, "no", "no")
 is_("revalidate: a present defect the judge no longer finds is not-present", [(r["defects"][i]["status"], r["defects"][i]["repair"]) for i in ("d00000051", "d00000052")],
@@ -877,7 +881,7 @@ is_("adjacent: of two fixes a line apart whose repairs cannot be told apart, bot
 pa, pb = (open(os.path.join(S24, "repairs", i + ".patch")).read() for i in ("d00000081", "d00000082"))
 ok("adjacent: with one repair holding both, the older fix first", pa == pb and pa.count("diff --git") == 2, pa)
 is_("adjacent: and one location for the group", r["defects"]["d00000081"]["hunks"], [{"file": "a.txt", "start": 2, "end": 10, "new_start": 2, "new_end": 10}])
-is_("adjacent: the branch is not disqualified for it", (len(cases(S24)["cases"]), cases(S24)["coverage"]), (1, {"unassessable_task": []}))
+is_("adjacent: the branch is not disqualified for it", (len(cases(S24)["cases"]), cases(S24)["coverage"]), (1, {"unassessable_task": [], "waiting": []}))
 INJ.check_invariant(ADJ, r["work"], r["final_commit"], r["work_commit"],
                     [("d00000081", pa), ("dpreadj", open(os.path.join(S24, "repairs", "dpreadj.patch")).read())])
 
@@ -894,7 +898,7 @@ is_("adjacent: a member the judge does not find leaves; the group stays reverted
     ("present", True, True))
 is_("coverage_gate: no recreation is asked of a defect whose group's revert stays in the tree; it is unassessable, says why, and is listed",
     (wanted(S24b), r["complete"], r["defects"]["d00000082"]["status"], "its group's revert stays in the tree" in r["defects"]["d00000082"]["reason"],
-     cases(S24b)["coverage"]), ([], True, "unassessable", True, {"unassessable_task": ["d00000082"]}))
+     cases(S24b)["coverage"]), ([], True, "unassessable", True, {"unassessable_task": ["d00000082"], "waiting": []}))
 
 # when the group's revert leaves the tree after all (the other member leaves too), the held defect gets its recreation then
 RJ3 = helpers.make_repo(ROOT, "adjthree")
@@ -1144,7 +1148,7 @@ is_("recreation_checked: a recreation that breaks its file's syntax leaves the d
 ok("recreation_checked: with the file in the reason", r["defects"]["d000000b1"]["reason"].startswith("the recreation breaks b.py"), r["defects"]["d000000b1"])
 ok("recreation_checked: and the shipped tree keeps the fixed file and the other defects", "fixed B" in show(r["work"], r["work_commit"], "b.py")
    and "bug A" in show(r["work"], r["work_commit"], "a.py") and r["complete"] is True, r["defects"])
-is_("recreation_checked: it is listed unassessable", cases(S31c)["coverage"], {"unassessable_task": ["d000000b1"]})
+is_("recreation_checked: it is listed unassessable", cases(S31c)["coverage"], {"unassessable_task": ["d000000b1"], "waiting": []})
 
 # a recreation that gives back a tree the judge has seen asks nothing new: that question was answered
 S31b = setup_state("w-not-again", [NBR], {"bnot00001": [DNA, DNB]})
@@ -1353,7 +1357,7 @@ run(S42)
 r = inj(S42, "bpass0001")
 is_("passes: and what still fails is unassessable and listed in coverage; each had one recreation",
     (r["defects"]["d00000a01"]["status"], r["defects"]["d00000a02"]["status"], r["defects"]["d00000a03"]["status"], cases(S42)["coverage"], r["complete"]),
-    ("unassessable", "unassessable", "recreated", {"unassessable_task": ["d00000a01", "d00000a02"]}, True))
+    ("unassessable", "unassessable", "recreated", {"unassessable_task": ["d00000a01", "d00000a02"], "waiting": []}, True))
 
 # ================================================================ a range of uncounted defects only is not sent to a judge
 DU1 = dict(dfx("d0000000b", "task", "P3", [(FA, FBC)], "src/b.py"), counted=False)

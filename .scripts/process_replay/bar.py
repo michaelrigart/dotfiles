@@ -12,7 +12,8 @@ except that a failing coverage gate makes every verdict inconclusive (spec 4.3, 
               per-task class (counted defects, P0-P2).
   fail        an assessable run left a per-task P0/P1 unrecovered while it recovered every pre-merge P0/P1 of its case.
   pass        every case has all its runs, every run is assessable, every counted per-task defect is recovered in every run, and the
-              coverage gate holds (coverage.unassessable_task is empty).
+              coverage gate holds and is settled (coverage.unassessable_task and coverage.waiting are empty; a cases.json without
+              `waiting` reads as empty).
   inconclusive anything else.
 
 A run voided and replaced by a re-run is not counted; a final void (no replacement) or an error run is not assessable.
@@ -143,6 +144,9 @@ def bar(cases, runs, coverage):
     held = (coverage or {}).get("unassessable_task") or []
     if held:
         blocks.append("coverage gate: per-task defects unassessable after the second attempt: {}".format(", ".join(held)))
+    unsettled = (coverage or {}).get("waiting") or []
+    if unsettled:
+        blocks.append("coverage gate: not settled, branch(es) still waiting for answers: {}".format(", ".join(unsettled)))
     if not cases:
         blocks.append("there are no cases")
     if fails and not held:
@@ -235,8 +239,8 @@ def _mins(x):
 def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines, cut):
     out = ["Replay report: the per-task reviewer's pass bar (spec 4.6)", "", "status: {}".format(status["status"].upper()), "reasons:"]
     out += ["  - " + r for r in status["reasons"]]
-    out += ["", "coverage gate: per-task defects unassessable after the second attempt: {}".format(
-        ", ".join((doc.get("coverage") or {}).get("unassessable_task") or []) or "none"),
+    out += ["", "coverage gate: per-task defects unassessable after the second attempt: {}; branches still waiting: {}".format(
+        ", ".join((doc.get("coverage") or {}).get("unassessable_task") or []) or "none", ", ".join((doc.get("coverage") or {}).get("waiting") or []) or "none"),
             "judge-present inputs cut from the top (no anchor located): {} (presence {}, validation {}, revalidation {})".format(
                 sum(cut.values()), cut["presence"], cut["validation"], cut["revalidation"]), "", "Cases"]
     total = {True: collections.Counter(), False: collections.Counter()}

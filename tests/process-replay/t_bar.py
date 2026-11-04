@@ -76,6 +76,9 @@ TABLE = [
     ("task_p2_unrecovered_inconclusive", [BASE], two("c1", sts(t1="r", t2="u", q1="r", q2="r")), NONE, "inconclusive"),
     ("coverage_gate: unassessable per-task defects make a pass inconclusive", [BASE], two("c1", ALL_R), HELD, "inconclusive"),
     ("coverage_gate_override_inconclusive: a fail under a failing gate is inconclusive", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), HELD, "inconclusive"),
+    ("coverage_waiting: every run passing, a branch still waiting: inconclusive", [BASE], two("c1", ALL_R), {"unassessable_task": [], "waiting": ["bx"]}, "inconclusive"),
+    ("coverage_waiting: an empty waiting list is a settled gate: pass", [BASE], two("c1", ALL_R), {"unassessable_task": [], "waiting": []}, "pass"),
+    ("coverage_waiting: a cases.json without the key (an older state) is a settled gate: pass", [BASE], two("c1", ALL_R), {"unassessable_task": []}, "pass"),
     ("coverage_gate_holds: the same runs with the gate holding are a fail", [BASE], two("c1", sts(t1="u", t2="r", q1="r", q2="r")), NONE, "fail"),
     ("a void run with no replacement is not assessable: no pass", [BASE], [run("c1", "a", ALL_R), run("c1", "b", sts(t1="p", t2="p", q1="p", q2="p"), end="void", voids=2)],
      NONE, "inconclusive"),
@@ -112,6 +115,9 @@ fail_at = [i for i, r in enumerate(got["reasons"]) if "unrecovered while every p
 gate_at = [i for i, r in enumerate(got["reasons"]) if r.startswith("coverage gate:")]
 ok("coverage_gate_override_inconclusive: the reasons hold the fail (both runs) before the coverage gate's",
    len(fail_at) == 2 and len(gate_at) == 1 and max(fail_at) < gate_at[0], got["reasons"])
+
+got = bar.bar([BASE], two("c1", ALL_R), {"unassessable_task": [], "waiting": ["bx", "by"]})
+ok("coverage_waiting: the reasons say the gate is not settled and name the waiting branches", any(r.startswith("coverage gate: not settled") and "bx, by" in r for r in got["reasons"]), got["reasons"])
 
 # ---- runs_per_case: report expects as many runs as `run` makes; the count lives in common.RUNS and nowhere else
 C.RUNS = 3

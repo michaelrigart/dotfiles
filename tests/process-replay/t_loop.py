@@ -1696,7 +1696,8 @@ holder = os.path.dirname(os.environ["XDG_STATE_HOME"])
 for dry in (False, True):
     got = refusal(go_from, holder, w, dry_run=dry)
     ok("refuses_forbidden_beneath_cwd: from the directory holding the state, review-work, cxh and xreview, run{} raises Failed naming review-work".format(
-        " (dry)" if dry else ""), got is not None and "review-work" in got and "beneath its working directory" in got and holder in got, got)
+        " (dry)" if dry else ""), got is not None and "review-work" in got and "at, beneath, around or beside its working directory" in got
+        and "outside every forbidden root" in got and holder in got, got)
 ok("refuses_forbidden_beneath_cwd: no run directory appears and no state file but the locks changes", not os.path.exists(os.path.join(w.state, "runs"))
    and before == unlocked(w.state) and len(PREP) == made, sorted(set(before) ^ set(unlocked(w.state))))
 go_from(helpers.tmp_root(), w)
@@ -1729,6 +1730,29 @@ cases_ = C.jload(os.path.join(w.state, "cases.json"))
 ok("refuses_failed_gate: and the report's verdict is inconclusive", report_of(w)["bar"]["status"] == "inconclusive" and cases_["coverage"]["unassessable_task"] == ["d00000099"])
 text = go(w, dry_run=True, despite_coverage_gate=True)
 ok("refuses_failed_gate: a dry run with the option goes ahead too", "§4 stays inconclusive" in text, text)
+
+w = World("unsettled")
+behave(lambda run, k: ("approve", []))
+ok("coverage_waiting: control: a cases.json without the waiting key (an older state) starts", "waiting" not in C.jload(os.path.join(w.state, "cases.json"))["coverage"]
+   and refusal(go, w, dry_run=True) is None)
+edit(os.path.join(w.state, "cases.json"), lambda d: d["coverage"].update(waiting=["bwait2", "bwait1"]))
+before, made = unlocked(w.state), len(PREP)
+for dry in (False, True):
+    got = refusal(go, w, dry_run=dry)
+    ok("refuses_unsettled_gate: a branch still waiting stops run{}, naming it and the option".format(" (dry)" if dry else ""), got is not None and "not settled" in got
+       and "bwait2, bwait1" in got and "--despite-coverage-gate" in got and "Codex budget" in got, got)
+ok("refuses_unsettled_gate: and no run is made", not os.path.exists(os.path.join(w.state, "runs")) and before == unlocked(w.state) and len(PREP) == made)
+text = go(w, despite_coverage_gate=True)
+ok("refuses_unsettled_gate: with the option the runs start, and run says §4 stays inconclusive", len(w.runs()) == 2 and "not settled" in text and "§4 stays inconclusive" in text, text)
+ok("refuses_unsettled_gate: and the waiting key does not supersede the runs: the case digest is the one they began with",
+   all(r["case_digest"] == C.case_digest(C.jload(os.path.join(w.state, "cases.json"))["cases"][0], C.jload(os.path.join(w.state, "branches.json"))["branches"][0],
+                                         C.jload(os.path.join(w.state, "injected", w.bid + ".json")), dict((d["id"], d) for d in C.jload(os.path.join(
+                                             w.state, "inventory", w.bid + ".json"))["defects"])) for r in w.runs()) and not any(r.get("superseded") for r in w.runs()))
+edit(os.path.join(w.state, "cases.json"), lambda d: d["coverage"].update(waiting=[]))
+go(w)
+ok("refuses_unsettled_gate: once nothing waits, run goes on with the same runs (none superseded, none added)", len(w.runs()) == 2 and not any(r.get("superseded") for r in w.runs()))
+rep = report_of(w)
+ok("refuses_unsettled_gate: control: report reads the settled gate", not any("not settled" in r for r in rep["bar"]["reasons"]))
 
 ap = argparse.ArgumentParser()
 P.add_args_run(ap)
