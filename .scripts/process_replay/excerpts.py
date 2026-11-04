@@ -100,9 +100,14 @@ def files_input(names, read, marks):
 
 
 def note_cut(state, jid, site, cut):
-    """Record that the question `jid` at `site` showed `cut` from the top for want of an anchor; nothing when none was."""
+    """Record that the question `jid` at `site` showed `cut` from the top for want of an anchor. The record follows the latest input: with
+    nothing cut, an older record of `jid` is removed (a loop question's id is not keyed by its input, and an inventory input is rewritten
+    in place)."""
+    path = os.path.join(state, CUTS, jid + ".json")
     if cut:
-        C.jsave(os.path.join(state, CUTS, jid + ".json"), {"site": site, "files": list(cut)})
+        C.jsave(path, {"site": site, "files": list(cut)})
+    elif os.path.exists(path):
+        os.unlink(path)
 
 
 def count_cuts(state):

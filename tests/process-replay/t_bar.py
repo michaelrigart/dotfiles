@@ -279,6 +279,19 @@ delta = [r for r in rep["cases"][0]["runs"] if r["label"] == "delta"][0]
 is_("report.json: an extra of zero", delta["extra_rounds"], 0)
 ok("report.md: no plan section without plan cases", "Plan-review checkpoint" not in md)
 
+# ---- report_counts_cut_inputs
+is_("report_counts_cut_inputs: no record is all zeros, in the report and in report.json", (rep["cut_inputs"], "judge-present inputs cut from the top (no anchor located): 0 (presence 0, validation 0, revalidation 0)" in md),
+    ({"presence": 0, "validation": 0, "revalidation": 0}, True))
+S1c = os.path.join(ROOT, "state-cuts")
+shutil.copytree(STATE, S1c)
+for jid, site, files in (("x1-0", "presence", ["a.py"]), ("x1-1", "presence", ["b.py", "c.py"]), ("alpha-0-t1", "revalidation", ["a.py"])):
+    C.jsave(os.path.join(S1c, "cuts", "judge-present", jid + ".json"), {"site": site, "files": files})
+bar.cmd_report(Namespace(state=S1c, dry_run=False))
+mdc = open(os.path.join(S1c, "report.md")).read()
+repc = C.jload(os.path.join(S1c, "report.json"))
+ok("report_counts_cut_inputs: two presence inputs and one revalidation input are three, by site", "judge-present inputs cut from the top (no anchor located): 3 (presence 2, validation 0, revalidation 1)" in mdc, mdc[:600])
+is_("report_counts_cut_inputs: and report.json holds the same", repc["cut_inputs"], {"presence": 2, "validation": 0, "revalidation": 1})
+
 # ---- a case branch missing from branches.json, a run with fewer rounds than the original, a case with no pre-merge class
 S2 = os.path.join(ROOT, "state2")
 NP = case("cn", task=[("t1", "P1"), ("t2", "P2")], rounds=3)

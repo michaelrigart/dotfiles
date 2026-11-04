@@ -29,7 +29,7 @@ The fixpoint. A counted defect is in the tree by its revert (its group reverted)
            applied first, lets the unit apply (two fixes too close to revert apart are one group); failing that, the members of its
            groups are out, and its recreations stay (if they no longer apply, they go out for good at the next build).
   judge    judge-present for every member on that tree (or, while recreations are on trial, for those alone), keyed by what the
-           judge sees (gate.py): a tree state already judged reuses its answer, and no question is ever overwritten. A member
+           judge sees (gate.py; a long file as windows around the located hunks, excerpts.py): a tree state already judged reuses its answer, and no question is ever overwritten. A member
            answered no or unclear is out. A round whose answers are all in and in which no defect leaves is settled. In it, a
            per-task defect that is out gets its one recreation (gate.recreation), made against the round's injected tree: the final
            tree with the settled round's reverted groups reverted and docs/superpowers pinned, no recreation applied (recreation_base).
@@ -594,11 +594,12 @@ class Fixpoint(object):
         text = "".join(s[2] for s in recs) + "".join(g["patch"] for g in sorted(groups, key=_group_order, reverse=True))
         return P.locate(self.work, head, text)[0] is not None
 
-    def judge(self, head, ids):
-        """({defect: answer}, [ids of the questions still waiting]) of judge-present on the tree at head."""
+    def judge(self, head, ids, located):
+        """({defect: answer}, [ids of the questions still waiting]) of judge-present on the tree at head, where the repairs of `located`
+        ({defect: hunks}, from locate) lie: they are what the judge's windows are cut around."""
         answers, waiting = {}, []
         for did in ids:
-            jid, ans = G.validate(self.a.state, self.work, head, self.defects[did], self.counts)
+            jid, ans = G.validate(self.a.state, self.work, head, self.defects[did], located.get(did, []), self.counts)
             self.questions.note("judge-present", jid, ans is not None)
             if ans is None:
                 waiting.append(jid)
@@ -664,7 +665,7 @@ class Fixpoint(object):
                 self.resolve(head, *broken)
                 continue
             trials = self.trials()
-            answers, waiting = self.judge(head, trials or sorted(self.mode))
+            answers, waiting = self.judge(head, trials or sorted(self.mode), located)
             self.head, self.located = head, located
             if trials:
                 if waiting:

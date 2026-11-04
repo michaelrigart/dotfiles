@@ -120,13 +120,14 @@ def render(path, bugged):
     lines = list(FIXED[path])
     drop = set()
     for did in bugged:
-        f, (op, a, b), _c, _s = DEFECTS[did]
+        f, spec, _c, _s = DEFECTS[did]
         if f != path:
             continue
-        if op == "replace":
-            lines[a - 1] = b
-        else:
-            drop |= set(range(a - 1, b))
+        for op, a, b in (spec if isinstance(spec, list) else [spec]):
+            if op == "replace":
+                lines[a - 1] = b
+            else:
+                drop |= set(range(a - 1, b))
     return [l for i, l in enumerate(lines) if i not in drop]
 
 
@@ -182,7 +183,7 @@ class World(object):
             put(os.path.dirname(repair), os.path.basename(repair), patch)
             self.patches[did] = patch
             drec[did] = {"status": "present", "reason": "", "group": GROUPS.get(did, did), "repair": repair, "hunks": parse_hunks(path, patch)}
-            defects.append({"id": did, "class": cls, "severity": sev, "counted": True, "summary": "bug in " + did, "file": f, "line": DEFECTS[did][1][1],
+            defects.append({"id": did, "class": cls, "severity": sev, "counted": True, "summary": "bug in " + did, "file": f, "line": None if isinstance(DEFECTS[did][1], list) else DEFECTS[did][1][1],
                             "failure_scenario": "it breaks " + did, "fixes": [], "files": [f], "at": "2026-10-20T10:00:00Z"})
         C.jsave(os.path.join(self.state, "inventory", bid + ".json"), {"branch": bid, "defects": defects})
         C.jsave(os.path.join(self.state, "injected", bid + ".json"), {"work": work, "work_commit": self.wc, "plan_commit": self.base, "defects": drec,
@@ -591,6 +592,50 @@ r["defects"]["dM"] = "recovered"
 ok("touched: dM's repair, whose change sits at line 26 of the shifted file, is beside dL's hunk (lines 27-33 once shifted), not in it",
    P.touched(r, c2) == [], P.touched(r, c2))
 ok("touched: sanity, the same coordinates unshifted would have claimed dL (hunk 25-31 holds line 26)", any(h["start"] <= 26 <= h["end"] for h in r["repairs"]["dL"]["hunks"]))
+
+# ================================================================== revalidation_window_follows_shift
+# Y's repair inserts 400 lines at line 100 and edits line 2001; X's hunk sits at line 2000 of the injected 3000-line file, so its window is at 2400 of 3400
+FIXED["src/big.py"] = ["big {:04d} ".format(i).ljust(30, "x") + "\n" for i in range(1, 3401)]
+DEFECTS["dX"] = ("src/big.py", ("replace", 2400, "X_BUG\n"), "task", "P2")
+DEFECTS["dY"] = ("src/big.py", [("drop", 100, 499), ("replace", 2401, "Y_BUG\n")], "task", "P1")
+w = World("shiftwin", ids=("dX", "dY"))
+del FIXED["src/big.py"]
+inj = C.jload(os.path.join(w.state, "injected", w.bid + ".json"))
+ok("revalidation_window_follows_shift: control: the injected file has 3000 lines and X's repair is one hunk around line 2000",
+   len(git(w.work, "show", w.wc + ":src/big.py").split("\n")) == 3000 and [(h["start"], h["end"]) for h in inj["defects"]["dX"]["hunks"]] == [(1997, 2003)], inj["defects"]["dX"]["hunks"])
+inj["defects"]["dX"]["hunks"] = [{"file": "src/big.py", "start": 2000, "end": 2000, "new_start": 2000, "new_end": 2000}]
+C.jsave(os.path.join(w.state, "injected", w.bid + ".json"), inj)
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=["found dY"])
+go(w)
+drive(w, report=["found dY"])
+go(w)
+r = w.runs()[0]
+ok("revalidation_window_follows_shift: control: Y's repair touches X, and X is asked again", P.touched(r, git(r["scratch"], "rev-parse", "HEAD")) == ["dX"]
+   and r["defects"]["dX"] == "present" and r["step"] == "valid", (P.touched(r, git(r["scratch"], "rev-parse", "HEAD")), r["step"]))
+ok("revalidation_window_follows_shift: the hunk is followed through the commit that moved it, to line 2400", P._anchors(r, "dX") == [{"file": "src/big.py", "start": 2400, "end": 2400}],
+   P._anchors(r, "dX"))
+doc = C.jload(os.path.join(w.state, "judge-present", "%s-0-dX.json" % r["label"]))
+text = doc["files"][0]["text"]
+is_("revalidation_window_follows_shift: X's revalidation input is windowed around 2400 of the repaired 3400-line file, not around 2000",
+    (text.split("\n")[0], "X_BUG" in text, "big 2000 " in text), ("[lines 2250-2550 of 3400]", True, False))
+ok("revalidation_window_follows_shift: and the window is no fallback", not os.path.exists(os.path.join(w.state, "cuts", "judge-present", "%s-0-dX.json" % r["label"])))
+
+# a repair whose hunk is not in the file keeps the cut from the top, recorded as revalidation
+r2 = dict(r, repairs=dict(r["repairs"], dX=dict(r["repairs"]["dX"], hunks=[{"file": "src/elsewhere.py", "start": 5, "end": 5}])))
+real_defect = P._defect
+P._defect = lambda ctx, run, did: dict(real_defect(ctx, run, did), line=None)
+files, cut = P._files(r2, "dX", P.Ctx(w.args()))
+is_("revalidation_fallback: with no hunk in the file (and the finding giving no line) the long file is cut from the top and named", (files[0]["text"].startswith("big 0001 "), cut), (True, ["src/big.py"]))
+ctx = P.Ctx(w.args())
+P._open_valid(ctx, r2, ["dX"])
+P._defect = real_defect
+is_("revalidation_fallback: _open_valid records the input under the revalidation site", C.jload(os.path.join(w.state, "cuts", "judge-present", "%s-0-dX.json" % r["label"])),
+    {"site": "revalidation", "files": ["src/big.py"]})
+P._open_valid(ctx, r, ["dX"])
+ok("revalidation_fallback: and the same question asked again, windowed, loses the record (loop ids are not keyed by the input)",
+   not os.path.exists(os.path.join(w.state, "cuts", "judge-present", "%s-0-dX.json" % r["label"])))
 
 # ================================================================== endings
 # approve: every present defect unrecovered

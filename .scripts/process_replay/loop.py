@@ -7,7 +7,8 @@ A run takes an injected tree through the final whole-branch review, then the Cod
           original checkout (a leak voids the run); the answer goes to a judge-match (the report form).
   match   a judge-match holds the defects still present (shuffled per review, no class) and the review's findings.
   valid   after the oracle fixer re-applied the matched repairs (one commit), a judge-present for each remaining defect
-          whose hunk lines the commit changed, or whose repair no longer applies.
+          whose hunk lines the commit changed, or whose repair no longer applies. A long file is shown as windows around the
+          defect's hunks, followed to the commit (excerpts.py).
   codex   a Codex round (codex.codex_round) on the repaired tree, at most TURNS in flight across all runs.
   done
 
@@ -44,6 +45,7 @@ import tempfile
 from . import codex as K
 from . import codexhome
 from . import common as C
+from . import excerpts as E
 from . import final as F
 from . import scratch
 from .common import Failed, L, XR, jload, jsave, say
@@ -51,7 +53,6 @@ from .common import Failed, L, XR, jload, jsave, say
 ROUNDS = 6                # Codex rounds at most (spec 4.4)
 TURNS = 3                 # Codex turns in flight across all runs (spec 8)
 HOME = "nomem"
-FILE_CAP, FILES_CAP = 60000, 150000
 COMMIT = "Address review findings"
 KEYS = ("severity", "file", "line", "summary", "failure_scenario")
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.M)
@@ -354,24 +355,28 @@ def _open_match(ctx, run, review, report=None):
     run["step"] = "match"
 
 
-def _files(run, did, ctx):
-    d = _defect(ctx, run, did)
-    names = []
-    for n in [C.norm(d.get("file"))] + list(d.get("files") or []):
-        if n and n not in names:
-            names.append(n)
-    out, room = [], FILES_CAP
-    for n in names:
-        if room <= 0:
-            break
-        try:
-            data = C.git(run["scratch"], "show", "HEAD:" + n, raw=True)
-        except Failed:
-            continue
-        text = C.cap(data.decode("utf-8", "replace"), min(FILE_CAP, room))
-        room -= len(text)
-        out.append({"path": n, "text": text})
+def _anchors(run, did):
+    """[{file, start, end}]: the hunks of the repair of `did` as the scratch tree at HEAD has them. Each is followed from base_tip, the
+    injected tree, through the commits since, as `touched` follows it."""
+    sd = run["scratch"]
+    out = []
+    for h in run["repairs"][did]["hunks"]:
+        start, end = _shift(_hunks(sd, run["base_tip"], "HEAD", h["file"]), h["start"], h["end"])
+        out.append({"file": h["file"], "start": start, "end": end})
     return out
+
+
+def _files(run, did, ctx):
+    """([{path, text}], cut): the finding's file and the files of its fix as the scratch tree at HEAD has them, windowed around the
+    repair's followed hunks and the finding's line (excerpts)."""
+    d = _defect(ctx, run, did)
+
+    def read(path):
+        try:
+            return C.git(run["scratch"], "show", "HEAD:" + path, raw=True).decode("utf-8", "replace")
+        except Failed:
+            return None
+    return E.files_input(E.paths_of(d), read, E.anchors(d, _anchors(run, did)))
 
 
 def _open_valid(ctx, run, ids):
@@ -380,7 +385,9 @@ def _open_valid(ctx, run, ids):
     for did in ids:
         d = _defect(ctx, run, did)
         jid = "{}-{}-{}".format(run["label"], n, did)
-        _put(ctx.a.state, "judge-present", jid, {"finding": dict((k, d.get(k)) for k in KEYS), "files": _files(run, did, ctx)})
+        files, cut = _files(run, did, ctx)
+        _put(ctx.a.state, "judge-present", jid, {"finding": dict((k, d.get(k)) for k in KEYS), "files": files})
+        E.note_cut(ctx.a.state, jid, "revalidation", cut)
         asked[did] = jid
     run["judging"] = {"kind": "valid", "ids": asked}
     run["step"] = "valid"
@@ -791,9 +798,8 @@ def cmd_match(a):
 @C.locked(lambda a: None if a.dry_run else "exclusive", daemon=lambda a: not a.dry_run)
 def cmd_cleanup(a):
     """Stop the replay home's daemon and archive the threads the runs used; remove scratch/, work/, views/, packs/ (a cache), each
-    recreate/<defect>/tree (a working copy of the final tree) once recreated/<defect>.patch holds what it made (before that, `inject`
-    still needs it), the run scratches under review-work/scratch and this state's staged
-    items under review-work/items. Every JSON file, brief, patch and `done` marker stays. It holds run.lock exclusively and the replay
+    recreate/<id>/tree (the round's injected tree under the recreation's id) once recreated/<id>.patch holds what it made (before that,
+    `inject` still needs it), the run scratches under review-work/scratch and this state's staged items under review-work/items. Every JSON file, brief, patch and `done` marker stays. It holds run.lock exclusively and the replay
     daemons' lock, so it refuses while any other command uses the state (a `run`, `match` or `pending`) or any process uses the daemon.
     Threads are archived on the daemon as it is: run cleanup before `home --stop`, or archiving fails (exit 1) though everything else
     is removed."""

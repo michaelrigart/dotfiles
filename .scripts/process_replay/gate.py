@@ -1,8 +1,9 @@
 """Judging a defect, and the coverage gate (spec 4.3).
 
 Every judge-present and judge-same question is keyed by what the judge sees: its id is <defect>-<the first 12 hex digits of the
-sha256 of its input>. A question about a given state of the files is asked once; its answer serves every run and every round that
-asks the same; and no input is ever rewritten, or its answer set aside, by a later question, which has another id.
+sha256 of its input>. A judge-present input shows each file whole, or as windows around the repair's hunks (excerpts.py). A question
+about a given state of the files is asked once; its answer serves every run and every round that asks the same; and no input is ever
+rewritten, or its answer set aside, by a later question, which has another id.
 
 The coverage gate: a per-task defect that leaves the injected tree gets one hand re-creation, made against the round's injected tree (the
 final tree with every other active group reverted and docs/superpowers pinned: its base). Its id is <defect>-<the first 12 hex digits of its
@@ -21,14 +22,13 @@ import subprocess
 import tempfile
 
 from . import common as C
+from . import excerpts as E
 from . import inventory as I
 from . import patches as P
 from . import scratch
 from .common import Failed
 
 XR = C.XR
-
-FILE_CAP, FILES_CAP = 60000, 150000
 
 RECREATE_BRIEF = """Read {spec}. It holds a reported defect (finding), the change that fixed it (fix) and the path of a copy of the code (tree).
 
@@ -44,29 +44,15 @@ def finding(d):
     return dict((k, d.get(k)) for k in I.KEYS)
 
 
-def paths_of(d):
-    """The files a judge sees for a defect: the finding's file, then the files its fix changes."""
-    names = []
-    for n in [C.norm(d.get("file"))] + list(d.get("files") or []):
-        if n and n not in names:
-            names.append(n)
-    return names
-
-
-def files_input(work, rev, d):
-    """[{path, text}]: the finding's file, then the files its fix changes, as `rev` has them (60000 characters each, 150000 in all)."""
-    out, room = [], FILES_CAP
-    for n in paths_of(d):
-        if room <= 0:
-            break
+def files_input(work, rev, d, hunks):
+    """([{path, text}], cut): the finding's file, then the files its fix changes, as `rev` has them, shown by excerpts.files_input around
+    the repair's `hunks` (located in that tree) and the finding's line; `cut` names the files cut from the top for want of an anchor."""
+    def read(path):
         try:
-            data = C.git(work, "show", "{}:{}".format(rev, n), raw=True)
+            return C.git(work, "show", "{}:{}".format(rev, path), raw=True).decode("utf-8", "replace")
         except Failed:
-            continue
-        text = C.cap(data.decode("utf-8", "replace"), min(FILE_CAP, room))
-        room -= len(text)
-        out.append({"path": n, "text": text})
-    return out
+            return None
+    return E.files_input(E.paths_of(d), read, E.anchors(finding(d), hunks))
 
 
 def question_id(prefix, doc):
@@ -87,10 +73,12 @@ def _verdict(ans):
     return ans.get("answer") if isinstance(ans, dict) else None       # an accepted answer holds yes, no or unclear
 
 
-def validate(state, work, rev, d, counts):
-    """(question id, answer): can the defect's failure scenario happen in the tree at `rev`. The answer is "yes", "no" or "unclear", or
-    None until the judge answers."""
-    jid, ans = ask(state, "judge-present", d["id"], {"finding": finding(d), "files": files_input(work, rev, d)}, counts)
+def validate(state, work, rev, d, hunks, counts):
+    """(question id, answer): can the defect's failure scenario happen in the tree at `rev`, where its repair's `hunks` lie. The answer is
+    "yes", "no" or "unclear", or None until the judge answers. A file cut from the top for want of an anchor is recorded under the question."""
+    files, cut = files_input(work, rev, d, hunks)
+    jid, ans = ask(state, "judge-present", d["id"], {"finding": finding(d), "files": files}, counts)
+    E.note_cut(state, jid, "validation", cut)
     return jid, _verdict(ans)
 
 

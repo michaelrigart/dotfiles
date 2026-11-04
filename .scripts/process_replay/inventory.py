@@ -12,7 +12,7 @@ because a round tip may survive only in the snapshot.
 The defects are decided by blind judges, in phases; `cases` is run again after each phase:
   judge-task/<group>-<branch>  one per (task group, branch): the reviews that belong to that branch, one change per fix range
   judge-known/<nonce>.json     one per round that has a next round and a P0-P2 finding
-  judge-present/<nonce>-<i>    one per known-real finding of a round k >= 2: round 1's text of its file
+  judge-present/<nonce>-<i>    one per known-real finding of a round k >= 2: round 1's text of its file (windows around its fix when long)
   judge-dedup/<branch>.json    one per branch, over every known-real defect, once the rest has answered
 and, when everything a branch needs has answered, inventory/<branch>.json = {branch, defects, dropped}.
 branches.json holds every chain examined, with its reason when it is not a candidate.
@@ -25,7 +25,9 @@ import os
 import re
 
 from . import common as C
+from . import excerpts as E
 from . import merges
+from . import patches as P
 from . import planreview
 from .common import Failed
 
@@ -37,7 +39,7 @@ RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 KEYS = ("severity", "file", "line", "summary", "failure_scenario")
 ROUND_KEYS = ("k", "nonce", "tip", "base", "thread", "turns", "at", "verdict")
 DOCS = "docs/superpowers/"
-FILE_CAP, REPORT_CAP = 60000, 60000
+REPORT_CAP = 60000
 MIN_RANGES = 2                         # fix ranges a branch needs: spec 4.1 asks for two per-task defects
 OPEN = 16                              # candidates whose judge inputs are written
 _NOTE = re.compile(r"^.*Finding under verification.*$", re.I | re.M)
@@ -414,11 +416,16 @@ def plan_commit(repo, entries, scope):
 
 
 # ------------------------------------------------------------------ judge inputs and the defects they decide
-def _files_input(repo, tip, name):
-    """[{path, text}] for the file a finding names, as the tip has it (60000 characters; one file, so far under the 150000 in all)."""
-    name = C.norm(name)
-    text = repo.file(tip, name) if name else None
-    return [] if text is None else [{"path": name, "text": C.cap(text, FILE_CAP)}]
+def _presence_files(repo, chain, i, f, jid, state):
+    """[{path, text}] for the file a finding of round i names, as the round 1 tip has it: whole, or as windows around the finding's line
+    and the hunks of its fix (the change from tip i to tip i+1) located at that tip. The input is recorded when the file was cut from
+    the top for want of an anchor."""
+    name = C.norm(f.get("file"))
+    tip = chain[0]["tip"]
+    marks = E.anchors(f, E.located(repo.view, tip, P.fix_patch(repo.view, chain[i]["tip"], chain[i + 1]["tip"])))
+    files, cut = E.files_input([name] if name else [], lambda p: repo.file(tip, p), marks)
+    E.note_cut(state, jid, "presence", cut)
+    return files
 
 
 def _digest(doc):
@@ -538,8 +545,8 @@ def judge_branch(a, br, scope, counts):
                 continue
             if r["k"] > 1:
                 jid = "{}-{}".format(r["nonce"], f["index"])
-                _put(state, "judge-present", jid, {"finding": dict((k, f[k]) for k in KEYS),
-                                                  "files": _files_input(repo, chain[0]["tip"], f.get("file"))}, counts)
+                _put(state, "judge-present", jid, {"finding": dict((k, f[k]) for k in KEYS), "files": _presence_files(repo, chain, i, f, jid, state)},
+                     counts)
                 present = C.accepted_answer(state, "judge-present", jid)
                 if not isinstance(present, dict):
                     pending += 1

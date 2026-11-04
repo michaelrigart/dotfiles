@@ -1765,3 +1765,27 @@ run(S73)
 is_("old_recreation_set_aside: inject asks for a new recreation of A", [n for n in inputs(S73, "recreate") if n.startswith(DEF_A["id"] + "-")], [rid_of(S73, DEF_A["id"])])
 is_("old_recreation_set_aside: the old files are as they were", dict((rel, open(os.path.join(S73, rel)).read()) for rel in old), old)
 is_("old_recreation_set_aside: and pending lists only the new item", [i for k, i, *_ in C.pending(S73) if k == "recreate"], [rid_of(S73, DEF_A["id"])])
+
+# ================================================================ a long file is judged as windows around the located hunks
+RW = helpers.make_repo(ROOT, "windowrepo")
+BW = cm(RW, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RW, "checkout", "-q", "-b", "feat")
+WLINES = ["line {:04d} ".format(i).ljust(30, "x") for i in range(1, 3001)]
+WBAD = list(WLINES)
+WBAD[1999] = "line 2000 BUG".ljust(30, "x")
+TW = cm(RW, "2026-10-01T09:00:00Z", {"big.txt": SS(WBAD), "small.txt": "s = 1\n", PLAN: "plan\n"}, "task 1")
+WF = cm(RW, "2026-10-01T10:00:00Z", {"big.txt": SS(WLINES)}, "fix big")
+WF2 = cm(RW, "2026-10-01T11:00:00Z", {"small.txt": "s = 2\n"}, "fix small")
+git(RW, "checkout", "-q", "main")
+DW = dict(dfx("d00000081", "task", "P1", [(TW, WF)], "big.txt"), line=None)
+DW2 = dfx("d00000082", "task", "P2", [(WF, WF2)], "small.txt")
+PFW, DPREW = extend(RW, "win")
+WB = rec_branch("bwin00001", RW, "feat", BW, PFW, TW)
+S80 = setup_state("w-window", [WB], {"bwin00001": [DW, DW2, DPREW]})
+run(S80)
+wi = only(S80, "d00000081")
+wtext = wi["files"][0]["text"]
+is_("validation_uses_located_hunks: the injected big.txt (3000 lines, the revert at line 2000) is shown as the window around the hunk at 1997-2003 (git's context), though the finding gives no line",
+    wtext.split("\n")[0], "[lines 1847-2153 of 3000]")
+ok("validation_uses_located_hunks: and the window holds the reverted line", "line 2000 BUG" in wtext and "line 1846" not in wtext and "line 2154" not in wtext, wtext[:80])
+ok("validation_uses_located_hunks: no cut record is made for it", not os.path.isdir(os.path.join(S80, "cuts", "judge-present")) or not os.listdir(os.path.join(S80, "cuts", "judge-present")))

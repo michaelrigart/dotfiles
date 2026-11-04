@@ -544,6 +544,55 @@ run_cases(GS, RGROUPS)
 is_("cases: a re-run gives the same defect ids", sorted(d["id"] for d in C.jload(os.path.join(GS, "inventory", BID + ".json"))["defects"]), ids1)
 
 
+# ================================================================ presence: a long file is shown as windows around the fix
+PR = helpers.make_repo(ROOT, "prepo")
+with dated("2026-09-20T10:00:00Z"):
+    put(PR, "README.md", "readme\n")
+    PR0 = helpers.commit(PR, "base")
+NUM = lambda edits={}: "".join(edits.get(i, "line {:04d} ".format(i).ljust(30, "x")) + "\n" for i in range(1, 3001))
+PRE_PLAN = "docs/superpowers/plans/p.md"
+PRB = make_branch(PR, "pre", PR0, [
+    ("2026-10-01T09:00:00Z", {"big.py": NUM({2000: "line 2000 BUG"}), "long2.py": NUM(), "small.py": "s = 1\ns = 1\n", PRE_PLAN: "plan\n"}, "task 1"),
+    ("2026-10-01T10:00:00Z", {"small.py": "s = 1\ns = 2\n"}, "fix 1"),
+    ("2026-10-01T11:00:00Z", {"small.py": "s = 1\ns = 3\n"}, "fix 2"),
+    ("2026-10-02T09:00:00Z", {"note.txt": "n\n"}, "round one's tip"),
+    ("2026-10-03T09:00:00Z", {"long2.py": NUM({2000: "line 2000 P1 EDIT"})}, "round two's tip"),
+    ("2026-10-04T09:00:00Z", {"big.py": NUM(), "long2.py": NUM({2000: "line 2000 P2 FIX"}), "small.py": "s = 1\ns = 4\n"}, "round three's tip")])
+PRT1, PRF1, PRF2, PRK1, PRK2, PRK3 = PRB
+merge(PR, "pre", "2026-10-10T10:00:00Z")
+PSTATE = world("w-presence")
+PG = C.L.common_dir(PR)
+helpers.write_rollout(os.environ["CODEX_HOME"], "th-pre", [
+    {"turn": "pr1", "answer": codex_answer("changes", [])},
+    {"turn": "pr2", "answer": codex_answer("changes", [finding("P2", "big.py", None, "big: line 2000 is wrong"), finding("P2", "small.py", 2, "small: the value is wrong"),
+                                                        finding("P2", "long2.py", None, "long2: line 2000 is wrong")])},
+    {"turn": "pr3", "answer": codex_answer("approve", [])}])
+helpers.write_ledger(os.environ["XDG_STATE_HOME"], PR, [
+    receipt("xr-pre-1", "2026-10-02T10:00:00.000000Z", "th-pre", "pr1", PG, "pre", PR0, PRK1, verdict="changes"),
+    receipt("xr-pre-2", "2026-10-03T10:00:00.000000Z", "th-pre", "pr2", PG, "pre", PR0, PRK2, verdict="changes"),
+    receipt("xr-pre-3", "2026-10-04T10:00:00.000000Z", "th-pre", "pr3", PG, "pre", PR0, PRK3)])
+PGROUPS = [group("gpre", PG, [review("review", "2026-10-01T09:30:00.000Z", [(PR0, PRT1)], PRT1, report="Task 1."),
+                              review("re-review", "2026-10-01T10:30:00.000Z", [(PRT1, PRF1)], PRF1, report="fixed"),
+                              review("re-review", "2026-10-01T11:30:00.000Z", [(PRF1, PRF2)], PRF2, report="fixed again")])]
+run_cases(PSTATE, PGROUPS)
+answers(PSTATE, "judge-known", "xr-pre-2", {"verdicts": [{"index": 0, "answer": "yes"}, {"index": 1, "answer": "yes"}, {"index": 2, "answer": "yes"}]})
+run_cases(PSTATE, PGROUPS)
+pw = C.jload(os.path.join(PSTATE, "judge-present", "xr-pre-2-0.json"))
+ps = C.jload(os.path.join(PSTATE, "judge-present", "xr-pre-2-1.json"))
+pf = C.jload(os.path.join(PSTATE, "judge-present", "xr-pre-2-2.json"))
+is_("presence_window: a 3000-line file whose fix changes line 2000, the finding giving no line, is the window around the fix's hunk (lines 1997-2003, git's context)",
+    [(f["path"], f["text"].split("\n")[0]) for f in pw["files"]], [("big.py", "[lines 1847-2153 of 3000]")])
+ok("presence_window: the window is the round-1 tip's text", "line 2000 BUG" in pw["files"][0]["text"] and "line 1846" not in pw["files"][0]["text"], pw["files"][0]["text"][:60])
+ok("presence_window: and the window is no fallback", not os.path.exists(os.path.join(PSTATE, "cuts", "judge-present", "xr-pre-2-0.json")))
+is_("presence_short_unchanged: a finding in a short file is [{path, text}], the whole file as the round-1 tip has it",
+    ps["files"], [{"path": "small.py", "text": "s = 1\ns = 3\n"}])
+ok("presence_short_unchanged: and no fallback is recorded for it", not os.path.exists(os.path.join(PSTATE, "cuts", "judge-present", "xr-pre-2-1.json")))
+is_("presence_fallback: a fix that does not apply at the round-1 tip, the finding giving no line, is cut from the top",
+    (len(pf["files"]), pf["files"][0]["path"], pf["files"][0]["text"].startswith("line 0001 "), pf["files"][0]["text"].endswith("[truncated]\n")), (1, "long2.py", True, True))
+is_("presence_fallback: and it is recorded under the presence site", C.jload(os.path.join(PSTATE, "cuts", "judge-present", "xr-pre-2-2.json")), {"site": "presence", "files": ["long2.py"]})
+is_("presence_fallback: the count is one presence input", I.E.count_cuts(PSTATE), {"presence": 1, "validation": 0, "revalidation": 0})
+
+
 # ================================================================ rewritten commits join by patch id; --open stages the candidates
 OR = helpers.make_repo(ROOT, "orepo")
 with dated("2026-09-20T10:00:00Z"):

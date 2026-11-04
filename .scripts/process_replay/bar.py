@@ -1,7 +1,8 @@
 """`report`: the per-run pass bar (spec 4.6), the per-task reviewer's October cost, and the plan-checkpoint section.
 
-Reads <state>/cases.json, runs/<case>/<label>/state.json, inventory/<branch>.json, injected/<branch>.json, branches.json
-and reviews.json, and writes report.md and report.json beside them (with --dry-run it prints the report and writes nothing).
+Reads <state>/cases.json, runs/<case>/<label>/state.json, inventory/<branch>.json, injected/<branch>.json, branches.json,
+cuts/judge-present/ (the judge-present inputs that fell back to the cut from the top, counted per site) and reviews.json, and writes
+report.md and report.json beside them (with --dry-run it prints the report and writes nothing).
 
 bar(cases, runs, coverage) takes each case with the inventory records of its defects attached as case["info"] ({id: defect}), because
 the class, severity and summary of a defect are not in the run states. Precedence: fail > pass > inconclusive.
@@ -25,6 +26,7 @@ import json
 import os
 
 from . import common as C
+from . import excerpts
 from . import planreview
 from .common import Failed, jload, say
 
@@ -229,11 +231,13 @@ def _mins(x):
     return "{:.1f}".format(x)
 
 
-def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines):
+def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines, cut):
     out = ["Replay report: the per-task reviewer's pass bar (spec 4.6)", "", "status: {}".format(status["status"].upper()), "reasons:"]
     out += ["  - " + r for r in status["reasons"]]
     out += ["", "coverage gate: per-task defects unassessable after the second attempt: {}".format(
-        ", ".join((doc.get("coverage") or {}).get("unassessable_task") or []) or "none"), "", "Cases"]
+        ", ".join((doc.get("coverage") or {}).get("unassessable_task") or []) or "none"),
+            "judge-present inputs cut from the top (no anchor located): {} (presence {}, validation {}, revalidation {})".format(
+                sum(cut.values()), cut["presence"], cut["validation"], cut["revalidation"]), "", "Cases"]
     total = {True: collections.Counter(), False: collections.Counter()}
     for case in cases:
         br = branches.get(case["branch"]) or {}
@@ -316,8 +320,9 @@ def cmd_report(a):
         cost = dict((c["id"], october(branches[c["branch"]], groups) if c["branch"] in branches else None) for c in cases)
     dropped = drops(cases, inventories, injected)
     plan_lines, plan_data = planreview.report_section(a.state)
-    text = render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines)
-    data = {"bar": status, "coverage": doc.get("coverage") or {}, "drops": dropped, "examined_not_cases": [e for e in doc.get("examined") or []
+    cut = excerpts.count_cuts(a.state)
+    text = render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines, cut)
+    data = {"bar": status, "coverage": doc.get("coverage") or {}, "cut_inputs": cut, "drops": dropped, "examined_not_cases": [e for e in doc.get("examined") or []
                                                                                                          if isinstance(e, dict) and not e.get("qualified")],
             "cases": [dict(id=c["id"], branch=c["branch"], repo=c.get("repo"), original_rounds=c.get("original_rounds"), runs=rows[c["id"]],
                            superseded=status["superseded"].get(c["id"], []),

@@ -82,6 +82,13 @@ is_("fallback_counted: an input counts once, whatever its files", X.count_cuts(S
 X.note_cut(S, "q4", "revalidation", [])
 ok("fallback_counted: note_cut with no file writes nothing", not os.path.exists(os.path.join(S, "cuts", "judge-present", "q4.json")))
 is_("fallback_counted: and count_cuts sees none of it", X.count_cuts(S)["revalidation"], 0)
+X.note_cut(S, "q5", "revalidation", ["big.txt"])
+is_("note_cut_follows_latest: the first input is cut", X.count_cuts(S)["revalidation"], 1)
+X.note_cut(S, "q5", "revalidation", [])
+ok("note_cut_follows_latest: the same id later windowed loses its record", not os.path.exists(os.path.join(S, "cuts", "judge-present", "q5.json")))
+is_("note_cut_follows_latest: and is no longer counted", X.count_cuts(S)["revalidation"], 0)
+X.note_cut(S, "never-cut", "presence", [])
+ok("note_cut_follows_latest: nothing cut and no record is still nothing", not os.path.exists(os.path.join(S, "cuts", "judge-present", "never-cut.json")))
 is_("count_cuts: a state with no record is all zeros", X.count_cuts(os.path.join(ROOT, "empty")), {"presence": 0, "validation": 0, "revalidation": 0})
 
 # ---- total_cap_finding_first
@@ -157,6 +164,10 @@ got, cut = X.files_input(["big.txt"], read_of({"big.txt": BIG}), marks)
 is_("stale_line_ignored: the finding's line past the end adds nothing; the located hunk gives the window", (got[0]["text"].split("\n")[0], cut), ("[lines 850-1150 of 3000]", []))
 got, cut = X.files_input(["big.txt"], read_of({"big.txt": BIG}), {"big.txt": [(5000, 5000), (1000, 1000)]})
 is_("stale_line_ignored: marks [(5000, 5000), (1000, 1000)] give one window around 1000, and no cut", ([x for x in got[0]["text"].split("\n") if x.startswith("[lines ")], cut), (["[lines 850-1150 of 3000]"], []))
+
+for path in ("./big.txt", "a/big.txt"):
+    got, cut = X.files_input(X.paths_of({"file": path}), read_of({"big.txt": BIG}), X.anchors({"file": path, "line": 2000}, []))
+    is_("unnormalised_finding_path: a finding written {} is windowed on its line, not cut".format(path), (got[0]["path"], got[0]["text"].split("\n")[0], cut), ("big.txt", "[lines 1850-2150 of 3000]", []))
 
 # ---- huge_lines_capped
 huge = "".join(("{} ".format(i) + "m" * 70000 + "\n") for i in range(1, 5))
