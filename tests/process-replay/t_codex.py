@@ -517,8 +517,7 @@ for label, text in (("a file in its own scratch", "cat src/a.py"), ("its own scr
                     ("a grep -e pattern", "grep -rn -e ~/.codex/sessions -e $XDG_STATE_HOME/cxh src"),
                     ("a git grep pattern", "git -C {} grep -n ~/.claude/projects".format(OWN)),
                     ("a glob inside its own scratch", "cat src/*.py"),
-                    ("a subshell's cd does not outlive it", "(cd ~/Code/Org) && cat repo/x"),
-                    ("a cd inside its own scratch and back up", "cd src && cat ../README.md"),
+                    ("a cd inside its own scratch", "cd src && cat a.py ./b.py"),
                     ("its own scratch through a symlink to it", "cat {}/src/a.py".format(os.path.join(ROOT, "to-own")))):
     if label.startswith("its own scratch through"):
         os.symlink(OWN, os.path.join(ROOT, "to-own"))
@@ -615,15 +614,16 @@ for label, cmd in (("a $( ) inside a grep pattern", 'rg -n "$(head -1 ~/.codex/m
 for label, cmd, want in (("a cd to a computed directory does not go to $HOME", "cd $(git rev-parse --show-toplevel) && rg -n foo", []),
                          ("... nor with backticks", "cd `git rev-parse --show-toplevel` && rg -n foo", []),
                          ("$PWD is the tracked directory", 'rg foo "$PWD"; rg foo ${PWD}/src', []),
-                         ("$(pwd) is the tracked directory", 'rg foo "$(pwd)"; cat `pwd`/src/a.py', []),
-                         ("cd - returns to the previous directory, its own scratch", "cd ~ && cd - && rg foo", [])):
+                         ("$(pwd) is the tracked directory", 'rg foo "$(pwd)"; cat `pwd`/src/a.py', [])):
     is_("cwd: {} (M-3)".format(label), forbid(cmd), want)
 ABOVE = sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", CX, CL))
-is_("cwd: ... and a second cd - goes back again, above every root under $HOME", forbid("cd ~ && cd - && cd - && rg foo"), ABOVE)
+is_("cwd: a cd - after a cd above a root keeps that directory too, so the search walks it", forbid("cd ~ && cd - && rg foo"), ABOVE)
+is_("cwd: ... and a second cd - as well", forbid("cd ~ && cd - && cd - && rg foo"), ABOVE)
 is_("cwd: $PWD after a cd above a root is that directory", forbid('cd ~ && rg foo "$PWD"'), ABOVE)
 is_("cwd: ... and so is $(pwd)", forbid('cd ~ && rg foo "$(pwd)"'), ABOVE)
-is_("cwd: a subshell's cd leaves cd - where it was before the subshell (N-2)", forbid("cd ~ && cd /usr && (cd /var) && cd - && rg x"), ABOVE)
-# ---- a cd that may not run leaves the tracker in both directories; a cd in a subshell does not outlive it; && keeps the new one only (spec 14.3 c)
+is_("cwd: a subshell's cd and a cd - keep every directory (N-2)", forbid("cd ~ && cd /usr && (cd /var) && cd - && rg x"), ABOVE)
+# ---- the cd tracker is monotone within a call, as an assignment is (spec 14.3 c): a cd adds every directory it may lead to, wherever it stands,
+# nothing removes one, and every command after it is judged from all of them, the starting directory included
 for cmd in ("false && cd /usr; cat .codex/x", "cd /usr || true; cat .codex/x", "if true; then cd /usr; fi; cat .codex/x",
             "(cd /usr); cat .codex/x", "cd /usr || cat .codex/x", "true && cd /usr || cat .codex/x", "true || cd /usr\ncat .codex/x", "true && (cd /usr); cat .codex/x",
             "if true; then cd /usr; else cat .codex/x; fi", "if false; then true; elif true; then cd /usr; else cat .codex/x; fi", "case x in a) cd /usr;; b) cat .codex/x;; esac",
@@ -631,21 +631,106 @@ for cmd in ("false && cd /usr; cat .codex/x", "cd /usr || true; cat .codex/x", "
             "if true; then if true; then cd /usr; fi; fi; cat .codex/x", "true && cd /usr && cd /var; cat .codex/x", "echo $(true && cd /usr; cat .codex/x)",
             "sh -c 'false && cd /usr; cat .codex/x'",
             "cd /nonexistent; cat .codex/x", "cd /usr; cat .codex/x", "cd /usr\ncat .codex/x", "cd /usr | cat .codex/x", "(cd /usr; cat .codex/x)",
-            "if true; then cd /usr; cat .codex/x; fi", "cd /usr && cd /var; cat .codex/x", "cd /usr; cd /var; cat .codex/x"):
-    is_("cd_may_not_run: {!r} still reads from the starting directory".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
-for cmd in ("cd /usr && cat .codex/x", "true && cd /usr && cat .codex/x", "(cd /usr && cat .codex/x)", 
-            "cd /usr && cd /var && cat .codex/x",
-            "for d in a; do cd /usr && cat .codex/x; done", "case x in a) cd /usr && cat .codex/x;; esac", "cd /usr && cat .codex/x || true"):
-    is_("cd_may_not_run: {!r} is judged from the new directory only".format(cmd), forbid(cmd, cwd=house), [])
-is_("cd_may_not_run: a recursive search after one walks the starting directory, so every root under it", forbid("test -d /usr && cd /usr; ls -R .", cwd=house),
-    sorted("{} in t1".format(x) for x in (house + "/Code/Org/repo", CX, CL)))
-is_("cd_fails: a cd followed by ; may have failed, so a scratch cwd's own directories are all it can be", forbid("cd src; cat a.py; cd nosuch; cat b.py"), [])
-is_("cd_fails: ... and && says the cd ran, so only the new directory is judged", forbid("cd /usr && cat .codex/x", cwd=house), [])
-is_("cd_may_not_run: ... and after a cd that ran it walks only the new one", forbid("cd /usr && ls -R .", cwd=house), [])
-is_("cd_may_not_run: a cd that may not run still adds the new directory (what it reaches from there is judged)", forbid("false && cd ~/.codex; cat x", cwd=OWN), [CX + " in t1"])
-many = "; ".join("true && cd /{}".format(d) for d in ("usr", "var", "bin", "sbin", "etc")) + "; cat x"
+            "if true; then cd /usr; cat .codex/x; fi", "cd /usr && cd /var; cat .codex/x", "cd /usr; cd /var; cat .codex/x",
+            "cd /nonexistent && true; cat .codex/x", "cd /usr && git log; cat .codex/x", "cd /usr && cat a\ncat .codex/x"):
+    is_("cd_monotone: {!r} still reads from the starting directory (I1)".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
+# ---- what && joins to a cd runs only if the cd succeeded: it is judged from where the cd leads alone (the ruling on round 2's concern 1)
+for cmd in ("cd /usr && cat .codex/x", "cd /tmp && cat .codex/x", "true && cd /usr && cat .codex/x", "(cd /usr && cat .codex/x)", "cd /usr && cd /var && cat .codex/x",
+            "for d in a; do cd /usr && cat .codex/x; done", "case x in a) cd /usr && cat .codex/x;; esac", "cd /usr && cat .codex/x || true",
+            "cd /usr && cat a && cat .codex/x", "cd /usr && cat a | cat .codex/x", "if cd /usr && cat .codex/x; then :; fi", "{ cd /usr && cat .codex/x; }",
+            "true | true && cd /usr && cat .codex/x", "false || true && cd /usr && cat .codex/x", "builtin cd /usr && cat .codex/x", "command cd /usr && cat .codex/x",
+            "D=1 cd /usr && cat .codex/x", "cd -P /usr && cat .codex/x", "cd -- /usr && cat .codex/x", "cd /usr 2>/dev/null && cat .codex/x",
+            ">/dev/null cd /usr && cat .codex/x", "cd /usr && cat \"$PWD/.codex/x\"", "cd /usr && echo $(cat .codex/x)", "cd /usr && sh -c 'cat .codex/x'"):
+    is_("cd_and: {!r} from ~ is judged from where the cd leads alone".format(cmd), forbid(cmd, cwd=house), [])
+is_("cd_and: ... and a recursive search joined to it walks only there", forbid("cd /usr && ls -R .", cwd=house), [])
+is_("cd_and: cd src && cat ../README.md from a scratch's root reads the scratch's own README", forbid("cd src && cat ../README.md"), [])
+is_("cd_and: a cd joined to it by && narrows again from there", forbid("cd ~/Code && cd Org && cat repo/x", cwd=OWN), [house + "/Code/Org/repo in t1"])
+is_("cd_and: what follows ; after the chain may start where the first cd failed, so ../ from the scratch's root lands in review-work",
+    forbid("cd src && cat a.py; cd ../tests && cat b.py"), [os.path.join(XSH, "review-work") + " in t1"])
+is_("cd_and: cd ~ && false || cat .codex/sessions/x from the scratch names ~/.codex (the || branch sees every directory)",
+    forbid("cd ~ && false || cat .codex/sessions/x"), [CX + " in t1"])
+for cmd in ("cd /usr && false || cat .codex/x", "cd /usr && cat a & cat .codex/x", "cd /usr && cat a\ncat .codex/x", "cd /usr && cat a;; cat .codex/x",
+            "cd /usr && cat a || cd /var && cat .codex/x"):
+    is_("cd_and: {!r} from ~ ends the chain, so what follows sees every directory".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
+for cmd in ("! cd /usr && cat .codex/x", "env cd /usr && cat .codex/x", "sudo cd /usr && cat .codex/x", "nohup cd /usr && cat .codex/x", "time cd /usr && cat .codex/x",
+            "timeout 5 cd /usr && cat .codex/x", "command -p cd /usr && cat .codex/x", "cd() { :; }; cd /usr && cat .codex/x",
+            "function cd { :; }; cd /usr && cat .codex/x", "true | cd /usr && cat .codex/x", "true || cd /usr && cat .codex/x",
+            "cd /usr x && cat .codex/x", "pushd -n /usr && cat .codex/x", 'cd "$D" && cat .codex/x', 'cd "$(echo /usr)" && cat .codex/x',
+            "cd `echo /usr` && cat .codex/x", "(cd /usr) && cat .codex/x", "(cd /usr && true) && cat .codex/x", "{ cd /usr; true; } && cat .codex/x",
+            "f() { cd ~; }; cd /usr && f && cat .codex/x", "function f { cd ~; }; cd /usr && f && cat .codex/x", "cd /usr && source x.sh && cat .codex/x",
+            "cd /usr && . ./x && cat .codex/x", 'cd /usr && eval "$X" && cat .codex/x', "cd /tmp && cd - && cat .codex/x", "pushd /tmp && popd && cat .codex/x",
+            "pushd /tmp && pushd && cat .codex/x", "pushd /tmp && pushd +1 && cat .codex/x", "cd /tmp && cd -1 && cat .codex/x",
+            'cd /tmp && cd "$D" && cat .codex/x', "cd /tmp && cd $(x) && cat .codex/x", "cd /tmp && cd a b && cat .codex/x",
+            "cd() { builtin cd \"$@\"; }; builtin cd /tmp && cd ~ && cat .codex/x"):
+    is_("cd_and: {!r} from ~ may run where it started, so it is judged from there too".format(cmd), forbid(cmd, cwd=house), [CX + " in t1"])
+for cmd in ("cd /usr && true | cd ~ && cat .codex/sessions/x", "cd /usr && { cd ~; } && cat .codex/sessions/x", "cd /usr && x=$(cd ~) && cat .codex/sessions/x",
+            "cd /usr && if true; then cd ~; fi && cat .codex/sessions/x"):
+    is_("cd_and: {!r} keeps a cd made inside the chain for what follows in it".format(cmd), forbid(cmd), [CX + " in t1"])
+is_("cd_monotone_cost: a subshell's cd outlives it", forbid("(cd ~/Code/Org) && cat repo/x"), [house + "/Code/Org/repo in t1"])
+is_("cd_monotone: a recursive search after a cd that may not run walks the starting directory", forbid("test -d /usr && cd /usr; ls -R .", cwd=house), ABOVE)
+is_("cd_monotone: cds that stay inside the scratch leave its own directories all it can be in", forbid("cd src; cat a.py; cd nosuch; cat b.py"), [])
+is_("cd_monotone: a cd that may not run still adds the new directory (what it reaches from there is judged)", forbid("false && cd ~/.codex; cat x", cwd=OWN), [CX + " in t1"])
+for cmd in ("if cd ~ && false; then :; else cat .codex/sessions/x; fi", "if cd ~; false; then :; else cat .codex/sessions/x; fi",
+            "if cd ~; then if false; then :; else cat .codex/sessions/x; fi; fi", "if false; then :; elif cd ~ && false; then :; else cat .codex/sessions/x; fi",
+            "while true; do if cd ~ && false; then :; else cat .codex/sessions/x; fi; done", "for d in a; do if cd ~; then if false; then :; else cat .codex/sessions/x; fi; fi; done",
+            "if true; then cd ~ && { if false; then :; else cat .codex/sessions/x; fi; }; fi", "if true; then cd ~ && time if false; then :; else cat .codex/sessions/x; fi; fi",
+            "case y in y) cd ~ && { case x in z) :;; *) cat .codex/sessions/x;; esac; };; esac", "case y in y) cd ~ && ! case x in z) :;; *) cat .codex/sessions/x;; esac;; esac",
+            "if cd ~ && false\nthen :\nelse cat .codex/sessions/x\nfi"):
+    is_("cd_monotone: {!r} is judged from where the cd before its else or ;; led (C1)".format(cmd), forbid(cmd), [CX + " in t1"])
+for cmd in ("pushd ~ && pushd /usr && popd && cat .codex/sessions/x", "cd ~ && popd; cat .codex/sessions/x", "cd ~ && cd -; cat .codex/sessions/x",
+            "pushd ~ && popd && cat .codex/sessions/x", "pushd ~ && pushd +1 && cat .codex/sessions/x", "cd -P ~ && cat .codex/sessions/x", "cd -- ~ && cat .codex/sessions/x",
+            "builtin cd ~ && cat .codex/sessions/x", "command cd ~ && cat .codex/sessions/x", "f() { cd ~; }; f; cat .codex/sessions/x",
+            "echo $(cd ~) && cat .codex/sessions/x", "echo $(cd ~; (true)) && cat .codex/sessions/x", "sh -c 'cd ~' && cat .codex/sessions/x",
+            "x=`cd ~; pwd`; cat .codex/sessions/x"):
+    is_("cd_monotone: {!r} keeps ~ for what follows (M1)".format(cmd), forbid(cmd), [CX + " in t1"])
+is_("cd_monotone: a case pattern's ) closes no subshell (M3)", forbid("(cd ~ && case x in a) cat .codex/sessions/x;; esac)"), [CX + " in t1"])
+for cmd in ("cd - && rg foo", "cd -- - && rg foo", "cd -P - && rg foo", "cd -1 && rg foo", "popd && rg foo", "popd +1 && rg foo", "pushd +1 && rg foo", "pushd -0 && rg foo"):
+    is_("cd_monotone: {!r} goes back to a directory the tracker holds, so it searches only its own scratch".format(cmd), forbid(cmd), [])
+    is_("cd_monotone: ... and is no directory of that name either ({!r})".format(cmd), forbid(cmd.replace("rg foo", "cat ../../.codex/x"), cwd=house + "/w"), [])
+is_("cd_monotone: pushd with no operand is a cd ~ (zsh's, with one directory on the stack), as a bare cd is", (forbid("pushd && rg foo"), forbid("cd && rg foo")), (ABOVE, ABOVE))
+# ---- a loop is scanned twice when its pass added a directory or a value, so a read before the cd or assignment is judged as the next iteration makes it (M2, R11)
+for cmd in ("for i in 1 2; do cat .codex/sessions/x; cd ~; done", "while cat .codex/sessions/x; do cd ~; done", "until cat .codex/sessions/x; do cd ~; done",
+            "select x in a; do cat .codex/sessions/x; cd ~; done", "for i in 1 2\ndo\n  cat .codex/sessions/x\n  cd ~\ndone",
+            "for i in 1 2; do cat $D/sessions/x; D=~/.codex; done", "for i in 1 2; do for j in 1 2; do cat .codex/sessions/x; done; cd ~; done",
+            "if true; then for i in 1 2; do cat .codex/sessions/x; cd ~; done; fi", "for i in 1 2; do { cat .codex/sessions/x; cd ~; }; done",
+            "for i in 1 2; do (cat .codex/sessions/x); cd ~ || break; done", "true | while read x; do cat .codex/sessions/x; cd ~; done",
+            "echo $(for i in 1 2; do cat .codex/sessions/x; cd ~; done)"):
+    is_("loop_twice: {!r} reads from where the loop's earlier iteration went".format(cmd), forbid(cmd), [CX + " in t1"])
+is_("loop_twice: a third iteration is not followed (a limit the docstring names)", forbid("for i in 1 2 3; do cat .codex/x; cd ..; done", cwd=house + "/w/x"), [])
+is_("loop_twice: ... while what follows the loop is judged from every directory it reached", forbid("for i in 1 2 3; do cd ..; done; cat .codex/x", cwd=house + "/w/x"), [CX + " in t1"])
+is_("loop_twice: a loop that adds nothing is not scanned again, and its reads stay where they are", forbid("for i in 1 2; do cat .codex/sessions/x; done"), [])
+start = time.time()
+for cmd in ("done; done; cat x", "for i in a; do cat x", "for i in a; do " * 40 + "cd ..; " + "done; " * 40, "while true; do cd ~; done; " * 60,
+            "for i in a; do HOME=~/x; done; " * 20):
+    ok("loop_twice: {!r} ends".format(cmd[:40]), isinstance(forbid(cmd), list))
+ok("loop_twice: ... and quickly", time.time() - start < 30, time.time() - start)
+many = "; ".join("cd /d{}".format(n) for n in range(K.MAX_CWDS)) + "; cat x"
 got = forbid(many, cwd=house)
-ok("cd_may_not_run: more directories than MAX_CWDS is the TOO_MANY leak, not a silent cut", len(got) == 1 and "more values than the scan expands" in got[0], got)
+ok("cd_monotone: more directories than MAX_CWDS is the TOO_MANY leak, not a silent cut", got and all("more values than the scan expands" in x for x in got), got)
+is_("cd_monotone: MAX_CWDS directories are followed, none lost", forbid("; ".join("cd /d{}".format(n) for n in range(K.MAX_CWDS - 2)) + "; cd ~; cat .codex/x", cwd=OWN),
+    [CX + " in t1"])
+for cmd in ("cd src && rg x; cd ../tests && rg y; cd .. && git status", "cd /tmp && ls; cd /usr && ls; cd /var && ls; cd ~/Code && ls",
+            "cd a; cd b; cd c; ls"):
+    ok("cd_monotone: an ordinary multi-cd call ({!r}) stays within MAX_CWDS".format(cmd), not any("more values" in x for x in forbid(cmd)), forbid(cmd))
+# ---- redirections stand anywhere among a simple command's words: the assignments and the command are read without them, their targets as paths (P2)
+SECRET = K.wall([], ["/secret"])
+for cmd in ("< /dev/null D=/; cat ${D}secret/x", "2>/dev/null D=/; cat ${D}secret/x", "E=/ <f D=/; cat ${D}secret/x", ">f D=/ 2>&1; cat ${D}secret/x",
+            "&>f D=/; cat ${D}secret/x", "<<< x D=/; cat ${D}secret/x", "< /dev/null export D=/; cat ${D}secret/x", "2>/dev/null declare -x D=/; cat ${D}secret/x",
+            "< /dev/null D=/ sh -c 'cat ${D}secret/x'"):
+    is_("redirect_first: {!r} gives D its value (P2)".format(cmd), forbid(cmd, cwd="/safe", wall=SECRET), ["/secret in t1"])
+for cmd in (">/dev/null cd ~; cat .codex/sessions/x", "2>/dev/null builtin cd ~ && cat .codex/sessions/x", "< /dev/null command cd ~ && cat .codex/sessions/x",
+            "2>&1 bash -c 'cd ~ && cat .codex/sessions/x'", "</dev/null sudo sh -c 'cd ~; cat .codex/sessions/x'"):
+    is_("redirect_first: {!r} is the cd or shell it runs".format(cmd), forbid(cmd), [CX + " in t1"])
+for cmd in (">/dev/null command rg foo", "2>/dev/null env rg foo", "< /dev/null exec rg foo", "2>/dev/null time rg foo", ">/dev/null nohup grep -rn foo",
+            "2>/dev/null timeout 5 rg foo", ">/dev/null xargs rg foo"):
+    is_("redirect_first: {!r} from ~ walks it".format(cmd), forbid(cmd, cwd=house), ABOVE)
+is_("redirect_first: a redirection's target is still read", (forbid("< ~/.codex/x D=/; true"), forbid(">~/.codex/x env true")), ([CX + " in t1"],) * 2)
+for cmd in ("2>/dev/null rg -n ~/.codex/memories src", "2>/dev/null env rg -n ~/.codex/memories src", "> f command grep -e ~/.codex/memories src",
+            "< f sudo git log -S ~/.codex/memories"):
+    is_("redirect_first: {!r} still has a pattern, not a path, behind its redirection and wrapper".format(cmd), forbid(cmd), [])
+is_("cd_monotone: each command of a call is a shell of its own, and the call's other fields start at its workdir",
+    sorted(K.named(fwall, OWN, ["cd ~", "cat .codex/x"], [".codex/y"], [".codex/z"], searches=["."])), [])
+is_("cd_monotone: after --, cd -x goes to the directory -x", forbid("cd -- -x && cat ../.codex/y", cwd=house), [CX + " in t1"])
 for label, cmd in (("git log -G", "git log -G '~/.codex/memories' --oneline"), ("git log --grep", "git log --grep ~/.codex/sessions"),
                    ("git log --grep=", "git log --grep=$XDG_STATE_HOME/xreview"), ("git log -S glued", "git log -S'$XDG_STATE_HOME/xreview'"),
                    ("git diff -S", "git diff -S ~/.claude/projects HEAD~1"), ("git grep -e", "git grep -n -e ~/.codex/memories"),
@@ -1192,6 +1277,13 @@ for label, cmd in (("command -v", "command -v chezmoi"), ("command -V", "command
                    ("an argument of xargs", "ls | xargs rg chezmoi"), ("a lookup under sudo", "sudo which chezmoi")):
     is_("tool_words: {} only looks the binary up, or is not a command: not a leak".format(label), leaked(fc(cmd), CHZ), [])
 is_("tool_words: the heredoc's later lines are commands again", leaked(fc("cat <<EOF\nx\nEOF\nchezmoi diff"), CHZ), CHZN)
+for cmd in ("2>/dev/null env chezmoi diff", "< /dev/null command chezmoi diff", ">/dev/null exec chezmoi diff", "2>&1 time chezmoi diff", "&>/dev/null nohup chezmoi diff",
+            "</dev/null sudo chezmoi diff", "2>/dev/null A=1 env chezmoi diff", "<<< x builtin chezmoi diff", "2>/dev/null xargs chezmoi diff",
+            "if >/dev/null chezmoi diff; then :; fi", "< /dev/null SRC=x chezmoi diff"):
+    is_("redirect_first: {} runs chezmoi (a redirection before the command is no command word)".format(cmd), leaked(fc(cmd), CHZ), CHZN)
+is_("redirect_first: ... and a lookup after one is still a lookup", (leaked(fc("2>/dev/null command -v chezmoi"), CHZ), leaked(fc(">/dev/null which chezmoi"), CHZ)), ([], []))
+is_("redirect_first: a chezmoi call with a redirection among its flags reads its paths", (leaked(fc("chezmoi -S {0} 2>/dev/null -D {0}/h managed".format(SCR)), CHZ),
+    leaked(fc("< /dev/null chezmoi -S {0} -D {0}/h managed".format(SCR)), CHZ)), ([], []))
 TL = 'await tools.exec_command({cmd:`ls\nchezmoi diff`, workdir:`/work/scratch`});'
 is_("tool_words: a template-literal cmd is read", leaked_payload({"type": "custom_tool_call", "name": "exec", "input": TL}, CHZ), CHZN)
 TL2 = 'await tools.exec_command({cmd:`cat ../orig/a`, workdir:`/work/scratch`});'
@@ -1260,7 +1352,7 @@ many = "; ".join("A=/a{}".format(i) for i in range(1, 18))
 is_("too_many_values: a use with more values than the scan expands is a leak", leaked(fc(many + "; cat $A/x"), CHZ), ["$A/x (more values than the scan expands) in t1"])
 is_("too_many_values: sixteen values are expanded, none is lost", leaked(fc("; ".join("A=/a{}".format(i) for i in range(1, 16)) + "; cat $A/x"), CHZ), [])
 is_("too_many_values: a cd to more directories than the scan follows is a leak",
-    leaked(fc("D=/d1; D=/d2; D=/d3; D=/d4; D=/d5; cd $D && ls"), CHZ), ["$D (more values than the scan expands) in t1"])
+    leaked(fc("; ".join("D=/d{}".format(n) for n in range(K.MAX_CWDS)) + "; cd $D && ls"), CHZ), ["$D (more values than the scan expands) in t1"])
 
 # ---- assignments, fix round 1
 OWNWALL = CHZ + [house + "/.codex"]
@@ -1478,8 +1570,10 @@ is_("flags_after_subcommand: managed --source <scratch> -D <scratch>/h reads onl
 is_("flags_after_subcommand: diff -S <scratch> still reads ~", leaked(fc("chezmoi diff -S {}".format(SCR)), CHZ), CHZN)
 is_("flags_after_subcommand: managed -S <scratch> --destination ~ reads ~", leaked(fc("chezmoi managed -S {} --destination ~".format(SCR)), CHZ), CHZN)
 is_("flags_after_subcommand: diff --source <scratch> -D <scratch>/h reads neither", leaked(fc("chezmoi diff --source {0} -D {0}/h".format(SCR)), CHZ), [])
-for cmd in ("ls x$(cd ~/.local/share) chezmoi", "echo chezmoi$(true) x$(true) chezmoi diff", "ls a`true` chezmoi diff"):
+for cmd in ("ls x$(cd /tmp) chezmoi", "echo chezmoi$(true) x$(true) chezmoi diff", "ls a`true` chezmoi diff"):
     is_("glued_word_not_a_command: {} does not run chezmoi".format(cmd), leaked(fc(cmd), CHZ), [])
+is_("glued_word_not_a_command: ... while a cd inside the substitution adds its directory, so the word is judged from there too (cd_monotone)",
+    leaked(fc("ls x$(cd ~/.local/share) chezmoi"), CHZ), CHZN)
 is_("glued_word_not_a_command: ... a tool word with a glued substitution is still the command", leaked(fc("chezmoi$(true) --source {0} -D {0}/h managed".format(SCR)), CHZ), [])
 is_("glued_word_not_a_command: ... it reads ~ by default, and the original without a source", (leaked(fc("chezmoi$(true) --source {} managed".format(SCR)), CHZ), leaked(fc("chezmoi$(true) managed"), CHZ)), (CHZN, CHZN))
 is_("heredoc_not_run: a heredoc body is not run", leaked(fc("cat <<EOF\nchezmoi diff\nEOF"), CHZ), [])
