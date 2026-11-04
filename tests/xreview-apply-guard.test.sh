@@ -128,6 +128,49 @@ is "K9: xreview apply opened a window the guard finds (B's file outside the diff
 is "K9: and B's file in the diff" "$(edit "$B/src/in-diff.txt")" allow
 no_windows
 
+# --- L. The classified checkout is the one the edit lands in, not the one the path starts in
+# L1: a `..` through a missing directory climbs out of the checkout the walk stopped at.
+no_windows; window "$A"
+is "L1: A's window denies A's file reached through B/src/<missing>/../../../" \
+   "$(edit "$B/src/nope/../../../repo/src/untouched.txt")" deny
+is "L1: and still allows A's file in the diff reached that way" \
+   "$(edit "$B/src/nope/../../../repo/src/in-diff.txt")" allow
+no_windows; window "$B"
+is "L1: B's window denies B's file reached through A/src/<missing>/../../../" \
+   "$(edit "$A/src/nope/../../../repo-b/src/untouched.txt")" deny
+is "L1: a missing directory that is entered and left stays in its checkout" \
+   "$(edit "$B/src/nope/../untouched.txt")" deny
+is "L1: B's window leaves A's file alone, reached through B/src/<missing>/../" \
+   "$(edit "$B/src/nope/../../../repo/src/untouched.txt")" allow
+
+# L2: a symlinked file is classified by its target, not by the link's directory.
+ln -s "$B/src/untouched.txt" "$A/src/link.txt"
+ln -s "$B/src/in-diff.txt" "$A/src/link-diff.txt"
+ln -s link.txt "$A/src/chain.txt"                       # relative, two hops
+ln -s "$A/src/untouched.txt" "$B/src/rlink.txt"
+ln -s loop.txt "$A/src/loop.txt"
+is "L2: B's window denies a link in A whose target is B's file outside the diff" \
+   "$(edit "$A/src/link.txt")" deny
+is "L2: and allows a link in A whose target is B's file in the diff" \
+   "$(edit "$A/src/link-diff.txt")" allow
+is "L2: a relative chain of links is followed to its target" "$(edit "$A/src/chain.txt")" deny
+is "L2: a link in B to A's file is A's, which has no window" "$(edit "$B/src/rlink.txt")" allow
+is "L2: a plain file in A stays allowed" "$(edit "$A/src/untouched.txt")" allow
+is "L2: a link loop fails open" "$(edit "$A/src/loop.txt")" allow
+
+# L3: the remedy line is shell-safe for a checkout whose path holds a space.
+SP="$ROOT/sp ace"
+git -C "$A" worktree add -q "$SP" -b sp 2>/dev/null || { echo "worktree fixture setup failed" >&2; exit 1; }
+no_windows; window "$SP"
+reason="$(guard_out "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$SP/src/untouched.txt")" \
+          | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')"
+SPTOP="$(git -C "$SP" rev-parse --show-toplevel)"
+remedy="$(printf '%s\n' "$reason" | grep 'apply --done')"
+is "L3: the remedy, evaluated by a shell, names the checkout with the space" \
+   "$( xreview() { printf '%s' "$2"; }; eval "$remedy" )" "$SPTOP"
+no_windows
+
+git -C "$A" worktree remove --force "$SP" 2>/dev/null; git -C "$A" branch -D sp >/dev/null 2>&1
 git -C "$A" worktree remove --force "$B" 2>/dev/null; git -C "$A" worktree remove --force "$H" 2>/dev/null
 git -C "$A" branch -D b h >/dev/null 2>&1
 

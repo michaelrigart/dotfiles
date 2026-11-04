@@ -60,15 +60,50 @@ case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
 # path, while a tool payload may carry the symlinked one (/var/folders vs /private/var/folders,
 # /tmp vs /private/tmp). Comparing them raw silently classifies in-repo files as outside it,
 # and the guard then allows everything — failing open in the one direction that matters.
-dir=$(dirname "$path"); miss=
-while [ ! -d "$dir" ]; do
-  parent=$(dirname "$dir")
-  [ "$parent" != "$dir" ] || allow
-  miss="/$(basename "$dir")$miss"; dir=$parent
+#
+# resolve <absolute path> sets `cur` (the physical, existing directory the path reaches) and
+# `miss` (the components still to be created). Walking the missing tail component by component
+# applies `.` and `..` there lexically — a `..` after a missing directory cancels it, and one
+# with nothing left to cancel climbs out of `cur` — so the path is classified where the tool
+# will write it, not where the walk happened to stop. Existing parts resolve physically.
+resolve() {
+  local d=$1 tail= c p IFS=/
+  while [ ! -d "$d" ]; do
+    p=$(dirname "$d")
+    [ "$p" != "$d" ] || allow
+    tail="/$(basename "$d")$tail"; d=$p
+  done
+  cur=$(cd "$d" 2>/dev/null && pwd -P) || allow
+  [ -n "$cur" ] || allow
+  miss=
+  for c in $tail; do
+    case "$c" in
+      ""|.) ;;
+      ..) if [ -n "$miss" ]; then miss=${miss%/*}; else cur=$(dirname "$cur"); fi ;;
+      *)  if [ -z "$miss" ] && [ -d "$cur/$c" ]; then
+            cur=$(cd "$cur/$c" 2>/dev/null && pwd -P) || allow
+          else
+            miss="$miss/$c"
+          fi ;;
+    esac
+  done
+}
+
+resolve "$path"
+abs="${cur%/}$miss"
+# A symlinked file belongs to its target's checkout, not to the link's directory. Follow a
+# chain a bounded number of hops (plain `readlink`: the one form every pinned PATH offers); a
+# loop or an unreadable link is unexpected, so it fails open like every other surprise.
+hops=0
+while [ -L "$abs" ]; do
+  hops=$((hops + 1)); [ "$hops" -le 10 ] || allow
+  target=$(readlink "$abs" 2>/dev/null) || allow
+  [ -n "$target" ] || allow
+  case "$target" in /*) ;; *) target="$(dirname "$abs")/$target" ;; esac
+  resolve "$target"
+  abs="${cur%/}$miss"
 done
-real=$(cd "$dir" 2>/dev/null && pwd -P) || allow
-[ -n "$real" ] || allow
-abs="$real$miss/$(basename "$path")"
+real=$cur
 
 root=$(git -C "$real" rev-parse --show-toplevel 2>/dev/null) || allow
 [ -n "$root" ] || allow
@@ -89,6 +124,7 @@ case "$rel" in
   *_test.*|*.test.*|*_spec.*|*.spec.*|test_*) allow ;;
 esac
 
+qroot=$(printf '%q' "$root")
 nonce=$(sed -n 's/^nonce=//p' "$marker" 2>/dev/null | head -1)
 deny "Outside the cross-review apply window: $rel
 
@@ -97,6 +133,6 @@ plus test paths. '$rel' is neither, so this edit would change code the review ne
 
 If the fix genuinely belongs there, close the window first:
 
-    xreview -C $root apply --done
+    xreview -C $qroot apply --done
 
 Then make the change deliberately, as your own edit rather than the reviewer's."
