@@ -151,6 +151,12 @@ once that rule changes:
   - a file belongs to the innermost checkout that holds it, so a submodule or a nested repository is
     its own checkout and answers to its own window;
   - a path inside a `.git` directory has no work tree and is not policed.
+- **Ruling (2026-11-04).** The path model has four rules: the payload path is folded lexically; its
+  nearest existing ancestor is resolved physically and the missing tail appended; a final symlink is
+  allowed; the checkout is the git toplevel of that ancestor. Measured on Claude Code 2.1.316, Edit,
+  Write and NotebookEdit refuse to write through a final symlink (direct, chained or dangling) and name
+  the target, fold `..` lexically and resolve the existing prefix physically. If a future Claude Code
+  writes through final symlinks, a redirection through a link fails open, which suits a narrow guard.
 
 ### 4. No-focus mode
 

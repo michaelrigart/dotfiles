@@ -10,11 +10,11 @@
 # written first; that stays discipline, and no hook can observe it.
 #
 # Keyed by the edited file's checkout, never the hook's cwd (spec 2026-11-03 §3).
-# Path model: (1) the payload path, absolute against $PWD, is normalised lexically, the tool's view;
-# (2) its existing prefix is resolved physically, the missing tail appended; (3) a final symlink is
-# followed as the kernel does, physically, <=32 hops (`..` = physical parent, missing ends the walk,
-# `..` after missing fails open); (4) the checkout is the one holding that final path.
-#
+# Path model: (1) the payload path, absolute against $PWD, is folded lexically; (2) its nearest
+# existing ancestor is resolved physically, the missing tail appended; (3) a final symlink is allowed:
+# Claude Code 2.1.316 refuses to write through one and names the target, which the next edit is
+# classified on; (4) the checkout is the git toplevel of the directory from (2).
+
 # INACTIVE by default: with no apply window open this exits immediately, which is every
 # ordinary edit. Anything unexpected — missing jq, unparseable payload, path outside the
 # repo — fails open, on the same reasoning as the other guards: a gate that fires
@@ -60,9 +60,6 @@ case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
 
 # norm <absolute path> sets `npath` to the path with `.` and empty components dropped and each
 # `..` popping the component before it (never above `/`) - a stack in pure shell, no subprocess.
-# walk <start dir> <path> sets `cur` (the physical, existing directory reached) and `miss` (the
-# components after it that do not exist as directories). It changes this shell's directory, which
-# nothing later relies on.
 norm() {
   local c IFS=/
   npath=
@@ -75,41 +72,13 @@ norm() {
   done
   [ -n "$npath" ] || npath=/
 }
-walk() {
-  local c IFS=/
-  cd -P -- "$1" 2>/dev/null || allow
-  miss=
-  for c in $2; do
-    case "$c" in
-      ""|.) ;;
-      ..)   [ -z "$miss" ] || allow             # the kernel fails (ENOENT) below a missing component
-            cd -P -- .. 2>/dev/null || allow ;;
-      *)    if [ -z "$miss" ] && [ -d "./$c" ]; then
-              cd -P -- "./$c" 2>/dev/null || allow
-            else
-              miss="$miss/$c"
-            fi ;;
-    esac
-  done
-  cur=$PWD
-}
 
 norm "$path"
-walk / "$npath"
-abs="${cur%/}$miss"
-# Follow a chain up to 32 hops, the kernel's own limit (MAXSYMLINKS on macOS): a lower cap would
-# allow a chain the kernel still follows. Plain `readlink` is the one form every pinned PATH offers.
-# A link is the sole missing component, so `cur` is its own physical directory. A loop or an
-# unreadable link is unexpected, so it fails open like every other surprise.
-hops=0
-while [ -L "$abs" ]; do
-  hops=$((hops + 1)); [ "$hops" -le 32 ] || allow
-  target=$(readlink "$abs" 2>/dev/null) || allow
-  [ -n "$target" ] || allow
-  case "$target" in /*) walk / "$target" ;; *) walk "$cur" "$target" ;; esac
-  abs="${cur%/}$miss"
-done
-real=$cur
+dir=$npath; miss=
+while [ ! -d "$dir" ]; do miss="/${dir##*/}$miss"; dir=${dir%/*}; [ -n "$dir" ] || dir=/; done
+cd -P -- "$dir" 2>/dev/null || allow
+real=$PWD; abs="${real%/}$miss"
+[ -L "$abs" ] && allow        # Claude Code refuses to write through it and names the target
 
 root=$(git -C "$real" rev-parse --show-toplevel 2>/dev/null) || allow
 [ -n "$root" ] || allow

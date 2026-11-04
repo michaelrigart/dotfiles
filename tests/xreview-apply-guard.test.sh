@@ -143,21 +143,6 @@ is "L1: a missing directory that is entered and left stays in its checkout" \
 is "L1: B's window leaves A's file alone, reached through B/src/<missing>/../" \
    "$(edit "$B/src/nope/../../../repo/src/untouched.txt")" allow
 
-# L2: a symlinked file is classified by its target, not by the link's directory.
-ln -s "$B/src/untouched.txt" "$A/src/link.txt"
-ln -s "$B/src/in-diff.txt" "$A/src/link-diff.txt"
-ln -s link.txt "$A/src/chain.txt"                       # relative, two hops
-ln -s "$A/src/untouched.txt" "$B/src/rlink.txt"
-ln -s loop.txt "$A/src/loop.txt"
-is "L2: B's window denies a link in A whose target is B's file outside the diff" \
-   "$(edit "$A/src/link.txt")" deny
-is "L2: and allows a link in A whose target is B's file in the diff" \
-   "$(edit "$A/src/link-diff.txt")" allow
-is "L2: a relative chain of links is followed to its target" "$(edit "$A/src/chain.txt")" deny
-is "L2: a link in B to A's file is A's, which has no window" "$(edit "$B/src/rlink.txt")" allow
-is "L2: a plain file in A stays allowed" "$(edit "$A/src/untouched.txt")" allow
-is "L2: a link loop fails open" "$(edit "$A/src/loop.txt")" allow
-
 # L3: the remedy line is shell-safe for a checkout whose path holds a space.
 SP="$ROOT/sp ace"
 git -C "$A" worktree add -q "$SP" -b sp 2>/dev/null || { echo "worktree fixture setup failed" >&2; exit 1; }
@@ -170,49 +155,13 @@ is "L3: the remedy, evaluated by a shell, names the checkout with the space" \
    "$( xreview() { printf '%s' "$2"; }; eval "$remedy" )" "$SPTOP"
 no_windows
 
-# L4: `..` has one model, the lexical one, in the existing head and the missing tail alike.
-# B/src/alink is a symlink to A/src: climbing out of alink lexically lands in B/src, and a
-# physical climb would land in A.
-no_windows; window "$B"
-ln -s "$A/src" "$B/src/alink"
-is "L4: a .. after a symlinked directory is read lexically, so B's file is denied" \
-   "$(edit "$B/src/nope/../alink/../untouched.txt")" deny
-is "L4: and with no missing directory before it" \
-   "$(edit "$B/src/alink/../untouched.txt")" deny
-is "L4: entering the symlinked directory without climbing is A's file, which has no window" \
-   "$(edit "$B/src/alink/untouched.txt")" allow
-
-# L5: the hop cap is the kernel's (32), not a smaller one that fails open on a chain it follows.
-mkchain() {   # mkchain <prefix> <n> <target>: <prefix>1 -> target, <prefix>k -> <prefix>(k-1)
-  local i; ln -s "$3" "$A/src/$1-1"
-  for ((i = 2; i <= $2; i++)); do ln -s "$1-$((i - 1))" "$A/src/$1-$i"; done
-}
-mkchain c11 11 "$B/src/untouched.txt"; mkchain c32 32 "$B/src/untouched.txt"
-mkchain c33 33 "$B/src/untouched.txt"
-is "L5: an 11-link chain ending at B's file is denied" "$(edit "$A/src/c11-11")" deny
-is "L5: a 32-link chain ending at B's file is denied"  "$(edit "$A/src/c32-32")" deny
-is "L5: a chain past the kernel's limit is unexpected and fails open" "$(edit "$A/src/c33-33")" allow
-no_windows
-
-# --- M. The path model, one row per rule (see the guard's header). B/src/alink -> A/src from L4.
+# --- M. The path model, one row per rule (see the guard's header). B/src/alink -> A/src.
 # t <window: A|B|none> <path> <expect> <label> - one window open, one Edit, one verdict.
 t() {
   no_windows; [ "$1" = none ] || window "${!1}"
   is "$4" "$(edit "$2")" "$3"
 }
-ln -s alink/../src/untouched.txt "$B/src/evil"           # kernel: alink -> A/src, .. -> A: A/src/untouched.txt
-ln -s "$B/src/alink/../src/untouched.txt" "$B/src/evil-abs"
-ln -s alink/../src/in-diff.txt "$B/src/evil-diff"
-ln -s nope/../untouched.txt "$B/src/gap"                  # kernel: ENOENT at nope
-ln -s "$B/src/nope/../untouched.txt" "$B/src/gap-abs"
-ln -s alink/newdir/f.txt "$B/src/tail"                    # missing tail appended after the walk
-ln -s alink/../../repo/src/untouched.txt "$B/src/up2"     # two physical parents: A/src -> A -> $ROOT
-ln -s untouched.txt "$A/src/relnest"                      # relative text against the link's physical directory
-mkchain_up() {   # mkchain_up <prefix> <n>: <prefix>-1 -> A's file, <prefix>-k -> ../src/<prefix>-(k-1)
-  local i; ln -s "$A/src/untouched.txt" "$A/src/$1-1"
-  for ((i = 2; i <= $2; i++)); do ln -s "../src/$1-$((i - 1))" "$A/src/$1-$i"; done
-}
-mkchain_up m32 32; mkchain_up m33 33
+ln -s "$A/src" "$B/src/alink"
 # rule 1: lexical, first
 t B "$B/src/nope/../alink/../untouched.txt" deny  "M1: .. after a symlinked directory is lexical (B's file)"
 t B "$B/src/./alink/../untouched.txt"       deny  "M1: . and .. are folded before anything is resolved"
@@ -220,19 +169,11 @@ t B "$B/src/./alink/../untouched.txt"       deny  "M1: . and .. are folded befor
 t A "$B/src/alink/untouched.txt"            deny  "M2: a symlinked directory in the prefix is entered physically"
 t B "$B/src/alink/untouched.txt"            allow "M2: and it is A's file, so B's window leaves it alone"
 t A "$B/src/alink/newdir/f.txt"             deny  "M2: the missing tail lands in A's checkout"
-# rule 3: the final symlink is followed physically
-t A "$B/src/evil"                           deny  "M3: relative text with .. through a symlinked directory lands in A (review case)"
-t A "$B/src/evil-abs"                       deny  "M3: absolute text with .. through a symlinked directory lands in A"
-t B "$B/src/evil"                           allow "M3: the same link is not B's file"
-t A "$B/src/evil-diff"                      allow "M3: the walk lands on A's file in the diff, not just anywhere in A"
-t A "$B/src/up2"                            deny  "M3: two .. climb two physical parents"
-t A "$B/src/alink/relnest"                  deny  "M3: relative text is taken against the link's physical directory"
-t A "$B/src/tail"                           deny  "M3: a missing component ends the walk and the rest is appended"
-t B "$B/src/gap"                            allow "M3: .. after a missing component (relative text) fails open"
-t B "$B/src/gap-abs"                        allow "M3: .. after a missing component (absolute text) fails open"
-t B "$A/src/m32-32"                         allow "M3: a 32-hop chain with .. in each hop is followed to A's file (B has no say)"
-t A "$A/src/m32-32"                         deny  "M3: ... and A's window denies it"
-t A "$A/src/m33-33"                         allow "M3: 33 hops is past the kernel's limit and fails open"
+# rule 3: a final symlink is allowed; Claude Code refuses to write through it and names the target
+no_windows; window "$A"
+ln -s untouched.txt "$A/src/link.txt"
+is "M3: an Edit of a symlink outside the diff, to a file outside the diff, is allowed (neither the link as its own path nor its target is classified)" \
+   "$(edit "$A/src/link.txt")" allow
 no_windows
 
 git -C "$A" worktree remove --force "$SP" 2>/dev/null; git -C "$A" branch -D sp >/dev/null 2>&1
