@@ -19,12 +19,12 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 ## Repositories and worktrees
 
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
-- **`wt` worktrees are Michael's.** `wt <branch>` makes a sibling checkout
-  `~/Code/<Org>/<repo>-<branch>` with its own Herdr workspace; worktrees share one database, Redis
-  and storage. He creates them with `wt` and removes them with `wt-rm` at the end. Never create one,
-  and never offer or run `wt-rm`. If he explicitly asks for a teardown, use `command wt-rm
-  <branch>`, as the worktree guard says, never `git worktree remove`. A harness worktree (an agent's
-  own isolation) follows its own tool's lifecycle.
+- **`wt` worktrees.** `wt <branch>` makes a sibling checkout `~/Code/<Org>/<repo>-<branch>` with
+  its own Herdr workspace; worktrees share one database, Redis and storage. The driver may open one
+  per independent line of work, as `wt --no-focus <branch> <local-branch>` (a remote start point
+  sets an upstream), and names each checkout it opened in its report; never in the dotfiles. Only
+  Michael tears one down: never offer or run `wt-rm`. If he explicitly asks, use `command wt-rm
+  <branch>`, never `git worktree remove`. A harness worktree follows its own tool's lifecycle.
 - **Backups:** Borg through Vorta (runbook: the vault's Backups note) skips uncommitted work in a
   `wt` worktree, so checkpoint commits are the protection.
 

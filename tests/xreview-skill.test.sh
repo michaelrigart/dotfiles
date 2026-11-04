@@ -593,6 +593,20 @@ if printf '%s' "$flat" | grep -qF -- '`--diff <dest>...<branch>` once the plan i
   _pass "the skill dispatches plan reviews with --diff once the plan is committed"
 else _fail "the skill dispatches plan reviews with --diff once the plan is committed" "missing"; fi
 
+# A line in a wt checkout passes -C to every xreview call. S1 catches the skill naming a
+# flag the CLI lacks (the subcommand extractor skips words that start with `-`); S2 catches
+# a documented refusal with nothing behind it; S3 catches the trap of a body path built from
+# $TMPDIR, which the unsandboxed xreview cannot read because its $TMPDIR is another directory.
+if printf '%s' "$flat" | grep -qF -- 'xreview -C <checkout>' && grep -qF -- '[-C <checkout>]' "$XREVIEW"; then
+  _pass "the skill names 'xreview -C <checkout>', and the CLI's usage holds [-C <checkout>]"
+else _fail "the skill names 'xreview -C <checkout>', and the CLI's usage holds [-C <checkout>]" "missing"; fi
+if printf '%s' "$flat" | grep -qF -- 'was dispatched from another checkout' && grep -qF -- 'was dispatched from another checkout' "$XREVIEW"; then
+  _pass "the skill documents the another-checkout refusal, and the CLI raises it"
+else _fail "the skill documents the another-checkout refusal, and the CLI raises it" "missing"; fi
+if printf '%s' "$flat" | grep -qF -- 'Pass the body file by absolute path'; then
+  _pass "the skill says to pass the body file by absolute path"
+else _fail "the skill says to pass the body file by absolute path" "missing"; fi
+
 # The escalation list is exactly these bullets, in this order: any reworded, added or
 # dropped bullet fails here.
 expected_esc="$(cat <<'EXPECTED_ESC'
