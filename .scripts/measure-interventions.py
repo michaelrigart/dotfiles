@@ -76,9 +76,11 @@ DENIAL_RES = [(name, re.compile(r"^(?:PreToolUse:\w+ hook error: )?(?:" + pat + 
 # is how the cross-review skill writes it (NONCE=$(xreview dispatch ...)). A quoted mention
 # (rg "xreview dispatch") is not a call, and single-quoted text is removed first: nothing
 # inside single quotes executes (printf %s 'NONCE=$(xreview dispatch ...)'). An optional
-# -C <dir> (double-quoted, or a run of non-blanks) names the checkout, as a wt line's calls do.
+# -C <dir> names the checkout, as a wt line's calls do; <dir> is one shell word, any run of
+# double-quoted strings (with backslash escapes), single-quoted strings, backslash-escaped
+# characters and plain characters (not blank, quote or backslash): /a\ b/"c d"/e.
 SINGLE_QUOTED = re.compile(r"'[^']*'")
-XREVIEW_RE = re.compile(r"(?:^|[;&|(\n]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:command\s+)?(?:\S*/)?xreview\s+(?:-C\s+(?:\"[^\"]*\"|\S+)\s+)?(dispatch|collect)\b")
+XREVIEW_RE = re.compile(r"""(?:^|[;&|(\n]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:command\s+)?(?:\S*/)?xreview\s+(?:-C\s+(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s"'\\])+\s+)?(dispatch|collect)\b""")
 INTERRUPT = "[Request interrupted by user"
 BACKGROUND_ID_RE = re.compile(r"running in background with ID: ([A-Za-z0-9_-]+)")
 NOTIFICATION = "<task-notification>"

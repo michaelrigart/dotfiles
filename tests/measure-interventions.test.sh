@@ -162,16 +162,20 @@ entries = [
     {"type": "assistant", "timestamp": ts(1), "message": {"role": "assistant", "content": [
         tu("c1", "xreview -C /Users/x/Code/O/r-feat dispatch --checkpoint plan b.md"),
         tu("c2", 'xreview -C "/a b/c" collect xr-9 60'),
-        tu("c3", "xreview -C /tmp/collect round --reset")]}},
-    {"type": "user", "timestamp": ts(2), "message": {"role": "user", "content": [res("c1"), res("c2"), res("c3")]}},
+        tu("c3", "xreview -C /tmp/collect round --reset"),
+        tu("c4", r"xreview -C /a\ b/c dispatch --checkpoint plan body.md"),
+        tu("c5", "xreview -C '/a b/c' collect xr-9 60"),
+        tu("c6", r'xreview -C /a\ b/"c d"/e dispatch --checkpoint plan body.md'),
+        tu("c7", r'xreview -C /a\ b/"c d"/collect round --reset')]}},
+    {"type": "user", "timestamp": ts(2), "message": {"role": "user", "content": [res("c1"), res("c2"), res("c3"), res("c4"), res("c5"), res("c6"), res("c7")]}},
 ]
 with open(os.path.join(sys.argv[1], "sess-c.jsonl"), "w") as fh:
     for e in entries: fh.write(json.dumps(e) + "\n")
 PY
 OUT2="$(/usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$ROOT/projects2" 2>&1)"
 is2() { local got; got="$(printf '%s' "$OUT2" | jq -r "$1" 2>&1)"; if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi; }
-is2 '.xreview.dispatches' 1 "xreview -C <dir> dispatch counts; a wt line's reviews stay in the metric"
-is2 '.xreview.collects'   1 "xreview -C \"<dir with spaces>\" collect counts, and -C <dir> round is neither verb"
+is2 '.xreview.dispatches' 3 "xreview -C <dir> dispatch counts, also with a backslash-escaped space or mixed quoted/escaped segments in <dir>"
+is2 '.xreview.collects'   2 "xreview -C <dir with spaces> collect counts (double or single quoted), and -C <dir> round is neither verb, however <dir> is written"
 
 [ "$rc" -eq 0 ] && _pass "runs on the system python and exits 0" || _fail "runs on the system python and exits 0" "rc=$rc: $OUT"
 is '.sessions'                        1   "only sessions active in the window count"
