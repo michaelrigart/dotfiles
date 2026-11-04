@@ -47,7 +47,9 @@ call's workdir (else the scratch) and every directory a cd or pushd before it in
 (a branch, a loop, a subshell, a pipeline, a function body, sh -c, $( ), backticks) and whether it ran or failed. Nothing removes a
 directory, as an assignment adds a value and never hides one (spec 14.3 c): cd -, cd ~-, popd and a stack entry (-N, +N, ~+N, ~-N,
 pushd +N) add nothing (bash's cd +N also adds a directory of that name), a bare cd or pushd adds ~, a cd to a substitution goes to a
-directory of that literal name, and eval's arguments are a script run in this shell. One exception, because it is sound: what
+directory of that literal name, and eval's arguments are a script run in this shell. A cd's directory is held as spelled, ./..
+collapsed, and also as the system resolves it, symlinks first, where that is another directory (cd -P link/.. is the link target's
+parent; on macOS /var/.. is /private). One exception, because it is sound: what
 && joins to a cd runs only if that cd succeeded, so it is judged from where the cd leads alone (`cd src && cat ../x` reads the scratch's
 x), through further && links, when the cd is the shell's builtin (not after !, env, sudo or another wrapper, nor a function of the
 call named cd), opens its and-or list or follows &&, and has one operand the scan expands in full; a later cd in the chain narrows
@@ -55,7 +57,8 @@ again, while a cd that may go back (cd -, ~-, popd, a stack entry, a bare pushd,
 empty, zsh's cd OLD NEW), a function of the call, `.`, source, eval and a command word the scan cannot expand ($(echo cd), $C) widen it
 to every directory, and ||, ;, &, ;;, a newline and a closing ) end it. A loop whose pass added a directory or a value, or that opened in
 such a chain and moved (`cd /usr && while cat x; do cd ~; done`: its condition runs again from ~), is scanned once more with every
-directory, for what its next iteration reads. Tokens are read with ~, $HOME, $XDG_STATE_HOME, $XDG_DATA_HOME, $PWD (and $(pwd), ~+),
+directory, for what its next iteration reads (a loop's starting point is taken before its condition or word list runs, so
+`while cd ..; do cat x; done` reads x two levels up). Tokens are read with ~, $HOME, $XDG_STATE_HOME, $XDG_DATA_HOME, $PWD (and $(pwd), ~+),
 $OLDPWD (~-: any directory the tracker holds, or the inherited one) and, for Codex, $CODEX_HOME expanded, then two ways, ./.. collapsed first and symlinks first, each by its real path. A real path is forbidden when it lies
 in a root at component boundaries (a glob component counts as whatever it can match; the original checkout's root also covers its wt
 siblings <dir>-*), unless it lies literally in one of the allowed subtrees. Allowed subtrees are judged after resolution, so
@@ -76,9 +79,9 @@ Known limits, not chased further. Missed: an unknown variable ($DIR/x stays lite
 time (string concatenation in a script, a variable set in another call, or to a value that is not literal), ANSI-C quoting ($'...' escapes are not decoded), env -C DIR (the
 command's directory is not moved), reads spread over separate calls (a cd in one call does not carry to the next), a cd - before any
 cd of the command (it goes to the inherited $OLDPWD, which the scan does not know), zsh's two-operand cd OLD NEW (taken as cd OLD), a cd
-that CDPATH, cdable_vars, auto_cd or zsh's named directories send elsewhere and cd -P through a symlink (the directory is taken as
-spelled and collapsed logically: none is set in this repository's shell configuration, and a call that sets one itself, as CDPATH=x,
-shopt -s cdable_vars, setopt cdablevars or auto_cd, or hash -d, is not modelled either), a cd assembled at run time ($(echo cd) ~:
+that CDPATH, cdable_vars, auto_cd or zsh's named directories send elsewhere (the directory is taken as spelled: none is set in this
+repository's shell configuration, and a call that sets one itself, as CDPATH=x, shopt -s cdable_vars, setopt cdablevars or auto_cd, or
+hash -d, is not modelled either), a cd assembled at run time ($(echo cd) ~:
 what follows it widens, but its directory is not added), aliases or
 functions defined earlier, a function's body run from another directory (it is read where it is defined), a loop's third and later
 iterations (`for i in 1 2 3; do cat x; cd ..; done` reads x from two of the three directories), brace expansion (~/.codex/{sessions,x}), a ** glob spanning several components, an unquoted substitution
@@ -1011,12 +1014,16 @@ class _Scan(object):
         return any("$" in t or "`" in t for t in _expand(token, self.variables(cwds))[0])
 
     def dirs(self, target, cwds):
-        """The directories `cd target` may lead to from `cwds` (logical: ./.. collapsed as cd does); a target with more values than the
-        scan expands is a TOO_MANY leak."""
+        """The directories `cd target` may lead to from `cwds`: each logically (./.. collapsed, as cd does by default) and physically
+        (symlinks resolved first, as cd -P and the system do: link/.. is the link target's parent) where the two are not the same
+        directory, that is where the physical form is not the logical one's real path; a path is judged by its real path anyway, so a
+        tree with no link before a .. adds nothing. A target with more values than the scan expands is a TOO_MANY leak."""
         out = []
         expanded, whole = _expand(target, self.variables(cwds))
         for t in expanded:
-            out += [os.path.normpath(j) for j in ([t] if t.startswith("/") else [c + "/" + t for c in cwds])]
+            for j in ([t] if t.startswith("/") else [c + "/" + t for c in cwds]):
+                logical, physical = os.path.normpath(j), _real(j)
+                out += [logical] + ([physical] if physical and physical != _real(logical) else [])
         if not whole:
             self.found.add(TOO_MANY.format(target))
         return list(dict.fromkeys(out))
@@ -1163,6 +1170,8 @@ class _Scan(object):
                 i = j
                 continue
             if tok not in SEPARATORS:
+                if tok in LOOPS and all(w in KEYWORDS + ("time",) for w in simple):
+                    loops.append((start, self.held(), self.moves, cur is not self.union))   # before its condition or word list runs
                 simple.append(tok)
                 continue
             if simple:
@@ -1175,10 +1184,8 @@ class _Scan(object):
                     cur = self.union
                 elif led is not None and tok == "&&" and before in CHAIN_STARTS:
                     cur = list(led)                             # what && joins to it runs only where the cd led
-                for w in simple:                    # the keywords that lead it: a loop opens or closes
-                    if w in LOOPS:
-                        loops.append((start, self.held(), self.moves, cur is not self.union))
-                    elif w == "done" and loops:
+                for w in simple:                    # the keywords that lead it: a loop closes
+                    if w == "done" and loops:
                         at, held, moves, narrowed = loops.pop()
                         if at not in again and (self.held() > held or (narrowed and self.moves > moves)):
                             again.add(at)

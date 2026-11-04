@@ -692,6 +692,34 @@ for cmd in ('eval "cd ~" && cat .codex/sessions/x', "eval cd ~; cat .codex/sessi
 is_("eval_script: ... and they are still words, so a pattern in them still counts (the docstring's limit)", forbid("eval 'rg ~/.codex/x src'"), [CX + " in t1"])
 is_("cd_monotone_cost: for d in a b; do cd $d && ls; cd ..; done from a scratch's root names review-work (M4, accepted: the second pass starts at ..)",
     forbid("for d in a b; do cd $d && ls; cd ..; done"), [RW])
+# ---- round 4: a loop's baseline is taken before its condition runs (Codex P2), and a cd holds where the system resolves it too (Codex P2)
+SECRET_A = K.wall([], ["/a/secret"])
+for cmd in ("while cd ..; do cat secret; done", "until ! cd ..; do cat secret; done", "while cd .. && true; do cat secret; done",
+            "while true; cd ..; do cat secret; done", "for d in $(cd ..; cd ..; pwd); do cat secret; done"):
+    is_("loop_baseline: {!r} from /a/b/c reads /a/secret on a later iteration".format(cmd), forbid(cmd, cwd="/a/b/c", wall=SECRET_A), ["/a/secret in t1"])
+for cmd in ("while cd ..; do :; done", "while true; do cat secret; done"):
+    is_("loop_baseline: ... while {!r} reads no secret".format(cmd), forbid(cmd, cwd="/a/b/c", wall=SECRET_A), [])
+for cmd in ("cd /usr && while eval 'cat .codex/x'; do cd ~; done", "cd /usr && while $CHK .codex/x; do cd ~; done", "cd /usr && while source .codex/x; do cd ~; done"):
+    is_("loop_baseline: {!r} from ~ is a loop that opened narrowed, though its widening condition ran first (cold check of ba1ec51)".format(cmd),
+        forbid(cmd, cwd=house), [CX + " in t1"])
+SIDE = house + "/Code/Org/side"
+os.makedirs(SIDE, exist_ok=True)
+os.symlink(SIDE, os.path.join(OWN, "side"))
+for cmd in ("cd -P side/.. && cat repo/answers", "cd side/.. && cat repo/answers", "cd -P side/.. ; cat repo/answers", "cd side && cd .. && cat repo/answers"):
+    is_("cd_physical: {!r} from the scratch, side a link beside the original, may read the original (Codex P2)".format(cmd), forbid(cmd),
+        [house + "/Code/Org/repo in t1"])
+if os.path.realpath("/var") == "/private/var":
+    is_("cd_physical: cd -P /var/.. && cat secret/answer.json reads /private/secret (macOS: /var is a link)",
+        forbid("cd -P /var/.. && cat secret/answer.json", wall=K.wall([], ["/private/secret"])), ["/private/secret in t1"])
+probe = K._Scan(K.wall([], ["/nothing"]), K._values())
+probe.script("cd src && cd lib; cd ..; cd ../tests", [OWN])
+S0 = os.path.dirname(OWN)
+is_("cd_physical: a tree with no link before .. adds no second form (and stays within MAX_CWDS)", (probe.union, sorted(probe.found)),
+    ([OWN, OWN + "/src", OWN + "/src/lib", S0, S0 + "/tests", OWN + "/tests", OWN + "/src/tests", os.path.dirname(S0) + "/tests"], []))
+probe = K._Scan(K.wall([], ["/nothing"]), K._values())
+probe.script("cd -P /var/..", [OWN])
+if os.path.realpath("/var") == "/private/var":
+    is_("cd_physical: ... and cd /var/.. holds / and /private", probe.union, [OWN, "/", "/private"])
 is_("cd_monotone_cost: a subshell's cd outlives it", forbid("(cd ~/Code/Org) && cat repo/x"), [house + "/Code/Org/repo in t1"])
 is_("cd_monotone: a recursive search after a cd that may not run walks the starting directory", forbid("test -d /usr && cd /usr; ls -R .", cwd=house), ABOVE)
 is_("cd_monotone: cds that stay inside the scratch leave its own directories all it can be in", forbid("cd src; cat a.py; cd nosuch; cat b.py"), [])
