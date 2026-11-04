@@ -858,7 +858,13 @@ These are the builder's calls on what §14 leaves open. The controller records a
 - **R2, the chezmoi source is read as a search root (§14.3 b)**, beside the destination, because chezmoi
   walks it. It is stricter than "judged by its paths", and it changes no verdict §14.3 predicts for the
   2026-11-03 records.
-- **R3** is reserved for Task 4: a subcommand that fails the real-chezmoi test loses its exemption.
+- **R3, no chezmoi subcommand is exempt from the destination (§14.3 b, Task 4 Step 4):** with a
+  `.chezmoiremove` in the source, as every October dotfiles scratch has had since 2026-08-31, `managed` and
+  `source-path` read the destination too: a real chezmoi v2.74.0 fails both with `lstat
+  <dest>/.claude/subagent-statusline.sh: permission denied` (or `open <dest>/.foo: permission denied` for a
+  `dir/**` glob) when the destination is unreadable. The plan's probe source had no `.chezmoiremove`, so it
+  could not show this. `SOURCE_ONLY` is removed, and the destination (default `~`) is always a search root.
+  So 7f3b624a's `chezmoi --source <scratch> managed` still names the original, against §14.3's estimate.
 - **R4, the old export moves too, and every export is forbidden (§14.3 a):** `~/Code/.replay/harness-f0919ec`
   is a copy of the repository under the driving session's directory, so Task 10 renames it beside the new
   exports. `forbidden()` covers every `$XDG_STATE_HOME/process-replay/harness-*` and the running harness's
