@@ -170,6 +170,30 @@ is "L3: the remedy, evaluated by a shell, names the checkout with the space" \
    "$( xreview() { printf '%s' "$2"; }; eval "$remedy" )" "$SPTOP"
 no_windows
 
+# L4: `..` has one model, the lexical one, in the existing head and the missing tail alike.
+# B/src/alink is a symlink to A/src: climbing out of alink lexically lands in B/src, and a
+# physical climb would land in A.
+no_windows; window "$B"
+ln -s "$A/src" "$B/src/alink"
+is "L4: a .. after a symlinked directory is read lexically, so B's file is denied" \
+   "$(edit "$B/src/nope/../alink/../untouched.txt")" deny
+is "L4: and with no missing directory before it" \
+   "$(edit "$B/src/alink/../untouched.txt")" deny
+is "L4: entering the symlinked directory without climbing is A's file, which has no window" \
+   "$(edit "$B/src/alink/untouched.txt")" allow
+
+# L5: the hop cap is the kernel's (32), not a smaller one that fails open on a chain it follows.
+mkchain() {   # mkchain <prefix> <n> <target>: <prefix>1 -> target, <prefix>k -> <prefix>(k-1)
+  local i; ln -s "$3" "$A/src/$1-1"
+  for ((i = 2; i <= $2; i++)); do ln -s "$1-$((i - 1))" "$A/src/$1-$i"; done
+}
+mkchain c11 11 "$B/src/untouched.txt"; mkchain c32 32 "$B/src/untouched.txt"
+mkchain c33 33 "$B/src/untouched.txt"
+is "L5: an 11-link chain ending at B's file is denied" "$(edit "$A/src/c11-11")" deny
+is "L5: a 32-link chain ending at B's file is denied"  "$(edit "$A/src/c32-32")" deny
+is "L5: a chain past the kernel's limit is unexpected and fails open" "$(edit "$A/src/c33-33")" allow
+no_windows
+
 git -C "$A" worktree remove --force "$SP" 2>/dev/null; git -C "$A" branch -D sp >/dev/null 2>&1
 git -C "$A" worktree remove --force "$B" 2>/dev/null; git -C "$A" worktree remove --force "$H" 2>/dev/null
 git -C "$A" branch -D b h >/dev/null 2>&1

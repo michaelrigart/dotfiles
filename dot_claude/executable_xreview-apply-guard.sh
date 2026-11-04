@@ -61,42 +61,46 @@ case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
 # /tmp vs /private/tmp). Comparing them raw silently classifies in-repo files as outside it,
 # and the guard then allows everything — failing open in the one direction that matters.
 #
-# resolve <absolute path> sets `cur` (the physical, existing directory the path reaches) and
-# `miss` (the components still to be created). Walking the missing tail component by component
-# applies `.` and `..` there lexically — a `..` after a missing directory cancels it, and one
-# with nothing left to cancel climbs out of `cur` — so the path is classified where the tool
-# will write it, not where the walk happened to stop. Existing parts resolve physically.
+# `..` has one model throughout: lexical, as the tool's own path normalisation and bash's logical
+# `cd` apply it. norm <absolute path> sets `npath` to the path with `.` and empty components
+# dropped and each `..` popping the component before it (never above `/`) - a stack in pure shell,
+# no subprocess. Only then is the path walked, so no `..` is left to be read two ways.
+#
+# resolve <absolute path> sets `cur` (the physical, existing directory the normalised path
+# reaches) and `miss` (the components still to be created, none of them `.` or `..`).
+norm() {
+  local c IFS=/
+  npath=
+  for c in $1; do
+    case "$c" in
+      ""|.) ;;
+      ..)   npath=${npath%/*} ;;
+      *)    npath="$npath/$c" ;;
+    esac
+  done
+  [ -n "$npath" ] || npath=/
+}
 resolve() {
-  local d=$1 tail= c p IFS=/
+  local d p
+  norm "$1"; d=$npath; miss=
   while [ ! -d "$d" ]; do
     p=$(dirname "$d")
     [ "$p" != "$d" ] || allow
-    tail="/$(basename "$d")$tail"; d=$p
+    miss="/$(basename "$d")$miss"; d=$p
   done
   cur=$(cd "$d" 2>/dev/null && pwd -P) || allow
   [ -n "$cur" ] || allow
-  miss=
-  for c in $tail; do
-    case "$c" in
-      ""|.) ;;
-      ..) if [ -n "$miss" ]; then miss=${miss%/*}; else cur=$(dirname "$cur"); fi ;;
-      *)  if [ -z "$miss" ] && [ -d "$cur/$c" ]; then
-            cur=$(cd "$cur/$c" 2>/dev/null && pwd -P) || allow
-          else
-            miss="$miss/$c"
-          fi ;;
-    esac
-  done
 }
 
 resolve "$path"
 abs="${cur%/}$miss"
 # A symlinked file belongs to its target's checkout, not to the link's directory. Follow a
-# chain a bounded number of hops (plain `readlink`: the one form every pinned PATH offers); a
+# chain up to 32 hops, the kernel's own limit (MAXSYMLINKS on macOS): a lower cap would allow a
+# chain the kernel still follows. Plain `readlink` is the one form every pinned PATH offers. A
 # loop or an unreadable link is unexpected, so it fails open like every other surprise.
 hops=0
 while [ -L "$abs" ]; do
-  hops=$((hops + 1)); [ "$hops" -le 10 ] || allow
+  hops=$((hops + 1)); [ "$hops" -le 32 ] || allow
   target=$(readlink "$abs" 2>/dev/null) || allow
   [ -n "$target" ] || allow
   case "$target" in /*) ;; *) target="$(dirname "$abs")/$target" ;; esac
