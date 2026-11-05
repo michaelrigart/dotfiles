@@ -180,22 +180,31 @@ chmod 755 "$BIN/herdr"
 # `api projects/<url-encoded slug>/merge_requests/<iid>` answers the head pipeline's status from
 # the $PIPES fixture (`iid<TAB>status`; an iid absent from it has no pipeline). A stub that
 # returned every row to every query would hide the truncation the two-call split exists to
-# avoid, and one that ignored the slug would hide an unencoded `/`. A $PIPEFAIL file makes api
-# fail. A function because later cases overwrite the stub with failing variants.
+# avoid, and one that ignored the slug would hide an unencoded `/`. Both calls must name the
+# host (`api --hostname gitlab.com`, `mr list --repo https://gitlab.com/<slug>`): glab otherwise
+# takes it from the current directory's repository, and any other form is refused here.
+# A $PIPEFAIL file makes api fail the way glab does, the error's JSON body on STDOUT and a
+# non-zero exit; with the content "200" it answers 200 with a body that is not the MR.
+# A function because later cases overwrite the stub with failing variants.
 glab_stub() {
 cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
 if [ "${1:-}" = "api" ]; then
-  [ -e "${PIPEFAIL:-}" ] && { echo "error: could not reach gitlab.com" >&2; exit 1; }
-  case "${2:-}" in projects/test%2Fproj/merge_requests/*) ;; *) echo '{"message":"404 Not Found"}'; exit 1 ;; esac
-  iid="${2##*/}"; st=""
+  if [ -e "${PIPEFAIL:-}" ]; then
+    echo '{"message":"401 Unauthorized"}'
+    [ "$(cat "$PIPEFAIL")" = "200" ] && exit 0
+    echo "glab: 401 Unauthorized (HTTP 401)" >&2; exit 1
+  fi
+  [ "${2:-}" = "--hostname" ] && [ "${3:-}" = "gitlab.com" ] || { echo '{"message":"wrong host"}'; exit 1; }
+  case "${4:-}" in projects/test%2Fproj/merge_requests/*) ;; *) echo '{"message":"404 Not Found"}'; exit 1 ;; esac
+  iid="${4##*/}"; st=""
   [ -r "${PIPES:-}" ] && st="$(awk -F'\t' -v i="$iid" '$1==i {print $2; exit}' "$PIPES")"
   if [ -n "$st" ]; then echo "{\"iid\":$iid,\"head_pipeline\":{\"status\":\"$st\"}}"
   else echo "{\"iid\":$iid,\"head_pipeline\":null}"; fi
   exit 0
 fi
-case " $* " in *" --repo test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
+case " $* " in *" --repo https://gitlab.com/test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
 case " $* " in *" --merged "*) cat "$MRMERGED" ;; *) cat "$MROPEN" ;; esac
 exit 0
 G
@@ -382,7 +391,7 @@ echo "G. a repo Herdr cannot resolve to GitLab degrades to git-only"
 q git -C "$REPO" remote set-url origin git@github.com:test/proj.git
 rm -rf "$T/cache"   # a cached table would answer for the repo that no longer resolves
 run refresh
-check "$(grep -c -- '--repo test/proj ' "$CALLS")" "0" "no glab call for a non-GitLab remote"
+check "$(grep -c -- 'gitlab.com/test/proj ' "$CALLS")" "0" "no glab call for a non-GitLab remote"
 case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "git-derived phases still reported";;
   *) _fail "git-derived phases still reported (got: $(report_for w2))";; esac
 # feature/review has an open MR upstream, but without GitLab the script cannot know that.
@@ -432,7 +441,7 @@ cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
 case " $* " in *" --merged "*) echo "error: could not reach gitlab.com" >&2; exit 1 ;; esac
-case " $* " in *" --repo test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
+case " $* " in *" --repo https://gitlab.com/test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
 cat "$MROPEN"
 G
 chmod 755 "$BIN/glab"
@@ -511,6 +520,11 @@ ci_check w6 none "a merged MR shows no pipeline badge"
 ci_check w7 none "a branch without an MR shows no pipeline badge"
 check "$(glab_api_calls)" "4" "one api call per open MR, none for merged or MR-less spaces"
 check "$(grep -c -E 'merge_requests/(12|15)$' "$CALLS")" "0" "merged MRs are never queried for a pipeline"
+# glab takes the host from the current directory's repository unless told: name it every time.
+check "$(grep '^glab api ' "$CALLS" | grep -vc -- ' --hostname gitlab.com projects/test%2Fproj/')" "0" \
+  "every api call pins --hostname gitlab.com"
+check "$(grep '^glab mr list' "$CALLS" | grep -vc -- ' --repo https://gitlab.com/')" "0" \
+  "every mr list call pins the host in --repo"
 run refresh --force --workspace w6
 check "$(glab_api_calls)" "0" "a merged space makes no api call"
 run refresh --force --workspace w7
@@ -551,6 +565,14 @@ ci_check w4 ok "PRECONDITION: the pipeline cache warms"
 TTL=0 run refresh --workspace w4
 check "$(glab_api_calls)" "1" "an expired pipeline cache is refetched"
 ci_check w4 ok "a failed api call keeps the cached class"
+# glab prints an API error's JSON body on stdout (the stub does); parsed as if it were the MR it
+# would read as "no pipeline" and overwrite the warm cache for a whole TTL.
+check "$(cat "$T/cache/test_proj.mr10.pipeline")" "success" "an error body does not overwrite the cached status"
+echo 200 > "$PIPEFAIL"
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a 200 body that is not the MR keeps the cached class"
+check "$(cat "$T/cache/test_proj.mr10.pipeline")" "success" "a body without the MR's iid does not overwrite the cached status"
+: > "$PIPEFAIL"
 rm -rf "$T/cache"
 run refresh --workspace w4
 check "$RC" "0" "refresh survives a failing api call with a cold cache"
@@ -568,6 +590,19 @@ while IFS= read -r line; do
   [ "$n" -le 16 ] || over=$((over + 1))
 done < <(grep -E '^herdr workspace report-metadata ' "$CALLS")
 check "$over" "0" "no report carries more than 16 token keys"
+
+# The slug comes from a remote URL a sandboxed command can rewrite and reaches glab's --repo and
+# an API path: a slug that is not a plain group/project path makes no glab call at all (repo2,
+# whose remote is untouched, still makes its two).
+for bad in 'a/../b' 'a/b?x=1' 'a/b%2Fc' 'a/b c'; do
+  q git -C "$REPO" remote set-url origin "git@gitlab.com:$bad.git"
+  rm -rf "$T/cache"
+  run refresh
+  check "$(grep -c '^glab ' "$CALLS")" "2" "remote slug '$bad': no glab call for it"
+  check "$(grep -c 'proj2' "$CALLS")" "2" "remote slug '$bad': only the untouched repo is queried"
+  case "$(report_for w4)" in *"--token review"*) _fail "remote slug '$bad': no review badge";; *) _pass "remote slug '$bad': no review badge";; esac
+done
+q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 
 echo
 echo "I. the wiring that makes the badges appear and persist"

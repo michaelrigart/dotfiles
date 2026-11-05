@@ -121,12 +121,21 @@ repo_slug() { # repo_slug <repo_root> -> the GitLab slug (group/project) on stdo
   case "$url" in *gitlab.com*) ;; *) return 1 ;; esac
   slug="${url#*gitlab.com}"; slug="${slug#:}"; slug="${slug#/}"; slug="${slug%.git}"
   [ -n "$slug" ] || return 1
+  # The remote URL is repository configuration, which a sandboxed command can rewrite, and the
+  # slug lands in glab's repository argument and in an API path under Michael's token: accept
+  # only a plain group/project path, so nothing can leave the project's own path.
+  case "$slug" in *[!A-Za-z0-9._/-]*|*..*) return 1 ;; esac
   printf '%s\n' "$slug"
 }
 
-mr_table() { # mr_table <repo_root> <force>
-  local root="$1" force="$2" slug cache age now
-  slug="$(repo_slug "$root")" || return 1
+# glab takes the host from the current directory's git repository, whose configuration a
+# sandboxed command can rewrite, and this runs unsandboxed with a token. Both calls therefore
+# name the host: `api` through --hostname, and `mr list` through a full URL for --repo (measured
+# with glab: HOST/OWNER/REPO is read as a namespace, the https:// form pins the host).
+GITLAB_HOST_NAME="gitlab.com"
+
+mr_table() { # mr_table <slug> <force>
+  local slug="$1" force="$2" cache age now
 
   cache="$CACHE_DIR/$(printf '%s' "$slug" | tr '/' '_').tsv"
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
@@ -139,7 +148,7 @@ mr_table() { # mr_table <repo_root> <force>
   # a single --all query drops the oldest rows once a repo passes 100 MRs. The OPEN list on
   # its own keeps the rows a review badge depends on far from the cap.
   local open_json merged_json table
-  open_json="$(glab mr list --repo "$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
+  open_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
   if [ -z "$open_json" ]; then
     # A failed lookup is not evidence that the MRs went away: returning nothing would wipe
     # every review badge at once. A stale table beats a table asserted to be empty.
@@ -149,7 +158,7 @@ mr_table() { # mr_table <repo_root> <force>
   # Merged state is best-effort: if only this half fails the open rows still stand, and the
   # table is not cached, so the miss lasts one cycle instead of a TTL.
   local cacheable=1
-  merged_json="$(glab mr list --repo "$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
+  merged_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
   table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
@@ -193,11 +202,8 @@ for b, m in seen.items():
 # the old MR's pipeline. Prints ok, fail or run, or nothing (no pipeline, a status that is not
 # a badge, or no answer at all).
 pipeline_class() { # pipeline_class <slug> <iid> <force>
-  local slug="$1" iid="$2" force="$3" cache age now status
+  local slug="$1" iid="$2" force="$3" cache age now status json
   case "$iid" in ''|*[!0-9]*) return 0 ;; esac
-  # The slug comes from a remote URL that a sandboxed command can rewrite, and it lands in an
-  # API path under Michael's token: refuse anything that could leave the project's own path.
-  case "$slug" in *[!A-Za-z0-9._/-]*|*..*) return 0 ;; esac
 
   cache="$CACHE_DIR/$(printf '%s' "$slug" | tr '/' '_').mr$iid.pipeline"
   status=""
@@ -207,20 +213,26 @@ pipeline_class() { # pipeline_class <slug> <iid> <force>
     if [ "$age" -lt "$TTL" ]; then status="$(cat "$cache")"; fi
   fi
   if [ -z "$status" ]; then
-    # An empty answer is a failed call or unreadable JSON: a pipeline-less MR prints "none".
-    status="$(glab api "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null \
-      | "$PY" -I -c '
+    # glab prints an API error's JSON body on stdout and exits non-zero (a 401, 404, 429 or
+    # 5xx), so its status is taken on its own, never through a pipe into the parser. An empty
+    # status is a failed call or a body that is not this MR; a pipeline-less MR prints "none".
+    json="$(glab api --hostname "$GITLAB_HOST_NAME" \
+      "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
+    status=""
+    if [ -n "$json" ]; then
+      status="$(printf '%s' "$json" | "$PY" -I -c '
 import json, re, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(1)
-if not isinstance(d, dict):
+if not isinstance(d, dict) or str(d.get("iid")) != sys.argv[1]:
     sys.exit(1)
 p = d.get("head_pipeline")
 s = p.get("status") if isinstance(p, dict) else None
 print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
-' 2>/dev/null)" || status=""
+' "$iid" 2>/dev/null)" || status=""
+    fi
     if [ -n "$status" ]; then
       mkdir -p "$CACHE_DIR"
       printf '%s\n' "$status" > "$cache"
@@ -359,8 +371,9 @@ cmd_refresh() {
     [ -d "$path" ] || continue
     # `spaces` sorts by repo, so one lookup per repo falls out of iterating it.
     if [ "$root" != "$last_root" ]; then
-      table="$(mr_table "$root" "$force" || true)"
       slug="$(repo_slug "$root" || true)"
+      table=""
+      [ -z "$slug" ] || table="$(mr_table "$slug" "$force" || true)"
       last_root="$root"
     fi
     out="$(derive "$path" "$root" "$table")"
