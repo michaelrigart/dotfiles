@@ -55,6 +55,7 @@ cx() { run TAGTEAM_MODE=none TAGTEAM_FIXTURE=/dev/null HERDR_USAGE_TRACE="$TRACE
 
 # tagteam fixtures
 win() { printf '{"pct":%s,"resetsAt":"%s"}' "$1" "$(iso $((NOW + ${2:-10800})))"; }
+R="\"$(iso $((NOW + 10800)))\""
 usage_of() { printf '{"fiveHour":%s,"sevenDay":%s}' "$1" "$2"; }
 status() { # <usage|null> <usageAge> <lastGood|null> <lastGoodAge> [alias-json]
   printf '{"active":{"alias":%s,"usage":%s,"usageAgeSeconds":%s,"lastGoodUsage":%s,"lastGoodAgeSeconds":%s,"usageStatus":"ok"}}' \
@@ -108,7 +109,39 @@ is "usage non-null wins over lastGoodUsage" \
 is "usage and lastGoodUsage both null (token_expired) print a dash" \
   "$(cl '{"active":{"alias":"acct","usage":null,"usageAgeSeconds":null,"lastGoodUsage":null,"lastGoodAgeSeconds":null,"usageStatus":"token_expired"}}')" "acct —"
 
+echo "claude: a window with no reset time ends with its own length"
+bare() { printf '{"pct":%s}' "$1"; }
+lg_five() { cl "$(status null 0 "$(usage_of "$(bare 90)" null)" "$1")"; }
+is "lastGood fiveHour without resetsAt, 1h old: still shown" "$(lg_five 3600)" "acct 90% 5h ⚠ ·1h"
+is "lastGood fiveHour without resetsAt, exactly 5h old: still shown" "$(lg_five 18000)" "acct 90% 5h ⚠ ·5h"
+is "lastGood fiveHour without resetsAt, 6h old: treated as reset, dash" "$(lg_five 21600)" "acct —"
+is "lastGood sevenDay without resetsAt, 6d old: still shown" \
+  "$(cl "$(status null 0 "$(usage_of null "$(bare 70)")" 518400)")" "acct 70% wk ·6d"
+is "lastGood sevenDay without resetsAt, 8d old: dash" \
+  "$(cl "$(status null 0 "$(usage_of null "$(bare 70)")" 691200)")" "acct —"
+is "usage fiveHour without resetsAt, 6h old: dash" \
+  "$(cl "$(status "$(usage_of "$(bare 90)" null)" 21600 null null)")" "acct —"
+is "an expired no-reset window yields to a live one" \
+  "$(cl "$(status null 0 "$(usage_of "$(bare 90)" "$(bare 40)")" 21600)")" "acct 40% wk ·6h"
+is "a known future resetsAt is not cut short by the figure's age" \
+  "$(cl "$(status "$(usage_of "$(win 90 100000)" null)" 21600 null null)")" "acct 90% 5h ⚠ ·6h"
+
+echo "claude: an unknown age is marked ·?"
+is "usageAgeSeconds missing: ·?" "$(cl '{"active":{"alias":"acct","usage":{"sevenDay":{"pct":40,"resetsAt":'"$R"'}}}}')" "acct 40% wk ·?"
+is "usageAgeSeconds a string: ·?" "$(cl '{"active":{"alias":"acct","usage":{"sevenDay":{"pct":40,"resetsAt":'"$R"'}},"usageAgeSeconds":"old"}}')" "acct 40% wk ·?"
+is "usageAgeSeconds null: ·?" "$(cl '{"active":{"alias":"acct","usage":{"sevenDay":{"pct":40,"resetsAt":'"$R"'}},"usageAgeSeconds":null}}')" "acct 40% wk ·?"
+is "usageAgeSeconds negative: ·?" "$(cl '{"active":{"alias":"acct","usage":{"sevenDay":{"pct":40,"resetsAt":'"$R"'}},"usageAgeSeconds":-5}}')" "acct 40% wk ·?"
+is "lastGoodAgeSeconds missing: ·? (not a fresh-looking ·0m)" "$(cl '{"active":{"alias":"acct","usage":null,"lastGoodUsage":{"sevenDay":{"pct":40,"resetsAt":'"$R"'}}}}')" "acct 40% wk ·?"
+is "lastGoodAgeSeconds a string: ·?" "$(cl '{"active":{"alias":"acct","usage":null,"lastGoodUsage":{"sevenDay":{"pct":40,"resetsAt":'"$R"'}},"lastGoodAgeSeconds":"x"}}')" "acct 40% wk ·?"
+is "the warning still precedes ·?" "$(cl '{"active":{"alias":"acct","usage":{"sevenDay":{"pct":85,"resetsAt":'"$R"'}}}}')" "acct 85% wk ⚠ ·?"
+is "unknown age and no reset time: cannot show the figure, dash" "$(cl '{"active":{"alias":"acct","usage":{"sevenDay":{"pct":40}}}}')" "acct —"
+is "no usable window: a dash carries no age mark" "$(cl '{"active":{"alias":"acct","usage":{"sevenDay":{"pct":"x"}}}}')" "acct —"
+
 echo "claude: label and absence"
+is "tagteam's non-usage shape (email/provider, no usage keys): claude dash" \
+  "$(cl '{"active":{"email":"someone@example.invalid","provider":"claude","managed":false}}')" "claude —"
+is "the same shape with an alias: alias dash" \
+  "$(cl '{"active":{"alias":"acct","email":"someone@example.invalid","provider":"claude","managed":false}}')" "acct —"
 is "active null: no Claude segment" "$(cl '{"active":null}')" ""
 is "no alias key: label claude" "$(cl '{"active":{"usage":{"fiveHour":null,"sevenDay":'"$(win 69)"'},"usageAgeSeconds":0}}')" "claude 69% wk"
 is "alias null: label claude" "$(cl "$(plain null)")" "claude 69% wk"
@@ -122,9 +155,10 @@ out="$(run TAGTEAM_FIXTURE="$T/tt.json" TAGTEAM_RC=1)"; rc=$?
 is "tagteam exiting 1: no Claude segment, exit 0" "$out|$rc" "|0"
 out="$(cl 'this is not json {')"; rc=$?
 is "tagteam printing garbage: no Claude segment, exit 0" "$out|$rc" "|0"
+is "garbage leaves stderr empty" "$(cat "$T/stderr")" ""
 out="$(cl '')"; rc=$?
 is "tagteam printing nothing: no Claude segment, exit 0" "$out|$rc" "|0"
-is "garbage leaves stderr empty" "$(cat "$T/stderr")" ""
+is "empty output leaves stderr empty" "$(cat "$T/stderr")" ""
 
 echo "claude: a hung tagteam"
 new_codex
@@ -224,6 +258,10 @@ setm "$(S rollout-big.jsonl)" $((NOW - 90))
 size="$(wc -c < "$(S rollout-big.jsonl)" | tr -d ' ')"
 is "far token_count: the fixture is about 1 MB" "$([ "$size" -gt 1000000 ] && echo big || echo small:$size)" "big"
 is "far token_count: found in a file's first KiB past a line longer than a chunk" "$(cx)" "codex 44% wk"
+reads="$(grep -c '^read ' "$TRACE" || true)"
+biggest="$(awk '$1 == "read" && $2 > m { m = $2 } END { print m + 0 }' "$TRACE")"
+is "far token_count: the 1 MB file is read in at least 16 chunks" "$([ "$reads" -ge 16 ] && echo ok || echo "only $reads reads")" "ok"
+is "far token_count: no single read exceeds 64 KiB (a whole-file read would)" "$([ "$biggest" -gt 0 ] && [ "$biggest" -le 65536 ] && echo ok || echo "largest read $biggest bytes")" "ok"
 
 for pad in 65236 65336 65436 65535 65536 65700 131072; do
   new_codex
@@ -262,6 +300,15 @@ is "a window that has reset is ignored" "$(cx)" "codex 30% 5h"
 new_codex
 tc_line $((NOW - 60)) 90 10080 "$((NOW - 1))" | rollout "$(S rollout-a.jsonl)" $((NOW - 60))
 is "every Codex window reset prints a dash" "$(cx)" "codex —"
+noreset_case() { # <window-minutes> <event age in seconds>
+  new_codex
+  printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":50,"window_minutes":%s},"secondary":null}}}\n' \
+    "$(iso $((NOW - $2)))" "$1" | rollout "$(S rollout-a.jsonl)" $((NOW - $2))
+  cx
+}
+is "Codex window without resets_at, event 1h old (300 min window): shown" "$(noreset_case 300 3600)" "codex 50% 5h ·1h"
+is "Codex window without resets_at, event 6h old (300 min window): treated as reset, dash" "$(noreset_case 300 21600)" "codex —"
+is "Codex window without resets_at, event 6h old (10080 min window): shown" "$(noreset_case 10080 21600)" "codex 50% wk ·6h"
 new_codex
 tc_line $((NOW - 3 * 3600)) 82 10080 "$RESET" | rollout "$(S rollout-a.jsonl)" $((NOW - 3 * 3600))
 is "Codex age comes from the event timestamp (3h) with the warning" "$(cx)" "codex 82% wk ⚠ ·3h"
@@ -286,7 +333,7 @@ is "width: it is the 37-cell line the plan measured" "$len" "37"
 # ---------- malformed input ----------
 echo "malformed tagteam fields"
 CH="$T/codex-none"
-SHAPE='^([^ ]+ (-|[0-9]+% [^ ]+( !)?( \.[0-9]+[mhd])?))?$'
+SHAPE='^([^ ]+ (-|[0-9]+% [^ ]+( !)?( \.([0-9]+[mhd]|\?))?))?$'
 shape_ok() { # <name> <fixture-json>
   local out norm
   out="$(cl "$2")"; local rc=$?
@@ -297,7 +344,6 @@ shape_ok() { # <name> <fixture-json>
     _fail "$1" "rc=$rc out='$out' stderr='$(head -c 200 "$T/stderr")'" "a documented shape, empty stderr, exit 0"
   fi
 }
-R="\"$(iso $((NOW + 10800)))\""
 is "string pct is skipped: dash" "$(cl '{"active":{"alias":"acct","usage":{"fiveHour":{"pct":"high","resetsAt":'"$R"'},"sevenDay":null},"usageAgeSeconds":0}}')" "acct —"
 is "a window without resetsAt is not known to have reset: it shows" "$(cl '{"active":{"alias":"acct","usage":{"fiveHour":{"pct":38.4},"sevenDay":null},"usageAgeSeconds":0}}')" "acct 38% 5h"
 shape_ok "pct true" '{"active":{"alias":"acct","usage":{"fiveHour":{"pct":true,"resetsAt":'"$R"'}}}}'

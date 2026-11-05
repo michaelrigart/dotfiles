@@ -27,8 +27,10 @@ TAGTEAM_TIMEOUT = 3
 CODEX_MAX_AGE = 7 * 86400
 CHUNK = 64 * 1024
 
-# (percent used, window label, reset time as epoch seconds or None when not reported)
-Window = Tuple[float, str, Optional[float]]
+# (percent used, window label, reset time as epoch seconds or None when not reported,
+#  window length in seconds)
+Window = Tuple[float, str, Optional[float], float]
+CLAUDE_WINDOWS = (("fiveHour", "5h", 5 * 3600), ("sevenDay", "wk", 7 * 86400))
 
 
 def number(value) -> Optional[float]:
@@ -42,9 +44,9 @@ def percent(value) -> Optional[float]:
     return pct if pct is not None and 0 <= pct <= MAX_PCT else None
 
 
-def seconds(value) -> float:
+def seconds(value) -> Optional[float]:
     n = number(value)
-    return max(0.0, n) if n is not None else 0.0
+    return n if n is not None and n >= 0 else None
 
 
 def parse_iso(value) -> Optional[float]:
@@ -79,22 +81,29 @@ def fmt_age(age: float) -> str:
     return "%dd" % (secs // 86400)
 
 
-def pick_window(windows: List[Window], now: float) -> Optional[Tuple[float, str]]:
-    live = [w for w in windows if w[2] is None or w[2] > now]
+def pick_window(windows: List[Window], now: float, age: Optional[float]) -> Optional[Tuple[float, str]]:
+    def live(window: Window) -> bool:
+        if window[2] is not None:
+            return window[2] > now
+        return age is not None and age <= window[3]
+
+    live = [w for w in windows if live(w)]
     if not live:
         return None
     best = max(live, key=lambda w: w[0])
     return best[0], best[1]
 
 
-def render(label: str, picked: Optional[Tuple[float, str]], age: float, force_age: bool = False) -> str:
+def render(label: str, picked: Optional[Tuple[float, str]], age: Optional[float], force_age: bool = False) -> str:
     if picked is None:
         return "%s %s" % (label, DASH)
     pct, win = picked
     out = "%s %d%% %s" % (label, int(pct + 0.5), win)
     if pct >= WARN_AT:
         out += WARN
-    if force_age or age > STALE_AFTER:
+    if age is None:
+        out += " ·?"
+    elif force_age or age > STALE_AFTER:
         out += " ·" + fmt_age(age)
     return out
 
@@ -134,13 +143,13 @@ def claude_windows(block) -> List[Window]:
     windows: List[Window] = []
     if not isinstance(block, dict):
         return windows
-    for key, label in (("fiveHour", "5h"), ("sevenDay", "wk")):
+    for key, label, length in CLAUDE_WINDOWS:
         entry = block.get(key)
         if not isinstance(entry, dict):
             continue
         pct = percent(entry.get("pct"))
         if pct is not None:
-            windows.append((pct, label, parse_iso(entry.get("resetsAt"))))
+            windows.append((pct, label, parse_iso(entry.get("resetsAt")), length))
     return windows
 
 
@@ -152,12 +161,12 @@ def claude_segment(now: float) -> Optional[str]:
     alias = active.get("alias")
     label = alias if isinstance(alias, str) and alias.strip() and alias.isprintable() else "claude"
     if active.get("usage") is not None:
-        picked = pick_window(claude_windows(active["usage"]), now)
-        return render(label, picked, seconds(active.get("usageAgeSeconds")))
+        age = seconds(active.get("usageAgeSeconds"))
+        return render(label, pick_window(claude_windows(active["usage"]), now, age), age)
     if active.get("lastGoodUsage") is not None:
-        picked = pick_window(claude_windows(active["lastGoodUsage"]), now)
-        return render(label, picked, seconds(active.get("lastGoodAgeSeconds")), force_age=True)
-    return "%s %s" % (label, DASH)
+        age = seconds(active.get("lastGoodAgeSeconds"))
+        return render(label, pick_window(claude_windows(active["lastGoodUsage"]), now, age), age, force_age=True)
+    return render(label, None, 0)
 
 
 def window_label(minutes: float) -> Optional[str]:
@@ -185,7 +194,7 @@ def codex_windows(rate_limits: dict) -> List[Window]:
         minutes = number(entry.get("window_minutes"))
         label = window_label(minutes) if minutes is not None else None
         if pct is not None and label is not None:
-            windows.append((pct, label, number(entry.get("resets_at"))))
+            windows.append((pct, label, number(entry.get("resets_at")), minutes * 60))
     return windows
 
 
@@ -214,7 +223,9 @@ def last_token_count(path: str):
             while pos > 0:
                 start = max(0, pos - CHUNK)
                 handle.seek(start)
-                lines = (handle.read(pos - start) + partial).split(b"\n")
+                block = handle.read(pos - start)
+                trace("read %d" % len(block))
+                lines = (block + partial).split(b"\n")
                 pos = start
                 if pos > 0:
                     partial, lines = lines[0], lines[1:]
@@ -248,13 +259,13 @@ def rollout_files(home: str, now: float) -> List[Tuple[float, str]]:
     return files
 
 
-def trace(path: str) -> None:
+def trace(entry: str) -> None:
     target = os.environ.get("HERDR_USAGE_TRACE")
     if not target:
         return
     try:
         with open(target, "a", encoding="utf-8") as handle:
-            handle.write(path + "\n")
+            handle.write(entry + "\n")
     except OSError:
         pass
 
@@ -272,7 +283,8 @@ def codex_segment(now: float) -> Optional[str]:
     if best is None:
         return None
     stamp, rate_limits = best
-    return render("codex", pick_window(codex_windows(rate_limits), now), now - stamp)
+    age = max(0.0, now - stamp)
+    return render("codex", pick_window(codex_windows(rate_limits), now, age), age)
 
 
 def main() -> None:
