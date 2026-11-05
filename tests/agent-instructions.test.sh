@@ -233,13 +233,18 @@ need_flat global.md '- **Merge requests.** Load the `merge-request` skill before
 # The driver may open wt checkouts (spec 2026-11-03-driver-wt, section 5).
 need_flat global.md 'The driver may open one per independent line of work, as `wt --no-focus <branch> <local-branch>` (a remote start point sets an upstream), and names each checkout it opened in its report; never in the dotfiles.' \
   "global.md lets the driver open a wt checkout, on its conditions"
-need_flat global.md 'Only Michael tears one down: never offer or run `wt-rm`.' "global.md keeps teardown Michael's"
+need_flat global.md 'Never run `wt-rm` or `git worktree remove`: when a line is done (merged or abandoned), the report gives Michael the `wt-rm <branch>` command.' \
+  "global.md keeps teardown Michael's and has the report hand him the wt-rm command"
+need_flat global.md 'It hands the line to that session and keeps only coordination (briefing, rulings, the report), never the line'"'"'s work.' \
+  "global.md has the driver hand a wt line to the checkout's session"
 if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'Never create one'; then
   _fail "global.md no longer bans creating a wt worktree" "still present"
 else _pass "global.md no longer bans creating a wt worktree"; fi
 need_flat claude-code.md '`docker`, `basecamp`, `herdr`, `wt`, `xreview` and `review` are declared unsandboxed' \
   "claude-code.md lists wt among the excluded tools that must lead the call"
-need_flat claude-code.md 'line passes `-C <checkout>` to every `xreview` call' "claude-code.md carries the xreview -C rule"
+need_flat claude-code.md 'For a `wt` line, the driver'"'"'s own `xreview` calls pass `-C <checkout>`.' "claude-code.md carries the xreview -C rule"
+need_flat claude-code.md 'Find the checkout'"'"'s session in `ListAgents` (named after it) and `SendMessage` it the brief' \
+  "claude-code.md says how to dispatch a wt line to its session"
 need_flat claude-code.md 'never create a worktree for one of its tasks' "claude-code.md keeps the parallel-tasks worktree rule"
 # Codex-only text moved to codex.md.
 for gone in "**Skills don't change roles.**" "On Codex's side"; do

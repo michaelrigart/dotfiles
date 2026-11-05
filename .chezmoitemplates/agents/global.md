@@ -5,8 +5,7 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 
 ## Machine and toolchain
 
-- **Dotfiles:** managed by chezmoi (`~/.local/share/chezmoi`); edit the source, never a deployed
-  file.
+- **Dotfiles:** chezmoi-managed (`~/.local/share/chezmoi`); edit the source, never a deployed file.
 - **Strict XDG:** config `~/.config`, data `~/.local/share`, scripts `~/.local/bin` (on `$PATH`),
   cache `~/.cache`, state `~/.local/state`; `$HOME` stays clean.
 - **Shell and tools:** prefer `rg` and `fd`; there is no `bat`.
@@ -20,11 +19,13 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
 - **`wt` worktrees.** `wt <branch>` makes a sibling checkout `~/Code/<Org>/<repo>-<branch>` with
-  its own Herdr workspace; worktrees share one database, Redis and storage. The driver may open one
-  per independent line of work, as `wt --no-focus <branch> <local-branch>` (a remote start point
-  sets an upstream), and names each checkout it opened in its report; never in the dotfiles. Only
-  Michael tears one down: never offer or run `wt-rm`. If he explicitly asks, use `command wt-rm
-  <branch>`, never `git worktree remove`. A harness worktree follows its own tool's lifecycle.
+  its own Herdr workspace and an agent session in it; worktrees share one database, Redis and
+  storage. The driver may open one per independent line of work, as `wt --no-focus <branch>
+  <local-branch>` (a remote start point sets an upstream), and names each checkout it opened in its
+  report; never in the dotfiles. It hands the line to that session and keeps only coordination
+  (briefing, rulings, the report), never the line's work. Never run `wt-rm` or `git worktree
+  remove`: when a line is done (merged or abandoned), the report gives Michael the `wt-rm <branch>`
+  command. A harness worktree follows its own tool's lifecycle.
 - **Backups:** Borg through Vorta (runbook: the vault's Backups note) skips uncommitted work in a
   `wt` worktree, so checkpoint commits are the protection.
 
@@ -96,8 +97,7 @@ specs and merges; in between, the driver proceeds on its own.
 
 - **Asking.** Ask only for a real decision: a design choice, a trade-off outside the approved spec,
   or an irreversible action. Otherwise take the sensible default and say which one you took.
-- **Execution** is always subagent-driven. Move on to the next task or plan in a series without
-  asking.
+- **Execution** is always subagent-driven. Move to the next task or plan in a series without asking.
 - **Sizing.** Size the process to the change, never the quality bar. A small change (a fix, config
   change or contained addition: under ~150 lines of non-test code, no open design choice, no safety
   boundary such as permissions, sandbox, guards, auth, secrets, deletion, push or merge tooling,
@@ -147,4 +147,3 @@ capability limits.
   Otherwise neither tool addresses the other on its own.
 - **When Michael relays by hand:** evaluate the input, then report your conclusion, any remaining
   disagreement, the practical consequences and a recommendation, and stop. Reply without tags unless
-  he asks for a relay-ready handoff, which Claude Code wraps in `<from-claude-code>`.
