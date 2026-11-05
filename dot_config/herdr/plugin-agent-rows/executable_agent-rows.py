@@ -375,19 +375,24 @@ def run(transport, clock, sleep, stop, log=None):
                     live = _resync(transport, rows, live, send)
             except Stopping:
                 raise
-            except EventsLost as exc:
-                # The server is up but dropped events: rebuild from a fresh snapshot, once.
-                log("events lost: %s" % (exc,))
-                live.close()
-                live = None
-                live = _bootstrap(transport, rows, send)
-            except Exception as exc:
+            except EOFError as exc:
                 # A closed subscription is the server shutting down. Whatever answers next is a
                 # new server whose startup hook starts its own worker (with the code now on
                 # disk), so this one clears what it can and ends rather than attach to it.
                 log("connection lost: %r; exiting" % (exc,))
                 live.close()
                 live = None
+            except Exception as exc:
+                # Dropped events, a timed-out resync, a malformed event line: the server may
+                # well be up, so rebuild from a fresh snapshot, once and without waiting. A
+                # server that is really gone fails this bootstrap at once, and the worker ends.
+                log("%r; resyncing" % (exc,))
+                live.close()
+                live = None
+                try:
+                    live = _bootstrap(transport, rows, send)
+                except Exception as boot:
+                    log("resync failed: %r; exiting" % (boot,))
     except Stopping:
         pass
     except Exception as exc:

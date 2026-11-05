@@ -134,7 +134,8 @@ labels go at the next server start. That is accepted for a rollback path.
   new pane ID (`herdr --skill`: "A pane moved into another workspace receives a new
   workspace-qualified pane ID"), so a move remaps the worker's state to the new ID, or resyncs,
   and re-reports that pane's label; frames only ever go to IDs the worker currently knows to be
-  live. It resyncs from `session.snapshot` at start and on `events_lost`. A `pane_agent_detected`
+  live. It resyncs from `session.snapshot` at start and on `events_lost` or any other loop failure (one bootstrap; if that fails too the
+  worker exits). A `pane_agent_detected`
   that carries a release (`agent` null and/or `released`) removes the pane's state. With no
   working pane it does no periodic work at all.
 - **Wording.** Report a state label for every agent pane so `blocked` reads `needs you`; other

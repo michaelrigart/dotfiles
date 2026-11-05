@@ -11,7 +11,7 @@
 # returns; the worker owns the spinner frames (a `spin` pane token with a short TTL) and the
 # `blocked` -> "needs you" state label (reported under its own source, dev.agent-rows.labels),
 # and exits as soon as its subscription closes, which is the server shutting down. Only its first
-# connection retries; a restarted server's own startup hook launches a worker with the code now
+# connection keeps retrying (any other failure costs one fresh bootstrap); a restarted server's own startup hook launches a worker with the code now
 # on disk.
 id = "dev.agent-rows"
 name = "Agent rows"

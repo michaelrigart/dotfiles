@@ -101,6 +101,7 @@ class FakeTransport:
         self.refuse = False
         self.vanished = set()    # panes the server no longer knows: it answers their reports with an error
         self.refusing = {}       # pane_id -> error code: it answers that pane's reports with that error
+        self.snap_errors = {}    # snapshot call number (0-based) -> exception that call raises
     def request(self, method, params):
         self.requests.append((method, params))
         if self.refuse:
@@ -110,6 +111,10 @@ class FakeTransport:
         if method == "pane.report_metadata" and params["pane_id"] in self.vanished:
             return {"id": "x", "error": {"code": "pane_not_found", "message": "no such pane"}}
         if method == "session.snapshot":
+            err = self.snap_errors.pop(self.snap_i, None)
+            if err is not None:
+                self.snap_i += 1
+                raise err
             s = self.snapshots[min(self.snap_i, len(self.snapshots) - 1)]
             self.snap_i += 1
             return {"id": "x", "result": {"type": "session_snapshot", "snapshot": s}}
@@ -522,6 +527,48 @@ t0 = FakeTransport([snap(P("w1:p1"))]); t0.refuse = True
 rc = ar.run(t0, c0, c0.sleep, stop0)
 check("the first connect retries for 10 s on the fake clock, then run returns 0",
       rc == 0 and 10.0 <= c0.t <= 10.6 and len([m for m, _ in t0.requests if m == "events.subscribe"]) >= 5, (rc, c0.t))
+
+print("L2. A failure that is not the subscription closing: one bootstrap, then keep going")
+# The server is probably up. A transient failure must not stop the spinner until the next server
+# start, and a socket that is really gone fails that one bootstrap at once.
+lifecycle_subs = lambda t: len([s for s in t.subs if len(s.entries) == 3])
+cut = {}
+def trouble(make, refuse=False):
+    def step(sub):
+        cut["n"] = len(cut["tr"].requests); cut["t"] = cut["clock"].t
+        cut["tr"].refuse = refuse
+        sub.queue.append(make())
+    return step
+def go_trouble(step, snapshots, snap_errors=None):
+    c, stop = FakeClock(), threading.Event()
+    t = FakeTransport(snapshots); cut["tr"], cut["clock"] = t, c
+    t.snap_errors = dict(snap_errors or {})
+    f = FakeSelect(c, stop, [noop, step, noop, noop, noop, noop, noop])
+    real = ar.select; ar.select = f
+    try: rc = ar.run(t, c, c.sleep, stop)
+    finally: ar.select = real
+    return rc, t, c
+after_cut = lambda t: [p for m, p in t.requests[cut["n"]:] if m == "pane.report_metadata"]
+spun = lambda t, pid: len([p for p in after_cut(t) if p["pane_id"] == pid and (p.get("tokens") or {}).get("spin")])
+
+# (i) a resync whose snapshot times out once
+one = snap(P("w1:p1", "working"))
+two = snap(P("w1:p1", "working"), P("w1:p5"))
+rc, tr, clock = go_trouble(lambda sub: (cut.update(n=len(cut["tr"].requests)), sub.queue.append([detected_ev("w1:p5")])),
+                           [one, one, two], {2: socket.timeout("timed out")})
+check("a resync whose snapshot times out once: one more bootstrap, no waiting", lifecycle_subs(tr) == 2 and clock.t < 5, (lifecycle_subs(tr), clock.t))
+check("the worker keeps spinning afterwards", spun(tr, "w1:p1") >= 3, spun(tr, "w1:p1"))
+check("and the pane the failed resync was about is known after the bootstrap", ids(tr.subs[-1]) == ["w1:p1", "w1:p5"], [ids(s) for s in tr.subs])
+# (ii) events_lost, then a bootstrap that fails
+rc, tr, clock = go_trouble(trouble(lambda: ar.EventsLost("events_lost"), refuse=True), [one])
+post = tr.requests[cut["n"]:]
+check("events_lost then a failing bootstrap: run returns 0 without retrying or waiting",
+      rc == 0 and clock.t == cut["t"] and [m for m, _ in post if m == "events.subscribe"] == ["events.subscribe"], (rc, clock.t - cut["t"], [m for m, _ in post]))
+check("and the shown frame is cleared best-effort", cleared(post) == ["w1:p1"], post)
+# (iii) a malformed event line
+rc, tr, clock = go_trouble(trouble(lambda: json.JSONDecodeError("bad", "x", 0)), [one])
+check("a malformed event line: one more bootstrap, no waiting", lifecycle_subs(tr) == 2 and clock.t < 5, (lifecycle_subs(tr), clock.t))
+check("and the worker keeps spinning afterwards", spun(tr, "w1:p1") >= 3, spun(tr, "w1:p1"))
 
 print("M. SIGTERM")
 stop_box = {}

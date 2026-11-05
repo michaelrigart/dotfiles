@@ -76,9 +76,9 @@ Read it before any task; section numbers below (§1–§5) are the spec's.
 
 1. **Many agent panes.** The live session has 39; the worker must subscribe to all of them in one
    request and keep spinning only the working ones. Pinned in Task 4 (`many panes` case).
-2. **Server restart under a running worker.** The subscription hits EOF and every reconnect is
-   refused; the worker must clear what it can, release its lock and exit, so the next server
-   start's hook can launch a fresh one. Pinned in Task 4 (`server gone` case).
+2. **Server restart under a running worker.** The subscription hits EOF, whether or not a
+   reconnect would succeed; the worker must clear what it can, release its lock and exit, so the
+   next server start's hook can launch a fresh one. Pinned in Task 4 (`server gone` case).
 3. **A hung tagteam.** The tab bar entry has a timeout; a stuck `tagteam` must not take the Codex
    figure down with it. Pinned in Task 3 (`tagteam hangs` case).
 4. **A large rollout.** A ~1 MB file whose last `token_count` is near its start must be read in
@@ -319,7 +319,7 @@ Output rules (spec §5, exact):
   - `class Transport`: `request(method: str, params: dict) -> dict` (one connection per call,
     returns the parsed response line) and `subscribe(subscriptions: list) -> Subscription`, whose
     `fileno()`, `read_events() -> list[dict]` (complete lines available now; raises `EOFError` on
-    close or on an error line such as `events_lost`) and `close()` the loop uses.
+    close and `EventsLost` on an error line such as `events_lost`) and `close()` the loop uses.
   - `class Rows`: pure state. `apply_snapshot(snapshot: dict) -> Effects`,
     `apply_event(event: dict) -> Effects`, `frame_effects(frame: str) -> Effects`; `Effects` holds
     `reports: list[dict]` (ready `pane.report_metadata` params) and `resubscribe: bool`.
@@ -342,8 +342,11 @@ Output rules (spec §5, exact):
   subscription for `FRAME_S` while any pane works, with no timeout otherwise; only the first
   connect retries (for 10 s, then clear and return 0); a plain subscription close (`EOFError`) is
   the server shutting down, so clear shown frames best-effort and return 0 at once, leaving the
-  next server start's hook to launch a fresh worker; only an error line (`EventsLost`) resyncs,
-  with one new bootstrap; on SIGTERM/SIGINT clear shown frames and return 0. One instance: `fcntl.flock(LOCK_EX |
+  next server start's hook to launch a fresh worker; any other exception in the loop (an error
+  line, a resync that times out or is refused, a malformed event line) is logged and answered with
+  one new bootstrap and no wait, and if that bootstrap fails too, clear best-effort and return 0
+  (a socket that is really gone fails it at once, so the worker never attaches to a restarted
+  server); on SIGTERM/SIGINT clear shown frames and return 0. One instance: `fcntl.flock(LOCK_EX |
   LOCK_NB)` on `<state dir>/agent-rows.lock` (`$HERDR_PLUGIN_STATE_DIR`, else
   `~/.local/state/herdr/plugins/dev.agent-rows`); a second worker exits 0 at once. Log to
   `<state dir>/agent-rows.log`, truncated when it passes 256 KiB. Socket path from
@@ -373,6 +376,9 @@ Output rules (spec §5, exact):
   - **server gone**: EOF, whether or not a reconnect would succeed → shown frames cleared
     best-effort and `run` returns 0 at once, without a second bootstrap; the first connect alone
     retries, within the 10 s budget on the fake clock;
+  - **transient failures**: a resync whose snapshot times out once, and a malformed event line,
+    each cost one bootstrap with no wait and the worker keeps spinning; `events_lost` followed by
+    a failing bootstrap clears and returns 0;
   - SIGTERM while 2 panes spin → both cleared, return 0;
   - a second worker against a held lock exits 0 without making a request;
   - `Transport` framing through `socket.socketpair()`: one request line out, one response line
