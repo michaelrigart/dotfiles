@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented on `herdr-ui-refresh` (no MR). Completed 2026-11-06: do not run this plan again; its execution notes bind that run only.
 **Goal:** Direction B of the herdr refresh: pinned Tokyo Night palette and chrome, a spinner and
 "needs you" wording on agent rows, pipeline status on MR badges, and Claude/Codex usage in the tab
 bar.

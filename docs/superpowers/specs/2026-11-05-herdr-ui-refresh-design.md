@@ -1,6 +1,6 @@
 # Herdr UI refresh: Tokyo Night, live signals
 
-**Status:** In progress
+**Status:** Implemented on `herdr-ui-refresh` (dotfiles: no MR; the pushed branch is the end)
 **Date:** 2026-11-05
 **Branch:** `herdr-ui-refresh` (dotfiles: the pushed branch is the end, no MR)
 **Sign-off:** Michael, 2026-11-05, after Codex's spec review approved it in round 3
