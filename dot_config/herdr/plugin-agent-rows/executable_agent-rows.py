@@ -22,13 +22,14 @@ import time
 
 SOURCE = "dev.agent-rows"
 TOKEN = "spin"
-FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 FRAME_S = 0.14
 TTL_MS = 1500
 LABELS = {"blocked": "needs you"}
 
 RECONNECT_S = 0.5
 GIVE_UP_S = 10.0
+LOCK_WAIT_S = GIVE_UP_S + 2.0
 LOG_MAX = 256 * 1024
 LIFECYCLE = [{"type": "pane.agent_detected"}, {"type": "pane.closed"}, {"type": "pane.moved"}]
 
@@ -71,6 +72,11 @@ class Rows:
     def reset_connection(self):
         self.labelled.clear()
         self.covered = frozenset()
+
+    def forget(self, pane_id):
+        self.status.pop(pane_id, None)
+        self.labelled.discard(pane_id)
+        self.shown.discard(pane_id)
 
     def working(self):
         return any(s == "working" for s in self.status.values())
@@ -122,14 +128,15 @@ class Rows:
                     self._clear_if_shown(pane_id, reports)
         elif kind == "pane_agent_detected":
             pane_id = data.get("pane_id")
-            if pane_id and pane_id not in self.status:
+            if pane_id:
+                # A detection for a known pane is a new agent in the same pane (a restart):
+                # nothing the dead one was doing carries over.
+                self._clear_if_shown(pane_id, reports)
+                self.labelled.discard(pane_id)
                 self.status[pane_id] = "unknown"
                 self._label(pane_id, reports)
         elif kind == "pane_closed":
-            pane_id = data.get("pane_id")
-            self.status.pop(pane_id, None)
-            self.labelled.discard(pane_id)
-            self.shown.discard(pane_id)
+            self.forget(data.get("pane_id"))
         elif kind == "pane_moved":
             previous = data.get("previous_pane_id")
             pane = data.get("pane") or {}
@@ -137,8 +144,9 @@ class Rows:
             if new_id and previous in self.status:
                 status = self.status.pop(previous)
                 self.status[new_id] = pane.get("agent_status") or status
+                # The old id no longer names this pane for anyone else: send it nothing.
                 self.labelled.discard(previous)
-                self._clear_if_shown(previous, reports)
+                self.shown.discard(previous)
                 self._label(new_id, reports)
             elif new_id and new_id not in self.status and pane.get("agent"):
                 self.status[new_id] = pane.get("agent_status") or "unknown"
@@ -252,13 +260,17 @@ class Transport:
 
 
 def _send(transport, log, effects):
+    """Send every report; returns the pane ids whose report the server refused."""
+    refused = []
     for params in effects.reports:
         try:
             resp = transport.request("pane.report_metadata", params)
             if resp.get("error"):
+                refused.append(params["pane_id"])
                 log("report for %s refused: %s" % (params["pane_id"], json.dumps(resp["error"])[:200]))
         except Exception as exc:
             log("report for %s failed: %r" % (params["pane_id"], exc))
+    return refused
 
 
 def _snapshot(transport):
@@ -324,7 +336,7 @@ def run(transport, clock, sleep, stop, log=None):
     next_frame = 0.0
 
     def send(effects):
-        _send(transport, log, effects)
+        return _send(transport, log, effects)
 
     try:
         live = _connect(transport, rows, send, stop, clock, sleep, log, clock())
@@ -337,12 +349,15 @@ def run(transport, clock, sleep, stop, log=None):
                 if ready:
                     for event in live.read_events():
                         send(rows.apply_event(event))
-                    if rows.agent_panes() != rows.covered:
-                        live = _resync(transport, rows, live, send)
                 if rows.working() and clock() + 1e-6 >= next_frame:
-                    send(rows.frame_effects(FRAMES[tick % len(FRAMES)]))
+                    # A pane the server no longer knows (its tab or workspace closed without a
+                    # pane_closed) refuses its frame: drop it, and the resync below confirms.
+                    for pane_id in send(rows.frame_effects(FRAMES[tick % len(FRAMES)])):
+                        rows.forget(pane_id)
                     tick += 1
                     next_frame = clock() + FRAME_S
+                if rows.agent_panes() != rows.covered:
+                    live = _resync(transport, rows, live, send)
             except Stopping:
                 raise
             except Exception as exc:
@@ -394,6 +409,19 @@ def acquire_lock(directory):
     return handle
 
 
+def wait_for_lock(directory, clock, sleep):
+    """Take the lock, waiting a little longer than an old worker needs to give up (a server
+    restart near its deadline must not leave no worker); None if it stays held."""
+    deadline = clock() + LOCK_WAIT_S
+    while True:
+        lock = acquire_lock(directory)
+        if lock is not None:
+            return lock
+        if clock() >= deadline:
+            return None
+        sleep(RECONNECT_S)
+
+
 def install_signal_handlers(stop):
     def handler(signum, frame):
         if stop.is_set():
@@ -405,7 +433,7 @@ def install_signal_handlers(stop):
     signal.signal(signal.SIGINT, handler)
 
 
-def main(argv=None, env=None, transport=None):
+def main(argv=None, env=None, transport=None, clock=time.monotonic, sleep=time.sleep):
     argv = sys.argv[1:] if argv is None else argv
     env = os.environ if env is None else env
     command = argv[0] if argv else ""
@@ -419,7 +447,7 @@ def main(argv=None, env=None, transport=None):
         return 2
     directory = state_dir(env)
     os.makedirs(directory, exist_ok=True)
-    lock = acquire_lock(directory)
+    lock = wait_for_lock(directory, clock, sleep)
     if lock is None:
         return 0
     log = Log(os.path.join(directory, "agent-rows.log"))
@@ -432,7 +460,7 @@ def main(argv=None, env=None, transport=None):
     stop = threading.Event()
     install_signal_handlers(stop)
     log("worker started")
-    code = run(transport, time.monotonic, time.sleep, stop, log)
+    code = run(transport, clock, sleep, stop, log)
     log("worker exiting")
     return code
 

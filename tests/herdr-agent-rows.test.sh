@@ -44,7 +44,17 @@ cat > "$T/t.py" <<'PY'
 import ast, fcntl, importlib.machinery, importlib.util, json, os, signal, socket, sys, tempfile, threading
 
 PLUGIN = sys.argv[1]
-loader = importlib.machinery.SourceFileLoader("agent_rows", PLUGIN)
+
+# run.sh has no per-suite timeout and holds a machine-wide lock: a loop that stops terminating
+# (a bootstrap that keeps resubscribing, a give-up that never fires) must FAIL, not hang.
+HARNESS_BUDGET_S = 15
+def _too_slow(signum, frame):
+    print("  FAIL: the harness did not finish within %d s (a loop under test never terminated)" % HARNESS_BUDGET_S, flush=True)
+    os._exit(1)
+signal.signal(signal.SIGALRM, _too_slow)
+signal.alarm(HARNESS_BUDGET_S)
+
+loader =importlib.machinery.SourceFileLoader("agent_rows", PLUGIN)
 spec = importlib.util.spec_from_loader("agent_rows", loader)
 ar = importlib.util.module_from_spec(spec)
 loader.exec_module(ar)
@@ -85,10 +95,13 @@ class FakeTransport:
         self.requests = []
         self.subs = []
         self.refuse = False
+        self.vanished = set()    # panes the server no longer knows: it answers their reports with an error
     def request(self, method, params):
         self.requests.append((method, params))
         if self.refuse:
             raise ConnectionRefusedError("refused")
+        if method == "pane.report_metadata" and params["pane_id"] in self.vanished:
+            return {"id": "x", "error": {"code": "pane_not_found", "message": "no such pane"}}
         if method == "session.snapshot":
             s = self.snapshots[min(self.snap_i, len(self.snapshots) - 1)]
             self.snap_i += 1
@@ -167,7 +180,10 @@ def noop(sub): pass
 LABELS = {"blocked": "needs you"}
 
 print("B. Constants")
-check("frames are ten braille cells", ar.FRAMES == "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", ar.FRAMES)
+check("frames are ten braille cells", ar.FRAMES == "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f", ar.FRAMES)
+src_line = [l for l in open(PLUGIN, encoding="utf-8").read().splitlines() if l.startswith("FRAMES = ")]
+check("FRAMES is written as u-escapes in the source, never as literal glyphs",
+      src_line == ['FRAMES = "\\u280b\\u2819\\u2839\\u2838\\u283c\\u2834\\u2826\\u2827\\u2807\\u280f"'] and all(ord(ch) < 128 for ch in open(PLUGIN, encoding="utf-8").read()), src_line)
 check("constants", (ar.SOURCE, ar.TOKEN, ar.FRAME_S, ar.TTL_MS, ar.LABELS)
       == ("dev.agent-rows", "spin", 0.14, 1500, LABELS), (ar.SOURCE, ar.TOKEN, ar.FRAME_S, ar.TTL_MS, ar.LABELS))
 
@@ -244,8 +260,19 @@ check("subscriptions(): 3 lifecycle entries plus one status entry per agent pane
 eff = rows.apply_event(status_ev("w9:p9", "working"))
 check("a status event for an unknown pane is ignored",
       eff.reports == [] and {r["pane_id"] for r in rows.frame_effects("x").reports} == {"w1:p2"}, eff.reports)
+rows.mark_covered(rows.agent_panes())
 eff = rows.apply_event({"event": "pane.created", "data": {"type": "pane_created"}})
-check("an unrelated event does nothing", eff.reports == [] and eff.resubscribe is True, (eff.reports, eff.resubscribe))
+check("an unrelated event reports nothing and asks for no resubscribe", eff.reports == [] and eff.resubscribe is False, (eff.reports, eff.resubscribe))
+rows3 = ar.Rows()
+rows3.apply_snapshot(snap(P("w1:p1", "working")))
+rows3.mark_covered(["w1:p1"])
+rows3.frame_effects("x")
+eff = rows3.apply_event(detected_ev("w1:p1"))
+check("a detection for a known pane (agent restarted) clears its frame and relabels it",
+      [(r["pane_id"], "state_labels" in r, r.get("tokens")) for r in eff.reports]
+      == [("w1:p1", False, {"spin": None}), ("w1:p1", True, None)], eff.reports)
+check("and resets its status, so the dead agent's `working` does not carry over",
+      rows3.frame_effects("y").reports == [] and eff.resubscribe is False, rows3.status)
 rows2 = ar.Rows()
 eff = rows2.apply_event({"event": "pane.agent_detected", "data": {"pane_id": "w1:p1", "agent": "claude"}})
 check("the kind falls back to the line's event name, dotted or not", [r["pane_id"] for r in eff.reports] == ["w1:p1"], eff.reports)
@@ -275,7 +302,8 @@ post = [p for m, p in tr.requests[cut["n"]:] if m == "pane.report_metadata"]
 check("frames reach the new id after the move", len([p for p in post if p["pane_id"] == "w2:p1" and p.get("tokens", {}).get("spin")]) >= 3, post)
 check("no frame goes to the old id after the move",
       not [p for p in post if p["pane_id"] == "w1:p1" and p.get("tokens", {}).get("spin")], post)
-check("the old id's frame is cleared", [p["tokens"] for p in post if p["pane_id"] == "w1:p1"] == [{"spin": None}], post)
+check("no request after the move names the old id (no clear, no subscription entry)",
+      not [m for m, p in tr.requests[cut["n"]:] if '"w1:p1"' in json.dumps(p)], tr.requests[cut["n"]:])
 check("the new id gets its label again", len([p for p in post if p["pane_id"] == "w2:p1" and "state_labels" in p]) == 1, post)
 check("the next subscription names w2:p1, not w1:p1", ids(tr.subs[-1]) == ["w2:p1"], [ids(s) for s in tr.subs])
 check("the old subscription is closed", all(s.closed for s in tr.subs[:-1]), [s.closed for s in tr.subs])
@@ -285,9 +313,10 @@ rows.apply_snapshot(snap(P("w1:p1", "working")))
 rows.mark_covered(["w1:p1"])
 rows.frame_effects("x")
 eff = rows.apply_event(moved_ev("w1:p1", "w2:p1"))
-check("the move itself relabels the new id and clears the old one, before any resync",
-      [(r["pane_id"], "state_labels" in r) for r in eff.reports] == [("w1:p1", False), ("w2:p1", True)] and eff.resubscribe is True,
+check("the move itself relabels the new id and reports nothing to the old one, before any resync",
+      [(r["pane_id"], "state_labels" in r) for r in eff.reports] == [("w2:p1", True)] and eff.resubscribe is True,
       eff.reports)
+check("and the old id is no longer shown (a later clear_all names only live ids)", rows.clear_all().reports == [], rows.shown)
 
 print("H. pane_closed")
 cut = {}
@@ -306,6 +335,26 @@ post = [p for m, p in tr.requests[cut["n"]:] if m == "pane.report_metadata"]
 check("nothing at all is sent to a closed pane", not [p for p in post if p["pane_id"] == "w1:p1"], post)
 check("the other pane keeps spinning", len([p for p in post if p["pane_id"] == "w2:p1" or p["pane_id"] == "w1:p2"]) >= 2, post)
 check("the next subscription drops the closed pane", ids(tr.subs[-1]) == ["w1:p2"], [ids(s) for s in tr.subs])
+
+print("H2. A pane that vanished without pane_closed")
+cut = {}
+def vanish(sub): cut["n"] = len(cut["tr"].requests); cut["tr"].vanished.add("w1:p1")
+def go_vanish():
+    c, stop = FakeClock(), threading.Event()
+    both = snap(P("w1:p1", "working"), P("w1:p2", "working"))
+    t = FakeTransport([both, both, snap(P("w1:p2", "working"))]); cut["tr"] = t
+    f = FakeSelect(c, stop, [noop, vanish, noop, noop, noop, noop])
+    real = ar.select; ar.select = f
+    try: ar.run(t, c, c.sleep, stop)
+    finally: ar.select = real
+    return t
+tr = go_vanish()
+post = tr.requests[cut["n"]:]
+refused = [p for m, p in post if m == "pane.report_metadata" and p["pane_id"] == "w1:p1"]
+check("a refused frame is tried once, not on every tick", len(refused) == 1, refused)
+check("the loop resyncs after the refusal", [m for m, _ in post].count("session.snapshot") >= 1
+      and ids(tr.subs[-1]) == ["w1:p2"], [ids(s) for s in tr.subs])
+check("the other pane keeps spinning", len(frames(tr, "w1:p2")) >= 5, len(frames(tr, "w1:p2")))
 
 print("I. events_lost / EOF: resubscribe and a fresh snapshot")
 def lose(sub): sub.queue.append(EOFError("events_lost"))
@@ -410,11 +459,27 @@ print("N. One instance")
 with tempfile.TemporaryDirectory() as d:
     held = open(os.path.join(d, "agent-rows.lock"), "w")
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    env = {"HERDR_PLUGIN_STATE_DIR": d, "HERDR_SOCKET_PATH": "/nonexistent"}
     tr = FakeTransport([snap(P("w1:p1", "working"))])
-    rc = ar.main(["worker"], env={"HERDR_PLUGIN_STATE_DIR": d, "HERDR_SOCKET_PATH": "/nonexistent"}, transport=tr)
+    clock = FakeClock()
+    rc = ar.main(["worker"], env=env, transport=tr, clock=clock, sleep=clock.sleep)
     check("a second worker exits 0", rc == 0, rc)
     check("and makes no request", tr.requests == [] and tr.subs == [], tr.requests)
-    fcntl.flock(held, fcntl.LOCK_UN); held.close()
+    check("after waiting a little longer than an old worker needs to give up",
+          ar.GIVE_UP_S < clock.t <= ar.GIVE_UP_S + 3, clock.t)
+
+    # An old worker that gives up at its deadline releases the lock; a worker started by a
+    # server restart just before that must take over instead of exiting.
+    tr = FakeTransport([snap(P("w1:p1", "working"))])
+    tr.refuse = True          # so the taken-over run ends by its own give-up on the fake clock
+    clock = FakeClock()
+    def release_at_9(s):
+        clock.sleep(s)
+        if clock.t >= 9.0 and not held.closed:
+            fcntl.flock(held, fcntl.LOCK_UN); held.close()
+    rc = ar.main(["worker"], env=env, transport=tr, clock=clock, sleep=release_at_9)
+    check("a worker waiting while the old one lets go at 9 s takes over (it connects)",
+          rc == 0 and any(m == "events.subscribe" for m, _ in tr.requests), (rc, tr.requests[:2]))
     got = ar.acquire_lock(d)
     check("the lock is taken when free", got is not None, got)
     again = ar.acquire_lock(d)
@@ -444,7 +509,7 @@ check("start exits 0 after one Popen", rc == 0 and len(calls) == 1, (rc, calls))
 args, kw = calls[0]
 check("it runs `worker` of this file under isolated python", args[-1] == "worker" and "-I" in args and args[-2].endswith(".py"), args)
 check("in a new session, with stdio to /dev/null", kw.get("start_new_session") is True and all(
-      kw.get(k) is not None for k in ("stdin", "stdout", "stderr")), kw)
+      kw.get(k) == ar.subprocess.DEVNULL for k in ("stdin", "stdout", "stderr")), kw)
 
 print("Q. Transport framing over socketpair")
 a, b = socket.socketpair()
