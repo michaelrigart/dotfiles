@@ -221,7 +221,9 @@ Read it before any task; section numbers below (§1–§5) are the spec's.
 **Interfaces:**
 - Produces: `~/.config/herdr/usage.sh` → one line on stdout, exit 0 always.
 - Environment: `PINNED_PATH` (suite only, for the `tagteam` stub), `CODEX_HOME` (default
-  `$HOME/.codex`), `HERDR_USAGE_NOW` (suite only: epoch seconds standing in for now).
+  `$HOME/.codex`), `HERDR_USAGE_NOW` (suite only: epoch seconds standing in for now),
+  `HERDR_USAGE_TRACE` (suite only: when set, the path of each rollout file opened is appended to
+  that file, one per line, before it is read).
 - Shape: `/bin/bash` with the pinned `PATH`, then `exec /usr/bin/python3 -I - <<'PY'` (the
   `herdr-agent-state.sh` pattern), so all logic is stdlib Python.
 
@@ -262,9 +264,9 @@ Output rules (spec §5, exact):
   - **tagteam hangs** (stub sleeps 10) → the script returns within 4 s with the Codex segment;
   - Codex: newest-by-mtime file holds no `token_count` while an older one does → the older
     reading shows; five newer empty files → still found; an archived file with a newer event than
-    anything under `sessions/` wins; a file older than the newest event found is never opened
-    (prove with an unreadable file, mode 000, that would otherwise break the read); files older
-    than 7 days are ignored;
+    anything under `sessions/` wins; a file whose mtime is older than the newest event found is
+    never opened (the `HERDR_USAGE_TRACE` log lists the files read and does not list it); files
+    older than 7 days are never opened either (same proof);
   - **far token_count**: a ~1 MB file whose only `token_count` is in its first KiB → found;
   - `window_minutes` 10080 → `wk`, 300 → `5h`, 1440 → `1d`; Codex age from the event timestamp;
   - both agents → `acct 69% wk · codex 82% wk ⚠`; **width**: with both agents, ⚠ and age marks
@@ -325,10 +327,15 @@ Output rules (spec §5, exact):
   `pane_agent_detected` event named. Frames go only to panes currently `working`. A pane leaving
   `working`, closing or moving gets `{"spin": null}` (no TTL) on its last known live ID (not after
   close). Every agent pane gets `state_labels = LABELS` once per (re)appearance: at snapshot,
-  detection and move. `pane_moved` remaps all state from `previous_pane_id` to `pane.pane_id` and
-  sets `resubscribe`.
-- Loop rules: subscribe, then snapshot (so no event between them is lost); on `resubscribe`, open
-  the new subscription, snapshot again, then close the old one; wait with `select` on the
+  detection and move. `pane_moved` remaps all state from `previous_pane_id` to `pane.pane_id`.
+  `Rows` remembers which agent panes the live subscription covers, and **any** `apply_snapshot`
+  or `apply_event` that leaves the agent-pane set different from that covered set sets
+  `resubscribe` (a snapshot that discovers panes, a detection, a move, a close).
+- Loop rules: bootstrap by subscribing to the lifecycle events alone, then taking a snapshot (so
+  no event between them is lost); that first snapshot discovers the existing agent panes and so
+  sets `resubscribe`. On `resubscribe`: open the new subscription built from `subscriptions()`,
+  snapshot again, mark the new set as covered, then close the old subscription; repeat while a
+  snapshot still changes the set. Wait with `select` on the
   subscription for `FRAME_S` while any pane works, with no timeout otherwise; on `EOFError`
   reconnect, and after reconnects keep failing for 10 s, clear shown frames best-effort and return
   0; on SIGTERM/SIGINT clear shown frames and return 0. One instance: `fcntl.flock(LOCK_EX |
@@ -351,8 +358,13 @@ Output rules (spec §5, exact):
     `w2:p1` gets its label again, and the next subscription list names `w2:p1`, not `w1:p1`;
   - `pane_closed` of a working pane → no clear sent to it, no frames after;
   - `events_lost` / EOF → resubscribe and a fresh snapshot, state rebuilt from it;
-  - **many panes**: a snapshot with 39 agent panes, 3 working → one subscription with 42 entries,
-    frames to exactly the 3;
+  - **bootstrap**: starting against a snapshot with two idle agent panes, the first subscription
+    holds only the 3 lifecycle entries and the one after the first snapshot holds 5; a
+    `pane_agent_status_changed` (`working`) delivered on that second subscription starts frames
+    for its pane, and the first subscription is closed;
+  - **many panes**: a snapshot with 39 agent panes, 3 working → after bootstrap the live
+    subscription has 42 entries, frames go to exactly the 3, and no further resubscribe happens
+    while the set is unchanged;
   - **server gone**: EOF then every reconnect refused → shown frames cleared best-effort, `run`
     returns 0 within the 10 s budget on the fake clock;
   - SIGTERM while 2 panes spin → both cleared, return 0;
