@@ -34,6 +34,11 @@
 PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -u
 
+# glab reads the current directory's repository (its .git/glab-cli/config.yml, and it runs git
+# there), and a caller's directory is whatever a key command or plugin hook happened to have: a
+# repository a sandboxed command can write. Every path below is absolute and git runs with -C.
+cd / || exit 2
+
 SOURCE_ID="herdr-phase"
 CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}"
 
@@ -42,6 +47,7 @@ CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}
 HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
+STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
 
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
@@ -99,15 +105,16 @@ repo_status() { # repo_status <checkout_path> -> porcelain status, nothing from 
     git --no-optional-locks -C "$path" status --porcelain --ignore-submodules=all 2>/dev/null
 }
 
+# No here-documents in this script: bash 3.2 writes each to a temp file, and from a "/" working
+# directory a sandboxed run (the suite) cannot create it. Plain strings need no file.
 usage() {
-  cat <<'U'
-phase.sh — badge Herdr spaces with their merge phase
-
-  phase.sh refresh [--force] [--workspace ID]   report phases (all spaces, or one)
-  phase.sh --help
-
-Phases: active, review, merged.
-U
+  printf '%s\n' \
+    'phase.sh — badge Herdr spaces with their merge phase' \
+    '' \
+    '  phase.sh refresh [--force] [--workspace ID]   report phases (all spaces, or one)' \
+    '  phase.sh --help' \
+    '' \
+    'Phases: active, review, merged.'
 }
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
@@ -134,10 +141,14 @@ repo_slug() { # repo_slug <repo_root> -> the GitLab slug (group/project) on stdo
 # with glab: HOST/OWNER/REPO is read as a namespace, the https:// form pins the host).
 GITLAB_HOST_NAME="gitlab.com"
 
+# repo_slug admits no "%", so encoding "/" as %2F maps each slug to its own file name: a "_"
+# replacement made a/b_c and a_b/c share one.
+cache_key() { printf '%s' "$1" | sed 's|/|%2F|g'; }
+
 mr_table() { # mr_table <slug> <force>
   local slug="$1" force="$2" cache age now
 
-  cache="$CACHE_DIR/$(printf '%s' "$slug" | tr '/' '_').tsv"
+  cache="$CACHE_DIR/$(cache_key "$slug").tsv"
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
     now="$(date +%s)"
     age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
@@ -205,7 +216,7 @@ pipeline_class() { # pipeline_class <slug> <iid> <force>
   local slug="$1" iid="$2" force="$3" cache age now status json
   case "$iid" in ''|*[!0-9]*) return 0 ;; esac
 
-  cache="$CACHE_DIR/$(printf '%s' "$slug" | tr '/' '_').mr$iid.pipeline"
+  cache="$CACHE_DIR/$(cache_key "$slug").mr$iid.pipeline"
   status=""
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
     now="$(date +%s)"
@@ -237,8 +248,12 @@ print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
       mkdir -p "$CACHE_DIR"
       printf '%s\n' "$status" > "$cache"
     elif [ -f "$cache" ]; then
-      # A failed call is not evidence that the pipeline went away; a stale status beats none.
-      status="$(cat "$cache")"
+      # A failed call is not evidence that the pipeline went away, so a stale status beats none,
+      # but only for a while: a cached "run" glyph would otherwise stay on for as long as glab
+      # keeps failing. Past STALE_PIPELINE the tokens are cleared.
+      now="$(date +%s)"
+      age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
+      if [ "$age" -lt "$STALE_PIPELINE" ]; then status="$(cat "$cache")"; fi
     fi
   fi
 
@@ -388,9 +403,7 @@ cmd_refresh() {
       "open "*) [ -z "$slug" ] || ci="$(pipeline_class "$slug" "${second#open }" "$force")" ;;
     esac
     report "$ws" "$phase" "$value" "$ci"
-  done <<EOF
-$list
-EOF
+  done < <(printf '%s\n' "$list")
 }
 
 case "${1:---help}" in

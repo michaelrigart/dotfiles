@@ -184,14 +184,21 @@ chmod 755 "$BIN/herdr"
 # host (`api --hostname gitlab.com`, `mr list --repo https://gitlab.com/<slug>`): glab otherwise
 # takes it from the current directory's repository, and any other form is refused here.
 # A $PIPEFAIL file makes api fail the way glab does, the error's JSON body on STDOUT and a
-# non-zero exit; with the content "200" it answers 200 with a body that is not the MR.
+# non-zero exit; with the content "200" it answers 200 with a body that is not the MR, and with
+# "body-rc1" it prints a valid body for the asked MR (head pipeline failed) and still exits 1.
+# Every call records its working directory in $PWDS.
 # A function because later cases overwrite the stub with failing variants.
 glab_stub() {
 cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
+[ -z "${PWDS:-}" ] || echo "$PWD" >> "$PWDS"
 if [ "${1:-}" = "api" ]; then
   if [ -e "${PIPEFAIL:-}" ]; then
+    if [ "$(cat "$PIPEFAIL")" = "body-rc1" ]; then
+      echo "{\"iid\":${4##*/},\"head_pipeline\":{\"status\":\"failed\"}}"
+      echo "glab: HTTP 502" >&2; exit 1
+    fi
     echo '{"message":"401 Unauthorized"}'
     [ "$(cat "$PIPEFAIL")" = "200" ] && exit 0
     echo "glab: 401 Unauthorized (HTTP 401)" >&2; exit 1
@@ -248,11 +255,12 @@ cat > "$MRMERGED" <<'J'
  {"iid":15,"source_branch":"feature/merged-dirty","state":"merged","draft":false}]
 J
 PIPES="$T/pipes.tsv"; PIPEFAIL="$T/pipe-fail"
-export WSJSON MROPEN MRMERGED CALLS PIPES PIPEFAIL
+PWDS="$T/pwds"; : > "$PWDS"
+export WSJSON MROPEN MRMERGED CALLS PIPES PIPEFAIL PWDS
 
-run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call log
-  : > "$CALLS"
-  OUT=$(PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" \
+run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call log. RUNDIR starts it elsewhere.
+  : > "$CALLS"; : > "$PWDS"
+  OUT=$(cd "${RUNDIR:-$PWD}" && PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" \
         HERDR_PHASE_CACHE_DIR="$T/cache" \
         HERDR_PHASE_TTL="${TTL:-120}" \
         /bin/bash "$PHASE" "$@" 2>&1); RC=$?
@@ -567,11 +575,33 @@ check "$(glab_api_calls)" "1" "an expired pipeline cache is refetched"
 ci_check w4 ok "a failed api call keeps the cached class"
 # glab prints an API error's JSON body on stdout (the stub does); parsed as if it were the MR it
 # would read as "no pipeline" and overwrite the warm cache for a whole TTL.
-check "$(cat "$T/cache/test_proj.mr10.pipeline")" "success" "an error body does not overwrite the cached status"
+check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "an error body does not overwrite the cached status"
 echo 200 > "$PIPEFAIL"
 TTL=0 run refresh --workspace w4
 ci_check w4 ok "a 200 body that is not the MR keeps the cached class"
-check "$(cat "$T/cache/test_proj.mr10.pipeline")" "success" "a body without the MR's iid does not overwrite the cached status"
+check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "a body without the MR's iid does not overwrite the cached status"
+# The exit status is read on its own: a valid body for this MR with a non-zero exit (a gateway
+# error that still carried a body) must not be taken as an answer and overwrite the cache.
+echo body-rc1 > "$PIPEFAIL"
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a valid body with exit 1 keeps the cached class"
+check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "a valid body with exit 1 does not overwrite the cached status"
+
+# The stale fallback has an age limit: within 1800 s a failed call keeps the cached class, past it
+# the pipeline tokens are cleared (the cached status stays on disk, a later good call replaces it).
+aged() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$T/cache/test%2Fproj.mr10.pipeline"; }
+: > "$PIPEFAIL"
+aged 29
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a failed call keeps a cached status 29 minutes old"
+aged 31
+TTL=0 run refresh --workspace w4
+ci_check w4 none "a failed call clears the pipeline tokens once the cache is 31 minutes old"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase token survives the cleared pipeline tokens";;
+  *) _fail "the phase token survives the cleared pipeline tokens (got: $(report_for w4))";; esac
+rm -f "$PIPEFAIL"
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a good call after the limit shows the pipeline again"
 : > "$PIPEFAIL"
 rm -rf "$T/cache"
 run refresh --workspace w4
@@ -580,6 +610,14 @@ ci_check w4 none "a cold cache plus a failed api call invents no pipeline"
 case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase token survives the failed api call";;
   *) _fail "the phase token survives the failed api call (got: $(report_for w4))";; esac
 rm -f "$PIPEFAIL"
+
+# glab reads its configuration from the current directory's repository and runs git there, and a
+# key command or plugin hook starts phase.sh wherever the caller was. Started from inside a
+# repository, every glab call must still run from /.
+set_pipe 10 success 11 failed
+RUNDIR="$T/repo-review" run refresh --force
+[ "$(wc -l < "$PWDS" | tr -d ' ')" -gt 0 ] && _pass "the cwd case reached glab" || _fail "the cwd case reached glab"
+check "$(grep -vxc / "$PWDS")" "0" "every glab call runs from / even when phase.sh starts inside a repository"
 
 # Socket limit: at most 16 token keys per report; this one makes six.
 set_pipe 10 success 11 failed
@@ -603,6 +641,47 @@ for bad in 'a/../b' 'a/b?x=1' 'a/b%2Fc' 'a/b c'; do
   case "$(report_for w4)" in *"--token review"*) _fail "remote slug '$bad': no review badge";; *) _pass "remote slug '$bad': no review badge";; esac
 done
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
+
+# Two slugs that a "/" -> "_" cache name would fold into one file (a/b_c and a_b/c): each repo
+# has an MR numbered 10 on its own branch, with its own pipeline, and a cold run must not let the
+# second repo read the first one's MR table or pipeline status from the shared name.
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+if [ "${1:-}" = "api" ]; then
+  case "${4:-}" in
+    projects/a%2Fb_c/merge_requests/10) echo '{"iid":10,"head_pipeline":{"status":"success"}}' ;;
+    projects/a_b%2Fc/merge_requests/10) echo '{"iid":10,"head_pipeline":{"status":"failed"}}' ;;
+    *) echo '{}'; exit 1 ;;
+  esac
+  exit 0
+fi
+case " $* " in
+  *" --merged "*) echo '[]' ;;
+  *" --repo https://gitlab.com/a/b_c "*) echo '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]' ;;
+  *" --repo https://gitlab.com/a_b/c "*) echo '[{"iid":10,"source_branch":"feature/one","state":"opened","draft":false}]' ;;
+  *) echo '[]' ;;
+esac
+G
+chmod 755 "$BIN/glab"
+q git -C "$REPO" remote set-url origin git@gitlab.com:a/b_c.git
+q git -C "$REPO2" remote set-url origin git@gitlab.com:a_b/c.git
+cat > "$T/ws-collide.json" <<J
+{"id":"x","result":{"type":"workspace_list","workspaces":[
+ {"workspace_id":"w4","label":"review","worktree":{"checkout_path":"$T/repo-review","is_linked_worktree":true,"repo_root":"$REPO"}},
+ {"workspace_id":"wA","label":"two-one","worktree":{"checkout_path":"$T/repo2-one","is_linked_worktree":true,"repo_root":"$REPO2"}}
+]}}
+J
+rm -rf "$T/cache"
+WSJSON="$T/ws-collide.json" run refresh
+ci_check w4 ok "slug a/b_c shows its own pipeline (success)"
+ci_check wA fail "slug a_b/c shows its own pipeline (failed), not a/b_c's"
+case "$(report_for wA)" in *"--token review=$ICON_MR !10 "*) _pass "slug a_b/c finds its own MR table, not a/b_c's";;
+  *) _fail "slug a_b/c finds its own MR table, not a/b_c's (got: $(report_for wA))";; esac
+check "$(ls "$T/cache" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.mr10.pipeline a_b%2Fc.tsv " "cache names encode the slug's / as %2F"
+q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
+q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
+glab_stub
 
 echo
 echo "I. the wiring that makes the badges appear and persist"
