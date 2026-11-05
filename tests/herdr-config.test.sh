@@ -54,10 +54,11 @@ check "$rc" "0" "herdr config check exits 0"
 case "$out" in *"config: ok"*) _pass "herdr config check prints config: ok";;
   *) _fail "herdr config check prints config: ok (got: $out)";; esac
 
-cp "$CONF" "$T/broken.toml"
-printf '\n[ui]\nno_such_key_here = 1\n' >> "$T/broken.toml"
-HERDR_CONFIG_PATH="$T/broken.toml" herdr config check >/dev/null 2>&1; rc=$?
-check "$rc" "1" "a copy with an unknown [ui] key fails the check"
+awk '{print} $0 == "[ui]" { print "no_such_key_here = 1" }' "$CONF" > "$T/broken.toml"
+out="$(HERDR_CONFIG_PATH="$T/broken.toml" herdr config check 2>&1)"; rc=$?
+check "$rc" "1" "a copy with an unknown key under the existing [ui] fails the check"
+case "$out" in *"unknown config key ui.no_such_key_here"*) _pass "the failure names the unknown key, not a parse error";;
+  *) _fail "the failure names the unknown key, not a parse error (got: $out)";; esac
 
 echo "[theme.custom]"
 THEME="$(section theme.custom)"
@@ -80,19 +81,25 @@ TBR="$(printf '%s\n' "$UI" | flat)"
 if in_order "$TBR" 'tab_bar_right = [' '~/.config/herdr/usage.sh' '{ type = "zoom" }' '{ type = "datetime", format = "%H:%M" }'; then
   _pass "tab_bar_right lists usage command, zoom, datetime in order"
 else _fail "tab_bar_right lists usage command, zoom, datetime in order (got: $TBR)"; fi
-if in_order "$TBR" 'type = "command"' 'interval_seconds = 60' 'timeout_seconds = 5'; then
+if in_order "$TBR" 'type = "command"' 'interval_seconds = 60,' 'timeout_seconds = 5 }'; then
   _pass "the usage entry is a command with a 60 s interval and 5 s timeout"
 else _fail "the usage entry is a command with a 60 s interval and 5 s timeout (got: $TBR)"; fi
 
 echo "agent rows"
 AGENTS="$(section ui.sidebar.agents | flat)"
-if in_order "$AGENTS" 'token = "agent"' 'token = "$spin"' '"state_text"'; then
-  _pass "agents rows: \$spin follows agent, state_text follows \$spin"
-else _fail "agents rows: \$spin follows agent, state_text follows \$spin (got: $AGENTS)"; fi
+# Row 1 only (no brackets occur inside a row, so the first ] closes it), so state_text
+# moving to row 2 fails the case.
+AROW1="${AGENTS%%]*}"
+AGENT_STYLE='{ token = "agent", fg = "#bb9af7", bold = true }'
+SPIN_STYLE='{ token = "$spin", fg = "#e0af68", bold = true }'
+if in_order "$AROW1" "$AGENT_STYLE" "$SPIN_STYLE" '"state_text"'; then
+  _pass "agents row 1: mauve agent, yellow \$spin, then state_text"
+else _fail "agents row 1: mauve agent, yellow \$spin, then state_text (got: $AROW1)"; fi
 CODEX="$(section ui.sidebar.agents.rows_by_agent | flat)"
-if in_order "$CODEX" 'token = "agent"' 'token = "$spin"' '"state_text"'; then
-  _pass "codex override: \$spin follows agent, state_text follows \$spin"
-else _fail "codex override: \$spin follows agent, state_text follows \$spin (got: $CODEX)"; fi
+CROW1="${CODEX%%]*}"
+if in_order "$CROW1" "$AGENT_STYLE" "$SPIN_STYLE" '"state_text"'; then
+  _pass "codex override row 1: mauve agent, yellow \$spin, then state_text"
+else _fail "codex override row 1: mauve agent, yellow \$spin, then state_text (got: $CROW1)"; fi
 case "$AGENTS" in *terminal_title_stripped*) _pass "agents rows keep the dim title row";;
   *) _fail "agents rows keep the dim title row";; esac
 case "$CODEX" in *terminal_title_stripped*) _fail "codex override keeps only row 1";;
@@ -103,6 +110,10 @@ SPACES="$(section ui.sidebar.spaces | flat)"
 if in_order "$SPACES" '$active' '$review' '$merged' '$ci_ok' '$ci_fail' '$ci_run' 'token = "branch"'; then
   _pass "row 2: \$ci_* follow the phase tokens and precede branch"
 else _fail "row 2: \$ci_* follow the phase tokens and precede branch (got: $SPACES)"; fi
+if in_order "$SPACES" '{ token = "$ci_ok", fg = "#9ece6a", bold = true }' \
+  '{ token = "$ci_fail", fg = "#f7768e", bold = true }' '{ token = "$ci_run", fg = "#e0af68", bold = true }'; then
+  _pass "row 2: \$ci_* carry green, red and yellow, bold"
+else _fail "row 2: \$ci_* carry green, red and yellow, bold (got: $SPACES)"; fi
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"

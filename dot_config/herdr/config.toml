@@ -76,6 +76,7 @@ status_indicators = "symbols"
 confirm_close = true
 # The border label names the agent in each pane, so a split reads without the sidebar.
 show_agent_labels_on_pane_borders = true
+# The outer terminal title (Ghostty's tab and window bars): where I am, no hostname.
 window_title = "{workspace} · {tab}"
 # Claude and Codex usage (usage.sh), then Alt-z's zoom marker, then the clock.
 tab_bar_right = [
@@ -83,6 +84,7 @@ tab_bar_right = [
   { type = "zoom" },
   { type = "datetime", format = "%H:%M" },
 ]
+# A divider keeps the three entries from reading as one string.
 tab_bar_right_separator = "  │  "
 
 [ui.toast]
