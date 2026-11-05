@@ -496,7 +496,7 @@ cut = {}
 def gone(sub):
     cut["t"] = cut["clock"].t; cut["n"] = len(cut["tr"].requests)
     cut["tr"].refuse = cut["refuse"]
-    sub.queue.append(EOFError("closed"))
+    sub.queue.append(ar.SubscriptionClosed("closed"))
 def go_gone(refuse):
     c, stop = FakeClock(), threading.Event()
     t = FakeTransport([snap(P("w1:p1", "working"), P("w1:p2", "working"))]); cut["tr"], cut["clock"], cut["refuse"] = t, c, refuse
@@ -541,34 +541,44 @@ def trouble(make, refuse=False):
     return step
 def go_trouble(step, snapshots, snap_errors=None):
     c, stop = FakeClock(), threading.Event()
-    t = FakeTransport(snapshots); cut["tr"], cut["clock"] = t, c
+    t = FakeTransport(snapshots); cut["tr"], cut["clock"], cut["sleeps"] = t, c, []
     t.snap_errors = dict(snap_errors or {})
     f = FakeSelect(c, stop, [noop, step, noop, noop, noop, noop, noop])
+    def rec_sleep(s): cut["sleeps"].append(s); c.sleep(s)
     real = ar.select; ar.select = f
-    try: rc = ar.run(t, c, c.sleep, stop)
+    try: rc = ar.run(t, c, rec_sleep, stop)
     finally: ar.select = real
     return rc, t, c
 after_cut = lambda t: [p for m, p in t.requests[cut["n"]:] if m == "pane.report_metadata"]
 spun = lambda t, pid: len([p for p in after_cut(t) if p["pane_id"] == pid and (p.get("tokens") or {}).get("spin")])
 
-# (i) a resync whose snapshot times out once
 one = snap(P("w1:p1", "working"))
 two = snap(P("w1:p1", "working"), P("w1:p5"))
-rc, tr, clock = go_trouble(lambda sub: (cut.update(n=len(cut["tr"].requests)), sub.queue.append([detected_ev("w1:p5")])),
-                           [one, one, two], {2: socket.timeout("timed out")})
-check("a resync whose snapshot times out once: one more bootstrap, no waiting", lifecycle_subs(tr) == 2 and clock.t < 5, (lifecycle_subs(tr), clock.t))
-check("the worker keeps spinning afterwards", spun(tr, "w1:p1") >= 3, spun(tr, "w1:p1"))
-check("and the pane the failed resync was about is known after the bootstrap", ids(tr.subs[-1]) == ["w1:p1", "w1:p5"], [ids(s) for s in tr.subs])
+def detect_then_fail(what, err):
+    """A new pane is detected, and the resync it triggers fails at its snapshot request once."""
+    rc, tr, clock = go_trouble(lambda sub: (cut.update(n=len(cut["tr"].requests)), sub.queue.append([detected_ev("w1:p5")])),
+                               [one, one, two], {2: err})
+    check("%s: one more bootstrap" % what, lifecycle_subs(tr) == 2, lifecycle_subs(tr))
+    check("%s: it does not sleep first" % what, cut["sleeps"] == [], cut["sleeps"])
+    check("%s: the worker keeps spinning afterwards" % what, spun(tr, "w1:p1") >= 3, spun(tr, "w1:p1"))
+    check("%s: the bootstrap's snapshot re-labels the pane the failed resync was about (reported twice in all)" % what,
+          len(labels(tr, "w1:p5")) == 2 and ids(tr.subs[-1]) == ["w1:p1", "w1:p5"], (len(labels(tr, "w1:p5")), [ids(s) for s in tr.subs]))
+# (i) a resync whose snapshot times out once
+detect_then_fail("a resync whose snapshot times out", socket.timeout("timed out"))
+# (i-b) a one-shot request cut off before its answer is an EOFError too, but not the subscription closing
+detect_then_fail("a resync whose snapshot request is closed before a full line", EOFError("connection closed before a full line"))
 # (ii) events_lost, then a bootstrap that fails
 rc, tr, clock = go_trouble(trouble(lambda: ar.EventsLost("events_lost"), refuse=True), [one])
 post = tr.requests[cut["n"]:]
 check("events_lost then a failing bootstrap: run returns 0 without retrying or waiting",
-      rc == 0 and clock.t == cut["t"] and [m for m, _ in post if m == "events.subscribe"] == ["events.subscribe"], (rc, clock.t - cut["t"], [m for m, _ in post]))
+      rc == 0 and clock.t == cut["t"] and cut["sleeps"] == [] and [m for m, _ in post if m == "events.subscribe"] == ["events.subscribe"], (rc, clock.t - cut["t"], [m for m, _ in post]))
 check("and the shown frame is cleared best-effort", cleared(post) == ["w1:p1"], post)
 # (iii) a malformed event line
 rc, tr, clock = go_trouble(trouble(lambda: json.JSONDecodeError("bad", "x", 0)), [one])
-check("a malformed event line: one more bootstrap, no waiting", lifecycle_subs(tr) == 2 and clock.t < 5, (lifecycle_subs(tr), clock.t))
-check("and the worker keeps spinning afterwards", spun(tr, "w1:p1") >= 3, spun(tr, "w1:p1"))
+check("a malformed event line: one more bootstrap", lifecycle_subs(tr) == 2, lifecycle_subs(tr))
+check("a malformed event line: it does not sleep first", cut["sleeps"] == [], cut["sleeps"])
+check("a malformed event line: the worker keeps spinning afterwards", spun(tr, "w1:p1") >= 3, spun(tr, "w1:p1"))
+
 
 print("M. SIGTERM")
 stop_box = {}
@@ -680,7 +690,7 @@ check("two lines in one read come back together", [e["event"] for e in sub.read_
 b.sendall(b'{"id":"x","error":{"code":"events_lost","message":"m"}}\n')
 try: sub.read_events(); got = None
 except Exception as e: got = e
-check("an error line raises EventsLost, which is not the EOFError of a plain close",
+check("an error line raises EventsLost, which is not the close of the subscription",
       isinstance(got, ar.EventsLost) and not isinstance(got, EOFError), got)
 sub.close()
 check("close() closes the connection", a.fileno() == -1, a.fileno())
@@ -692,7 +702,7 @@ sub = ar.Transport("/unused", connect=lambda: a).subscribe([])
 b.close()
 try: sub.read_events(); got = None
 except EOFError as e: got = e
-check("a closed peer raises EOFError", isinstance(got, EOFError), got)
+check("a closed peer raises SubscriptionClosed (an EOFError)", isinstance(got, ar.SubscriptionClosed) and isinstance(got, EOFError), got)
 sub.close()
 
 a, b = socket.socketpair()

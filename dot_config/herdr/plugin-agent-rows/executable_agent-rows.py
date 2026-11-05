@@ -41,7 +41,12 @@ class RpcError(Exception):
 
 class EventsLost(Exception):
     """The subscription is still open but the server dropped events: resync from a snapshot.
-    A plain close (EOFError) is not this: it means the server shut down."""
+    A plain close (SubscriptionClosed) is not this: it means the server shut down."""
+
+
+class SubscriptionClosed(EOFError):
+    """The subscription's own connection closed. Other EOFErrors (a one-shot request cut off
+    before its answer) say nothing about the server shutting down."""
 
 
 class Stopping(BaseException):
@@ -201,7 +206,7 @@ class Subscription:
     def read_events(self):
         data = self._sock.recv(65536)
         if not data:
-            raise EOFError("subscription closed")
+            raise SubscriptionClosed("subscription closed")
         self._buf += data
         events = []
         while b"\n" in self._buf:
@@ -375,7 +380,7 @@ def run(transport, clock, sleep, stop, log=None):
                     live = _resync(transport, rows, live, send)
             except Stopping:
                 raise
-            except EOFError as exc:
+            except SubscriptionClosed as exc:
                 # A closed subscription is the server shutting down. Whatever answers next is a
                 # new server whose startup hook starts its own worker (with the code now on
                 # disk), so this one clears what it can and ends rather than attach to it.

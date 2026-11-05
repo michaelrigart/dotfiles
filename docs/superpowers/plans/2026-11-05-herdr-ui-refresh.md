@@ -318,8 +318,8 @@ Output rules (spec §5, exact):
 - Importable seams (the suite imports the file with `importlib` and never opens a real socket):
   - `class Transport`: `request(method: str, params: dict) -> dict` (one connection per call,
     returns the parsed response line) and `subscribe(subscriptions: list) -> Subscription`, whose
-    `fileno()`, `read_events() -> list[dict]` (complete lines available now; raises `EOFError` on
-    close and `EventsLost` on an error line such as `events_lost`) and `close()` the loop uses.
+    `fileno()`, `read_events() -> list[dict]` (complete lines available now; raises `SubscriptionClosed` (an
+    `EOFError`) on the subscription's own close and `EventsLost` on an error line such as `events_lost`) and `close()` the loop uses.
   - `class Rows`: pure state. `apply_snapshot(snapshot: dict) -> Effects`,
     `apply_event(event: dict) -> Effects`, `frame_effects(frame: str) -> Effects`; `Effects` holds
     `reports: list[dict]` (ready `pane.report_metadata` params) and `resubscribe: bool`.
@@ -340,7 +340,7 @@ Output rules (spec §5, exact):
   snapshot again, mark the new set as covered, then close the old subscription; repeat while a
   snapshot still changes the set. Wait with `select` on the
   subscription for `FRAME_S` while any pane works, with no timeout otherwise; only the first
-  connect retries (for 10 s, then clear and return 0); a plain subscription close (`EOFError`) is
+  connect retries (for 10 s, then clear and return 0); a plain subscription close (`SubscriptionClosed`; any other `EOFError`, such as a one-shot request cut off, takes the bootstrap path below) is
   the server shutting down, so clear shown frames best-effort and return 0 at once, leaving the
   next server start's hook to launch a fresh worker; any other exception in the loop (an error
   line, a resync that times out or is refused, a malformed event line) is logged and answered with
