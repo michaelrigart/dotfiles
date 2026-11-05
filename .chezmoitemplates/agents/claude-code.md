@@ -29,22 +29,22 @@
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
   Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
 - **Parallel tasks.** A plan runs entirely in its own worktree; never create a worktree for one of
-  its tasks. Plans give each task a `Depends on:` line. A batch is tasks with no pending
-  dependency, disjoint files (neither one's tests load the other's), and no shared test resource
-  such as a database, server or port. Dispatch a batch's implementers together in that worktree;
-  they do not commit and run only their focused tests. The controller commits each task on its own,
-  one commit at a time, reviews each on exactly that commit, and runs the full suite once per batch.
+  its tasks. Plans give tasks a `Depends on:` line. A batch is tasks with no pending dependency,
+  disjoint files (neither one's tests load the other's), and no shared test resource such as a
+  database, server or port. Dispatch a batch's implementers together in that worktree. They do not
+  commit, and run only their focused tests. The controller then commits each task on its own, one
+  at a time, reviews each on exactly that commit, and runs the full suite once per batch.
 - **Dispatching a `wt` line.** Find the checkout's session in `ListAgents` (named after it) and
   `SendMessage` it the brief: plan or task, branch, artifact paths, what to report back. That
-  session runs the line itself, with its own subagents and `xreview` reviews from its checkout.
-- **Pushing.** Push in a Bash call of its own, as one plain command:
-  `git push [options] <remote> <branch>` (for another repository, `git -C <path> push …`),
-  optionally piped to `tail`/`head`. The push guard denies a push chained after a commit, a push
-  with a comment, and a push inside a shell or substitution. It also runs gitleaks on the outgoing
-  commits. A genuine false positive gets its fingerprint in `.gitleaksignore`, committed on the
-  branch being pushed. While that file exists, push refs by name, never `--tags`/`--all`.
+  session runs the line itself, with its own subagents and `xreview` reviews from its checkout. If
+  `ListAgents` does not list it, tell Michael; never run the line in the main session.
+- **Pushing.** Push in its own Bash call as one plain command: `git push [options] <remote>
+  <branch>` (other repo: `git -C <path> push …`), optionally piped to `tail`/`head`. The guard
+  denies a push chained after a commit, with a comment, or in a shell or substitution, and runs
+  gitleaks on outgoing commits. A genuine false positive's fingerprint goes in `.gitleaksignore`,
+  committed on the pushed branch. While it exists, push refs by name, never `--tags`/`--all`.
 - **Cross-review** with Codex runs through the `cross-review` skill (`xreview`). It uses an
-  existing Codex pane; never open another. For a `wt` line, the driver's own `xreview` calls pass
-  `-C <checkout>`. `xreview dispatch` needs `--checkpoint spec|plan|pre-merge`.
+  existing Codex pane; never open another. If the driver itself reviews a `wt` line, its `xreview`
+  calls pass `-C <checkout>`. `xreview dispatch` needs `--checkpoint spec|plan|pre-merge`.
 - **Guard bypasses** (`FORGE_GUARD=off`, `XREVIEW_GUARD=off`, `WT_GUARD=off`): use one only
   when Michael asks for it in this conversation, and say so in the MR.

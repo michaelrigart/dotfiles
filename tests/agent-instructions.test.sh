@@ -136,6 +136,15 @@ lines=$(wc -l < "$FRAG/claude-code.md" | tr -d ' ')
 lines=$(wc -l < "$FRAG/codex.md" 2>/dev/null | tr -d ' ')
 [ "${lines:-99}" -le 30 ] && _pass "codex.md is at most 30 lines ($lines)" || _fail "codex.md is at most 30 lines" "$lines"
 
+# A reflow once cut the last line of global.md; each fragment must end on a finished sentence.
+for f in global.md claude-code.md codex.md; do
+  last=$(grep -v '^[[:space:]]*$' "$FRAG/$f" | tail -1)
+  case "$last" in
+    *[.:]) _pass "$f ends on a finished sentence" ;;
+    *) _fail "$f ends on a finished sentence" "$last" ;;
+  esac
+done
+
 # On case-insensitive APFS a fragment named claude.md IS a CLAUDE.md, and Claude Code loads
 # it as nested instructions whenever it reads a file in that directory.
 nested=$(find "$SRC/.chezmoitemplates" -iname 'claude.md' 2>/dev/null)
@@ -233,18 +242,25 @@ need_flat global.md '- **Merge requests.** Load the `merge-request` skill before
 # The driver may open wt checkouts (spec 2026-11-03-driver-wt, section 5).
 need_flat global.md 'The driver may open one per independent line of work, as `wt --no-focus <branch> <local-branch>` (a remote start point sets an upstream), and names each checkout it opened in its report; never in the dotfiles.' \
   "global.md lets the driver open a wt checkout, on its conditions"
-need_flat global.md 'Never run `wt-rm` or `git worktree remove`: when a line is done (merged or abandoned), the report gives Michael the `wt-rm <branch>` command.' \
-  "global.md keeps teardown Michael's and has the report hand him the wt-rm command"
-need_flat global.md 'It hands the line to that session and keeps only coordination (briefing, rulings, the report), never the line'"'"'s work.' \
-  "global.md has the driver hand a wt line to the checkout's session"
+need_flat global.md 'Never run `wt-rm` or `git worktree remove`: the line'"'"'s final report gives Michael the `wt-rm <branch>` command to run once it is merged or abandoned.' \
+  "global.md keeps teardown Michael's and has the final report hand him the wt-rm command"
+need_flat global.md 'its own Herdr workspace and a Claude Code session in it' \
+  "global.md says the wt workspace starts a Claude Code session"
+need_flat global.md 'It hands the line to that session, which rules on trade-offs inside the spec and escalates spec changes to the driver; the driver keeps only briefing and collecting the report, never the line'"'"'s work.' \
+  "global.md has the driver hand a wt line to the checkout's session and keep only coordination"
+# The last sentence of global.md was once lost to a reflow, leaving "Reply without tags unless".
+need_flat global.md 'Reply without tags unless he asks for a relay-ready handoff, which Claude Code wraps in `<from-claude-code>`.' \
+  "global.md keeps the relay-reply rule whole"
 if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'Never create one'; then
   _fail "global.md no longer bans creating a wt worktree" "still present"
 else _pass "global.md no longer bans creating a wt worktree"; fi
 need_flat claude-code.md '`docker`, `basecamp`, `herdr`, `wt`, `xreview` and `review` are declared unsandboxed' \
   "claude-code.md lists wt among the excluded tools that must lead the call"
-need_flat claude-code.md 'For a `wt` line, the driver'"'"'s own `xreview` calls pass `-C <checkout>`.' "claude-code.md carries the xreview -C rule"
+need_flat claude-code.md 'If the driver itself reviews a `wt` line, its `xreview` calls pass `-C <checkout>`.' "claude-code.md carries the xreview -C rule"
 need_flat claude-code.md 'Find the checkout'"'"'s session in `ListAgents` (named after it) and `SendMessage` it the brief' \
   "claude-code.md says how to dispatch a wt line to its session"
+need_flat claude-code.md 'If `ListAgents` does not list it, tell Michael; never run the line in the main session.' \
+  "claude-code.md keeps the wt line out of the main session when its session is missing"
 need_flat claude-code.md 'never create a worktree for one of its tasks' "claude-code.md keeps the parallel-tasks worktree rule"
 # Codex-only text moved to codex.md.
 for gone in "**Skills don't change roles.**" "On Codex's side"; do

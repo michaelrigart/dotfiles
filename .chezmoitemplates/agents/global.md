@@ -19,13 +19,14 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
 - **`wt` worktrees.** `wt <branch>` makes a sibling checkout `~/Code/<Org>/<repo>-<branch>` with
-  its own Herdr workspace and an agent session in it; worktrees share one database, Redis and
+  its own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis and
   storage. The driver may open one per independent line of work, as `wt --no-focus <branch>
   <local-branch>` (a remote start point sets an upstream), and names each checkout it opened in its
-  report; never in the dotfiles. It hands the line to that session and keeps only coordination
-  (briefing, rulings, the report), never the line's work. Never run `wt-rm` or `git worktree
-  remove`: when a line is done (merged or abandoned), the report gives Michael the `wt-rm <branch>`
-  command. A harness worktree follows its own tool's lifecycle.
+  report; never in the dotfiles. It hands the line to that session, which rules on trade-offs
+  inside the spec and escalates spec changes to the driver; the driver keeps only briefing and
+  collecting the report, never the line's work. Never run `wt-rm` or `git worktree remove`: the
+  line's final report gives Michael the `wt-rm <branch>` command to run once it is merged or
+  abandoned. A harness worktree follows its own tool's lifecycle.
 - **Backups:** Borg through Vorta (runbook: the vault's Backups note) skips uncommitted work in a
   `wt` worktree, so checkpoint commits are the protection.
 
@@ -105,9 +106,8 @@ specs and merges; in between, the driver proceeds on its own.
   pre-merge review together. Every other change has a spec and a plan, versioned with the code.
   Unsure or outgrown: not small; say which.
 - **Brainstorming.** Present the whole design in one message.
-- **Cross-review** runs at every checkpoint (spec sign-off, plan completion, pre-merge) without
-  being asked. Commits after the last pre-merge review need a new review before you report the work
-  as done.
+- **Cross-review** runs at every checkpoint (spec sign-off, plan completion, pre-merge) unasked.
+  Commits after the last pre-merge review need a new review before you report the work as done.
 - **Rulings.** Rule on review trade-offs that stay inside the approved spec, and record each one
   under "Rulings" in the MR. Escalate only what would change the spec.
 - **Fix now.** Fix in-scope findings on this branch. No follow-up MRs unless Michael asks.
@@ -147,3 +147,4 @@ capability limits.
   Otherwise neither tool addresses the other on its own.
 - **When Michael relays by hand:** evaluate the input, then report your conclusion, any remaining
   disagreement, the practical consequences and a recommendation, and stop. Reply without tags unless
+  he asks for a relay-ready handoff, which Claude Code wraps in `<from-claude-code>`.
