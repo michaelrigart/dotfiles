@@ -25,6 +25,8 @@ cat > "$T/bin/tagteam" <<'SH'
 [ "$*" = "status --json" ] || { echo "unexpected args: $*" >&2; exit 64; }
 case "${TAGTEAM_MODE:-fixture}" in
   hang) /bin/sleep 10; exit 0 ;;
+  trapterm) trap 'echo TERM > "$TAGTEAM_TERM_RECORD"' TERM
+            for ((i = 0; i < 60; i++)); do /bin/sleep 0.1; done; exit 0 ;;
   *) /bin/cat "$TAGTEAM_FIXTURE"; exit "${TAGTEAM_RC:-0}" ;;
 esac
 SH
@@ -169,6 +171,18 @@ t1="$(now_s)"
 is "hung tagteam: the Codex segment still prints, exit 0" "$out|$rc" "codex 82% wk ⚠|0"
 fast="$(/usr/bin/python3 -c "import sys; print('yes' if float(sys.argv[2]) - float(sys.argv[1]) < 4.0 else 'no')" "$t0" "$t1")"
 is "hung tagteam: the script returns within 4 s" "$fast" "yes"
+
+# tagteam may be mid token refresh: only SIGTERM lets it release its locks and keep the rotated
+# refresh token, so a timeout must send TERM and must not wait for the process to exit.
+rm -f "$T/term-record"
+t0="$(now_s)"
+out="$(run TAGTEAM_MODE=trapterm TAGTEAM_TERM_RECORD="$T/term-record")"; rc=$?
+t1="$(now_s)"
+fast="$(/usr/bin/python3 -c "import sys; print('yes' if float(sys.argv[2]) - float(sys.argv[1]) < 4.0 else 'no')" "$t0" "$t1")"
+is "tagteam that traps TERM and keeps running: the Codex segment still prints, exit 0" "$out|$rc" "codex 82% wk ⚠|0"
+is "tagteam that traps TERM and keeps running: the script returns within 4 s" "$fast" "yes"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -s "$T/term-record" ] && break; /bin/sleep 0.1; done
+is "a timed-out tagteam is sent SIGTERM (its handler ran)" "$(cat "$T/term-record" 2>/dev/null)" "TERM"
 
 # ---------- Codex, from rollouts ----------
 echo "codex: finding the reading"

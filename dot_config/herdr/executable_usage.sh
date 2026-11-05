@@ -82,12 +82,12 @@ def fmt_age(age: float) -> str:
 
 
 def pick_window(windows: List[Window], now: float, age: Optional[float]) -> Optional[Tuple[float, str]]:
-    def live(window: Window) -> bool:
+    def is_live(window: Window) -> bool:
         if window[2] is not None:
             return window[2] > now
         return age is not None and age <= window[3]
 
-    live = [w for w in windows if live(w)]
+    live = [w for w in windows if is_live(w)]
     if not live:
         return None
     best = max(live, key=lambda w: w[0])
@@ -122,13 +122,12 @@ def tagteam_status():
     try:
         out, _ = proc.communicate(timeout=TAGTEAM_TIMEOUT)
     except subprocess.TimeoutExpired:
+        # SIGTERM, never SIGKILL: tagteam may be mid token refresh, and only its TERM handler
+        # releases the account and credential locks without losing the rotated refresh token.
+        # It runs in its own session, so nothing here waits for it to finish.
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(proc.pid, signal.SIGTERM)
         except OSError:
-            pass
-        try:
-            proc.communicate(timeout=1)
-        except Exception:
             pass
         return None
     if proc.returncode != 0:
