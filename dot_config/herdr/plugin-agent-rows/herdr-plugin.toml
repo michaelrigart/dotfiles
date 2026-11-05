@@ -9,7 +9,10 @@
 #
 # The [[startup]] hook runs once per server start. It only detaches a long-lived worker and
 # returns; the worker owns the spinner frames (a `spin` pane token with a short TTL) and the
-# `blocked` -> "needs you" state label, and exits when the socket goes away for good.
+# `blocked` -> "needs you" state label (reported under its own source, dev.agent-rows.labels),
+# and exits as soon as its subscription closes, which is the server shutting down. Only its first
+# connection retries; a restarted server's own startup hook launches a worker with the code now
+# on disk.
 id = "dev.agent-rows"
 name = "Agent rows"
 version = "0.1.0"

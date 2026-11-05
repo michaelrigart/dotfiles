@@ -35,7 +35,11 @@ is "manifest startup command" "$(grep '^command = ' "$MANIFEST")" \
 is "manifest says how to link it" "$(grep -c 'herdr plugin link ~/.config/herdr/plugin-agent-rows' "$MANIFEST")" 1
 is "manifest says unlink waits for the next server start" "$(grep -ci 'next server start' "$MANIFEST")" 1
 is "plugin script has the absolute python shebang" "$(head -1 "$PLUGIN")" '#!/usr/bin/python3 -I'
-if [ -x "$PLUGIN" ]; then _pass "plugin script is executable"; else _fail "plugin script is executable" "mode $(stat -f %Lp "$PLUGIN")"; fi
+# chezmoi takes the deployed mode from the `executable_` prefix, not from the source file's mode,
+# so the prefix is what makes the script runnable: the hook's script name must exist under it.
+hook_script="$(grep -o 'plugin-agent-rows/[A-Za-z0-9._-]*\.py' "$MANIFEST" | head -1)"
+is "the startup hook's script is shipped under the executable_ prefix" \
+  "$([ -n "$hook_script" ] && [ -f "$DIR/executable_${hook_script#plugin-agent-rows/}" ] && echo yes)" yes
 is "plugin script compiles on the system python3" \
   "$(/usr/bin/python3 -I -c 'import sys; compile(open(sys.argv[1]).read(), "agent-rows.py", "exec")' "$PLUGIN" 2>&1 && echo ok)" ok
 
@@ -96,10 +100,13 @@ class FakeTransport:
         self.subs = []
         self.refuse = False
         self.vanished = set()    # panes the server no longer knows: it answers their reports with an error
+        self.refusing = {}       # pane_id -> error code: it answers that pane's reports with that error
     def request(self, method, params):
         self.requests.append((method, params))
         if self.refuse:
             raise ConnectionRefusedError("refused")
+        if method == "pane.report_metadata" and params["pane_id"] in self.refusing:
+            return {"id": "x", "error": {"code": self.refusing[params["pane_id"]], "message": "refused"}}
         if method == "pane.report_metadata" and params["pane_id"] in self.vanished:
             return {"id": "x", "error": {"code": "pane_not_found", "message": "no such pane"}}
         if method == "session.snapshot":
@@ -145,6 +152,11 @@ def status_ev(pid, status):
 def detected_ev(pid):
     return {"event": "pane.agent_detected",
             "data": {"type": "pane_agent_detected", "pane_id": pid, "agent": "claude"}}
+def released_ev(pid, **extra):
+    """pane_agent_detected also announces a release: no agent, and/or released with a final status."""
+    data = {"type": "pane_agent_detected", "pane_id": pid, "agent": None}
+    data.update(extra)
+    return {"event": "pane.agent_detected", "data": data}
 def closed_ev(pid):
     return {"event": "pane.closed", "data": {"type": "pane_closed", "pane_id": pid}}
 def moved_ev(prev, new, status="working"):
@@ -184,8 +196,9 @@ check("frames are ten braille cells", ar.FRAMES == "\u280b\u2819\u2839\u2838\u28
 src_line = [l for l in open(PLUGIN, encoding="utf-8").read().splitlines() if l.startswith("FRAMES = ")]
 check("FRAMES is written as u-escapes in the source, never as literal glyphs",
       src_line == ['FRAMES = "\\u280b\\u2819\\u2839\\u2838\\u283c\\u2834\\u2826\\u2827\\u2807\\u280f"'] and all(ord(ch) < 128 for ch in open(PLUGIN, encoding="utf-8").read()), src_line)
-check("constants", (ar.SOURCE, ar.TOKEN, ar.FRAME_S, ar.TTL_MS, ar.LABELS)
-      == ("dev.agent-rows", "spin", 0.14, 1500, LABELS), (ar.SOURCE, ar.TOKEN, ar.FRAME_S, ar.TTL_MS, ar.LABELS))
+check("constants", (ar.SOURCE, ar.LABEL_SOURCE, ar.TOKEN, ar.FRAME_S, ar.TTL_MS, ar.LABELS)
+      == ("dev.agent-rows", "dev.agent-rows.labels", "spin", 0.14, 1500, LABELS),
+      (ar.SOURCE, ar.LABEL_SOURCE, ar.TOKEN, ar.FRAME_S, ar.TTL_MS, ar.LABELS))
 
 print("C. Idle agents: labels once, then no work at all")
 state = {}
@@ -201,8 +214,8 @@ finally: ar.select = real
 check("idle run returns 0", rc == 0, rc)
 check("every agent pane, and only agent panes, gets the label",
       sorted(p["pane_id"] for p in labels(tr)) == ["w1:p1", "w1:p2"], labels(tr))
-check("label report carries state_labels, the source and no tokens or ttl",
-      all(p["state_labels"] == LABELS and p["source"] == "dev.agent-rows" and "tokens" not in p and "ttl_ms" not in p
+check("label report carries state_labels, the labels source and no tokens or ttl",
+      all(p["state_labels"] == LABELS and p["source"] == "dev.agent-rows.labels" and "tokens" not in p and "ttl_ms" not in p
           for p in labels(tr)), labels(tr))
 check("no spin token while idle", not frames(tr) and not clears(tr), reports(tr))
 check("no request over 50 fake seconds of waiting", state["n0"] == state["n1"], (state["n0"], state["n1"]))
@@ -236,7 +249,8 @@ def go_done():
     return t, f
 tr, fake = go_done()
 cl = clears(tr, "w1:p1")
-check("one clear, without ttl_ms", len(cl) == 1 and "ttl_ms" not in cl[0] and cl[0]["tokens"] == {"spin": None}, cl)
+check("one clear, without ttl_ms, under the frame source",
+      len(cl) == 1 and "ttl_ms" not in cl[0] and cl[0]["tokens"] == {"spin": None} and cl[0]["source"] == "dev.agent-rows", cl)
 after = [p for m, p in tr.requests[mark["n"]:mark["m"]] if m == "pane.report_metadata"]
 check("the clear goes out at once, and is the only report after the status change", after == cl, after)
 check("the wait has no timeout again once nothing works", fake.timeouts[-1] is None and fake.timeouts[-2] is None, fake.timeouts)
@@ -273,6 +287,28 @@ check("a detection for a known pane (agent restarted) clears its frame and relab
       == [("w1:p1", False, {"spin": None}), ("w1:p1", True, None)], eff.reports)
 check("and resets its status, so the dead agent's `working` does not carry over",
       rows3.frame_effects("y").reports == [] and eff.resubscribe is False, rows3.status)
+for shape, ev in (("agent null", released_ev("w1:p1")),
+                  ("agent null, released, final_status", released_ev("w1:p1", released=True, final_status="done")),
+                  ("released with a final_status and the old agent name", released_ev("w1:p1", agent="claude", released=True, final_status="done"))):
+    rows4 = ar.Rows()
+    rows4.apply_snapshot(snap(P("w1:p1", "working"), P("w1:p2")))
+    rows4.mark_covered(["w1:p1", "w1:p2"])
+    rows4.frame_effects("x")
+    eff = rows4.apply_event(ev)
+    check("a release (%s) clears the shown frame and asks for a resubscribe" % shape,
+          [(r["pane_id"], r.get("tokens")) for r in eff.reports] == [("w1:p1", {"spin": None})] and eff.resubscribe is True, eff.reports)
+    check("and forgets the pane: no frame, no clear, no subscription entry, no label bookkeeping (%s)" % shape,
+          rows4.frame_effects("y").reports == [] and rows4.clear_all().reports == []
+          and [s["pane_id"] for s in rows4.subscriptions()[3:]] == ["w1:p2"] and "w1:p1" not in rows4.labelled, rows4.status)
+    eff = rows4.apply_event(detected_ev("w1:p1"))
+    check("a later detection in that pane labels it afresh (%s)" % shape,
+          [r["pane_id"] for r in eff.reports] == ["w1:p1"] and "state_labels" in eff.reports[0], eff.reports)
+rows4 = ar.Rows()
+rows4.apply_snapshot(snap(P("w1:p2")))
+rows4.mark_covered(["w1:p2"])
+eff = rows4.apply_event(released_ev("w9:p9", released=True, final_status="done"))
+check("a release of a pane never known reports nothing and asks for nothing", eff.reports == [] and eff.resubscribe is False, (eff.reports, eff.resubscribe))
+
 rows2 = ar.Rows()
 eff = rows2.apply_event({"event": "pane.agent_detected", "data": {"pane_id": "w1:p1", "agent": "claude"}})
 check("the kind falls back to the line's event name, dotted or not", [r["pane_id"] for r in eff.reports] == ["w1:p1"], eff.reports)
@@ -282,6 +318,26 @@ rc, tr, fake, clock = go([snap(P("w1:p1")), snap(P("w1:p1")), snap(P("w1:p1"), P
 check("the loop labels the detected pane once", len(labels(tr, "w1:p5")) == 1, labels(tr, "w1:p5"))
 ids = lambda sub: sorted(s.get("pane_id", "") for s in sub.entries if s["type"] == "pane.agent_status_changed")
 check("the next subscription names the detected pane", ids(tr.subs[-1]) == ["w1:p1", "w1:p5"], [ids(s) for s in tr.subs])
+
+cut = {}
+def release(sub):
+    cut["n"] = len(cut["tr"].requests)
+    sub.queue.append([released_ev("w1:p1", released=True, final_status="done")])
+def go_release():
+    c, stop = FakeClock(), threading.Event()
+    both = snap(P("w1:p1", "working"), P("w1:p2", "working"))
+    t = FakeTransport([both, both, snap(P("w1:p2", "working"))]); cut["tr"] = t
+    f = FakeSelect(c, stop, [noop, release, noop, noop, noop])
+    real = ar.select; ar.select = f
+    try: ar.run(t, c, c.sleep, stop)
+    finally: ar.select = real
+    return t
+tr = go_release()
+post = [p for m, p in tr.requests[cut["n"]:] if m == "pane.report_metadata"]
+check("a released pane's frame is cleared once and it gets nothing after",
+      [p["tokens"] for p in post if p["pane_id"] == "w1:p1"] == [{"spin": None}], post)
+check("the next subscription drops the released pane", ids(tr.subs[-1]) == ["w1:p2"], [ids(s) for s in tr.subs])
+check("the other pane keeps spinning after the release", len(frames(tr, "w1:p2")) >= 3, len(frames(tr, "w1:p2")))
 
 print("G. pane_moved")
 def move(sub): sub.queue.append([moved_ev("w1:p1", "w2:p1")])
@@ -356,8 +412,28 @@ check("the loop resyncs after the refusal", [m for m, _ in post].count("session.
       and ids(tr.subs[-1]) == ["w1:p2"], [ids(s) for s in tr.subs])
 check("the other pane keeps spinning", len(frames(tr, "w1:p2")) >= 5, len(frames(tr, "w1:p2")))
 
-print("I. events_lost / EOF: resubscribe and a fresh snapshot")
-def lose(sub): sub.queue.append(EOFError("events_lost"))
+print("H3. A refusal that is not pane_not_found says nothing about the pane")
+cut = {}
+def limit(sub): cut["n"] = len(cut["tr"].requests); cut["tr"].refusing["w1:p1"] = "metadata_token_limit"
+def go_limit():
+    c, stop = FakeClock(), threading.Event()
+    both = snap(P("w1:p1", "working"), P("w1:p2", "working"))
+    t = FakeTransport([both]); cut["tr"] = t
+    f = FakeSelect(c, stop, [noop, limit, noop, noop, noop, noop])
+    real = ar.select; ar.select = f
+    try: ar.run(t, c, c.sleep, stop)
+    finally: ar.select = real
+    return t
+tr = go_limit()
+post = tr.requests[cut["n"]:]
+check("the pane is still tried on every tick (not forgotten)", len([p for m, p in post if m == "pane.report_metadata" and p["pane_id"] == "w1:p1"]) >= 4,
+      [p["pane_id"] for m, p in post if m == "pane.report_metadata"])
+check("and no resync follows: one snapshot per bootstrap step, no new subscription",
+      [m for m, _ in tr.requests].count("session.snapshot") == 2 and len(tr.subs) == 2, [m for m, _ in tr.requests])
+check("its subscription entry stays", ids(tr.subs[-1]) == ["w1:p1", "w1:p2"], [ids(s) for s in tr.subs])
+
+print("I. events_lost: resubscribe and a fresh snapshot")
+def lose(sub): sub.queue.append(ar.EventsLost("events_lost"))
 a = snap(P("w1:p1", "working"), P("w1:p2"))
 b = snap(P("w1:p1", "idle"), P("w1:p2", "working"))
 cut = {}
@@ -410,28 +486,42 @@ check("frames go to exactly the 3 working panes", {p["pane_id"] for p in frames(
 check("no resubscribe while the set is unchanged", len(tr.subs) == 2, len(tr.subs))
 check("each tick reports each working pane", len(frames(tr)) == 30, len(frames(tr)))
 
-print("L. Server gone")
+print("L. Server gone: a closed subscription ends the worker")
 cut = {}
 def gone(sub):
     cut["t"] = cut["clock"].t; cut["n"] = len(cut["tr"].requests)
-    cut["tr"].refuse = True
+    cut["tr"].refuse = cut["refuse"]
     sub.queue.append(EOFError("closed"))
-def go_gone():
+def go_gone(refuse):
     c, stop = FakeClock(), threading.Event()
-    t = FakeTransport([snap(P("w1:p1", "working"), P("w1:p2", "working"))]); cut["tr"], cut["clock"] = t, c
-    f = FakeSelect(c, stop, [noop, gone])
+    t = FakeTransport([snap(P("w1:p1", "working"), P("w1:p2", "working"))]); cut["tr"], cut["clock"], cut["refuse"] = t, c, refuse
+    f = FakeSelect(c, stop, [noop, gone, noop, noop, noop])
     real = ar.select; ar.select = f
     try: rc = ar.run(t, c, c.sleep, stop)
     finally: ar.select = real
     return rc, t, c
-rc, tr, clock = go_gone()
-spent = clock.t - cut["t"]
+cleared = lambda post: sorted(p["pane_id"] for m, p in post if m == "pane.report_metadata" and p["tokens"] == {"spin": None})
+# A restarted server answers at once, so a worker that reconnected would attach to it and keep its
+# old code; the next server start's hook launches a fresh worker instead.
+rc, tr, clock = go_gone(False)
 post = tr.requests[cut["n"]:]
-check("run returns 0", rc == 0, rc)
-check("it gives up once reconnects have failed for 10 s (on the fake clock)", 10.0 <= spent <= 10.6, spent)
-check("it retried the connection meanwhile", len([m for m, _ in post if m == "events.subscribe"]) >= 5, [m for m, _ in post])
-check("shown frames were cleared best-effort (attempted even though refused)",
-      sorted(p["pane_id"] for m, p in post if m == "pane.report_metadata" and p["tokens"] == {"spin": None}) == ["w1:p1", "w1:p2"], post)
+check("EOF with a server that would answer: run returns 0", rc == 0, rc)
+check("it does not bootstrap again (no subscription, no snapshot after the EOF)",
+      [m for m, _ in post if m != "pane.report_metadata"] == [] and len(tr.subs) == 2, [m for m, _ in post])
+check("it does not wait before exiting", clock.t == cut["t"], clock.t - cut["t"])
+check("shown frames are cleared on the way out", cleared(post) == ["w1:p1", "w1:p2"], post)
+check("every subscription is closed", all(s.closed for s in tr.subs), [s.closed for s in tr.subs])
+rc, tr, clock = go_gone(True)
+post = tr.requests[cut["n"]:]
+check("EOF with the server unreachable: run returns 0 at once, without retrying",
+      rc == 0 and clock.t == cut["t"] and [m for m, _ in post if m != "pane.report_metadata"] == [], (rc, clock.t - cut["t"], [m for m, _ in post]))
+check("shown frames were cleared best-effort (attempted even though refused)", cleared(post) == ["w1:p1", "w1:p2"], post)
+# Only the very first connection retries: the startup hook can run before the socket accepts.
+c0, stop0 = FakeClock(), threading.Event()
+t0 = FakeTransport([snap(P("w1:p1"))]); t0.refuse = True
+rc = ar.run(t0, c0, c0.sleep, stop0)
+check("the first connect retries for 10 s on the fake clock, then run returns 0",
+      rc == 0 and 10.0 <= c0.t <= 10.6 and len([m for m, _ in t0.requests if m == "events.subscribe"]) >= 5, (rc, c0.t))
 
 print("M. SIGTERM")
 stop_box = {}
@@ -542,8 +632,9 @@ b.sendall(b'{"event":"x"}\n{"event":"y"}\n')
 check("two lines in one read come back together", [e["event"] for e in sub.read_events()] == ["x", "y"], None)
 b.sendall(b'{"id":"x","error":{"code":"events_lost","message":"m"}}\n')
 try: sub.read_events(); got = None
-except EOFError as e: got = e
-check("an error line raises EOFError", isinstance(got, EOFError), got)
+except Exception as e: got = e
+check("an error line raises EventsLost, which is not the EOFError of a plain close",
+      isinstance(got, ar.EventsLost) and not isinstance(got, EOFError), got)
 sub.close()
 check("close() closes the connection", a.fileno() == -1, a.fileno())
 b.close()

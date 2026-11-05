@@ -21,6 +21,7 @@ import threading
 import time
 
 SOURCE = "dev.agent-rows"
+LABEL_SOURCE = SOURCE + ".labels"
 TOKEN = "spin"
 FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 FRAME_S = 0.14
@@ -38,6 +39,11 @@ class RpcError(Exception):
     pass
 
 
+class EventsLost(Exception):
+    """The subscription is still open but the server dropped events: resync from a snapshot.
+    A plain close (EOFError) is not this: it means the server shut down."""
+
+
 class Stopping(BaseException):
     """Raised by the signal handler so a blocking select is interrupted."""
 
@@ -48,8 +54,8 @@ class Effects:
         self.resubscribe = resubscribe
 
 
-def _report(pane_id, **fields):
-    params = {"pane_id": pane_id, "source": SOURCE}
+def _report(pane_id, source=SOURCE, **fields):
+    params = {"pane_id": pane_id, "source": source}
     params.update(fields)
     return params
 
@@ -92,7 +98,7 @@ class Rows:
     def _label(self, pane_id, reports):
         if pane_id not in self.labelled:
             self.labelled.add(pane_id)
-            reports.append(_report(pane_id, state_labels=dict(LABELS)))
+            reports.append(_report(pane_id, LABEL_SOURCE, state_labels=dict(LABELS)))
 
     def _clear_if_shown(self, pane_id, reports):
         if pane_id in self.shown:
@@ -128,7 +134,11 @@ class Rows:
                     self._clear_if_shown(pane_id, reports)
         elif kind == "pane_agent_detected":
             pane_id = data.get("pane_id")
-            if pane_id:
+            if pane_id and (data.get("released") or ("agent" in data and data["agent"] is None)):
+                # The same event carries a release: the pane is no longer an agent's.
+                self._clear_if_shown(pane_id, reports)
+                self.forget(pane_id)
+            elif pane_id:
                 # A detection for a known pane is a new agent in the same pane (a restart):
                 # nothing the dead one was doing carries over.
                 self._clear_if_shown(pane_id, reports)
@@ -201,7 +211,7 @@ class Subscription:
             msg = json.loads(line)
             body = msg.get("data") or {}
             if "error" in msg or (body.get("type") or msg.get("event")) == "events_lost":
-                raise EOFError("subscription error: %s" % json.dumps(msg.get("error") or msg)[:200])
+                raise EventsLost("subscription error: %s" % json.dumps(msg.get("error") or msg)[:200])
             events.append(msg)
         return events
 
@@ -260,14 +270,17 @@ class Transport:
 
 
 def _send(transport, log, effects):
-    """Send every report; returns the pane ids whose report the server refused."""
+    """Send every report; returns the pane ids the server says do not exist (`pane_not_found`).
+    Any other refusal is only logged: it says nothing about whether the pane is alive."""
     refused = []
     for params in effects.reports:
         try:
             resp = transport.request("pane.report_metadata", params)
-            if resp.get("error"):
-                refused.append(params["pane_id"])
-                log("report for %s refused: %s" % (params["pane_id"], json.dumps(resp["error"])[:200]))
+            error = resp.get("error")
+            if error:
+                if isinstance(error, dict) and error.get("code") == "pane_not_found":
+                    refused.append(params["pane_id"])
+                log("report for %s refused: %s" % (params["pane_id"], json.dumps(error)[:200]))
         except Exception as exc:
             log("report for %s failed: %r" % (params["pane_id"], exc))
     return refused
@@ -314,8 +327,10 @@ def _bootstrap(transport, rows, send):
     return _resync(transport, rows, live, send) if effects.resubscribe else live
 
 
-def _connect(transport, rows, send, stop, clock, sleep, log, since):
-    """Bootstrap, retrying until it works or `GIVE_UP_S` has passed since `since`."""
+def _connect(transport, rows, send, stop, clock, sleep, log):
+    """The first bootstrap, retried until it works or `GIVE_UP_S` has passed: the startup hook
+    can run before the socket accepts. Nothing after the first connection retries."""
+    since = clock()
     while not stop.is_set():
         try:
             return _bootstrap(transport, rows, send)
@@ -339,7 +354,7 @@ def run(transport, clock, sleep, stop, log=None):
         return _send(transport, log, effects)
 
     try:
-        live = _connect(transport, rows, send, stop, clock, sleep, log, clock())
+        live = _connect(transport, rows, send, stop, clock, sleep, log)
         while live is not None and not stop.is_set():
             try:
                 timeout = max(0.0, next_frame - clock()) if rows.working() else None
@@ -360,15 +375,23 @@ def run(transport, clock, sleep, stop, log=None):
                     live = _resync(transport, rows, live, send)
             except Stopping:
                 raise
-            except Exception as exc:
-                log("connection lost: %r" % (exc,))
-                lost_at = clock()
+            except EventsLost as exc:
+                # The server is up but dropped events: rebuild from a fresh snapshot, once.
+                log("events lost: %s" % (exc,))
                 live.close()
                 live = None
-                sleep(RECONNECT_S)
-                live = _connect(transport, rows, send, stop, clock, sleep, log, lost_at)
+                live = _bootstrap(transport, rows, send)
+            except Exception as exc:
+                # A closed subscription is the server shutting down. Whatever answers next is a
+                # new server whose startup hook starts its own worker (with the code now on
+                # disk), so this one clears what it can and ends rather than attach to it.
+                log("connection lost: %r; exiting" % (exc,))
+                live.close()
+                live = None
     except Stopping:
         pass
+    except Exception as exc:
+        log("resync failed: %r; exiting" % (exc,))
     finally:
         if live is not None:
             live.close()
