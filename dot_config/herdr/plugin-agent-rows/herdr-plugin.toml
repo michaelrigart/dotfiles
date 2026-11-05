@@ -1,0 +1,21 @@
+# dev.agent-rows — a spinner and "needs you" wording on agent rows.
+# Managed by chezmoi (source: dot_config/herdr/plugin-agent-rows/herdr-plugin.toml).
+# Registered with: herdr plugin link ~/.config/herdr/plugin-agent-rows
+#
+# Deliberately its own plugin, like dev.phase: registration is global and rollback is per-id,
+# so `herdr plugin unlink dev.agent-rows` removes this and nothing else. Herdr has no
+# supervised process in a manifest, so unlinking stops future starts only: the running worker
+# and the labels it reported go at the next server start.
+#
+# The [[startup]] hook runs once per server start. It only detaches a long-lived worker and
+# returns; the worker owns the spinner frames (a `spin` pane token with a short TTL) and the
+# `blocked` -> "needs you" state label, and exits when the socket goes away for good.
+id = "dev.agent-rows"
+name = "Agent rows"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Spin a frame on working agent rows and word blocked as needs you"
+platforms = ["macos"]
+
+[[startup]]
+command = ["/bin/zsh", "-c", "exec /usr/bin/python3 -I \"$HOME/.config/herdr/plugin-agent-rows/agent-rows.py\" start"]
