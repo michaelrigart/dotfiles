@@ -1,6 +1,6 @@
 # Herdr UI refresh: Tokyo Night, live signals
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-11-05
 **Branch:** `herdr-ui-refresh` (dotfiles: the pushed branch is the end, no MR)
 **Sign-off:** Michael, 2026-11-05, after Codex's spec review approved it in round 3
@@ -134,15 +134,19 @@ labels go at the next server start. That is accepted for a rollback path.
   new pane ID (`herdr --skill`: "A pane moved into another workspace receives a new
   workspace-qualified pane ID"), so a move remaps the worker's state to the new ID, or resyncs,
   and re-reports that pane's label; frames only ever go to IDs the worker currently knows to be
-  live. It resyncs from `session.snapshot` at start, on reconnect and on `events_lost`. With no
+  live. It resyncs from `session.snapshot` at start and on `events_lost`. A `pane_agent_detected`
+  that carries a release (`agent` null and/or `released`) removes the pane's state. With no
   working pane it does no periodic work at all.
 - **Wording.** Report a state label for every agent pane so `blocked` reads `needs you`; other
-  states keep herdr's labels. Labels carry no TTL and are re-reported at start and when an agent
-  pane appears (pane metadata does not survive a server restart).
+  states keep herdr's labels. Labels carry no TTL, are reported under their own source
+  (`dev.agent-rows.labels`, the frames use `dev.agent-rows`), and are re-reported at start and when
+  an agent pane appears (pane metadata does not survive a server restart).
 - **Lifecycle.** Started by a `[[startup]]` hook, which herdr runs once per server start; the
-  hook detaches the worker and returns. One instance (lock in `HERDR_PLUGIN_STATE_DIR`). When the
-  socket goes away for good, the worker exits; the next server start launches a new one. Bounded
-  log in the state dir.
+  hook detaches the worker and returns. One instance (lock in `HERDR_PLUGIN_STATE_DIR`). A plain
+  close of the event subscription means the server shut down: the worker clears what it can and
+  exits at once, and the next server start launches a new one with the code then on disk (a worker
+  that reconnected would attach to the restarted server and keep the old code). Only the very first
+  connect retries, for about 10 s. Bounded log in the state dir.
 - Works for any number of agent panes and any agent kind.
 
 ### 4. Pipeline on the MR badge (`phase.sh`)
@@ -171,13 +175,20 @@ is the truth for "quality passed, builds not started"; of its last 23 MR pipelin
 there has no pipeline and no badge; the draft rule costs nothing where it does not apply.
 
 The status is cached in the existing cache directory with the existing TTL, keyed by repository
-and MR iid, so a branch reused after a merge never shows the old MR's pipeline. Every hardening
-rule `phase.sh` already follows applies unchanged (no fetch, pinned `PATH`, no config-driven git
-execution, never reading back reported state).
+and MR iid (the slug's `/` encoded as `%2F`, so no two repositories share a file), so a branch
+reused after a merge never shows the old MR's pipeline. A failed lookup keeps showing a cached
+status only while that file is under 30 minutes old; after that the pipeline tokens are cleared.
+Every hardening rule `phase.sh` already follows applies unchanged (no fetch, pinned `PATH`, no
+config-driven git execution, never reading back reported state), and it now starts from `/`, since
+`glab` reads the current directory's repository.
 
 ### 5. Usage in the tab bar
 
-This section adds no network calls of its own and reads no login tokens.
+This section adds no network calls of its own and reads no login tokens. That describes
+`usage.sh`: `tagteam status` may itself fetch usage and refresh the live account's token on
+demand, which is tagteam's existing, accepted behaviour. For that reason `usage.sh` ends a
+`tagteam` that outlives its timeout with SIGTERM, never SIGKILL (tagteam's handler releases its
+locks and keeps a rotated refresh token), and does not wait for it.
 
 - **Claude: from tagteam** (Michael's ruling, 2026-11-05). Michael switches between three Claude
   accounts, each with a short tagteam alias, and his Claude status line already shows tagteam's

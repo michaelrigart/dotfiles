@@ -51,7 +51,8 @@ Read it before any task; section numbers below (§1–§5) are the spec's.
   `pane_agent_detected`, `pane_created`); the subscription request uses the dotted form
   (`pane.moved`). Normalise an incoming event's kind as `(data.get("type") or line["event"]).replace(".", "_")`.
 - `pane_moved` data: `previous_pane_id`, `pane` (PaneInfo, new `pane_id`). `pane_closed`:
-  `pane_id`. `pane_agent_detected`: `pane_id`, `agent`. `pane_agent_status_changed`: `pane_id`,
+  `pane_id`. `pane_agent_detected`: `pane_id`, `agent`; it also announces a release, as `agent:
+  null` and/or `released: true` with a `final_status`. `pane_agent_status_changed`: `pane_id`,
   `agent_status` (`idle|working|blocked|done|unknown`).
 - `session.snapshot` → `result.snapshot.panes[]`, each with `pane_id`, `agent` (null for non-agent
   panes), `agent_status`, `state_labels`, `tokens`. The live session had 39 agent panes.
@@ -223,7 +224,8 @@ Read it before any task; section numbers below (§1–§5) are the spec's.
 - Environment: `PINNED_PATH` (suite only, for the `tagteam` stub), `CODEX_HOME` (default
   `$HOME/.codex`), `HERDR_USAGE_NOW` (suite only: epoch seconds standing in for now),
   `HERDR_USAGE_TRACE` (suite only: when set, the path of each rollout file opened is appended to
-  that file, one per line, before it is read).
+  that file, one per line, before it is read, and a `read <bytes>` line follows for each chunk
+  read from it).
 - Shape: `/bin/bash` with the pinned `PATH`, then `exec /usr/bin/python3 -I - <<'PY'` (the
   `herdr-agent-state.sh` pattern), so all logic is stdlib Python.
 
@@ -310,7 +312,8 @@ Output rules (spec §5, exact):
   and that unlinking takes effect at the next server start (spec §3).
 - `agent-rows.py start` detaches `agent-rows.py worker` (`start_new_session=True`, stdio to
   `/dev/null`) and exits 0. `worker` runs the loop.
-- Constants: `SOURCE = "dev.agent-rows"`, `TOKEN = "spin"`, `FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"` (as `\u`
+- Constants: `SOURCE = "dev.agent-rows"` (frames), `LABEL_SOURCE = "dev.agent-rows.labels"`
+  (state labels, so a TTL on frames can never reach them), `TOKEN = "spin"`, `FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"` (as `\u`
   escapes), `FRAME_S = 0.14`, `TTL_MS = 1500`, `LABELS = {"blocked": "needs you"}`.
 - Importable seams (the suite imports the file with `importlib` and never opens a real socket):
   - `class Transport`: `request(method: str, params: dict) -> dict` (one connection per call,
@@ -336,9 +339,11 @@ Output rules (spec §5, exact):
   sets `resubscribe`. On `resubscribe`: open the new subscription built from `subscriptions()`,
   snapshot again, mark the new set as covered, then close the old subscription; repeat while a
   snapshot still changes the set. Wait with `select` on the
-  subscription for `FRAME_S` while any pane works, with no timeout otherwise; on `EOFError`
-  reconnect, and after reconnects keep failing for 10 s, clear shown frames best-effort and return
-  0; on SIGTERM/SIGINT clear shown frames and return 0. One instance: `fcntl.flock(LOCK_EX |
+  subscription for `FRAME_S` while any pane works, with no timeout otherwise; only the first
+  connect retries (for 10 s, then clear and return 0); a plain subscription close (`EOFError`) is
+  the server shutting down, so clear shown frames best-effort and return 0 at once, leaving the
+  next server start's hook to launch a fresh worker; only an error line (`EventsLost`) resyncs,
+  with one new bootstrap; on SIGTERM/SIGINT clear shown frames and return 0. One instance: `fcntl.flock(LOCK_EX |
   LOCK_NB)` on `<state dir>/agent-rows.lock` (`$HERDR_PLUGIN_STATE_DIR`, else
   `~/.local/state/herdr/plugins/dev.agent-rows`); a second worker exits 0 at once. Log to
   `<state dir>/agent-rows.log`, truncated when it passes 256 KiB. Socket path from
@@ -357,7 +362,7 @@ Output rules (spec §5, exact):
   - `pane_moved` of a working pane `w1:p1 → w2:p1` → later frames go to `w2:p1`, none to `w1:p1`,
     `w2:p1` gets its label again, and the next subscription list names `w2:p1`, not `w1:p1`;
   - `pane_closed` of a working pane → no clear sent to it, no frames after;
-  - `events_lost` / EOF → resubscribe and a fresh snapshot, state rebuilt from it;
+  - `events_lost` → resubscribe and a fresh snapshot, state rebuilt from it;
   - **bootstrap**: starting against a snapshot with two idle agent panes, the first subscription
     holds only the 3 lifecycle entries and the one after the first snapshot holds 5; a
     `pane_agent_status_changed` (`working`) delivered on that second subscription starts frames
@@ -365,8 +370,9 @@ Output rules (spec §5, exact):
   - **many panes**: a snapshot with 39 agent panes, 3 working → after bootstrap the live
     subscription has 42 entries, frames go to exactly the 3, and no further resubscribe happens
     while the set is unchanged;
-  - **server gone**: EOF then every reconnect refused → shown frames cleared best-effort, `run`
-    returns 0 within the 10 s budget on the fake clock;
+  - **server gone**: EOF, whether or not a reconnect would succeed → shown frames cleared
+    best-effort and `run` returns 0 at once, without a second bootstrap; the first connect alone
+    retries, within the 10 s budget on the fake clock;
   - SIGTERM while 2 panes spin → both cleared, return 0;
   - a second worker against a held lock exits 0 without making a request;
   - `Transport` framing through `socket.socketpair()`: one request line out, one response line
@@ -410,3 +416,8 @@ after the batch.
   entry shows only while zoomed (else drop it, spec §2); `state_text`'s default style is coloured
   (else make it dim, spec §3); the palette mapping per spec §1; the tab bar command runs with
   `~` expanded.
+- [ ] Live checks of the agent-rows worker's lifecycle and wording, also for that list:
+  (a) edit `agent-rows.py`, `chezmoi apply`, restart the herdr server, and see the change (a
+  restart must start a worker with the new code, never keep the old one);
+  (b) unlink the plugin, restart the server, and `pgrep -f agent-rows.py` finds nothing;
+  (c) an agent works, then hits an approval prompt, and its row reads "needs you".
