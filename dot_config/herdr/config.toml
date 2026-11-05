@@ -18,16 +18,33 @@ onboarding = false
 [theme]
 name = "tokyo-night"
 
-# Tokyo Night tokens. The rail sits a step under Ghostty's #1a1b26 as a recessed surface
-# and the active row lifts the same distance; the accent is Starship's prompt blue.
+# All 19 tokens herdr accepts, pinned to Tokyo Night so a herdr default change cannot
+# repaint the UI. The rail sits a step under Ghostty's #1a1b26 as a recessed surface and
+# the active row lifts the same distance; the accent is Starship's prompt blue. The
+# panel stays on Ghostty's own background. Hairlines are visible but quiet, nothing is
+# brighter than `text`, and colour is reserved for state.
 [theme.custom]
+panel_bg = "reset"
 sidebar_bg = "#16161e"
 active_row_bg = "#292e42"
 selection_bg = "#283457"
 accent = "#7aa2f7"
+surface0 = "#292e42"
+surface1 = "#3b4261"
+# The hairline: herdr's default equals the sidebar background and hides it.
+surface_dim = "#3b4261"
+overlay0 = "#565f89"
+overlay1 = "#737aa2"
+text = "#c0caf5"
+subtext0 = "#a9b1d6"
+mauve = "#bb9af7"
 # The status colours are the prompt's own red and green for failed and successful commands.
 red = "#f7768e"
 green = "#9ece6a"
+yellow = "#e0af68"
+blue = "#7aa2f7"
+teal = "#73daca"
+peach = "#ff9e64"
 
 # The shipped default is `delivery = "off"`, and then `herdr notification show` does
 # nothing, which removes the only feedback channel a detached `[[keys.command]]` has: a
@@ -38,7 +55,8 @@ green = "#9ece6a"
 # application. Accepted: the sidebar still carries the state.
 #
 # The sidebar borrows the prompt's palette: #7aa2f7 marks the space you are in and
-# #7dcfff the branch. Nothing else is coloured, which keeps them legible.
+# #7dcfff the branch. Colour beyond that marks live state only (phase, pipeline, spinner,
+# agent name), which keeps it legible.
 [ui]
 # Keep the sidebar grouped by workspace rather than a flat agent list.
 agent_panel_sort = "spaces"
@@ -56,12 +74,23 @@ status_indicators = "symbols"
 # Alt-q closes only the current workspace: one Herdr session owns many projects, so
 # keep Herdr's confirmation rather than killing every repository in the server.
 confirm_close = true
+# The border label names the agent in each pane, so a split reads without the sidebar.
+show_agent_labels_on_pane_borders = true
+window_title = "{workspace} · {tab}"
+# Claude and Codex usage (usage.sh), then Alt-z's zoom marker, then the clock.
+tab_bar_right = [
+  { type = "command", command = "~/.config/herdr/usage.sh", interval_seconds = 60, timeout_seconds = 5 },
+  { type = "zoom" },
+  { type = "datetime", format = "%H:%M" },
+]
+tab_bar_right_separator = "  │  "
 
 [ui.toast]
 delivery = "herdr"
 
 # Two rows per space: which checkout, then which branch. The branch is the longest string
-# in the rail and the one worth reading unabbreviated.
+# in the rail and the one worth reading unabbreviated. The pipeline result (ci_*, reported
+# by phase.sh) sits between the phase marker and the branch.
 [ui.sidebar.spaces]
 row_gap = 1
 # The phase marker leads row 2 so it survives truncation. Three tokens with exactly one
@@ -72,22 +101,28 @@ rows = [
   [{ token = "$active", fg = "#9ece6a", bold = true },
    { token = "$review", fg = "#e0af68", bold = true },
    { token = "$merged", fg = "#565f89" },
+   { token = "$ci_ok",   fg = "#9ece6a", bold = true },
+   { token = "$ci_fail", fg = "#f7768e", bold = true },
+   { token = "$ci_run",  fg = "#e0af68", bold = true },
    { token = "branch",  fg = "#7dcfff" }],
 ]
 
 # `workspace` is deliberately absent: agent_panel_sort = "spaces" already groups these
-# under their space.
+# under their space. The name is mauve; the braille spinner ($spin, reported while the
+# agent works) sits after it so the name never shifts, and state_text follows.
 [ui.sidebar.agents]
 row_gap = 1
 rows = [
-  ["state_icon", { token = "agent", bold = true }],
+  ["state_icon", { token = "agent", fg = "#bb9af7", bold = true },
+   { token = "$spin", fg = "#e0af68", bold = true }, "state_text"],
   [{ token = "terminal_title_stripped", dim = true }],
 ]
 
 # Codex titles its pane after the repository, which restates the heading; Claude titles
 # it after the conversation, which says what it is doing, so it keeps both rows.
 [ui.sidebar.agents.rows_by_agent]
-codex = [["state_icon", { token = "agent", bold = true }]]
+codex = [["state_icon", { token = "agent", fg = "#bb9af7", bold = true },
+          { token = "$spin", fg = "#e0af68", bold = true }, "state_text"]]
 
 [session]
 # What the Claude/Codex integrations exist to serve; the shipped default, pinned.
