@@ -330,7 +330,8 @@ Output rules (spec §5, exact):
   `pane_agent_detected` event named. Frames go only to panes currently `working`. A pane leaving
   `working`, closing or moving gets `{"spin": null}` (no TTL) on its last known live ID (not after
   close). Every agent pane gets `state_labels = LABELS` once per (re)appearance: at snapshot,
-  detection and move. `pane_moved` remaps all state from `previous_pane_id` to `pane.pane_id`.
+  detection and move, and again at each later snapshot or event until the server accepts the
+  report (an error response or exception leaves the pane unlabelled; never on a frame tick). `pane_moved` remaps all state from `previous_pane_id` to `pane.pane_id`.
   `Rows` remembers which agent panes the live subscription covers, and **any** `apply_snapshot`
   or `apply_event` that leaves the agent-pane set different from that covered set sets
   `resubscribe` (a snapshot that discovers panes, a detection, a move, a close).

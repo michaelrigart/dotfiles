@@ -70,7 +70,7 @@ class Rows:
 
     def __init__(self):
         self.status = {}          # pane_id -> agent_status, for every known agent pane
-        self.labelled = set()     # agent panes whose label was reported on this connection
+        self.labelled = set()     # agent panes whose label report the server accepted on this connection
         self.shown = set()        # panes currently carrying a spin frame
         self.covered = frozenset()  # agent panes the live subscription has status entries for
 
@@ -83,6 +83,10 @@ class Rows:
     def reset_connection(self):
         self.labelled.clear()
         self.covered = frozenset()
+
+    def mark_labelled(self, pane_ids):
+        """Record label reports the server accepted; a pane forgotten since is not recorded."""
+        self.labelled.update(p for p in pane_ids if p in self.status)
 
     def forget(self, pane_id):
         self.status.pop(pane_id, None)
@@ -101,9 +105,15 @@ class Rows:
         return Effects(reports, self.agent_panes() != self.covered)
 
     def _label(self, pane_id, reports):
-        if pane_id not in self.labelled:
-            self.labelled.add(pane_id)
+        """Ask for a pane's label until the server has accepted it (see mark_labelled): a pane
+        whose report failed is asked again at the next snapshot or event, never on a frame tick."""
+        if pane_id not in self.labelled and not any(
+                r["pane_id"] == pane_id and "state_labels" in r for r in reports):
             reports.append(_report(pane_id, LABEL_SOURCE, state_labels=dict(LABELS)))
+
+    def _label_pending(self, reports):
+        for pane_id in sorted(self.status):
+            self._label(pane_id, reports)
 
     def _clear_if_shown(self, pane_id, reports):
         if pane_id in self.shown:
@@ -149,7 +159,6 @@ class Rows:
                 self._clear_if_shown(pane_id, reports)
                 self.labelled.discard(pane_id)
                 self.status[pane_id] = "unknown"
-                self._label(pane_id, reports)
         elif kind == "pane_closed":
             self.forget(data.get("pane_id"))
         elif kind == "pane_moved":
@@ -162,10 +171,9 @@ class Rows:
                 # The old id no longer names this pane for anyone else: send it nothing.
                 self.labelled.discard(previous)
                 self.shown.discard(previous)
-                self._label(new_id, reports)
             elif new_id and new_id not in self.status and pane.get("agent"):
                 self.status[new_id] = pane.get("agent_status") or "unknown"
-                self._label(new_id, reports)
+        self._label_pending(reports)
         return self._effects(reports)
 
     def frame_effects(self, frame):
@@ -275,9 +283,10 @@ class Transport:
 
 
 def _send(transport, log, effects):
-    """Send every report; returns the pane ids the server says do not exist (`pane_not_found`).
-    Any other refusal is only logged: it says nothing about whether the pane is alive."""
-    refused = []
+    """Send every report; returns (refused, delivered): the pane ids the server says do not exist
+    (`pane_not_found`; any other refusal is only logged, it says nothing about whether the pane is
+    alive) and the pane ids whose label report the server accepted."""
+    refused, delivered = [], []
     for params in effects.reports:
         try:
             resp = transport.request("pane.report_metadata", params)
@@ -286,9 +295,11 @@ def _send(transport, log, effects):
                 if isinstance(error, dict) and error.get("code") == "pane_not_found":
                     refused.append(params["pane_id"])
                 log("report for %s refused: %s" % (params["pane_id"], json.dumps(error)[:200]))
+            elif "state_labels" in params:
+                delivered.append(params["pane_id"])
         except Exception as exc:
             log("report for %s failed: %r" % (params["pane_id"], exc))
-    return refused
+    return refused, delivered
 
 
 def _snapshot(transport):
@@ -313,7 +324,7 @@ def _resync(transport, rows, live, send):
                 send(effects)
             finally:
                 old.close()
-            if not effects.resubscribe:
+            if rows.agent_panes() == rows.covered:
                 return live
     except BaseException:
         live.close()
@@ -356,7 +367,13 @@ def run(transport, clock, sleep, stop, log=None):
     next_frame = 0.0
 
     def send(effects):
-        return _send(transport, log, effects)
+        refused, delivered = _send(transport, log, effects)
+        rows.mark_labelled(delivered)
+        for pane_id in refused:
+            # A pane the server no longer knows (its tab or workspace closed without a
+            # pane_closed) refuses its report: drop it, and the resync confirms.
+            rows.forget(pane_id)
+        return refused
 
     try:
         live = _connect(transport, rows, send, stop, clock, sleep, log)
@@ -370,10 +387,7 @@ def run(transport, clock, sleep, stop, log=None):
                     for event in live.read_events():
                         send(rows.apply_event(event))
                 if rows.working() and clock() + 1e-6 >= next_frame:
-                    # A pane the server no longer knows (its tab or workspace closed without a
-                    # pane_closed) refuses its frame: drop it, and the resync below confirms.
-                    for pane_id in send(rows.frame_effects(FRAMES[tick % len(FRAMES)])):
-                        rows.forget(pane_id)
+                    send(rows.frame_effects(FRAMES[tick % len(FRAMES)]))
                     tick += 1
                     next_frame = clock() + FRAME_S
                 if rows.agent_panes() != rows.covered:

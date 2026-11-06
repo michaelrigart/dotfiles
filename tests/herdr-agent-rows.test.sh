@@ -102,10 +102,17 @@ class FakeTransport:
         self.vanished = set()    # panes the server no longer knows: it answers their reports with an error
         self.refusing = {}       # pane_id -> error code: it answers that pane's reports with that error
         self.snap_errors = {}    # snapshot call number (0-based) -> exception that call raises
+        self.label_fail = {}     # pane_id -> iterator of outcomes for its label reports: "raise", an error code, or None (accept)
     def request(self, method, params):
         self.requests.append((method, params))
         if self.refuse:
             raise ConnectionRefusedError("refused")
+        if method == "pane.report_metadata" and "state_labels" in params and params["pane_id"] in self.label_fail:
+            outcome = next(self.label_fail[params["pane_id"]], None)
+            if outcome == "raise":
+                raise ConnectionResetError("reset")
+            if outcome is not None:
+                return {"id": "x", "error": {"code": outcome, "message": "refused"}}
         if method == "pane.report_metadata" and params["pane_id"] in self.refusing:
             return {"id": "x", "error": {"code": self.refusing[params["pane_id"]], "message": "refused"}}
         if method == "pane.report_metadata" and params["pane_id"] in self.vanished:
@@ -151,6 +158,10 @@ def P(pid, status="idle", agent="claude"):
 def NP(pid):
     return {"pane_id": pid, "agent": None, "agent_status": "unknown", "state_labels": {}, "tokens": {}}
 def snap(*panes): return {"panes": list(panes)}
+def acked(rows, eff):
+    """The server accepted every label report in `eff`: what run's send does for a pure Rows test."""
+    rows.mark_labelled([r["pane_id"] for r in eff.reports if "state_labels" in r])
+    return eff
 def status_ev(pid, status):
     return {"event": "pane.agent_status_changed",
             "data": {"type": "pane_agent_status_changed", "pane_id": pid, "agent_status": status}}
@@ -262,31 +273,31 @@ check("the wait has no timeout again once nothing works", fake.timeouts[-1] is N
 
 print("F. Detection, labels and resubscribe")
 rows = ar.Rows()
-eff = rows.apply_snapshot(snap(P("w1:p1"), P("w1:p2", "working"), NP("w1:p3")))
+eff = acked(rows, rows.apply_snapshot(snap(P("w1:p1"), P("w1:p2", "working"), NP("w1:p3"))))
 check("snapshot labels each agent pane",
       sorted(r["pane_id"] for r in eff.reports if "state_labels" in r) == ["w1:p1", "w1:p2"], eff.reports)
 check("snapshot that discovers panes sets resubscribe", eff.resubscribe is True, eff.resubscribe)
 rows.mark_covered(frozenset(["w1:p1", "w1:p2"]))
-eff = rows.apply_snapshot(snap(P("w1:p1"), P("w1:p2", "working")))
+eff = acked(rows, rows.apply_snapshot(snap(P("w1:p1"), P("w1:p2", "working"))))
 check("an unchanged pane set neither relabels nor resubscribes", eff.resubscribe is False and eff.reports == [], (eff.reports, eff.resubscribe))
-eff = rows.apply_event(detected_ev("w1:p4"))
+eff = acked(rows, rows.apply_event(detected_ev("w1:p4")))
 check("a detection labels the new pane and sets resubscribe",
       eff.resubscribe is True and [r["pane_id"] for r in eff.reports] == ["w1:p4"] and eff.reports[0]["state_labels"] == LABELS, eff.reports)
 check("subscriptions(): 3 lifecycle entries plus one status entry per agent pane",
       rows.subscriptions()[:3] == [{"type": "pane.agent_detected"}, {"type": "pane.closed"}, {"type": "pane.moved"}]
       and sorted(s["pane_id"] for s in rows.subscriptions()[3:]) == ["w1:p1", "w1:p2", "w1:p4"]
       and all(s["type"] == "pane.agent_status_changed" for s in rows.subscriptions()[3:]), rows.subscriptions())
-eff = rows.apply_event(status_ev("w9:p9", "working"))
+eff = acked(rows, rows.apply_event(status_ev("w9:p9", "working")))
 check("a status event for an unknown pane is ignored",
       eff.reports == [] and {r["pane_id"] for r in rows.frame_effects("x").reports} == {"w1:p2"}, eff.reports)
 rows.mark_covered(rows.agent_panes())
-eff = rows.apply_event({"event": "pane.created", "data": {"type": "pane_created"}})
+eff = acked(rows, rows.apply_event({"event": "pane.created", "data": {"type": "pane_created"}}))
 check("an unrelated event reports nothing and asks for no resubscribe", eff.reports == [] and eff.resubscribe is False, (eff.reports, eff.resubscribe))
 rows3 = ar.Rows()
-rows3.apply_snapshot(snap(P("w1:p1", "working")))
+acked(rows3, rows3.apply_snapshot(snap(P("w1:p1", "working"))))
 rows3.mark_covered(["w1:p1"])
 rows3.frame_effects("x")
-eff = rows3.apply_event(detected_ev("w1:p1"))
+eff = acked(rows3, rows3.apply_event(detected_ev("w1:p1")))
 check("a detection for a known pane (agent restarted) clears its frame and relabels it",
       [(r["pane_id"], "state_labels" in r, r.get("tokens")) for r in eff.reports]
       == [("w1:p1", False, {"spin": None}), ("w1:p1", True, None)], eff.reports)
@@ -296,26 +307,26 @@ for shape, ev in (("agent null", released_ev("w1:p1")),
                   ("agent null, released, final_status", released_ev("w1:p1", released=True, final_status="done")),
                   ("released with a final_status and the old agent name", released_ev("w1:p1", agent="claude", released=True, final_status="done"))):
     rows4 = ar.Rows()
-    rows4.apply_snapshot(snap(P("w1:p1", "working"), P("w1:p2")))
+    acked(rows4, rows4.apply_snapshot(snap(P("w1:p1", "working"), P("w1:p2"))))
     rows4.mark_covered(["w1:p1", "w1:p2"])
     rows4.frame_effects("x")
-    eff = rows4.apply_event(ev)
+    eff = acked(rows4, rows4.apply_event(ev))
     check("a release (%s) clears the shown frame and asks for a resubscribe" % shape,
           [(r["pane_id"], r.get("tokens")) for r in eff.reports] == [("w1:p1", {"spin": None})] and eff.resubscribe is True, eff.reports)
     check("and forgets the pane: no frame, no clear, no subscription entry, no label bookkeeping (%s)" % shape,
           rows4.frame_effects("y").reports == [] and rows4.clear_all().reports == []
           and [s["pane_id"] for s in rows4.subscriptions()[3:]] == ["w1:p2"] and "w1:p1" not in rows4.labelled, rows4.status)
-    eff = rows4.apply_event(detected_ev("w1:p1"))
+    eff = acked(rows4, rows4.apply_event(detected_ev("w1:p1")))
     check("a later detection in that pane labels it afresh (%s)" % shape,
           [r["pane_id"] for r in eff.reports] == ["w1:p1"] and "state_labels" in eff.reports[0], eff.reports)
 rows4 = ar.Rows()
-rows4.apply_snapshot(snap(P("w1:p2")))
+acked(rows4, rows4.apply_snapshot(snap(P("w1:p2"))))
 rows4.mark_covered(["w1:p2"])
-eff = rows4.apply_event(released_ev("w9:p9", released=True, final_status="done"))
+eff = acked(rows4, rows4.apply_event(released_ev("w9:p9", released=True, final_status="done")))
 check("a release of a pane never known reports nothing and asks for nothing", eff.reports == [] and eff.resubscribe is False, (eff.reports, eff.resubscribe))
 
 rows2 = ar.Rows()
-eff = rows2.apply_event({"event": "pane.agent_detected", "data": {"pane_id": "w1:p1", "agent": "claude"}})
+eff = acked(rows2, rows2.apply_event({"event": "pane.agent_detected", "data": {"pane_id": "w1:p1", "agent": "claude"}}))
 check("the kind falls back to the line's event name, dotted or not", [r["pane_id"] for r in eff.reports] == ["w1:p1"], eff.reports)
 
 def detect_script(sub): sub.queue.append([detected_ev("w1:p5")])
@@ -370,10 +381,10 @@ check("the next subscription names w2:p1, not w1:p1", ids(tr.subs[-1]) == ["w2:p
 check("the old subscription is closed", all(s.closed for s in tr.subs[:-1]), [s.closed for s in tr.subs])
 
 rows = ar.Rows()
-rows.apply_snapshot(snap(P("w1:p1", "working")))
+acked(rows, rows.apply_snapshot(snap(P("w1:p1", "working"))))
 rows.mark_covered(["w1:p1"])
 rows.frame_effects("x")
-eff = rows.apply_event(moved_ev("w1:p1", "w2:p1"))
+eff = acked(rows, rows.apply_event(moved_ev("w1:p1", "w2:p1")))
 check("the move itself relabels the new id and reports nothing to the old one, before any resync",
       [(r["pane_id"], "state_labels" in r) for r in eff.reports] == [("w2:p1", True)] and eff.resubscribe is True,
       eff.reports)
@@ -436,6 +447,46 @@ check("the pane is still tried on every tick (not forgotten)", len([p for m, p i
 check("and no resync follows: one snapshot per bootstrap step, no new subscription",
       [m for m, _ in tr.requests].count("session.snapshot") == 2 and len(tr.subs) == 2, [m for m, _ in tr.requests])
 check("its subscription entry stays", ids(tr.subs[-1]) == ["w1:p1", "w1:p2"], [ids(s) for s in tr.subs])
+
+print("H4. A label the server did not accept is asked for again")
+import itertools
+created_ev = {"event": "pane.created", "data": {"type": "pane_created"}}
+cut = {}
+def mark(sub): cut["n"] = len(cut["tr"].requests)
+def event(sub): sub.queue.append([created_ev])
+def go_labels(fail, script, working="working"):
+    c, stop = FakeClock(), threading.Event()
+    t = FakeTransport([snap(P("w1:p1", working))]); cut["tr"] = t
+    t.label_fail = {"w1:p1": fail}
+    f = FakeSelect(c, stop, script)
+    real = ar.select; ar.select = f
+    try: ar.run(t, c, c.sleep, stop)
+    finally: ar.select = real
+    return t
+# (i) the first two label reports (both snapshots of the bootstrap) fail, once by an exception and
+# once by an error response; the next event retries and the pane ends up labelled once, for good.
+tr = go_labels(iter(["raise", "metadata_token_limit"]), [mark, event, noop, noop, noop, noop], working="idle")
+lab = labels(tr, "w1:p1")
+check("a failed first label report is retried by the next event and then accepted",
+      len(lab) == 3 and all(p["source"] == "dev.agent-rows.labels" and p["state_labels"] == LABELS for p in lab), lab)
+after = [p for m, p in tr.requests[cut["n"]:] if m == "pane.report_metadata" and "state_labels" in p]
+check("the event retried it once and nothing asked again once it was accepted", len(after) == 1, after)
+# (ii) a label that keeps failing is retried once per event, never per frame tick
+tr = go_labels(itertools.repeat("metadata_token_limit"), [mark, event, noop, noop, event, noop, noop, event, noop, noop, noop])
+post = [p for m, p in tr.requests[cut["n"]:] if m == "pane.report_metadata"]
+check("a label that keeps failing is retried once per event (3 events, 3 retries)",
+      len([p for p in post if "state_labels" in p]) == 3, [p for p in post if "state_labels" in p])
+check("while the frames carry on at their own pace (not one label per tick)", len([p for p in post if (p.get("tokens") or {}).get("spin")]) >= 8,
+      len([p for p in post if (p.get("tokens") or {}).get("spin")]))
+check("a refused label does not forget the pane or resync", len(tr.subs) == 2, len(tr.subs))
+# a pane the server does not know refuses its label with pane_not_found: it is forgotten
+c, stop = FakeClock(), threading.Event()
+t = FakeTransport([snap(P("w1:p1"), P("w1:p2"))]); t.vanished.add("w1:p1")
+f = FakeSelect(c, stop, [noop, noop])
+real = ar.select; ar.select = f
+try: ar.run(t, c, c.sleep, stop)
+finally: ar.select = real
+check("a label refused with pane_not_found drops the pane from the subscription", ids(t.subs[-1]) == ["w1:p2"], [ids(x) for x in t.subs])
 
 print("I. events_lost: resubscribe and a fresh snapshot")
 def lose(sub): sub.queue.append(ar.EventsLost("events_lost"))

@@ -141,7 +141,9 @@ labels go at the next server start. That is accepted for a rollback path.
 - **Wording.** Report a state label for every agent pane so `blocked` reads `needs you`; other
   states keep herdr's labels. Labels carry no TTL, are reported under their own source
   (`dev.agent-rows.labels`, the frames use `dev.agent-rows`), and are re-reported at start and when
-  an agent pane appears (pane metadata does not survive a server restart).
+  an agent pane appears (pane metadata does not survive a server restart). A pane counts as
+  labelled only once the server accepted its report; until then the next snapshot or event asks
+  again (never a frame tick), and a `pane_not_found` refusal forgets the pane.
 - **Lifecycle.** Started by a `[[startup]]` hook, which herdr runs once per server start; the
   hook detaches the worker and returns. One instance (lock in `HERDR_PLUGIN_STATE_DIR`). A plain
   close of the event subscription means the server shut down: the worker clears what it can and
