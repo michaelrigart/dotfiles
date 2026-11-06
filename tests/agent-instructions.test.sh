@@ -228,8 +228,8 @@ need_flat global.md 'runs at every checkpoint (spec sign-off, plan completion, p
 need_flat global.md 'need a new review before you report the work as done' "global.md keeps the review-after-last-commit rule"
 need_flat claude-code.md 'runs through the `cross-review` skill' "claude-code.md names the cross-review skill"
 # The forge guard's deny text cites this bullet by its label.
-need_flat global.md '- **Merge requests.** Load the `merge-request` skill before opening an MR or PR.' \
-  "global.md keeps the Merge requests pointer the forge guard cites"
+need_flat global.md '- **Merge requests.** Load the `merge-request` skill before opening an MR, PR or issue.' \
+  "global.md keeps the Merge requests pointer the forge guard cites, and names issues"
 # The driver may open wt checkouts (spec 2026-11-03-driver-wt, section 5).
 need_flat global.md 'The driver may open one per independent line of work, as `wt --no-focus <branch> <local-branch>` (a remote start point sets an upstream), and names each checkout it opened in its report; never in the dotfiles.' \
   "global.md lets the driver open a wt checkout, on its conditions"

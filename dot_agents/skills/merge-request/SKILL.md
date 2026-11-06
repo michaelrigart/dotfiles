@@ -18,9 +18,13 @@ description: Use before opening any merge request, pull request or issue, with g
 - **Assign Michael** to every PR, MR and issue you open, at creation, because agents act as
   him and the self-assignee is him: `gh pr create --assignee @me`,
   `gh issue create --assignee @me`. glab has no `@me`: take the login from
-  `glab api user | jq -r .username` and pass `glab mr create --assignee <login>` or
-  `glab issue create --assignee <login>`. Azure DevOps PRs have no assignee: `az repos pr create`
-  has no such flag, so skip it.
+  `glab api user | jq -r .username`, run in the target repo's checkout or with
+  `--hostname <the MR's host>`, and pass `glab mr create --assignee <login>` or
+  `glab issue create --assignee <login>`. If the lookup prints nothing or `null`, omit the flag.
+  Azure DevOps PRs have no assignee, so `az repos pr create` gets none. An Azure Boards work item
+  does: `az boards work-item create --assigned-to "$(az account show --query user.name -o tsv)"`.
+  Where Michael cannot be assigned (no triage access, e.g. an upstream repo), drop the flag, say
+  so in your report, and do not retry the create.
 - **Never add agent attribution.** That means no session links, no `Claude-Session:`
   trailers, no `Co-authored-by:` agent lines, no "Generated with…" footers, and no naming
   of the tool. This holds in commits, MR/PR titles and bodies, issues and review comments.

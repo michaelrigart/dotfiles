@@ -343,7 +343,9 @@ if printf '%s' "$mr_desc" | grep -qF 'merge request, pull request or issue'; the
 else _fail "merge-request description names issues" "description: $mr_desc"; fi
 for text in 'gh pr create --assignee @me' 'gh issue create --assignee @me' \
   'glab api user | jq -r .username' 'glab mr create --assignee <login>' \
-  'glab issue create --assignee <login>'; do
+  'glab issue create --assignee <login>' '--hostname <the MR' 'prints nothing or `null`, omit the flag' \
+  'Azure DevOps PRs have no assignee' 'az boards work-item create --assigned-to' \
+  'az account show --query user.name -o tsv' 'do not retry the create'; do
   if grep -qF -- "$text" "$mr_skill"; then _pass "merge-request skill carries: $text"
   else _fail "merge-request skill carries: $text" "absent from $mr_skill"; fi
 done
