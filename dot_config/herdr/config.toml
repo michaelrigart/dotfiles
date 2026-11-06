@@ -79,9 +79,9 @@ show_agent_labels_on_pane_borders = true
 # The outer terminal title (Ghostty's tab and window bars): where I am, no hostname.
 window_title = "{workspace} · {tab}"
 # Alt-z's zoom marker, then Claude and Codex usage (usage.sh). No clock: macOS has one.
-# Usage comes last because its trailing non-breaking space insets the bar from the window
-# edge, so the status ends one column inside the panes' right border; a trailing entry of
-# its own would draw a separator in front of it.
+# Usage comes last because the Braille blank (U+2800) that usage.sh appends insets the bar
+# from the window edge, so the status ends one column inside the panes' right border; a
+# trailing entry of its own would draw a separator in front of it.
 tab_bar_right = [
   { type = "zoom" },
   { type = "command", command = "~/.config/herdr/usage.sh", interval_seconds = 60, timeout_seconds = 5 },

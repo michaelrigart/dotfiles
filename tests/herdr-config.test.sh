@@ -81,6 +81,11 @@ TBR="$(printf '%s\n' "$UI" | flat)"
 if in_order "$TBR" 'tab_bar_right = [' '{ type = "zoom" }' '~/.config/herdr/usage.sh'; then
   _pass "tab_bar_right lists zoom, then the usage command last (its trailing blank insets the bar)"
 else _fail "tab_bar_right lists zoom, then the usage command last (got: $TBR)"; fi
+# The inset is usage.sh's trailing blank, so nothing may follow the usage entry: a later entry
+# would leave a separator and its own text between the blank and the window edge.
+TBR_ARRAY="${TBR#*tab_bar_right = [}"; TBR_ARRAY="${TBR_ARRAY%%]*}"
+TBR_AFTER_USAGE="$(printf '%s' "${TBR_ARRAY##*timeout_seconds = 5 \}}" | tr -d ' ,')"
+check "$TBR_AFTER_USAGE" "" "the usage entry closes tab_bar_right (no entry after it)"
 check "$(printf '%s\n' "$TBR" | grep -c 'datetime')" "0" "tab bar right carries no clock"
 if in_order "$TBR" 'type = "command"' 'interval_seconds = 60,' 'timeout_seconds = 5 }'; then
   _pass "the usage entry is a command with a 60 s interval and 5 s timeout"
