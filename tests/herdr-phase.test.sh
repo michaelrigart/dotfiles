@@ -12,8 +12,9 @@
 #      lifetime, and clearing or expiry does not release a slot. Every report must therefore
 #      use the one stable --source; a per-run source id would exhaust a long-lived workspace.
 #   3. Exactly one of the three phase tokens may be set at a time, and the other two must be
-#      explicitly cleared. Herdr keeps a token until told otherwise, so a space that moves
-#      review -> merged would otherwise render both icons at once.
+#      explicitly cleared; the same holds for the three pipeline tokens (ci_ok, ci_fail,
+#      ci_run). Herdr keeps a token until told otherwise, so a space that moves review ->
+#      merged would otherwise render both icons at once.
 #   4. The icons are Nerd Font private-use codepoints. A wrong codepoint renders as tofu in
 #      the sidebar and nothing anywhere reports an error, so the exact bytes are pinned here.
 #
@@ -172,17 +173,51 @@ if [ "${1:-}" = "workspace" ] && [ "${2:-}" = "list" ]; then cat "$WSJSON"; fi
 exit 0
 H
 
-# Models the two things about `glab mr list` the script depends on: it lists OPEN merge
-# requests by default and merged ones only under --merged, and it answers per --repo. A stub
-# that returned every row to every query would hide the truncation this split exists to avoid.
+chmod 755 "$BIN/herdr"
+
+# Models the three things about glab the script depends on: `mr list` lists OPEN merge requests
+# by default and merged ones only under --merged, it answers per --repo, and
+# `api projects/<url-encoded slug>/merge_requests/<iid>` answers the head pipeline's status from
+# the $PIPES fixture (`iid<TAB>status`; an iid absent from it has no pipeline). A stub that
+# returned every row to every query would hide the truncation the two-call split exists to
+# avoid, and one that ignored the slug would hide an unencoded `/`. Both calls must name the
+# host (`api --hostname gitlab.com`, `mr list --repo https://gitlab.com/<slug>`): glab otherwise
+# takes it from the current directory's repository, and any other form is refused here.
+# A $PIPEFAIL file makes api fail the way glab does, the error's JSON body on STDOUT and a
+# non-zero exit; with the content "200" it answers 200 with a body that is not the MR, and with
+# "body-rc1" it prints a valid body for the asked MR (head pipeline failed) and still exits 1.
+# Every call records its working directory in $PWDS.
+# A function because later cases overwrite the stub with failing variants.
+glab_stub() {
 cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
-case " $* " in *" --repo test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
+[ -z "${PWDS:-}" ] || echo "$PWD" >> "$PWDS"
+if [ "${1:-}" = "api" ]; then
+  if [ -e "${PIPEFAIL:-}" ]; then
+    if [ "$(cat "$PIPEFAIL")" = "body-rc1" ]; then
+      echo "{\"iid\":${4##*/},\"head_pipeline\":{\"status\":\"failed\"}}"
+      echo "glab: HTTP 502" >&2; exit 1
+    fi
+    echo '{"message":"401 Unauthorized"}'
+    [ "$(cat "$PIPEFAIL")" = "200" ] && exit 0
+    echo "glab: 401 Unauthorized (HTTP 401)" >&2; exit 1
+  fi
+  [ "${2:-}" = "--hostname" ] && [ "${3:-}" = "gitlab.com" ] || { echo '{"message":"wrong host"}'; exit 1; }
+  case "${4:-}" in projects/test%2Fproj/merge_requests/*) ;; *) echo '{"message":"404 Not Found"}'; exit 1 ;; esac
+  iid="${4##*/}"; st=""
+  [ -r "${PIPES:-}" ] && st="$(awk -F'\t' -v i="$iid" '$1==i {print $2; exit}' "$PIPES")"
+  if [ -n "$st" ]; then echo "{\"iid\":$iid,\"head_pipeline\":{\"status\":\"$st\"}}"
+  else echo "{\"iid\":$iid,\"head_pipeline\":null}"; fi
+  exit 0
+fi
+case " $* " in *" --repo https://gitlab.com/test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
 case " $* " in *" --merged "*) cat "$MRMERGED" ;; *) cat "$MROPEN" ;; esac
 exit 0
 G
-chmod 755 "$BIN/herdr" "$BIN/glab"
+chmod 755 "$BIN/glab"
+}
+glab_stub
 
 # Deliberately interleaved between the two repos, the way the live session returns it.
 WSJSON="$T/ws.json"
@@ -219,14 +254,16 @@ cat > "$MRMERGED" <<'J'
 [{"iid":12,"source_branch":"feature/merged","state":"merged","draft":false},
  {"iid":15,"source_branch":"feature/merged-dirty","state":"merged","draft":false}]
 J
-export WSJSON MROPEN MRMERGED CALLS
+PIPES="$T/pipes.tsv"; PIPEFAIL="$T/pipe-fail"
+PWDS="$T/pwds"; : > "$PWDS"
+export WSJSON MROPEN MRMERGED CALLS PIPES PIPEFAIL PWDS
 
-run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call log
-  : > "$CALLS"
-  OUT=$(PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" \
+run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call log. RUNDIR starts it elsewhere.
+  : > "$CALLS"; : > "$PWDS"
+  OUT=$(cd "${RUNDIR:-$PWD}" && PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" \
         HERDR_PHASE_CACHE_DIR="$T/cache" \
         HERDR_PHASE_TTL="${TTL:-120}" \
-        bash "$PHASE" "$@" 2>&1); RC=$?
+        /bin/bash "$PHASE" "$@" 2>&1); RC=$?
 }
 
 # The report line for one workspace, so assertions read as "what did w4 get told".
@@ -315,9 +352,9 @@ for w in w2 w3 w4 w5 w6 w7 w8 w10 w11 w12 w13 wA wB; do
   line="$(report_for $w)"
   set_count=$(printf '%s\n' "$line" | grep -o -- "--token " | wc -l | tr -d ' ')
   clear_count=$(printf '%s\n' "$line" | grep -o -- "--clear-token " | wc -l | tr -d ' ')
-  [ $((set_count + clear_count)) -eq 3 ] || missing=$((missing + 1))
+  [ $((set_count + clear_count)) -eq 6 ] || missing=$((missing + 1))
 done
-check "$missing" "0" "each report accounts for all three phase tokens"
+check "$missing" "0" "each report accounts for the three phase and the three pipeline tokens"
 
 echo
 echo "D. MR lookups are cached per repo"
@@ -326,8 +363,9 @@ echo "D. MR lookups are cached per repo"
 # requests — and on netronix/curato, which is at !123, that is exactly what happened: MRs !121
 # to !123 were absent from a 99-row cache and their three worktrees sat unbadged. Splitting the
 # query means the OPEN list, the only one a review badge depends on, is never truncated.
-glab_calls() { grep -c '^glab ' "$CALLS"; }
-glab_repos() { grep '^glab ' "$CALLS" | sed -E 's/.*--repo ([^ ]+).*/\1/' | sort -u | wc -l | tr -d ' '; }
+glab_calls() { grep -c '^glab mr list' "$CALLS"; }
+glab_api_calls() { grep -c '^glab api ' "$CALLS"; }
+glab_repos() { grep '^glab mr list' "$CALLS" | sed -E 's/.*--repo ([^ ]+).*/\1/' | sort -u | wc -l | tr -d ' '; }
 
 rm -rf "$T/cache"   # section B already warmed it; these assertions count from cold
 run refresh
@@ -361,7 +399,7 @@ echo "G. a repo Herdr cannot resolve to GitLab degrades to git-only"
 q git -C "$REPO" remote set-url origin git@github.com:test/proj.git
 rm -rf "$T/cache"   # a cached table would answer for the repo that no longer resolves
 run refresh
-check "$(grep -c -- '--repo test/proj ' "$CALLS")" "0" "no glab call for a non-GitLab remote"
+check "$(grep -c -- 'gitlab.com/test/proj ' "$CALLS")" "0" "no glab call for a non-GitLab remote"
 case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "git-derived phases still reported";;
   *) _fail "git-derived phases still reported (got: $(report_for w2))";; esac
 # feature/review has an open MR upstream, but without GitLab the script cannot know that.
@@ -411,7 +449,7 @@ cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
 case " $* " in *" --merged "*) echo "error: could not reach gitlab.com" >&2; exit 1 ;; esac
-case " $* " in *" --repo test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
+case " $* " in *" --repo https://gitlab.com/test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
 cat "$MROPEN"
 G
 chmod 755 "$BIN/glab"
@@ -423,7 +461,7 @@ case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "open MRs stil
 case "$(report_for w6)" in *"--token merged"*) _fail "a half-answered lookup does not invent merged state";;
   *) _pass "a half-answered lookup does not invent merged state";; esac
 run refresh
-check "$(grep -c '^glab ' "$CALLS")" "4" "a half-answered lookup is not cached, so the next run retries"
+check "$(grep -c '^glab mr list' "$CALLS")" "4" "a half-answered lookup is not cached, so the next run retries"
 
 # With nothing cached there is nothing to fall back to, and git-only is the honest answer.
 cat > "$BIN/glab" <<'G'
@@ -438,6 +476,212 @@ run refresh
 check "$RC" "0" "refresh survives glab failing with a cold cache"
 case "$(report_for w4)" in *"--token review="*) _fail "a cold cache plus a failed lookup invents no MR state";;
   *) _pass "a cold cache plus a failed lookup invents no MR state";; esac
+
+echo
+echo "K. the head pipeline's status rides beside an open MR's badge"
+# The list endpoint carries no head_pipeline, so each open MR costs one `glab api` call. The
+# glyph bytes are pinned for the same reason as the icons: a wrong codepoint is tofu with no error.
+CI_OK=$(printf '\xee\xaa\xb2')     # U+EAB2 cod-check
+CI_FAIL=$(printf '\xee\xa9\xb6')   # U+EA76 cod-close
+CI_RUN=$(printf '\xee\xa9\xb7')    # U+EA77 cod-sync
+glab_stub
+rm -f "$PIPEFAIL"
+
+set_pipe() { # set_pipe [<iid> <status>]... -> the $PIPES fixture; no pairs means no pipelines
+  : > "$PIPES"
+  while [ $# -ge 2 ]; do printf '%s\t%s\n' "$1" "$2" >> "$PIPES"; shift 2; done
+}
+# The report must END with exactly one set pipeline token and the other two cleared, in that
+# order, after the phase tokens.
+ci_check() { # ci_check <ws> <ok|fail|run|none> <label>
+  local g="" t want="" line
+  case "$2" in ok) g=$CI_OK ;; fail) g=$CI_FAIL ;; run) g=$CI_RUN ;; esac
+  for t in ok fail run; do
+    if [ "$t" = "$2" ]; then want="$want --token ci_$t=$g"; else want="$want --clear-token ci_$t"; fi
+  done
+  line="$(report_for "$1")"
+  case "$line" in *"$want") _pass "$3";; *) _fail "$3 (got: $line)";; esac
+}
+
+set_pipe 10 success
+run refresh --force --workspace w4
+ci_check w4 ok "success -> ci_ok"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase token is unchanged beside the pipeline token";;
+  *) _fail "the phase token is unchanged beside the pipeline token (got: $(report_for w4))";; esac
+set_pipe 10 failed;  run refresh --force --workspace w4; ci_check w4 fail "failed -> ci_fail"
+for st in running pending created preparing waiting_for_resource scheduled; do
+  set_pipe 10 "$st"; run refresh --force --workspace w4; ci_check w4 run "$st -> ci_run"
+done
+for st in canceled skipped manual; do
+  set_pipe 10 "$st"; run refresh --force --workspace w4; ci_check w4 none "$st -> no pipeline badge"
+done
+set_pipe; run refresh --force --workspace w4; ci_check w4 none "no head pipeline -> no pipeline badge"
+
+# A draft is an open MR too; and only open MRs cost a call.
+set_pipe 10 success 11 failed 12 success 15 success
+run refresh --force
+ci_check w4 ok "a ready MR shows its pipeline"
+ci_check w5 fail "a draft MR shows its pipeline too"
+case "$(report_for w5)" in *"--token active=$ICON_DRAFT"*) _pass "the draft keeps its phase token beside the pipeline";;
+  *) _fail "the draft keeps its phase token beside the pipeline (got: $(report_for w5))";; esac
+ci_check w6 none "a merged MR shows no pipeline badge"
+ci_check w7 none "a branch without an MR shows no pipeline badge"
+check "$(glab_api_calls)" "4" "one api call per open MR, none for merged or MR-less spaces"
+check "$(grep -c -E 'merge_requests/(12|15)$' "$CALLS")" "0" "merged MRs are never queried for a pipeline"
+# glab takes the host from the current directory's repository unless told: name it every time.
+check "$(grep '^glab api ' "$CALLS" | grep -vc -- ' --hostname gitlab.com projects/test%2Fproj/')" "0" \
+  "every api call pins --hostname gitlab.com"
+check "$(grep '^glab mr list' "$CALLS" | grep -vc -- ' --repo https://gitlab.com/')" "0" \
+  "every mr list call pins the host in --repo"
+run refresh --force --workspace w6
+check "$(glab_api_calls)" "0" "a merged space makes no api call"
+run refresh --force --workspace w7
+check "$(glab_api_calls)" "0" "a space without an MR makes no api call"
+
+# Per-MR cache with the MR-table TTL.
+rm -rf "$T/cache"
+set_pipe 10 success 11 success 13 failed 14 running
+run refresh
+check "$(glab_api_calls)" "4" "a cold refresh makes one api call per open MR"
+run refresh
+check "$(glab_api_calls)" "0" "a second refresh inside the TTL makes no api call"
+check "$(glab_calls)" "0" "and no list call either"
+ci_check w4 ok "the cached status still renders"
+run refresh --force
+check "$(glab_api_calls)" "4" "--force refetches the pipelines"
+
+# The cache key holds the iid: a branch reused after a merge gets a new MR number, and the old
+# MR's pipeline must not be shown for it. Only the MR table is dropped, so the iid 10 entry is
+# still warm when the table says 17.
+set_pipe 10 success 17 failed 11 success 13 failed 14 running
+sed 's/"iid":10,/"iid":17,/' "$MROPEN" > "$MROPEN.new" && mv "$MROPEN.new" "$MROPEN"
+rm -f "$T/cache"/*.tsv
+run refresh --workspace w4
+check "$(glab_api_calls)" "1" "a new MR iid refetches at once"
+ci_check w4 fail "the new MR's status shows, never iid 10's"
+case "$(report_for w4)" in *"!17 "*) _pass "the report carries the new iid";; *) _fail "the report carries the new iid (got: $(report_for w4))";; esac
+sed 's/"iid":17,/"iid":10,/' "$MROPEN" > "$MROPEN.new" && mv "$MROPEN.new" "$MROPEN"
+rm -f "$T/cache"/*.tsv
+
+# A failed call is not evidence that the pipeline went away. With a warm cache the cached class
+# stands; with nothing cached there is nothing to show, and the phase token still goes out.
+rm -rf "$T/cache"
+set_pipe 10 success
+run refresh --workspace w4
+ci_check w4 ok "PRECONDITION: the pipeline cache warms"
+: > "$PIPEFAIL"
+TTL=0 run refresh --workspace w4
+check "$(glab_api_calls)" "1" "an expired pipeline cache is refetched"
+ci_check w4 ok "a failed api call keeps the cached class"
+# glab prints an API error's JSON body on stdout (the stub does); parsed as if it were the MR it
+# would read as "no pipeline" and overwrite the warm cache for a whole TTL.
+check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "an error body does not overwrite the cached status"
+echo 200 > "$PIPEFAIL"
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a 200 body that is not the MR keeps the cached class"
+check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "a body without the MR's iid does not overwrite the cached status"
+# The exit status is read on its own: a valid body for this MR with a non-zero exit (a gateway
+# error that still carried a body) must not be taken as an answer and overwrite the cache.
+echo body-rc1 > "$PIPEFAIL"
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a valid body with exit 1 keeps the cached class"
+check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "a valid body with exit 1 does not overwrite the cached status"
+
+# The stale fallback has an age limit: within 1800 s a failed call keeps the cached class, past it
+# the pipeline tokens are cleared (the cached status stays on disk, a later good call replaces it).
+aged() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$T/cache/test%2Fproj.mr10.pipeline"; }
+: > "$PIPEFAIL"
+aged 29
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a failed call keeps a cached status 29 minutes old"
+aged 31
+TTL=0 run refresh --workspace w4
+ci_check w4 none "a failed call clears the pipeline tokens once the cache is 31 minutes old"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase token survives the cleared pipeline tokens";;
+  *) _fail "the phase token survives the cleared pipeline tokens (got: $(report_for w4))";; esac
+rm -f "$PIPEFAIL"
+TTL=0 run refresh --workspace w4
+ci_check w4 ok "a good call after the limit shows the pipeline again"
+: > "$PIPEFAIL"
+rm -rf "$T/cache"
+run refresh --workspace w4
+check "$RC" "0" "refresh survives a failing api call with a cold cache"
+ci_check w4 none "a cold cache plus a failed api call invents no pipeline"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase token survives the failed api call";;
+  *) _fail "the phase token survives the failed api call (got: $(report_for w4))";; esac
+rm -f "$PIPEFAIL"
+
+# glab reads its configuration from the current directory's repository and runs git there, and a
+# key command or plugin hook starts phase.sh wherever the caller was. Started from inside a
+# repository, every glab call must still run from /.
+set_pipe 10 success 11 failed
+RUNDIR="$T/repo-review" run refresh --force
+[ "$(wc -l < "$PWDS" | tr -d ' ')" -gt 0 ] && _pass "the cwd case reached glab" || _fail "the cwd case reached glab"
+check "$(grep -vxc / "$PWDS")" "0" "every glab call runs from / even when phase.sh starts inside a repository"
+
+# Socket limit: at most 16 token keys per report; this one makes six.
+set_pipe 10 success 11 failed
+run refresh --force
+over=0
+while IFS= read -r line; do
+  n=$(printf '%s\n' "$line" | grep -o -E -- '--(clear-)?token ' | wc -l | tr -d ' ')
+  [ "$n" -le 16 ] || over=$((over + 1))
+done < <(grep -E '^herdr workspace report-metadata ' "$CALLS")
+check "$over" "0" "no report carries more than 16 token keys"
+
+# The slug comes from a remote URL a sandboxed command can rewrite and reaches glab's --repo and
+# an API path: a slug that is not a plain group/project path makes no glab call at all (repo2,
+# whose remote is untouched, still makes its two).
+for bad in 'a/../b' 'a/b?x=1' 'a/b%2Fc' 'a/b c'; do
+  q git -C "$REPO" remote set-url origin "git@gitlab.com:$bad.git"
+  rm -rf "$T/cache"
+  run refresh
+  check "$(grep -c '^glab ' "$CALLS")" "2" "remote slug '$bad': no glab call for it"
+  check "$(grep -c 'proj2' "$CALLS")" "2" "remote slug '$bad': only the untouched repo is queried"
+  case "$(report_for w4)" in *"--token review"*) _fail "remote slug '$bad': no review badge";; *) _pass "remote slug '$bad': no review badge";; esac
+done
+q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
+
+# Two slugs that a "/" -> "_" cache name would fold into one file (a/b_c and a_b/c): each repo
+# has an MR numbered 10 on its own branch, with its own pipeline, and a cold run must not let the
+# second repo read the first one's MR table or pipeline status from the shared name.
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+if [ "${1:-}" = "api" ]; then
+  case "${4:-}" in
+    projects/a%2Fb_c/merge_requests/10) echo '{"iid":10,"head_pipeline":{"status":"success"}}' ;;
+    projects/a_b%2Fc/merge_requests/10) echo '{"iid":10,"head_pipeline":{"status":"failed"}}' ;;
+    *) echo '{}'; exit 1 ;;
+  esac
+  exit 0
+fi
+case " $* " in
+  *" --merged "*) echo '[]' ;;
+  *" --repo https://gitlab.com/a/b_c "*) echo '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]' ;;
+  *" --repo https://gitlab.com/a_b/c "*) echo '[{"iid":10,"source_branch":"feature/one","state":"opened","draft":false}]' ;;
+  *) echo '[]' ;;
+esac
+G
+chmod 755 "$BIN/glab"
+q git -C "$REPO" remote set-url origin git@gitlab.com:a/b_c.git
+q git -C "$REPO2" remote set-url origin git@gitlab.com:a_b/c.git
+cat > "$T/ws-collide.json" <<J
+{"id":"x","result":{"type":"workspace_list","workspaces":[
+ {"workspace_id":"w4","label":"review","worktree":{"checkout_path":"$T/repo-review","is_linked_worktree":true,"repo_root":"$REPO"}},
+ {"workspace_id":"wA","label":"two-one","worktree":{"checkout_path":"$T/repo2-one","is_linked_worktree":true,"repo_root":"$REPO2"}}
+]}}
+J
+rm -rf "$T/cache"
+WSJSON="$T/ws-collide.json" run refresh
+ci_check w4 ok "slug a/b_c shows its own pipeline (success)"
+ci_check wA fail "slug a_b/c shows its own pipeline (failed), not a/b_c's"
+case "$(report_for wA)" in *"--token review=$ICON_MR !10 "*) _pass "slug a_b/c finds its own MR table, not a/b_c's";;
+  *) _fail "slug a_b/c finds its own MR table, not a/b_c's (got: $(report_for wA))";; esac
+check "$(ls "$T/cache" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.mr10.pipeline a_b%2Fc.tsv " "cache names encode the slug's / as %2F"
+q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
+q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
+glab_stub
 
 echo
 echo "I. the wiring that makes the badges appear and persist"
@@ -538,14 +782,7 @@ echo "J. a repository's own configuration runs nothing"
 # rev-list over a dangling remote-tracking ref, a promisor remote's uploadpack. Each is a marker
 # script that touches a file. Reproduced 2026-10-18 on git 2.54 and 2.56.
 rm -rf "$T/cache"
-cat > "$BIN/glab" <<'G'
-#!/usr/bin/env bash
-echo "glab $*" >> "$CALLS"
-case " $* " in *" --repo test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
-case " $* " in *" --merged "*) cat "$MRMERGED" ;; *) cat "$MROPEN" ;; esac
-exit 0
-G
-chmod 755 "$BIN/glab"
+glab_stub
 
 # mkmarkers <name> -> $T/<name>/{repo,wt1,wt2,marks}. wt1 (feature/merged) is clean apart from the
 # stat data of two tracked files, so its phase is `merged` (a merged MR, no local work); wt2

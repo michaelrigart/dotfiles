@@ -8,6 +8,10 @@
 # is the only thing keeping the badges alive. It must be cheap and safely re-runnable, and
 # it must never read back state it previously reported.
 #
+# Each report carries six tokens in one `herdr workspace report-metadata` call: the phase
+# (active, review or merged) and, for a space with an open MR (draft or not), the head
+# pipeline's status (ci_ok, ci_fail or ci_run). One of each group is set and the rest cleared.
+#
 # Three things drive it, and the periodic one is not redundant:
 #   - the dev.phase plugin's [[startup]] hook, which repaints every badge after a restart;
 #   - its [[events]] hooks on workspace.focused / worktree.created / worktree.removed;
@@ -20,7 +24,8 @@
 #
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
 # glab work. It never fetches: `origin/<branch>` is read as-is, and only the MR state, where
-# freshness matters, is cached with a TTL.
+# freshness matters, is cached with a TTL: the MR table per repo, each open MR's pipeline
+# status per repo and MR number.
 #
 # Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
 # sandboxed command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang,
@@ -28,6 +33,11 @@
 # pinned PATH that no caller's direnv or mise entry reaches. PINNED_PATH is for the suite only.
 PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -u
+
+# glab reads the current directory's repository (its .git/glab-cli/config.yml, and it runs git
+# there), and a caller's directory is whatever a key command or plugin hook happened to have: a
+# repository a sandboxed command can write. Every path below is absolute and git runs with -C.
+cd / || exit 2
 
 SOURCE_ID="herdr-phase"
 CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}"
@@ -37,6 +47,7 @@ CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}
 HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
+STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
 
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
@@ -44,6 +55,9 @@ ICON_BRANCH=$(printf '\xee\xb1\xaf')   # U+EC6F cod-git_branch
 ICON_MR=$(printf '\xee\xa9\xa4')       # U+EA64 cod-git_pull_request
 ICON_DRAFT=$(printf '\xee\xaf\x9b')    # U+EBDB cod-git_pull_request_draft
 ICON_MERGE=$(printf '\xee\xab\xbe')    # U+EAFE cod-git_merge
+CI_OK=$(printf '\xee\xaa\xb2')         # U+EAB2 cod-check
+CI_FAIL=$(printf '\xee\xa9\xb6')       # U+EA76 cod-close
+CI_RUN=$(printf '\xee\xa9\xb7')        # U+EA77 cod-sync
 
 # Run with -I below: isolated mode keeps the current directory (a repository) off sys.path and
 # ignores PYTHON* variables, so a module a sandboxed command wrote there cannot be imported.
@@ -91,15 +105,16 @@ repo_status() { # repo_status <checkout_path> -> porcelain status, nothing from 
     git --no-optional-locks -C "$path" status --porcelain --ignore-submodules=all 2>/dev/null
 }
 
+# No here-documents in this script: bash 3.2 writes each to a temp file, and from a "/" working
+# directory a sandboxed run (the suite) cannot create it. Plain strings need no file.
 usage() {
-  cat <<'U'
-phase.sh — badge Herdr spaces with their merge phase
-
-  phase.sh refresh [--force] [--workspace ID]   report phases (all spaces, or one)
-  phase.sh --help
-
-Phases: active, review, merged.
-U
+  printf '%s\n' \
+    'phase.sh — badge Herdr spaces with their merge phase' \
+    '' \
+    '  phase.sh refresh [--force] [--workspace ID]   report phases (all spaces, or one)' \
+    '  phase.sh --help' \
+    '' \
+    'Phases: active, review, merged.'
 }
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
@@ -107,14 +122,33 @@ die() { echo "phase.sh: $*" >&2; exit 2; }
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
 # Prints nothing and fails when the repo is not on GitLab or the lookup did not work.
-mr_table() { # mr_table <repo_root> <force>
-  local root="$1" force="$2" url slug cache age now
-  url="$(git -C "$root" remote get-url origin 2>/dev/null)" || return 1
+repo_slug() { # repo_slug <repo_root> -> the GitLab slug (group/project) on stdout, or fails
+  local url slug
+  url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
   case "$url" in *gitlab.com*) ;; *) return 1 ;; esac
   slug="${url#*gitlab.com}"; slug="${slug#:}"; slug="${slug#/}"; slug="${slug%.git}"
   [ -n "$slug" ] || return 1
+  # The remote URL is repository configuration, which a sandboxed command can rewrite, and the
+  # slug lands in glab's repository argument and in an API path under Michael's token: accept
+  # only a plain group/project path, so nothing can leave the project's own path.
+  case "$slug" in *[!A-Za-z0-9._/-]*|*..*) return 1 ;; esac
+  printf '%s\n' "$slug"
+}
 
-  cache="$CACHE_DIR/$(printf '%s' "$slug" | tr '/' '_').tsv"
+# glab takes the host from the current directory's git repository, whose configuration a
+# sandboxed command can rewrite, and this runs unsandboxed with a token. Both calls therefore
+# name the host: `api` through --hostname, and `mr list` through a full URL for --repo (measured
+# with glab: HOST/OWNER/REPO is read as a namespace, the https:// form pins the host).
+GITLAB_HOST_NAME="gitlab.com"
+
+# repo_slug admits no "%", so encoding "/" as %2F maps each slug to its own file name: a "_"
+# replacement made a/b_c and a_b/c share one.
+cache_key() { printf '%s' "$1" | sed 's|/|%2F|g'; }
+
+mr_table() { # mr_table <slug> <force>
+  local slug="$1" force="$2" cache age now
+
+  cache="$CACHE_DIR/$(cache_key "$slug").tsv"
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
     now="$(date +%s)"
     age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
@@ -125,7 +159,7 @@ mr_table() { # mr_table <repo_root> <force>
   # a single --all query drops the oldest rows once a repo passes 100 MRs. The OPEN list on
   # its own keeps the rows a review badge depends on far from the cap.
   local open_json merged_json table
-  open_json="$(glab mr list --repo "$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
+  open_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
   if [ -z "$open_json" ]; then
     # A failed lookup is not evidence that the MRs went away: returning nothing would wipe
     # every review badge at once. A stale table beats a table asserted to be empty.
@@ -135,7 +169,7 @@ mr_table() { # mr_table <repo_root> <force>
   # Merged state is best-effort: if only this half fails the open rows still stand, and the
   # table is not cached, so the miss lasts one cycle instead of a TTL.
   local cacheable=1
-  merged_json="$(glab mr list --repo "$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
+  merged_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
   table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
@@ -174,9 +208,66 @@ for b, m in seen.items():
   printf '%s\n' "$table"
 }
 
+# The list endpoint carries no head_pipeline, so the status costs one call per open MR. It is
+# cached per repo AND iid: a branch reused after a merge gets a new MR number and must not show
+# the old MR's pipeline. Prints ok, fail or run, or nothing (no pipeline, a status that is not
+# a badge, or no answer at all).
+pipeline_class() { # pipeline_class <slug> <iid> <force>
+  local slug="$1" iid="$2" force="$3" cache age now status json
+  case "$iid" in ''|*[!0-9]*) return 0 ;; esac
+
+  cache="$CACHE_DIR/$(cache_key "$slug").mr$iid.pipeline"
+  status=""
+  if [ "$force" != "1" ] && [ -f "$cache" ]; then
+    now="$(date +%s)"
+    age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt "$TTL" ]; then status="$(cat "$cache")"; fi
+  fi
+  if [ -z "$status" ]; then
+    # glab prints an API error's JSON body on stdout and exits non-zero (a 401, 404, 429 or
+    # 5xx), so its status is taken on its own, never through a pipe into the parser. An empty
+    # status is a failed call or a body that is not this MR; a pipeline-less MR prints "none".
+    json="$(glab api --hostname "$GITLAB_HOST_NAME" \
+      "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
+    status=""
+    if [ -n "$json" ]; then
+      status="$(printf '%s' "$json" | "$PY" -I -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict) or str(d.get("iid")) != sys.argv[1]:
+    sys.exit(1)
+p = d.get("head_pipeline")
+s = p.get("status") if isinstance(p, dict) else None
+print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
+' "$iid" 2>/dev/null)" || status=""
+    fi
+    if [ -n "$status" ]; then
+      mkdir -p "$CACHE_DIR"
+      printf '%s\n' "$status" > "$cache"
+    elif [ -f "$cache" ]; then
+      # A failed call is not evidence that the pipeline went away, so a stale status beats none,
+      # but only for a while: a cached "run" glyph would otherwise stay on for as long as glab
+      # keeps failing. Past STALE_PIPELINE the tokens are cleared.
+      now="$(date +%s)"
+      age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
+      if [ "$age" -lt "$STALE_PIPELINE" ]; then status="$(cat "$cache")"; fi
+    fi
+  fi
+
+  case "$status" in
+    success) echo ok ;;
+    failed) echo fail ;;
+    running|pending|created|preparing|waiting_for_resource|scheduled) echo run ;;
+  esac
+}
+
 # ------------------------------------------------------------------ derivation
-# Prints "<phase> <value>" for one checkout. Order matters: an open MR outranks every local
-# signal; local work outranks a merged MR.
+# Prints "<phase> <value>" for one checkout, and "open <iid>" on a second line when the
+# branch's MR is open (draft or not). Order matters: an open MR outranks every local signal;
+# local work outranks a merged MR.
 derive() { # derive <checkout_path> <repo_root> <mr_table>
   local path="$1" root="$2" table="$3" branch base row state iid draft
 
@@ -198,6 +289,7 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   if [ "$state" = "opened" ]; then
     if [ "$draft" = "1" ]; then printf 'active %s\n' "$ICON_DRAFT"
     else printf 'review %s !%s\n' "$ICON_MR" "$iid"; fi
+    printf 'open %s\n' "$iid"
     return 0
   fi
 
@@ -229,16 +321,23 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   printf 'active %s\n' "$ICON_BRANCH"
 }
 
-# Herdr keeps a token until told otherwise, so the two unused ones are cleared on every
-# report; otherwise a space moving review -> merged renders both icons at once.
-report() { # report <workspace_id> <phase> <value>
-  local ws="$1" phase="$2" value="$3"
+# Herdr keeps a token until told otherwise, so the unused ones are cleared on every report;
+# otherwise a space moving review -> merged renders both icons at once. Six keys per call:
+# the phase group (active, review, merged) with one set, and the pipeline group (ci_ok,
+# ci_fail, ci_run) with at most one set, none when <ci> is empty.
+report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
+  local ws="$1" phase="$2" value="$3" ci="${4:-}" g=""
   local -a args
   args=(workspace report-metadata "$ws" --source "$SOURCE_ID")
   local t
   for t in active review merged; do
     if [ "$t" = "$phase" ]; then args+=(--token "$t=$value")
     else args+=(--clear-token "$t"); fi
+  done
+  for t in ok fail run; do
+    case "$t" in ok) g=$CI_OK ;; fail) g=$CI_FAIL ;; run) g=$CI_RUN ;; esac
+    if [ "$t" = "$ci" ]; then args+=(--token "ci_$t=$g")
+    else args+=(--clear-token "ci_$t"); fi
   done
   herdr $HERDR_ARGS "${args[@]}" >/dev/null 2>&1 || true
 }
@@ -277,7 +376,7 @@ cmd_refresh() {
     esac
   done
 
-  local list ws path root phase value last_root="" table=""
+  local list ws path root phase value last_root="" table="" slug="" out first second ci
   list="$(spaces)"
   [ -n "$list" ] || return 0
 
@@ -287,16 +386,24 @@ cmd_refresh() {
     [ -d "$path" ] || continue
     # `spaces` sorts by repo, so one lookup per repo falls out of iterating it.
     if [ "$root" != "$last_root" ]; then
-      table="$(mr_table "$root" "$force" || true)"
+      slug="$(repo_slug "$root" || true)"
+      table=""
+      [ -z "$slug" ] || table="$(mr_table "$slug" "$force" || true)"
       last_root="$root"
     fi
-    set -- $(derive "$path" "$root" "$table")
+    out="$(derive "$path" "$root" "$table")"
+    first="${out%%$'\n'*}"
+    second=""
+    case "$out" in *$'\n'*) second="${out#*$'\n'}" ;; esac
+    set -- $first
     phase="${1:-none}"; shift || true
     value="$*"
-    report "$ws" "$phase" "$value"
-  done <<EOF
-$list
-EOF
+    ci=""
+    case "$second" in
+      "open "*) [ -z "$slug" ] || ci="$(pipeline_class "$slug" "${second#open }" "$force")" ;;
+    esac
+    report "$ws" "$phase" "$value" "$ci"
+  done < <(printf '%s\n' "$list")
 }
 
 case "${1:---help}" in
