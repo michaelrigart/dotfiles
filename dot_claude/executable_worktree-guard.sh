@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) guard: wt worktrees are retired with `command wt-rm`, never raw git.
+# PreToolUse(Bash) guard: wt worktrees are retired by Michael with `wt-rm`, never raw git.
 # Denies, in any command segment:
 #   1. git worktree unlock                      (crosses the lifecycle lock)
 #   2. git worktree remove with two or more forces (crosses it too)
@@ -45,13 +45,13 @@ case "$cmd" in *WT_GUARD=off*) allow ;; esac
 verb_re='worktree([[:space:]]|\\)+(remove|unlock)'
 [[ $cmd =~ $verb_re ]] || allow
 
-REMEDY="Retire a wt worktree with:
+REMEDY="Do not retire a wt worktree yourself. Give Michael this command to run:
 
-    command wt-rm <branch>
+    wt-rm <branch>
 
-(\`command\` matters: it reaches the PATH wrapper, which loads the full lifecycle in a
-non-interactive shell.) A worktree owned by another tool goes through that tool's own
-lifecycle. For a deliberate manual reconciliation, re-run with WT_GUARD=off."
+A worktree owned by another tool goes through that tool's own lifecycle. For a deliberate
+manual reconciliation, re-run with WT_GUARD=off
+only when Michael asks for it in this conversation."
 
 NL=$'\n'; TAB=$'\t'
 sq="'"

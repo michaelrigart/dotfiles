@@ -5,8 +5,7 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 
 ## Machine and toolchain
 
-- **Dotfiles:** managed by chezmoi (`~/.local/share/chezmoi`); edit the source, never a deployed
-  file.
+- **Dotfiles:** chezmoi-managed (`~/.local/share/chezmoi`); edit the source, never a deployed file.
 - **Strict XDG:** config `~/.config`, data `~/.local/share`, scripts `~/.local/bin` (on `$PATH`),
   cache `~/.cache`, state `~/.local/state`; `$HOME` stays clean.
 - **Shell and tools:** prefer `rg` and `fd`; there is no `bat`.
@@ -20,11 +19,14 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
 - **`wt` worktrees.** `wt <branch>` makes a sibling checkout `~/Code/<Org>/<repo>-<branch>` with
-  its own Herdr workspace; worktrees share one database, Redis and storage. The driver may open one
-  per independent line of work, as `wt --no-focus <branch> <local-branch>` (a remote start point
-  sets an upstream), and names each checkout it opened in its report; never in the dotfiles. Only
-  Michael tears one down: never offer or run `wt-rm`. If he explicitly asks, use `command wt-rm
-  <branch>`, never `git worktree remove`. A harness worktree follows its own tool's lifecycle.
+  its own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis and
+  storage. The driver may open one per independent line of work, as `wt --no-focus <branch>
+  <local-branch>` (a remote start point sets an upstream), and names each checkout it opened in its
+  report; never in the dotfiles. It hands the line to that session, which rules on trade-offs
+  inside the spec and escalates spec changes to the driver; the driver keeps only briefing and
+  collecting the report, never the line's work. Never run `wt-rm` or `git worktree remove`: the
+  line's final report gives Michael the `wt-rm <branch>` command to run once it is merged or
+  abandoned. A harness worktree follows its own tool's lifecycle.
 - **Backups:** Borg through Vorta (runbook: the vault's Backups note) skips uncommitted work in a
   `wt` worktree, so checkpoint commits are the protection.
 
@@ -96,8 +98,7 @@ specs and merges; in between, the driver proceeds on its own.
 
 - **Asking.** Ask only for a real decision: a design choice, a trade-off outside the approved spec,
   or an irreversible action. Otherwise take the sensible default and say which one you took.
-- **Execution** is always subagent-driven. Move on to the next task or plan in a series without
-  asking.
+- **Execution** is always subagent-driven. Move to the next task or plan in a series without asking.
 - **Sizing.** Size the process to the change, never the quality bar. A small change (a fix, config
   change or contained addition: under ~150 lines of non-test code, no open design choice, no safety
   boundary such as permissions, sandbox, guards, auth, secrets, deletion, push or merge tooling,
@@ -105,9 +106,8 @@ specs and merges; in between, the driver proceeds on its own.
   pre-merge review together. Every other change has a spec and a plan, versioned with the code.
   Unsure or outgrown: not small; say which.
 - **Brainstorming.** Present the whole design in one message.
-- **Cross-review** runs at every checkpoint (spec sign-off, plan completion, pre-merge) without
-  being asked. Commits after the last pre-merge review need a new review before you report the work
-  as done.
+- **Cross-review** runs at every checkpoint (spec sign-off, plan completion, pre-merge) unasked.
+  Commits after the last pre-merge review need a new review before you report the work as done.
 - **Rulings.** Rule on review trade-offs that stay inside the approved spec, and record each one
   under "Rulings" in the MR. Escalate only what would change the spec.
 - **Fix now.** Fix in-scope findings on this branch. No follow-up MRs unless Michael asks.
