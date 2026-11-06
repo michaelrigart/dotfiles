@@ -125,8 +125,11 @@ echo "== rule 3: literal absolute wt sibling =="
 expect deny  "absolute sibling target"      "$TMP" "git worktree remove $SIB"
 expect_reason_contains "deny reason tells the agent to give Michael the wt-rm command" \
   "$TMP" "git worktree remove $SIB" "Give Michael this command to run:"
-expect_reason_contains "deny reason names the wt-rm command" \
-  "$TMP" "git worktree remove $SIB" "wt-rm <branch>"
+# Four leading spaces: the old `    command wt-rm <branch>` line also contains `wt-rm <branch>`.
+expect_reason_contains "deny reason shows the bare wt-rm command, not command wt-rm" \
+  "$TMP" "git worktree remove $SIB" "    wt-rm <branch>"
+expect_reason_contains "deny reason limits WT_GUARD=off to Michael's ask" \
+  "$TMP" "git worktree remove $SIB" "only when Michael asks for it in this conversation."
 expect deny  "with -C, absolute target"     "$TMP" "git -C $REPO worktree remove $SIB"
 expect allow "-c value quotes a worktree verb"  "$TMP" 'git -c alias.example="git worktree unlock x" config --get user.name'
 expect allow "-c single-quoted verb value"      "$TMP" "git -c alias.wtu='worktree unlock' config --get alias.wtu"

@@ -50,7 +50,8 @@ REMEDY="Do not retire a wt worktree yourself. Give Michael this command to run:
     wt-rm <branch>
 
 A worktree owned by another tool goes through that tool's own lifecycle. For a deliberate
-manual reconciliation, re-run with WT_GUARD=off."
+manual reconciliation, re-run with WT_GUARD=off
+only when Michael asks for it in this conversation."
 
 NL=$'\n'; TAB=$'\t'
 sq="'"
