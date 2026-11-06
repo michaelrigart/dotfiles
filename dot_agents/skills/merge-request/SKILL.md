@@ -22,9 +22,9 @@ description: Use before opening any merge request, pull request or issue, with g
   `--hostname <the MR's host>`, and pass `glab mr create --assignee <login>` or
   `glab issue create --assignee <login>`. If the lookup prints nothing or `null`, omit the flag.
   Azure DevOps PRs have no assignee, so `az repos pr create` gets none. An Azure Boards work item
-  does: `az boards work-item create --assigned-to "$(az account show --query user.name -o tsv)"`.
-  Where Michael cannot be assigned (no triage access, e.g. an upstream repo), drop the flag, say
-  so in your report, and do not retry the create.
+  does: `az boards work-item create --assigned-to me`. Where Michael cannot be assigned (no
+  triage access, e.g. an upstream repo), create it once without the flag and
+  say so in your report; never repeat a create that already failed for the same reason.
 - **Never add agent attribution.** That means no session links, no `Claude-Session:`
   trailers, no `Co-authored-by:` agent lines, no "Generated with…" footers, and no naming
   of the tool. This holds in commits, MR/PR titles and bodies, issues and review comments.
