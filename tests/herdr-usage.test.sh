@@ -51,7 +51,10 @@ new_codex() {
   : > "$TRACE"
 }
 
-run() { env -i HOME="$T/home" PINNED_PATH="$PINNED" CODEX_HOME="$CH" HERDR_USAGE_NOW="$NOW" "$@" "$SCRIPT" 2>"$T/stderr"; }
+INSET="$(printf '\xe2\xa0\x80')"   # U+2800 Braille blank: the one-column inset closing a non-empty line
+runraw() { env -i HOME="$T/home" PINNED_PATH="$PINNED" CODEX_HOME="$CH" HERDR_USAGE_NOW="$NOW" "$@" "$SCRIPT" 2>"$T/stderr"; }
+# The figures are asserted without the inset; the inset itself is pinned from runraw below.
+run() { runraw "$@" | LC_ALL=C sed "s/$INSET\$//"; }
 cl() { printf '%s' "$1" > "$T/tt.json"; run TAGTEAM_FIXTURE="$T/tt.json"; }
 cx() { run TAGTEAM_MODE=none TAGTEAM_FIXTURE=/dev/null HERDR_USAGE_TRACE="$TRACE"; }
 
@@ -343,6 +346,18 @@ is "both agents with age marks and the warning" "$out" "acct 69% wk ·40m · cod
 len="$(printf '%s' "$out" | /usr/bin/python3 -c 'import sys; print(len(sys.stdin.buffer.read().decode("utf-8")))')"
 is "width: the longest realistic line is at most 40 characters" "$([ "$len" -le 40 ] && echo ok || echo "too wide: $len")" "ok"
 is "width: it is the 37-cell line the plan measured" "$len" "37"
+
+echo "inset: the last glyph sits one column inside the panes' border"
+raw_of() { local out; out="$(runraw "$@"; echo x)"; printf '%s' "${out%x}"; }
+printf '%s' "$(status "$(usage_of null "$(win 69)")" 2400 null null)" > "$T/tt.json"
+is "a non-empty line ends with exactly one Braille blank, then the newline (herdr trims a no-break space)" \
+  "$(raw_of TAGTEAM_FIXTURE="$T/tt.json" | od -An -c | tr -s ' ')" \
+  "$(printf 'acct 69%% wk ·40m · codex 82%% wk ⚠ ·3h%s\n' "$INSET" | od -An -c | tr -s ' ')"
+is "width: the inset adds one cell to the 37, 38 in all" \
+  "$(raw_of TAGTEAM_FIXTURE="$T/tt.json" | /usr/bin/python3 -c 'import sys; print(len(sys.stdin.buffer.read().decode("utf-8").rstrip("\n")))')" "38"
+CH="$T/codex-none"
+is "no figure at all stays a bare newline: herdr would draw a separator before a lone blank" \
+  "$(PINNED="$T/empty-bin" raw_of | od -An -c | tr -s ' ')" "$(printf '\n' | od -An -c | tr -s ' ')"
 
 # ---------- malformed input ----------
 echo "malformed tagteam fields"
