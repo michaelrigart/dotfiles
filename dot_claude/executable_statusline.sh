@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Claude Code status line — Tokyo Night, full width.
 # Segments: dir  git branch (both left out inside a Herdr pane, whose workspace shows
-# them)  model  tagteam  most-recent skill/plugin  plan progress, then a bar to the right
-# edge. Receives the session JSON on stdin; terminal width from $COLUMNS.
+# them)  model  tagteam (also left out inside a Herdr pane, whose tab bar shows the usage)
+# most-recent skill/plugin  plan progress, then a bar to the right edge. Receives the session JSON on stdin; terminal width from $COLUMNS.
 export LC_ALL=en_US.UTF-8   # count runes, not bytes, in ${#text} width math
 # Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
 # 2026-10-16, sandbox write boundary). PINNED_PATH is for the suite only.
@@ -64,10 +64,11 @@ DASH=$(printf '\xe2\x80\x94')  # U+2014  — em dash (no-skill placeholder)
 DOT=$(printf '\xc2\xb7')       # U+00B7  · middot (model / effort separator)
 R=$'\033[0m'
 
-# --- tagteam: the live account and its usage. Empty when tagteam is missing, fails (it
-# cannot open its store inside the sandbox) or prints nothing; then no segment is shown. ---
+# --- tagteam: the live account and its usage. Left out inside a Herdr pane, whose tab bar
+# shows it (tagteam is not called). Empty when tagteam is missing, fails (it cannot open its
+# store inside the sandbox) or prints nothing; then no segment is shown. ---
 tt=""
-if command -v tagteam >/dev/null 2>&1; then
+if [ -z "${HERDR_PANE_ID:-}" ] && command -v tagteam >/dev/null 2>&1; then
   tt=$(tagteam --no-color statusline </dev/null 2>/dev/null) || tt=""
   tt=${tt%%$'\n'*}
   # Drop OSC sequences (BEL or ESC \ terminated, e.g. hyperlinks; an unterminated one runs
