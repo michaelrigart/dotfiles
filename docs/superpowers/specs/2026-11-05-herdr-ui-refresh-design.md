@@ -104,6 +104,10 @@ tab_bar_right_separator = "  │  "
 The first design also had a `{ type = "datetime", format = "%H:%M" }` clock entry; Michael removed
 it while tuning on 2026-11-06 (macOS has a clock).
 
+A second tuning decision of the same day: inside a Herdr pane the Claude status line leaves the
+tagteam usage segment out (and skips the tagteam call), since herdr's tab bar shows the usage;
+outside Herdr it is unchanged.
+
 The zoom entry should show only while a pane is zoomed (Alt-z). If herdr renders it
 unconditionally, the builder drops it and says so. Herdr strips ANSI from command output, so the
 tab bar is one colour.
