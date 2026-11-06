@@ -84,7 +84,8 @@ else _fail "tab_bar_right lists zoom, then the usage command last (got: $TBR)"; 
 # The inset is usage.sh's trailing blank, so nothing may follow the usage entry: a later entry
 # would leave a separator and its own text between the blank and the window edge.
 TBR_ARRAY="${TBR#*tab_bar_right = [}"; TBR_ARRAY="${TBR_ARRAY%%]*}"
-TBR_AFTER_USAGE="$(printf '%s' "${TBR_ARRAY##*timeout_seconds = 5 \}}" | tr -d ' ,')"
+TBR_AFTER_USAGE="${TBR_ARRAY#*'~/.config/herdr/usage.sh'}"   # from the usage entry's command onward
+TBR_AFTER_USAGE="$(printf '%s' "${TBR_AFTER_USAGE#*\}}" | tr -d ' ,')"   # past that entry's closing brace
 check "$TBR_AFTER_USAGE" "" "the usage entry closes tab_bar_right (no entry after it)"
 check "$(printf '%s\n' "$TBR" | grep -c 'datetime')" "0" "tab bar right carries no clock"
 if in_order "$TBR" 'type = "command"' 'interval_seconds = 60,' 'timeout_seconds = 5 }'; then
