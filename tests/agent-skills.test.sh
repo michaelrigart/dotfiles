@@ -333,5 +333,23 @@ if managed=$(chezmoi --config "$T/empty.toml" --source "$shared" managed 2>"$T/m
   done
 else _fail "chezmoi managed runs" "$(head -n 2 "$T/managed.err")"; fi
 
+# merge-request must tell agents to assign Michael to every PR, MR and issue they open, and
+# its description must name issues, or the skill never loads before `gh issue create`.
+echo "merge-request skill: assignee rule and issue trigger"
+mr_skill="$SRC/dot_agents/skills/merge-request/SKILL.md"
+mr_desc=$(sed -n 's/^description: //p' "$mr_skill")
+if printf '%s' "$mr_desc" | grep -qF 'merge request, pull request or issue'; then
+  _pass "merge-request description names issues"
+else _fail "merge-request description names issues" "description: $mr_desc"; fi
+for text in 'gh pr create --assignee @me' 'gh issue create --assignee @me' \
+  'glab api user | jq -r .username' 'glab mr create --assignee <login>' \
+  'glab issue create --assignee <login>' '--hostname <the MR' 'prints nothing or `null`, omit the flag' \
+  'Azure DevOps PRs have no assignee' \
+  'az boards work-item create --assigned-to me' 'create it once without the flag' \
+  'say so in your report' 'never repeat a create that already failed for the same reason'; do
+  if grep -qF -- "$text" "$mr_skill"; then _pass "merge-request skill carries: $text"
+  else _fail "merge-request skill carries: $text" "absent from $mr_skill"; fi
+done
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -70,10 +70,10 @@ live, what is tracked and when each is committed never vary per repository.
   have, deleting branches, tags, data or infrastructure, discarding uncommitted work it did not
   create, or pushing to the default branch. Exempt: a lease on your own branch, a merged branch's
   pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.
-- **Merge requests.** Load the `merge-request` skill before opening an MR or PR. Never add agent
-  attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines, "Generated
-  with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or review comments.
-  The published record is Michael's.
+- **Merge requests.** Load the `merge-request` skill before opening an MR, PR or issue. Never add
+  agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines,
+  "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or
+  review comments. The published record is Michael's.
 - **Second brain.** Offer a note when work produces durable knowledge and write it only when asked;
   the `second-brain` skill holds the conventions.
 
