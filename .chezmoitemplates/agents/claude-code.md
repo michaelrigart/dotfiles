@@ -29,7 +29,7 @@
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
   Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
 - **Parallel tasks.** A plan runs entirely in its own worktree; never create a worktree for one of
-  its tasks. Plans give tasks a `Depends on:` line. A batch is tasks with no pending dependency,
+  its tasks. Plans give each task a `Depends on:` line. A batch is tasks with no pending dependency,
   disjoint files (neither one's tests load the other's), and no shared test resource such as a
   database, server or port. Dispatch a batch's implementers together in that worktree. They do not
   commit, and run only their focused tests. The controller then commits each task on its own, one
@@ -39,10 +39,10 @@
   session runs the line itself, with its own subagents and `xreview` reviews from its checkout. If
   `ListAgents` does not list it, tell Michael; never run the line in the main session.
 - **Pushing.** Push in its own Bash call as one plain command: `git push [options] <remote>
-  <branch>` (other repo: `git -C <path> push …`), optionally piped to `tail`/`head`. The guard
-  denies a push chained after a commit, with a comment, or in a shell or substitution, and runs
-  gitleaks on outgoing commits. A genuine false positive's fingerprint goes in `.gitleaksignore`,
-  committed on the pushed branch. While it exists, push refs by name, never `--tags`/`--all`.
+  <branch>` (other repo: `git -C <path> push …`), optionally piped to `tail`/`head`. The push
+  guard denies a push chained after a commit, with a comment, or in a shell or substitution, and
+  runs gitleaks on the push. A genuine false positive's fingerprint goes in `.gitleaksignore`,
+  committed on the pushed branch. While that file exists, push refs by name, never `--tags`/`--all`.
 - **Cross-review** with Codex runs through the `cross-review` skill (`xreview`). It uses an
   existing Codex pane; never open another. If the driver itself reviews a `wt` line, its `xreview`
   calls pass `-C <checkout>`. `xreview dispatch` needs `--checkpoint spec|plan|pre-merge`.

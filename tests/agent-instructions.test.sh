@@ -140,7 +140,7 @@ lines=$(wc -l < "$FRAG/codex.md" 2>/dev/null | tr -d ' ')
 for f in global.md claude-code.md codex.md; do
   last=$(grep -v '^[[:space:]]*$' "$FRAG/$f" | tail -1)
   case "$last" in
-    *[.:]) _pass "$f ends on a finished sentence" ;;
+    *.) _pass "$f ends on a finished sentence" ;;
     *) _fail "$f ends on a finished sentence" "$last" ;;
   esac
 done

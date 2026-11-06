@@ -123,8 +123,10 @@ SPACED="$TMP/my repo-topic"; mkdir -p "$SPACED"
 
 echo "== rule 3: literal absolute wt sibling =="
 expect deny  "absolute sibling target"      "$TMP" "git worktree remove $SIB"
-expect_reason_contains "deny reason names the command-prefixed remedy" \
-  "$TMP" "git worktree remove $SIB" "command wt-rm <branch>"
+expect_reason_contains "deny reason tells the agent to give Michael the wt-rm command" \
+  "$TMP" "git worktree remove $SIB" "Give Michael this command to run:"
+expect_reason_contains "deny reason names the wt-rm command" \
+  "$TMP" "git worktree remove $SIB" "wt-rm <branch>"
 expect deny  "with -C, absolute target"     "$TMP" "git -C $REPO worktree remove $SIB"
 expect allow "-c value quotes a worktree verb"  "$TMP" 'git -c alias.example="git worktree unlock x" config --get user.name'
 expect allow "-c single-quoted verb value"      "$TMP" "git -c alias.wtu='worktree unlock' config --get alias.wtu"
@@ -197,7 +199,7 @@ expect deny  "remove -ff"                   "$TMP" 'git worktree remove -ff ../a
 expect deny  "remove --force --force"       "$TMP" 'git worktree remove --force --force rel'
 expect deny  "remove -f --force"            "$TMP" "git -C $REPO worktree remove -f --force rel"
 expect_reason_contains "lock-crossing deny names the remedy" \
-  "$TMP" 'git worktree unlock x' "command wt-rm <branch>"
+  "$TMP" 'git worktree unlock x' "Give Michael this command to run:"
 expect allow "single force, not a sibling"  "$TMP" "git worktree remove --force $REPO/.claude/worktrees/scratch"
 expect allow "lock"                         "$TMP" 'git worktree lock x'
 expect allow "add"                          "$TMP" 'git worktree add ../x'
