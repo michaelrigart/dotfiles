@@ -78,9 +78,10 @@ check "$(printf '%s\n' "$UI" | grep -c '^show_agent_labels_on_pane_borders = tru
 check "$(printf '%s\n' "$UI" | grep -c '^window_title = "{workspace} · {tab}"$')" "1" "window title names workspace and tab"
 check "$(printf '%s\n' "$UI" | grep -c '^tab_bar_right_separator = "  │  "$')" "1" "tab bar right separator"
 TBR="$(printf '%s\n' "$UI" | flat)"
-if in_order "$TBR" 'tab_bar_right = [' '~/.config/herdr/usage.sh' '{ type = "zoom" }' '{ type = "datetime", format = "%H:%M" }'; then
-  _pass "tab_bar_right lists usage command, zoom, datetime in order"
-else _fail "tab_bar_right lists usage command, zoom, datetime in order (got: $TBR)"; fi
+if in_order "$TBR" 'tab_bar_right = [' '~/.config/herdr/usage.sh' '{ type = "zoom" }'; then
+  _pass "tab_bar_right lists usage command, zoom in order"
+else _fail "tab_bar_right lists usage command, zoom in order (got: $TBR)"; fi
+check "$(printf '%s\n' "$TBR" | grep -c 'datetime')" "0" "tab bar right carries no clock"
 if in_order "$TBR" 'type = "command"' 'interval_seconds = 60,' 'timeout_seconds = 5 }'; then
   _pass "the usage entry is a command with a 60 s interval and 5 s timeout"
 else _fail "the usage entry is a command with a 60 s interval and 5 s timeout (got: $TBR)"; fi

@@ -97,9 +97,12 @@ Pane borders, outer borders and gaps stay at herdr's defaults (`auto`, on, on).
 ### 2. Tab bar right
 
 ```toml
-tab_bar_right = [ <usage command, §5>, { type = "zoom" }, { type = "datetime", format = "%H:%M" } ]
+tab_bar_right = [ <usage command, §5>, { type = "zoom" } ]
 tab_bar_right_separator = "  │  "
 ```
+
+The first design also had a `{ type = "datetime", format = "%H:%M" }` clock entry; Michael removed
+it while tuning on 2026-11-06 (macOS has a clock).
 
 The zoom entry should show only while a pane is zoomed (Alt-z). If herdr renders it
 unconditionally, the builder drops it and says so. Herdr strips ANSI from command output, so the
@@ -295,7 +298,7 @@ small change (cold diff review plus Codex's pre-merge review), and he merges it.
 - Draft MRs get the pipeline badge too.
 - Spinner placed after the agent name (the mockup showed it before), so names never shift.
 - Only `blocked` gets new wording (`needs you`).
-- Clock as `%H:%M`.
+- Clock as `%H:%M`. Superseded by Michael's tuning decision of 2026-11-06: no clock in the tab bar.
 - `panel_bg = "reset"` so Ghostty owns the background.
 - Usage older than 30 minutes carries its age.
 - Unlinking the plugin takes effect at the next server start.

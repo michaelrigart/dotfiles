@@ -78,13 +78,12 @@ confirm_close = true
 show_agent_labels_on_pane_borders = true
 # The outer terminal title (Ghostty's tab and window bars): where I am, no hostname.
 window_title = "{workspace} · {tab}"
-# Claude and Codex usage (usage.sh), then Alt-z's zoom marker, then the clock.
+# Claude and Codex usage (usage.sh), then Alt-z's zoom marker. No clock: macOS has one.
 tab_bar_right = [
   { type = "command", command = "~/.config/herdr/usage.sh", interval_seconds = 60, timeout_seconds = 5 },
   { type = "zoom" },
-  { type = "datetime", format = "%H:%M" },
 ]
-# A divider keeps the three entries from reading as one string.
+# A divider keeps the entries from reading as one string.
 tab_bar_right_separator = "  │  "
 
 [ui.toast]
