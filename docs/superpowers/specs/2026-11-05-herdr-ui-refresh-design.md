@@ -101,6 +101,11 @@ tab_bar_right = [ <usage command, §5>, { type = "zoom" } ]
 tab_bar_right_separator = "  │  "
 ```
 
+Michael's tuning request of 2026-11-06 (status ends one column inside the panes' right border): the
+order became `[ { type = "zoom" }, <usage command> ]`, and the usage line ends with one U+2800
+Braille blank (herdr trims a trailing U+00A0 from command output and draws a separator before a
+trailing `text` entry); an empty usage line stays empty.
+
 The first design also had a `{ type = "datetime", format = "%H:%M" }` clock entry; Michael removed
 it while tuning on 2026-11-06 (macOS has a clock).
 

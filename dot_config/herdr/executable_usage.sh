@@ -20,6 +20,11 @@ from typing import List, Optional, Tuple
 SEPARATOR = " · "
 WARN = " ⚠"
 DASH = "—"
+# One Braille blank (U+2800) closes a non-empty line: herdr draws the tab bar to the window
+# edge, and this keeps the last glyph one column inside the panes' right border. It is not
+# whitespace to herdr, which trims a trailing no-break space (U+00A0) from command output. An
+# empty line stays empty, or herdr would draw a separator before a lone blank.
+INSET = chr(0x2800)
 WARN_AT = 80
 MAX_PCT = 1000
 STALE_AFTER = 1800
@@ -296,7 +301,10 @@ def main() -> None:
             segment = None
         if segment:
             segments.append(segment)
-    sys.stdout.buffer.write((SEPARATOR.join(segments) + "\n").encode("utf-8"))
+    line = SEPARATOR.join(segments)
+    if line:
+        line += INSET
+    sys.stdout.buffer.write((line + "\n").encode("utf-8"))
 
 
 try:
