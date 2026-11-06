@@ -2,6 +2,8 @@
 # Feeds a session JSON through dot_claude/executable_statusline.sh with a stub tagteam on
 # PATH and checks the tagteam segment:
 #   - shown in teal, and in red once a percentage reaches 90;
+#   - left out inside a Herdr pane (HERDR_PANE_ID set), whose tab bar shows the usage, and
+#     then tagteam is not called;
 #   - left out when tagteam is absent, fails or prints nothing, when it would not fit, and
 #     when a character of unknown width makes the line's width unknown.
 # Left out means byte-identical to a run without tagteam.
@@ -65,6 +67,14 @@ else _fail "teal segment at 200 columns" "$(strip "$out")"; fi
 if [ "$(cat "$T/args")" = "--no-color statusline" ]; then
   _pass "tagteam is called as: tagteam --no-color statusline"
 else _fail "tagteam arguments" "$(cat "$T/args")"; fi
+
+# --- inside a Herdr pane the tab bar shows the usage: no segment, and tagteam is never called ---
+rm -f "$T/args"
+out=$(HERDR_PANE=1 run tt 200 "$TT\n")
+if ! has "$out" "$TEAL" && ! has "$(strip "$out")" "5h" && [ ! -e "$T/args" ] \
+   && [ "$out" = "$(HERDR_PANE=1 run none 200)" ] && [ "$(vis "$out")" = 200 ]; then
+  _pass "inside a Herdr pane the segment is left out and tagteam is not called"
+else _fail "tagteam segment inside a Herdr pane" "$(strip "$out") | called: $([ -e "$T/args" ] && cat "$T/args")"; fi
 
 # --- red from 90% (integer part decides) ---
 for pct in 90 92 90.4; do
