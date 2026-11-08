@@ -9,9 +9,8 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 - **Strict XDG:** config `~/.config`, data `~/.local/share`, scripts `~/.local/bin` (on `$PATH`),
   cache `~/.cache`, state `~/.local/state`; `$HOME` stays clean.
 - **Shell and tools:** prefer `rg` and `fd`; there is no `bat`.
-- **Packages:** Homebrew packages go in the chezmoi-managed `~/.config/homebrew/Brewfile`; runtimes
-  (Ruby, Python, Rust, .NET) go in mise (`~/.config/mise/config.toml`). Never install ad hoc or as
-  global toolchains.
+- **Packages:** Homebrew packages go in `~/.config/homebrew/Brewfile`; runtimes (Ruby, Python, Rust,
+  .NET) go in mise (`~/.config/mise/config.toml`). Never install ad hoc or as global toolchains.
 - **Firewall:** an outbound firewall (Little Snitch) blocks new or ad-hoc-signed binaries until
   allowed. Suspect it first when a connection fails for no clear reason.
 
@@ -22,13 +21,14 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
   own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis and
   storage. Every new branch in a `~/Code` repository is one, small changes included: never a plain
   branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt` as
-  declared, without asking. Before the line's first file (a spec draft too), the driver runs
-  `wt --no-focus <branch> <local-branch>` (a remote start point sets an upstream) and names the
-  checkout in its report. At spec sign-off, or at once for a small change, it hands the line to that
-  session, which rules on trade-offs inside the spec and escalates spec changes to the driver; the
-  driver keeps only briefing and collecting the report, never the line's work. Never run `wt-rm` or
-  `git worktree remove`: the line's final report gives Michael the `wt-rm <branch>` command to run
-  once it is merged or abandoned. A harness worktree follows its own tool's lifecycle.
+  declared, without asking. The driver runs `wt --no-focus <branch> <local-branch>` (a remote start
+  point sets an upstream) before the line's first file, or stops and tells Michael if it fails. It
+  writes and commits the spec in that checkout, then hands the line to that session (a small change
+  at once), which rules on trade-offs inside the spec and escalates spec changes; the driver keeps
+  only briefing and collecting the report, never the line's work. Never run `wt-rm` or `git worktree
+  remove`: the line's final report (the driver's, if dropped before hand-off) gives Michael the
+  `wt-rm <branch>` command to run once it is merged or abandoned. Never in the dotfiles, whose
+  harness worktrees follow their own tool's lifecycle.
 - **Backups:** Borg skips uncommitted `wt` work (the vault's Backups note); commit at checkpoints.
 
 ## Design records

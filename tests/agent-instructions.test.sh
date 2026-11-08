@@ -239,22 +239,26 @@ need_flat claude-code.md 'runs through the `cross-review` skill' "claude-code.md
 # The forge guard's deny text cites this bullet by its label.
 need_flat global.md '- **Merge requests.** Load the `merge-request` skill before opening an MR, PR or issue.' \
   "global.md keeps the Merge requests pointer the forge guard cites, and names issues"
-# The driver opens wt checkouts (spec 2026-11-03-driver-wt, section 5). "May open" let sessions
-# keep making plain branches in a ~/Code main checkout, small fixes and spec commits most of all,
-# and using-git-worktrees offered EnterWorktree or working in place (transcripts 2026-11-03..08).
+# The driver opens wt checkouts (spec 2026-11-03-driver-wt, section 5, whose "may open" this
+# branch makes mandatory, 2026-11-08). "May open" let sessions keep making plain branches in a
+# ~/Code main checkout, small fixes and spec commits most of all, and using-git-worktrees offered
+# EnterWorktree or working in place (transcripts 2026-11-03..08).
 need_flat global.md 'Every new branch in a `~/Code` repository is one, small changes included: never a plain branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt` as declared, without asking.' \
   "global.md makes wt the only way to start a branch in a ~/Code repository"
-need_flat global.md 'Before the line'"'"'s first file (a spec draft too), the driver runs `wt --no-focus <branch> <local-branch>` (a remote start point sets an upstream) and names the checkout in its report.' \
-  "global.md opens the checkout before the line's first file, on its conditions"
+need_flat global.md 'The driver runs `wt --no-focus <branch> <local-branch>` (a remote start point sets an upstream) before the line'"'"'s first file, or stops and tells Michael if it fails.' \
+  "global.md opens the checkout before the line's first file, and stops rather than fall back when wt fails"
 if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'The driver may open'; then
   _fail "global.md no longer makes a wt checkout optional" "still present"
 else _pass "global.md no longer makes a wt checkout optional"; fi
-need_flat global.md 'Never run `wt-rm` or `git worktree remove`: the line'"'"'s final report gives Michael the `wt-rm <branch>` command to run once it is merged or abandoned.' \
-  "global.md keeps teardown Michael's and has the final report hand him the wt-rm command"
+need_flat global.md 'Never run `wt-rm` or `git worktree remove`: the line'"'"'s final report (the driver'"'"'s, if dropped before hand-off) gives Michael the `wt-rm <branch>` command to run once it is merged or abandoned.' \
+  "global.md keeps teardown Michael's and has a final report hand him the wt-rm command, a dropped line's too"
 need_flat global.md 'its own Herdr workspace and a Claude Code session in it' \
   "global.md says the wt workspace starts a Claude Code session"
-need_flat global.md 'At spec sign-off, or at once for a small change, it hands the line to that session, which rules on trade-offs inside the spec and escalates spec changes to the driver; the driver keeps only briefing and collecting the report, never the line'"'"'s work.' \
-  "global.md has the driver hand a wt line to the checkout's session, and says when, keeping only coordination"
+# A spec written from the main checkout landed on main, not on the line's branch.
+need_flat global.md 'It writes and commits the spec in that checkout, then hands the line to that session (a small change at once), which rules on trade-offs inside the spec and escalates spec changes; the driver keeps only briefing and collecting the report, never the line'"'"'s work.' \
+  "global.md commits the spec in the wt checkout before hand-off and keeps the driver to coordination"
+need_flat global.md 'Never in the dotfiles, whose harness worktrees follow their own tool'"'"'s lifecycle.' \
+  "global.md keeps wt out of the dotfiles"
 # The last sentence of global.md was once lost to a reflow, leaving "Reply without tags unless".
 need_flat global.md 'Reply without tags unless he asks for a relay-ready handoff, which Claude Code wraps in `<from-claude-code>`.' \
   "global.md keeps the relay-reply rule whole"
@@ -270,8 +274,10 @@ need_flat claude-code.md 'If `ListAgents` does not list it, tell Michael; never 
   "claude-code.md keeps the wt line out of the main session when its session is missing"
 need_flat claude-code.md 'never create a worktree for one of its tasks' "claude-code.md keeps the parallel-tasks worktree rule"
 # "Its own worktree" read as a harness worktree beside the wt rule (hulder, 2026-11-03).
-need_flat claude-code.md 'A plan runs entirely in its line'"'"'s checkout;' \
-  "claude-code.md runs a plan in its line's checkout, never a fresh worktree"
+need_flat claude-code.md 'A plan runs entirely in its line'"'"'s checkout (dotfiles: a harness worktree);' \
+  "claude-code.md runs a plan in its line's checkout, and a dotfiles plan in a harness worktree"
+need_flat claude-code.md '`SendMessage` it the brief: spec, plan or task, branch, artifact paths, what to report back.' \
+  "claude-code.md briefs a wt line with its spec, since hand-off comes at spec sign-off"
 # Codex-only text moved to codex.md.
 for gone in "**Skills don't change roles.**" "On Codex's side"; do
   if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- "$gone"; then
