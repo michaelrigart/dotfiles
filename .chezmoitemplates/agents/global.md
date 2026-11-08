@@ -18,17 +18,19 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 ## Repositories and worktrees
 
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
-- **`wt` worktrees.** `wt <branch>` makes a sibling checkout `~/Code/<Org>/<repo>-<branch>` with
-  its own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis and
-  storage. The driver may open one per independent line of work, as `wt --no-focus <branch>
-  <local-branch>` (a remote start point sets an upstream), and names each checkout it opened in its
-  report; never in the dotfiles. It hands the line to that session, which rules on trade-offs
+- **`wt` worktrees.** `wt <branch>` makes a sibling checkout `~/Code/<Org>/<repo>-<branch>` with its
+  own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis and
+  storage. Every new branch in `~/Code` is one, small changes included: never a plain branch (`git
+  switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt` as declared, without
+  asking. The dotfiles never use `wt`. The driver runs `wt --no-focus <branch> <local-branch>` (a
+  remote start point sets an upstream) before the line's first file and names the checkout in its
+  report; if `wt` fails, it stops and tells Michael. It writes and commits the spec in that
+  checkout, then hands the line to its session (a small change at once), which rules on trade-offs
   inside the spec and escalates spec changes to the driver; the driver keeps only briefing and
   collecting the report, never the line's work. Never run `wt-rm` or `git worktree remove`: the
-  line's final report gives Michael the `wt-rm <branch>` command to run once it is merged or
-  abandoned. A harness worktree follows its own tool's lifecycle.
-- **Backups:** Borg through Vorta (runbook: the vault's Backups note) skips uncommitted work in a
-  `wt` worktree, so checkpoint commits are the protection.
+  line's final report (the driver's, if dropped before hand-off) gives Michael the `wt-rm <branch>`
+  command to run once it is merged or abandoned. Harness worktrees follow their tool's lifecycle.
+- **Backups:** Borg skips uncommitted `wt` work (the vault's Backups note); commit at checkpoints.
 
 ## Design records
 
@@ -52,8 +54,7 @@ live, what is tracked and when each is committed never vary per repository.
 - **Completed documents.** Mark a completed plan so it is not run again; its execution banners bind
   that run only, never repository policy. Durable lessons go in the spec, plan, ADR or MR
   description, never in raw run files.
-- **Cross-repo work.** Open both MRs before merging either, and merge the one holding the
-  canonical spec first.
+- **Cross-repo work.** Open both MRs before merging either; merge the canonical spec's MR first.
 - Load the `design-records` skill when creating, updating, completing or abandoning a spec or plan,
   or setting its Status.
 
@@ -116,8 +117,7 @@ specs and merges; in between, the driver proceeds on its own.
   not: stop and bring Michael the round count, what recurs and a structural option.
 - **Finishing.** Push the feature branch and open a Draft MR where the repository uses MRs. For the
   dotfiles, the pushed branch is the end. Show no finishing menus, and never merge.
-- **Reporting.** End every final report with one state line: pushed, review receipt, open items,
-  next step.
+- **Reporting.** Final reports end on one state line: pushed, review receipt, open items, next step.
 - **Fresh sessions.** When asking for spec sign-off and in a final report, end with one line
   suggesting `/clear` plus a paste-ready prompt (checkout, branch, artifact paths, next step).
   Persist anything not yet on disk first; never stop only to suggest it.
