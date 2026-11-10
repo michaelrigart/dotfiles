@@ -19,7 +19,7 @@
 - No `HOMEASSISTANT_URL` or `HOMEASSISTANT_TOKEN` in any child of the launcher (`sed`, `curl`, `mise`).
 - The launcher stays POSIX `sh` (`#!/bin/sh`, `sh -n` clean) and calls `sed` and `curl` by name.
 - Exact strings from the spec: the probe is `curl -k -s -o /dev/null --connect-timeout 1 --max-time 2 "<home url>/"`; the stderr line is `ha-mcp: home address unreachable; using env-remote`.
-- Never run `op`, never read anything under `~/.config/ha-mcp`, and never run a chezmoi command that renders templates (`apply`, `cat`, `diff`, `status`, `execute-template`): rendering calls 1Password and prints the token. The suites' own `chezmoi --source <checkout> managed` (`tests/claude-settings.test.sh` section X) lists target paths without rendering contents and stays allowed. `chezmoi apply` is Michael's, after merge.
+- Never run `op`, never read anything under `~/.config/ha-mcp`, and never run `chezmoi` yourself: rendering the real source (`apply`, `cat`, `diff`, `status`) calls 1Password and can print the token. The repository's own suites (`./tests/…`, `./tests/run.sh`) are exempt: they call `chezmoi` only for `managed` listings or to render secret-free templates and fixtures under temporary configs. `chezmoi apply` is Michael's, after merge.
 - Suites are executed directly (`./tests/<name>.test.sh`), never through an interpreter. Report results as passed/total.
 - Never start a Bash call with `cd`; use absolute paths or `git -C`.
 - Implementers do not commit. They run only their task's suites and report back; the controller commits each task.
