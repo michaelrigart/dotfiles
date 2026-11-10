@@ -112,6 +112,17 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
 log_info "✓ Firewall enabled"
 
 # ============================================================================
+# Claude Code managed policy
+# ============================================================================
+# Limits Claude Code mods to the organization's (see the managed mods lock spec).
+log_info "Installing the Claude Code managed policy..."
+if "${0:A:h}/install-claude-managed-settings.sh"; then
+  log_info "✓ Claude Code managed policy in place"
+else
+  log_warn "Claude Code managed policy NOT installed — fix what the output above names, then re-run .scripts/install-claude-managed-settings.sh (--replace only overwrites a different policy file)"
+fi
+
+# ============================================================================
 # Keyboard Settings
 # ============================================================================
 log_info "Configuring keyboard settings..."

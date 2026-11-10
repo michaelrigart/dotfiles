@@ -22,6 +22,7 @@ T=$(cd "$T" && pwd -P)                       # /tmp is a symlink to /private/tmp
 [ -n "$T" ] && [ -d "$T" ] || { echo "REFUSING: temp root did not resolve"; exit 2; }
 case "$T" in "$HOME"|"$HOME"/*) echo "REFUSING: temp root is inside the real HOME"; exit 2;; esac
 mkdir -p "$T"/{bin,home,src/.chezmoidata,src/.scripts,brew/bin}
+mkdir -m 755 "$T/managed"                    # not umask-dependent: the installer's walk refuses a 775 root
 CALLS="$T/calls"; IDDB="$T/identity"; MUTLOG="$T/refused"; SBX_ROOT="$T"
 cp "$SRC/.chezmoidata/machines.toml" "$T/src/.chezmoidata/"
 mkdir -p "$T/src/.git"
@@ -225,10 +226,13 @@ echo "G. configure.sh identity validation (the real script, not a stub)"
 # The harness stubs configure.sh for provision.sh's benefit, so its own validation was
 # never exercised: deleting the HostName check left every assertion green. These call
 # the real script. Mismatches exit before configure.sh touches anything.
+# The only thing keeping this real configure.sh run away from /Library and the REAL sudo is
+# CLAUDE_MANAGED_SETTINGS_TEST_ROOT in the env -i list below. The sudo stub never sees the
+# installer, which calls /usr/bin/sudo by absolute path; section K asserts the redirect.
 cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
   OUT=$(cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
         FV="${FV:-Off}" \
-        CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
+        CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$T/managed" \
         zsh "$SRC/.scripts/configure.sh" --hostname "$4" 2>&1); RC=$?; }
 cfg fenrir fenrir fenrir fenrir
 has "identity verified" "matching identity passes validation"
@@ -275,6 +279,21 @@ FV=Off
 called "pmset -a autorestart 1" "hercules enables restart-after-power-loss"
 : > "$CALLS"; cfg fenrir fenrir fenrir fenrir
 not_called "pmset -a autorestart" "fenrir does not (it has a battery and a lid)"
+
+echo "K. configure.sh installs the Claude Code managed policy"
+rm -rf "$T/managed/ClaudeCode"; cfg fenrir fenrir fenrir fenrir
+has "✓ Claude Code managed policy in place" "the managed policy is installed"
+has "installed: $T/managed/ClaudeCode/managed-settings.json" "the policy went to the scratch root"
+hasnt "/Library/Application Support/ClaudeCode" "the first run stays out of /Library"
+cmp -s "$T/managed/ClaudeCode/managed-settings.json" "$SRC/.scripts/claude-managed-settings.json" \
+  && _pass "the installed policy is the repo's policy" || _fail "the installed policy is the repo's policy"
+printf '%s\n' '{"pluginConfigs":{}}' > "$T/managed/ClaudeCode/managed-settings.json"
+cfg fenrir fenrir fenrir fenrir
+has "Claude Code managed policy NOT installed" "a different existing policy is refused, not replaced"
+[ "$(cat "$T/managed/ClaudeCode/managed-settings.json")" = '{"pluginConfigs":{}}' ] \
+  && _pass "the refused policy file is untouched" || _fail "the refused policy file is untouched"
+has "Configuring keyboard settings" "a refusal does not stop configure.sh"
+hasnt "/Library/Application Support/ClaudeCode" "the refused run stays out of /Library"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

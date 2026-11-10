@@ -47,10 +47,15 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction.
+  `install-claude-managed-settings.sh` installs `claude-managed-settings.json`, the Claude Code
+  mods lock, into `/Library/Application Support/ClaudeCode/`, and refuses a `managed-settings.d`
+  beside it. `configure.sh` runs it; `chezmoi apply` never does. Running it for real (sudo,
+  `--replace` to overwrite a different policy) is Michael's; agents run it only in test mode,
+  through its suite and `tests/provision.test.sh`.
   `measure-interventions.py` sits beside them: the transcript metrics for the
   safe-autonomy evaluation. `skill-updates.sh` is non-interactive too and runs weekly in
-  the `skill-updates` workflow. Mode `755` — git stores only the exec bit, so a clone
-  yields 755, never 700.
+  the `skill-updates` workflow. The scripts are mode `755` (not the 644 policy file) — git
+  stores only the exec bit, so a clone yields 755, never 700.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
 - Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
