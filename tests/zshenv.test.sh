@@ -17,6 +17,8 @@ ZSHENV="$SRC/dot_config/zsh/zshenv"
 [ -f "$ZSHENV" ] || { echo "missing script under test: $ZSHENV" >&2; exit 2; }
 [ -x /bin/zsh ] || { echo "no /bin/zsh" >&2; exit 2; }
 [ -x /opt/homebrew/bin/brew ] || { echo "Homebrew is not at /opt/homebrew; this suite needs it" >&2; exit 2; }
+target=$(find /var/run -maxdepth 1 -type s 2>/dev/null | head -1)
+[ -n "$target" ] || { echo "INCONCLUSIVE: no system unix socket under /var/run to symlink" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -29,9 +31,10 @@ printf '#!/bin/sh\necho launcher\n' > "$FAKE/.local/bin/codex"
 chmod 755 "$FAKE/.local/bin/codex"
 printf 'source "%s"\n' "$ZSHENV" > "$FAKE/.zshrc"
 
-probe() { # probe <zsh code> -> its stdout in a clean interactive login shell
+probe() { # probe <zsh code> [VAR=value ...] -> its stdout in a clean interactive login shell
+  local code=$1; shift
   env -i HOME="$FAKE" USER="${USER:-michael}" TERM=dumb PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-    ZDOTDIR="$FAKE" /bin/zsh -il -c "$1" 2>/dev/null
+    ZDOTDIR="$FAKE" "$@" /bin/zsh -il -c "$code" 2>/dev/null
 }
 
 first=$(probe 'type -a codex' | head -1)
@@ -78,6 +81,36 @@ fi
 got=$(probe '/usr/bin/printenv OP_BIOMETRIC_UNLOCK_ENABLED')
 [ "$got" = true ] && _pass "child processes get OP_BIOMETRIC_UNLOCK_ENABLED=true" \
   || _fail "child processes get OP_BIOMETRIC_UNLOCK_ENABLED=true" "${got:-unset}"
+
+# Regression: git's SSH commit signing failed with "No private key found" after a herdr
+# restart. herdr points every pane's SSH_AUTH_SOCK at a proxy that holds no keys until a
+# client registers its agent, so a local shell must use the 1Password agent directly; an SSH
+# login keeps its forwarded agent, and a machine without 1Password keeps its own.
+HERDR_SOCK="$FAKE/.config/herdr/herdr.sock.agent"
+OP_DIR="$FAKE/Library/Group Containers/2BUA8C4S2C.com.1password/t"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
+[ "$got" = "$HERDR_SOCK" ] && _pass "without a 1Password socket, a preset SSH_AUTH_SOCK is kept" \
+  || _fail "without a 1Password socket, a preset SSH_AUTH_SOCK is kept" "${got:-unset}"
+
+mkdir -p "$OP_DIR"
+: > "$OP_DIR/agent.sock"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
+[ "$got" = "$HERDR_SOCK" ] && _pass "a non-socket file at the 1Password path is ignored" \
+  || _fail "a non-socket file at the 1Password path is ignored" "${got:-unset}"
+
+# The sandbox forbids bind() on unix sockets, so the fake agent is a symlink to a system
+# socket; -S follows it, as it does for the real check.
+rm "$OP_DIR/agent.sock"
+ln -s "$target" "$OP_DIR/agent.sock"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK')
+[ "$got" = "$OP_DIR/agent.sock" ] && _pass "SSH_AUTH_SOCK is exported to child processes when none was set" \
+  || _fail "SSH_AUTH_SOCK is exported to child processes when none was set" "${got:-unset}"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
+[ "$got" = "$OP_DIR/agent.sock" ] && _pass "a local shell replaces a herdr SSH_AUTH_SOCK with the 1Password agent" \
+  || _fail "a local shell replaces a herdr SSH_AUTH_SOCK with the 1Password agent" "${got:-unset}"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK" SSH_CONNECTION="10.0.0.1 50000 10.0.0.2 22")
+[ "$got" = "$HERDR_SOCK" ] && _pass "an SSH login keeps its forwarded SSH_AUTH_SOCK" \
+  || _fail "an SSH login keeps its forwarded SSH_AUTH_SOCK" "${got:-unset}"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
