@@ -167,5 +167,20 @@ for rc in 0 6; do
   no_secret "K $rc"
 done
 
+echo "L. env has two URL lines"
+write_env 'http://h:8123' 'https://r.example'
+printf "HOMEASSISTANT_URL='http://h:8123'\nHOMEASSISTANT_URL='http://other:8123'\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
+MOCK_CURL_RC=0 run
+check "probes the first URL only" "$PROBE http://h:8123/|unset|unset" "$(cat "$T/curl.log")"
+no_secret "L"
+
+echo "M. env has an empty URL"
+write_env 'http://h:8123' 'https://r.example'
+printf "HOMEASSISTANT_URL=''\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
+MOCK_CURL_RC=6 run
+check "uses env" "$ENVF" "$(third)"
+check "curl never ran" "" "$(cat "$T/curl.log")"
+no_secret "M"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
