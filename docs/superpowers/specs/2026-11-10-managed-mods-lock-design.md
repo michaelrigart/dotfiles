@@ -88,6 +88,10 @@ file:
    - neither the file nor any directory from its own up to `/` is owned by anyone but root or
      writable by group or others. The group itself is not checked: fenrir's hand-installed
      file and its directory are `root:admin` without group write, which is safe.
+   - neither the file nor any of those directories carries an ACL entry that allows anything.
+     A macOS ACL can grant write, delete or `add_file`/`delete_child` to a user whatever the
+     mode bits say. Deny-only entries are harmless and pass. None of the real path carries an
+     ACL today (checked on fenrir, 2026-11-10).
 
    For a correct target, report "unchanged" and exit 0 without sudo. The docs require the
    file and every directory above it to be writable only by an administrator. Otherwise a
@@ -99,14 +103,14 @@ file:
      roll out a future change to the policy.
    - Nothing else writes that file on these Macs, so an incorrect target means a stale policy,
      a hand edit or tampering. Each of those should be seen before it is replaced.
-   - An unsafe directory above the target (not owned by root, or writable by group or others)
-     is refused even with `--replace`. Fixing system directories is out of scope, and the
+   - An unsafe directory above the target (not owned by root, writable by group or others, or
+     carrying an allow ACL entry) is refused even with `--replace`. Fixing system directories is out of scope, and the
      message names the directory.
 4. **Install atomically, owned by root.**
    - Create the directory if missing: mode 0755, owner root.
    - Copy the source to a hidden temporary file in the same directory.
    - Check that staged copy before publishing it: it must parse, be byte-identical to the
-     source, be owned by root and have mode 0644. If any check fails, delete the temporary
+     source, be owned by root, have mode 0644 and carry no allow ACL entry. If any check fails, delete the temporary
      file, leave the target exactly as it was, and exit non-zero.
    - Only then rename the staged copy over the target, so Claude Code never reads a
      half-written or wrong file.
@@ -159,11 +163,17 @@ case per behaviour. Each case names the bug it catches:
 6. A broken source (invalid JSON, or valid JSON in the wrong shape) makes the run exit
    non-zero and writes nothing. Catches the one failure that would stop Claude Code from
    starting.
-7. An existing file with the right bytes but a group- or world-writable mode, and separately
-   one inside a group- or world-writable directory, is not reported "unchanged". Without
-   `--replace` the run exits non-zero and names the failed check. With `--replace`, the
-   file's mode is fixed, while the writable directory is still refused. Catches a byte-only
-   check that would bless a policy any user could rewrite.
+7. An existing file with the right bytes is not reported "unchanged" in any of four cases:
+   - the file has a group- or world-writable mode;
+   - the file carries an allow ACL entry, such as `group:everyone allow write`;
+   - its directory is group- or world-writable;
+   - its directory carries an allow ACL entry, such as `allow add_file,delete_child`.
+
+   The sandbox lets the suite set these ACLs on scratch files (checked 2026-11-10). Without
+   `--replace`, each run exits non-zero and names the failed check. With `--replace`, the
+   two file cases come back correct, and the two directory cases are still refused. A
+   deny-only ACL on the file passes. Catches a check that would bless a policy another user
+   could rewrite.
 8. With `--replace` over an existing file, a staging step forced to produce a truncated copy
    makes the run exit non-zero. The existing target must stay byte-identical, and no temporary
    file may remain. Catches the loss of atomic installation: an in-place copy that dies midway
@@ -210,8 +220,9 @@ following the repo's suite convention.
 - The main `managed-settings.json` file rather than a `managed-settings.d/` drop-in. fenrir
   already has the main file, and no MDM writes these Macs.
 - Refuse a different target unless `--replace` is given, rather than always overwriting it.
-- Judge ownership by owner (root) and write bits, not by group, so fenrir's `root:admin`
-  file passes. An unsafe directory above the target is reported and never fixed.
+- Judge safety by the owner (root), the write bits and allow ACL entries, not by group, so
+  fenrir's `root:admin` file passes. Any allow ACL entry counts as unsafe, without parsing which
+  rights it grants. An unsafe directory above the target is reported and never fixed.
 - Install via a temporary file and a rename, rather than writing the target in place.
 - Validate with `/usr/bin/jq` (part of macOS), so a fresh Mac needs no Homebrew `jq` first.
 - Check the refusal by hand once, rather than with a live suite.
