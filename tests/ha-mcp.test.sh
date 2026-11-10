@@ -11,8 +11,10 @@ set -uo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCHER="$SRC/dot_local/bin/executable_ha-mcp"
 TPL="$SRC/dot_config/private_ha-mcp/private_env.tmpl"
+TPL_REMOTE="$SRC/dot_config/private_ha-mcp/private_env-remote.tmpl"
 [ -f "$LAUNCHER" ] || { echo "missing launcher: $LAUNCHER" >&2; exit 2; }
 [ -f "$TPL" ] || { echo "missing template: $TPL" >&2; exit 2; }
+[ -f "$TPL_REMOTE" ] || { echo "missing template: $TPL_REMOTE" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/ha-mcp.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
@@ -78,6 +80,9 @@ echo "E. template"
 EXPECTED='HOMEASSISTANT_URL={{ onepasswordRead "op://Private/Home Assistant MCP/hostname" | squote }}
 HOMEASSISTANT_TOKEN={{ onepasswordRead "op://Private/Home Assistant MCP/credential" | squote }}'
 check "references exactly the two 1Password fields" "$EXPECTED" "$(cat "$TPL")"
+EXPECTED_REMOTE='HOMEASSISTANT_URL={{ onepasswordRead "op://Private/Home Assistant MCP/remote_url" | squote }}
+HOMEASSISTANT_TOKEN={{ onepasswordRead "op://Private/Home Assistant MCP/credential" | squote }}'
+check "remote template references the remote_url and credential fields" "$EXPECTED_REMOTE" "$(cat "$TPL_REMOTE")"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

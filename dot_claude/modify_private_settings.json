@@ -394,6 +394,7 @@ printf '%s' "$input" | jq \
             { "path": "~/.aws/credentials",                    "mode": "deny" },
             { "path": "~/.config/op/config",                   "mode": "deny" },
             { "path": "~/.config/ha-mcp/env",                  "mode": "deny" },
+            { "path": "~/.config/ha-mcp/env-remote",           "mode": "deny" },
             { "path": "~/.config/unifi-network/env",           "mode": "deny" }
           ]
         },
