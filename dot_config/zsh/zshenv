@@ -45,6 +45,13 @@ else
   export EDITOR='nvim'
 fi
 
+# Local shells sign and authenticate through the 1Password SSH agent. herdr points every pane's
+# SSH_AUTH_SOCK at a proxy that holds no keys after a server restart, which breaks git's SSH
+# signing. An SSH login keeps its forwarded agent; a machine without 1Password keeps its own.
+op_agent="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+[[ -z $SSH_CONNECTION && -S $op_agent ]] && export SSH_AUTH_SOCK=$op_agent
+unset op_agent
+
 # Bundler config vars
 export BUNDLE_USER_CACHE="$XDG_CACHE_HOME/bundler/cache"
 export BUNDLE_USER_CONFIG="$XDG_CONFIG_HOME/bundler/config"
