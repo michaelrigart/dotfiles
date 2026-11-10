@@ -92,6 +92,10 @@ file:
      A macOS ACL can grant write, delete or `add_file`/`delete_child` to a user whatever the
      mode bits say. Deny-only entries are harmless and pass. None of the real path carries an
      ACL today (checked on fenrir, 2026-11-10).
+   - nothing named `managed-settings.d` exists beside it, not even a symlink. Claude Code reads
+     `*.json` drop-ins from that directory after the main file, and a later document overrides an
+     earlier one, so a drop-in could turn `allowManagedModsOnly` off while the main file stays
+     correct. Nothing writes drop-ins on these Macs.
 
    For a correct target, report "unchanged" and exit 0 without sudo. The docs require the
    file and every directory above it to be writable only by an administrator. Otherwise a
@@ -106,6 +110,8 @@ file:
    - An unsafe directory above the target (not owned by root, writable by group or others, or
      carrying an allow ACL entry) is refused even with `--replace`. Fixing system directories is out of scope, and the
      message names the directory.
+   - A `managed-settings.d` beside the target is refused even with `--replace`; the message names
+     it. Removing it, or adopting drop-ins, is Michael's decision.
 4. **Install atomically, owned by root.**
    - Create the directory if missing: mode 0755, owner root.
    - Copy the source to a hidden temporary file in the same directory.
@@ -180,6 +186,10 @@ case per behaviour. Each case names the bug it catches:
    would leave truncated JSON and block Claude Code from starting.
 9. A configure.sh check asserts that configure.sh calls the installer without `--replace`.
    Catches a provisioning path that silently drops the lock.
+10. A `managed-settings.d` beside a correct target (an empty directory, one holding a drop-in that
+    sets `allowManagedModsOnly` to `false`, or a dangling symlink) makes the run exit non-zero
+    with and without `--replace`, name it, and leave the target untouched. Catches an installer
+    that reports "unchanged" while a drop-in turns the lock off.
 
 The suite must fail loudly, exiting 2, when the installer or the policy file is missing,
 following the repo's suite convention.
@@ -214,6 +224,11 @@ following the repo's suite convention.
 - **A broken file blocks startup.** A hand edit of the installed file that breaks its JSON stops
   Claude Code from starting until it is fixed or removed. The installer's validation covers
   only its own writes.
+
+## Amendments after sign-off
+
+- 2026-11-10, Michael's call after the final branch review: refuse a `managed-settings.d` beside
+  the target (§2 step 2 and 3, test 10), rather than only listing it as a known limit.
 
 ## Calls made while writing, not by Michael
 
