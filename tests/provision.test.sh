@@ -67,7 +67,7 @@ cp "$T/brew/bin/brew" "$T/bin/brew"
 printf '#!/usr/bin/env bash\necho "fdesetup $*" >> "$CALLS"\necho "FileVault is ${FV:-Off}."\n' > "$T/bin/fdesetup"
 printf '#!/usr/bin/env bash\necho "pmset $*" >> "$CALLS"\nexit 0\n' > "$T/bin/pmset"
 printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/csrutil"
-for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall osascript tee; do
+for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall osascript tee launchctl; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
 done
 # op also logs the app-integration switch it was started with (see section B).
@@ -294,6 +294,19 @@ has "Claude Code managed policy NOT installed" "a different existing policy is r
   && _pass "the refused policy file is untouched" || _fail "the refused policy file is untouched"
 has "Configuring keyboard settings" "a refusal does not stop configure.sh"
 hasnt "/Library/Application Support/ClaudeCode" "the refused run stays out of /Library"
+
+echo "L. configure.sh with and without LaunchAgents plists"
+# zsh's nomatch turns an empty be.netronix.*.plist glob into a fatal error under set -e.
+mkdir -p "$T/home/Library/LaunchAgents"; rm -f "$T/home/Library/LaunchAgents"/be.netronix.*.plist
+cfg fenrir fenrir fenrir fenrir
+has   "macOS configuration complete" "no LaunchAgents plists: configure.sh still completes"
+hasnt "no matches found" "and the empty glob is not an error"
+: > "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; : > "$CALLS"
+cfg fenrir fenrir fenrir fenrir
+has    "macOS configuration complete" "a plist present: configure.sh completes"
+called "launchctl bootstrap gui/" "and the plist is bootstrapped through the stubbed launchctl"
+has    "loaded be.netronix.probe" "and reported loaded"
+rm -f "$T/home/Library/LaunchAgents/be.netronix.probe.plist"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
