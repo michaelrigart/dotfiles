@@ -1,6 +1,6 @@
 # Home Assistant MCP Away From Home Implementation Plan
 
-**Status:** In progress (branch `feat/ha-mcp-remote`; the dotfiles have no MR)
+**Status:** Implemented on `feat/ha-mcp-remote`; executed once, do not run again.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

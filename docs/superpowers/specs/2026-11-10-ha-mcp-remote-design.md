@@ -1,6 +1,6 @@
 # Home Assistant MCP server away from home
 
-**Status:** In progress (branch `feat/ha-mcp-remote`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/ha-mcp-remote`; the dotfiles have no MR)
 **Date:** 2026-11-10
 **Branch:** `feat/ha-mcp-remote`
 **Amends:** [`2026-10-23-ha-mcp-design.md`](2026-10-23-ha-mcp-design.md) §1 to §3
