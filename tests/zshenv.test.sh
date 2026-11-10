@@ -17,6 +17,8 @@ ZSHENV="$SRC/dot_config/zsh/zshenv"
 [ -f "$ZSHENV" ] || { echo "missing script under test: $ZSHENV" >&2; exit 2; }
 [ -x /bin/zsh ] || { echo "no /bin/zsh" >&2; exit 2; }
 [ -x /opt/homebrew/bin/brew ] || { echo "Homebrew is not at /opt/homebrew; this suite needs it" >&2; exit 2; }
+target=$(find /var/run -maxdepth 1 -type s 2>/dev/null | head -1)
+[ -n "$target" ] || { echo "INCONCLUSIVE: no system unix socket under /var/run to symlink" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -90,12 +92,19 @@ got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
 [ "$got" = "$HERDR_SOCK" ] && _pass "without a 1Password socket, a preset SSH_AUTH_SOCK is kept" \
   || _fail "without a 1Password socket, a preset SSH_AUTH_SOCK is kept" "${got:-unset}"
 
+mkdir -p "$OP_DIR"
+: > "$OP_DIR/agent.sock"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
+[ "$got" = "$HERDR_SOCK" ] && _pass "a non-socket file at the 1Password path is ignored" \
+  || _fail "a non-socket file at the 1Password path is ignored" "${got:-unset}"
+
 # The sandbox forbids bind() on unix sockets, so the fake agent is a symlink to a system
 # socket; -S follows it, as it does for the real check.
-target=$(find /var/run -maxdepth 1 -type s 2>/dev/null | head -1)
-[ -n "$target" ] || { echo "INCONCLUSIVE: no system unix socket under /var/run to symlink" >&2; exit 2; }
-mkdir -p "$OP_DIR"
+rm "$OP_DIR/agent.sock"
 ln -s "$target" "$OP_DIR/agent.sock"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK')
+[ "$got" = "$OP_DIR/agent.sock" ] && _pass "SSH_AUTH_SOCK is exported to child processes when none was set" \
+  || _fail "SSH_AUTH_SOCK is exported to child processes when none was set" "${got:-unset}"
 got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
 [ "$got" = "$OP_DIR/agent.sock" ] && _pass "a local shell replaces a herdr SSH_AUTH_SOCK with the 1Password agent" \
   || _fail "a local shell replaces a herdr SSH_AUTH_SOCK with the 1Password agent" "${got:-unset}"
