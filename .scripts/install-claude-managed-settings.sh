@@ -1,14 +1,16 @@
-#!/bin/bash
+#!/bin/bash -p
 # Installs the Claude Code managed mods lock (claude-managed-settings.json, beside this
 # script) as /Library/Application Support/ClaudeCode/managed-settings.json.
 #   install-claude-managed-settings.sh [--replace]
 # A correct target is left alone, an incorrect one is refused unless --replace is given,
-# and an unsafe directory above it is never fixed. Writes use sudo.
+# an unsafe directory above it is never fixed, and a managed-settings.d beside it is always
+# refused. Writes use sudo.
 # Tests: CLAUDE_MANAGED_SETTINGS_TEST_ROOT=<absolute directory> redirects the target to
 # <root>/ClaudeCode/managed-settings.json, expects the invoking user as owner, stops the
 # directory walk at <root> and uses no sudo; CLAUDE_MANAGED_SETTINGS_TEST_STAGE=truncate
 # (test mode only) cuts the staged copy short before it is checked.
-# Runs under macOS's bash 3.2, and calls every tool by absolute path so PATH cannot fake a check.
+# Runs under macOS's bash 3.2 with -p (no BASH_ENV, no imported functions), and calls every tool
+# by absolute path so PATH cannot fake a check; jq runs with an empty HOME so ~/.jq cannot either.
 set -u
 
 REPLACE=0
@@ -30,6 +32,7 @@ if [ "${CLAUDE_MANAGED_SETTINGS_TEST_ROOT+set}" = set ]; then
   case "$ROOT" in /*) ;; *) echo "test root must be an absolute directory: $ROOT" >&2; exit 2 ;; esac
   while [ "$ROOT" != / ] && [ "${ROOT%/}" != "$ROOT" ]; do ROOT=${ROOT%/}; done
   [ -d "$ROOT" ] || { echo "test root is not a directory: $ROOT" >&2; exit 2; }
+  echo "test mode: $ROOT" >&2
   DIR="$ROOT/ClaudeCode"
   EXPECT_UID=$(/usr/bin/id -u)
 else
@@ -55,7 +58,7 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 valid_policy() {
-  /usr/bin/jq -e -s 'length == 1 and (.[0] | type == "object") and (.[0].pluginConfigs["cc-plugin-sec-default@builtin"].options.allowManagedModsOnly == true)' "$1" >/dev/null 2>&1
+  HOME=/var/empty /usr/bin/jq -e -s 'length == 1 and (.[0] | type == "object") and (.[0].pluginConfigs["cc-plugin-sec-default@builtin"].options.allowManagedModsOnly == true)' "$1" >/dev/null 2>&1
 }
 
 # True when `ls -lde` lists an ACL entry that allows anything. The first line is the file
@@ -71,16 +74,26 @@ has_allow_acl() {
   return 1
 }
 
+# The one owner, write-mode and ACL rule for every path this script trusts. Sets PERMS (one
+# reason per line, owner first) and PERM_MODE (empty when stat failed); returns 1 on any reason.
+check_perms() {
+  local st uid
+  PERMS=""; PERM_MODE=""
+  st=$(/usr/bin/stat -f '%u %Lp' "$1") || { PERMS="unreadable"; return 1; }
+  uid=${st% *}; PERM_MODE=${st#* }
+  [ "$uid" = "$EXPECT_UID" ] || PERMS="owner uid $uid, expected $EXPECT_UID"
+  if [ $(( 8#$PERM_MODE & 8#022 )) -ne 0 ]; then PERMS="$PERMS${PERMS:+
+}writable by group or others"; fi
+  if has_allow_acl "$1"; then PERMS="$PERMS${PERMS:+
+}allow ACL entry"; fi
+  [ -z "$PERMS" ]
+}
+
 # Sets DIR_REASON and returns 1 when $1 is not a safe directory.
 check_dir() {
-  local d=$1 st uid mode
-  if [ -L "$d" ]; then DIR_REASON="symbolic link"; return 1; fi
-  if [ ! -d "$d" ]; then DIR_REASON="not a directory"; return 1; fi
-  st=$(/usr/bin/stat -f '%u %Lp' "$d") || { DIR_REASON="unreadable"; return 1; }
-  uid=${st% *}; mode=${st#* }
-  if [ "$uid" != "$EXPECT_UID" ]; then DIR_REASON="owner uid $uid, expected $EXPECT_UID"; return 1; fi
-  if [ $(( 8#$mode & 8#022 )) -ne 0 ]; then DIR_REASON="writable by group or others"; return 1; fi
-  if has_allow_acl "$d"; then DIR_REASON="allow ACL entry"; return 1; fi
+  if [ -L "$1" ]; then DIR_REASON="symbolic link"; return 1; fi
+  if [ ! -d "$1" ]; then DIR_REASON="not a directory"; return 1; fi
+  check_perms "$1" || { DIR_REASON=${PERMS%%$'\n'*}; return 1; }
   return 0
 }
 
@@ -96,20 +109,20 @@ walk_dirs() {
   done
 }
 
+# Claude Code merges managed-settings.d/*.json over managed-settings.json, so anything by that
+# name beside the target (a directory, a file, a symlink, dangling or not) could undo the lock.
+has_dropins() { [ -e "$DIR/managed-settings.d" ] || [ -L "$DIR/managed-settings.d" ]; }
+
 # Sets REASONS (one per line) and DIFFERS for the installed target. Returns 1 when it is
 # not a regular file, which no flag overrides.
 check_target() {
-  local st uid mode
   REASONS=""; DIFFERS=0
   if [ -L "$TARGET" ] || [ ! -f "$TARGET" ]; then REASONS="not a regular file"; return 1; fi
-  st=$(/usr/bin/stat -f '%u %Lp' "$TARGET") || { REASONS="unreadable"; return 0; }
-  uid=${st% *}; mode=${st#* }
   add_reason() { REASONS="$REASONS${REASONS:+
 }$1"; }
-  [ "$uid" = "$EXPECT_UID" ] || add_reason "owner uid $uid, expected $EXPECT_UID"
-  [ $(( 8#$mode & 8#022 )) -eq 0 ] || add_reason "writable by group or others"
-  [ $(( 8#$mode & 8#444 )) -eq $(( 8#444 )) ] || add_reason "not readable by everyone"
-  if has_allow_acl "$TARGET"; then add_reason "allow ACL entry"; fi
+  check_perms "$TARGET" || add_reason "$PERMS"
+  [ -n "$PERM_MODE" ] || return 0
+  [ $(( 8#$PERM_MODE & 8#444 )) -eq $(( 8#444 )) ] || add_reason "not readable by everyone"
   if [ ! -r "$TARGET" ]; then
     add_reason "unreadable"
   elif ! /usr/bin/cmp -s "$TARGET" "$SOURCE"; then
@@ -120,12 +133,8 @@ check_target() {
 
 # Sets STAGE_REASON and returns 1 when the staged copy is not exactly the source.
 check_staged() {
-  local st uid mode
-  st=$(/usr/bin/stat -f '%u %Lp' "$1") || { STAGE_REASON="unreadable"; return 1; }
-  uid=${st% *}; mode=${st#* }
-  if [ "$uid" != "$EXPECT_UID" ]; then STAGE_REASON="owner uid $uid, expected $EXPECT_UID"; return 1; fi
-  if [ "$mode" != 644 ]; then STAGE_REASON="mode $mode, expected 644"; return 1; fi
-  if has_allow_acl "$1"; then STAGE_REASON="allow ACL entry"; return 1; fi
+  check_perms "$1" || { STAGE_REASON=${PERMS%%$'\n'*}; return 1; }
+  if [ "$PERM_MODE" != 644 ]; then STAGE_REASON="mode $PERM_MODE, expected 644"; return 1; fi
   if ! valid_policy "$1" || ! /usr/bin/cmp -s "$1" "$SOURCE"; then
     STAGE_REASON="content differs from $SOURCE"; return 1
   fi
@@ -138,6 +147,9 @@ fi
 
 if ! walk_dirs; then
   echo "unsafe directory: $BAD_DIR: $DIR_REASON"; exit 1
+fi
+if has_dropins; then
+  echo "refused: $DIR/managed-settings.d: drop-in directory present"; exit 1
 fi
 
 if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
@@ -181,6 +193,9 @@ STAGED=""
 
 if ! walk_dirs; then
   echo "verify failed: $TARGET: unsafe directory $BAD_DIR: $DIR_REASON"; exit 1
+fi
+if has_dropins; then
+  echo "verify failed: $DIR/managed-settings.d: drop-in directory present"; exit 1
 fi
 check_target
 if [ -n "$REASONS" ]; then

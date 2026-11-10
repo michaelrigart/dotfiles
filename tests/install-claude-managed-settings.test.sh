@@ -205,7 +205,10 @@ for bad in --repalce --force replace; do
   has "unknown option:" "argument $bad is named unknown"
   [ ! -e "$R/ClaudeCode" ] && _pass "argument $bad wrote nothing" || _fail "argument $bad created the directory"
 done
-OUT=$(env -u CLAUDE_MANAGED_SETTINGS_TEST_ROOT CLAUDE_MANAGED_SETTINGS_TEST_STAGE=truncate "$INST" 2>&1); RC=$?
+# A real-mode run: on a copy beside a broken source, so a regressed guard stops at
+# "invalid policy source" before any walk or write, never at a real install.
+printf '%s\n' '{"pluginConfigs":' > "$BS"
+OUT=$(env -u CLAUDE_MANAGED_SETTINGS_TEST_ROOT CLAUDE_MANAGED_SETTINGS_TEST_STAGE=truncate "$BI" 2>&1); RC=$?
 rc_is 2 "test stage outside test mode exits 2"
 has "test variable set outside test mode" "test stage outside test mode is named"
 OUT=$(CLAUDE_MANAGED_SETTINGS_TEST_ROOT=rel "$INST" 2>&1); RC=$?
@@ -244,6 +247,68 @@ CFG="$SRC/.scripts/configure.sh"
 INVOKES=$(grep 'install-claude-managed-settings.sh' "$CFG" | grep -Ev '^[[:space:]]*(#|log_)' || true)
 ok "configure.sh invokes the installer" test -n "$INVOKES"
 case "$INVOKES" in *--replace*) _fail "no installer invocation in configure.sh passes --replace";; *) _pass "no installer invocation in configure.sh passes --replace";; esac
+
+echo "L. the owner rule (one helper behind the directory walk, the target and the staged copy)"
+# /usr/share is root-owned and SIP-protected: the invoking user is not its owner.
+OUT=$(CLAUDE_MANAGED_SETTINGS_TEST_ROOT=/usr/share "$INST" 2>&1); RC=$?
+rc_is 1 "a root-owned test root exits 1"
+has "unsafe directory: /usr/share: owner uid 0, expected $(id -u)" "a root-owned directory is refused by owner"
+[ ! -e /usr/share/ClaudeCode ] && _pass "a root-owned test root wrote nothing" || _fail "a root-owned test root got a ClaudeCode directory"
+# No test can run the normal branch (it means /Library and sudo), so pin it statically.
+NORMAL=$(sed -n '/^else$/,/^fi$/p' "$INST")
+case "$NORMAL" in
+  *'EXPECT_UID=0'*'/Library/Application Support/ClaudeCode'*|*'/Library/Application Support/ClaudeCode'*'EXPECT_UID=0'*) _pass "the normal run expects root as owner";;
+  *) _fail "the normal run expects root as owner";;
+esac
+
+echo "M. test mode announces itself"
+fresh; run
+[ "${OUT%%$'\n'*}" = "test mode: $R" ] && _pass "the first line says test mode and the root" || _fail "the first line says test mode and the root"
+
+echo "N. the environment cannot steer the run"
+mkdir -p "$T/decoy"; printf '%s\n' "$EVIL" > "$T/decoy/claude-managed-settings.json"
+printf 'pwd() { echo "%s"; }\n' "$T/decoy" > "$T/bashenv"
+fresh
+OUT=$(BASH_ENV="$T/bashenv" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$R" "$INST" 2>&1); RC=$?
+rc_is 0 "BASH_ENV defining pwd: install still succeeds"
+ok "BASH_ENV cannot change the installed policy" is_policy "$TGT"
+fresh
+OUT=$(env "BASH_FUNC_pwd%%=() { echo \"$T/decoy\"; }" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$R" "$INST" 2>&1); RC=$?
+rc_is 0 "an exported pwd function: install still succeeds"
+ok "an exported pwd function cannot change the installed policy" is_policy "$TGT"
+mkdir -p "$T/jqhome"; printf 'def length: 1;\n' > "$T/jqhome/.jq"
+printf '%s%s\n' "$POLICY" "$POLICY" > "$BS"
+fresh
+OUT=$(HOME="$T/jqhome" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$R" "$BI" 2>&1); RC=$?
+rc_is 1 "a planted ~/.jq: the doubled policy still exits 1"
+has "invalid policy source:" "a planted ~/.jq cannot make a broken source valid"
+
+echo "O. a managed-settings.d beside the target is refused"
+# Claude Code merges managed-settings.d/*.json after managed-settings.json, so a drop-in
+# could switch the lock off while the target is correct.
+OFF='{"pluginConfigs":{"cc-plugin-sec-default@builtin":{"options":{"allowManagedModsOnly":false}}}}'
+for variant in empty file dangling; do
+  installed
+  case $variant in
+    empty) mkdir -m 755 "$R/ClaudeCode/managed-settings.d"; d="an empty managed-settings.d";;
+    file) mkdir -m 755 "$R/ClaudeCode/managed-settings.d"; printf '%s\n' "$OFF" > "$R/ClaudeCode/managed-settings.d/zz.json"; d="a managed-settings.d with an override";;
+    dangling) ln -s nowhere "$R/ClaudeCode/managed-settings.d"; d="a dangling managed-settings.d symlink";;
+  esac
+  ino=$(stat -f %i "$TGT")
+  for flag in "" --replace; do
+    run $flag
+    rc_is 1 "$d${flag:+ $flag} exits 1"
+    has "refused: $R/ClaudeCode/managed-settings.d: drop-in directory present" "$d${flag:+ $flag} is named"
+    hasnt "unchanged" "$d${flag:+ $flag} is not reported unchanged"
+    hasnt "installed:" "$d${flag:+ $flag} is not reported installed"
+    hasnt "--replace to" "$d${flag:+ $flag} offers no --replace hint"
+    [ "$(stat -f %i "$TGT")" = "$ino" ] && is_policy "$TGT" && _pass "$d${flag:+ $flag} left the target alone" || _fail "$d${flag:+ $flag} touched the target"
+  done
+done
+installed
+run
+rc_is 0 "no drop-in: the correct target exits 0"
+has "unchanged: $TGT" "no drop-in: the correct target is still unchanged"
 
 echo
 echo "RESULT: $pass passed, $fail failed"
