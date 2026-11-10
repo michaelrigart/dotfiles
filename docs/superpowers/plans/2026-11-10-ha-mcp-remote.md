@@ -19,7 +19,7 @@
 - No `HOMEASSISTANT_URL` or `HOMEASSISTANT_TOKEN` in any child of the launcher (`sed`, `curl`, `mise`).
 - The launcher stays POSIX `sh` (`#!/bin/sh`, `sh -n` clean) and calls `sed` and `curl` by name.
 - Exact strings from the spec: the probe is `curl -k -s -o /dev/null --connect-timeout 1 --max-time 2 "<home url>/"`; the stderr line is `ha-mcp: home address unreachable; using env-remote`.
-- Never run `chezmoi` (not even `cat` or `managed`: rendering calls 1Password), `op`, or read anything under `~/.config/ha-mcp`. `chezmoi apply` is Michael's, after merge.
+- Never run `op`, never read anything under `~/.config/ha-mcp`, and never run a chezmoi command that renders templates (`apply`, `cat`, `diff`, `status`, `execute-template`): rendering calls 1Password and prints the token. The suites' own `chezmoi --source <checkout> managed` (`tests/claude-settings.test.sh` section X) lists target paths without rendering contents and stays allowed. `chezmoi apply` is Michael's, after merge.
 - Suites are executed directly (`./tests/<name>.test.sh`), never through an interpreter. Report results as passed/total.
 - Never start a Bash call with `cd`; use absolute paths or `git -C`.
 - Implementers do not commit. They run only their task's suites and report back; the controller commits each task.
@@ -72,7 +72,9 @@
 - Produces: `HAMCP_ENV_FILE` set to one of those two paths; nothing else changes in the exec line.
 
 - [ ] **Step 1: Write the failing tests.**
-  - A stub `curl` in `$T/bin` (beside the `mise` stub) appends one line per call to `$T/curl.log`: `"$*|${HOMEASSISTANT_URL-unset}|${HOMEASSISTANT_TOKEN-unset}"`, then exits `${MOCK_CURL_RC:-0}`. `run()` empties `$T/curl.log` as it empties `$LOG`. `ENVR="$T/home/.config/ha-mcp/env-remote"`.
+  - A stub `curl` in `$T/bin` (beside the `mise` stub) appends one line per call to `$T/curl.log`: `"$*|${HOMEASSISTANT_URL-unset}|${HOMEASSISTANT_TOKEN-unset}"`, then exits `${MOCK_CURL_RC:-0}`.
+  - A `sed` wrapper in `$T/bin` appends one line per call to `$T/sed.log`, `<url>|<token>`, where each field is `set` or `unset` for `HOMEASSISTANT_URL` and `HOMEASSISTANT_TOKEN` (never the value), then `exec /usr/bin/sed "$@"`.
+  - `run()` empties `$T/curl.log` and `$T/sed.log` as it empties `$LOG`. `ENVR="$T/home/.config/ha-mcp/env-remote"`.
   - Case B (no `env-remote`): add `check "curl never ran" "" "$(cat "$T/curl.log")"`.
   - New cases, each writing `env` as `HOMEASSISTANT_URL='http://h:8123'` plus the sentinel token, and `env-remote` as `HOMEASSISTANT_URL='https://r.example'` plus the sentinel, unless stated:
     - **F. `env-remote` unreadable** (`chmod 000`; restore after): mise log's third field is `$T/home/.config/ha-mcp/env`; curl log empty.
@@ -80,7 +82,7 @@
     - **H. home does not answer**, once with `MOCK_CURL_RC=6` and once with `28`: mise log is exactly `$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|$T/home/.config/ha-mcp/env-remote|unset|unset|1`; stderr is exactly `ha-mcp: home address unreachable; using env-remote`; exit 0.
     - **I. trailing slash:** `env` URL `'http://h:8123/'` → the curl log's URL argument is `http://h:8123/`.
     - **J. no URL line:** `env` holds only the token line → third field is `env`; curl log empty.
-    - **K. inherited variables:** run with `HOMEASSISTANT_URL=http://stale HOMEASSISTANT_TOKEN=SECRET-TOKEN-123` in the caller's environment, with `MOCK_CURL_RC=0` and with `6`: the curl log line ends `|unset|unset`, and the mise log's fourth and fifth fields are `unset`.
+    - **K. inherited variables:** run with `HOMEASSISTANT_URL=http://stale HOMEASSISTANT_TOKEN=SECRET-TOKEN-123` in the caller's environment, with `MOCK_CURL_RC=0` and with `6`: the sed log is non-empty and every line is `unset|unset`; the curl log line ends `|unset|unset`; the mise log's fourth and fifth fields are `unset`.
     - In F to K: stdout and stderr never contain the sentinel; the curl log never contains the sentinel or `r.example`.
 - [ ] **Step 2: Run them to see them fail.** `./tests/ha-mcp.test.sh`: H, G (curl log), I and K fail.
 - [ ] **Step 3: Implement in `dot_local/bin/executable_ha-mcp`.**
