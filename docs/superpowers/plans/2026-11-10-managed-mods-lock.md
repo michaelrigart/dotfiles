@@ -31,7 +31,7 @@
 2. A symlinked directory on the walk (`ClaudeCode` → elsewhere): refused as an unsafe directory, with and without `--replace` (Task 1, case I2).
 3. A broken source run with `--replace` over an existing policy: the existing file stays byte-identical (Task 1, case F, last item).
 4. A mistyped option (`--repalce`) or the failure-injection variable set outside test mode: exit 2 before anything is read or written (Task 1, case I4).
-5. An existing target its user cannot read: reported "not readable by everyone", never "unchanged", replaced cleanly with `--replace` (Task 1, case I5).
+5. An existing target its user cannot read, by mode or by a deny ACL entry: never "unchanged", whatever its bytes, and replaced cleanly with `--replace` (Task 1, cases I5 and G).
 
 ## Calls made in this plan, not in the spec
 
@@ -65,7 +65,7 @@
   - `staged copy failed: <reason>; target left as it was` (exit 1)
   - `verify failed: <target>: <reason>` (exit 1)
   - `unknown option: <arg>` and `test variable set outside test mode` (exit 2)
-- Reasons (exact): `not a regular file`, `symbolic link`, `not a directory`, `owner uid <actual>, expected <expected>`, `writable by group or others`, `not readable by everyone`, `allow ACL entry`, `content differs from <source>` (followed by `diff -u <target> <source>` output), `mode <octal>, expected 644` (staged copy only).
+- Reasons (exact): `not a regular file`, `symbolic link`, `not a directory`, `owner uid <actual>, expected <expected>`, `writable by group or others`, `not readable by everyone`, `allow ACL entry`, `unreadable`, `content differs from <source>` (followed by `diff -u <target> <source>` output), `mode <octal>, expected 644` (staged copy only).
 
 - [ ] **Step 1: Write the failing suite.** `#!/usr/bin/env bash`, `set -u`, the `_pass`/`_fail` (`  PASS: …`/`  FAIL: …`) and `RESULT: N passed, M failed` idiom of `tests/provision.test.sh`; exit 2 with `missing script under test: <path>` when the installer or the policy file is absent. `T=$(mktemp -d …)`, resolved with `pwd -P`, removed on EXIT (restore write bits first: `chmod -R u+w`). `fresh()` makes a new `R` under `$T` (resolved) and sets `TGT="$R/ClaudeCode/managed-settings.json"`; `run [args]` sets `OUT` (stdout+stderr) and `RC` from `CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$R" "$INST" "$@"`. `nostage` asserts no `$R/ClaudeCode/.managed-settings.json.*` remains. Cases, each naming its bug in a comment:
   - **A. policy bytes** (wrong guard id, top-level key, extra keys): `printf '%s\n' "$POLICY" | cmp -s - "$SRC/.scripts/claude-managed-settings.json"`.
@@ -81,20 +81,21 @@
     - `chmod +a "user:$(id -un) allow add_file,delete_child" "$R/ClaudeCode"`: `unsafe directory: $R/ClaudeCode: allow ACL entry`, with and without `--replace`.
     - `chmod 777 "$R"`: `unsafe directory: $R: writable by group or others` (the walk reaches the test root).
     - deny only, `chmod +a "group:everyone deny delete" "$TGT"`: RC 0, `unchanged`.
+    - a deny entry that blocks reading, `chmod +a "user:$(id -un) deny read" "$TGT"`, with the right bytes and mode 644 (a policy Claude Code cannot read): RC 1, `refused: $TGT: unreadable`, lacks `unchanged` and `content differs`. Repeat with different bytes: still RC 1, never `unchanged`. `--replace` → RC 0; next `run` → `unchanged`.
   - **H. staged copy checked before publish** (in-place copy dying midway): D's state, `CLAUDE_MANAGED_SETTINGS_TEST_STAGE=truncate run --replace` → RC 1, OUT has `staged copy failed:`, the old bytes intact, `nostage`. Same on a `fresh` root without `--replace`: RC 1, no target, `nostage`.
   - **I. Review Focus:**
     1. `mkdir -m 755 "$R/ClaudeCode"`; the policy in `$R/elsewhere.json` (644); `ln -s ../elsewhere.json "$TGT"` → RC 1, `refused: $TGT: not a regular file`; `--replace` → RC 1, `$TGT` still a symlink, `elsewhere.json` bytes unchanged.
     2. `$R/real/managed-settings.json` correct (dir 755, file 644); `ln -s real "$R/ClaudeCode"` → RC 1, `unsafe directory: $R/ClaudeCode: symbolic link`, with and without `--replace`.
     3. Covered by F's last item.
     4. `run --repalce`, `run --force`, `run replace`: RC 2, `unknown option:`, `$R/ClaudeCode` absent. `env -u CLAUDE_MANAGED_SETTINGS_TEST_ROOT CLAUDE_MANAGED_SETTINGS_TEST_STAGE=truncate "$INST"` → RC 2, `test variable set outside test mode`. A relative test root (`CLAUDE_MANAGED_SETTINGS_TEST_ROOT=rel`) → RC 2.
-    5. Installed file `chmod 200`: RC 1, `refused: $TGT: not readable by everyone`, lacks `unchanged`; `--replace` → RC 0, mode 644, bytes equal the policy.
+    5. Installed file `chmod 200`: RC 1, `refused: $TGT: not readable by everyone` and `refused: $TGT: unreadable`, lacks `unchanged` and `content differs`; `--replace` → RC 0, mode 644, bytes equal the policy.
 - [ ] **Step 2: Run it to see it fail.** `./tests/install-claude-managed-settings.test.sh` exits 2 (`missing script under test`).
 - [ ] **Step 3: Create the policy file** with the exact bytes from Global Constraints, mode 644.
 - [ ] **Step 4: Implement the installer**, in this order (spec §2):
   1. Parse arguments (`--replace` only) and the test variables; exit 2 on anything else.
   2. Validate the source: `/usr/bin/jq -e -s 'length == 1 and (.[0] | type == "object") and (.[0].pluginConfigs["cc-plugin-sec-default@builtin"].options.allowManagedModsOnly == true)'`. The same function validates the staged copy.
   3. Walk directories from the target's directory (its parent when the directory is missing) up to `/`, or to the test root inclusive: each must not be a symlink, must be a directory, owned by the expected uid, `mode & 022 == 0`, with no allow ACL entry. Any failure → `unsafe directory:` and exit 1, whatever the flags.
-  4. If the target exists: not a regular file (or a symlink) → `refused: …: not a regular file`, exit 1, whatever the flags. Otherwise check owner, `mode & 022 == 0`, `mode & 0444 == 0444`, no allow ACL entry, and `cmp`-equality with the source (skipped, with no `diff`, when the invoking user cannot read the target: the mode reason already refuses it). All pass → `unchanged:`, exit 0. Else print every failed reason; without `--replace` exit 1.
+  4. If the target exists: not a regular file (or a symlink) → `refused: …: not a regular file`, exit 1, whatever the flags. Otherwise check owner, `mode & 022 == 0`, `mode & 0444 == 0444`, no allow ACL entry, that the invoking user can read it (`[ -r ]`, which honours deny ACL entries; failing is the reason `unreadable`), and `cmp`-equality with the source. The content check and its `diff` run only on a readable target; an unreadable one has already failed. All pass → `unchanged:`, exit 0. Else print every failed reason; without `--replace` exit 1.
   5. Install: create a missing directory (`/bin/mkdir -m 0755`); stage with `/usr/bin/mktemp "<dir>/.managed-settings.json.XXXXXX"`, `/bin/cp` the source into it, `/bin/chmod 0644`; an EXIT trap removes a staged file that was not published. Check the staged copy (valid shape, `cmp`-equal, owner, mode exactly 644, no allow ACL entry); any failure → remove it, `staged copy failed:`, exit 1. Then `/bin/mv -f` it over the target.
   6. Re-run checks 3 and 4 on the result; a failure → `verify failed:`, exit 1. Then `installed:` and the restart line.
   - The writes in step 5 go through one helper that prefixes `/usr/bin/sudo` in a normal run and nothing in test mode.
@@ -117,7 +118,7 @@
 - Produces: `configure.sh` log lines `Installing the Claude Code managed policy...`, `✓ Claude Code managed policy in place`, and on failure `Claude Code managed policy NOT installed — review the output above; re-run .scripts/install-claude-managed-settings.sh, with --replace to overwrite`.
 
 - [ ] **Step 1: Write the failing tests.**
-  - Task 1's suite, **J. configure.sh calls the installer without `--replace`** (a provisioning path that drops the lock): at least one line of `.scripts/configure.sh` contains `install-claude-managed-settings.sh`, and none of those lines contains `--replace`.
+  - Task 1's suite, **J. configure.sh calls the installer without `--replace`** (a provisioning path that drops the lock): the invocation lines of `.scripts/configure.sh` are those containing `install-claude-managed-settings.sh` whose first non-blank text is neither `#` nor `log_` (the failure message names the script and `--replace` on purpose). At least one exists, and none contains `--replace`. The behavioural proof is provision section K below.
   - `tests/provision.test.sh`: setup creates `$T/managed`; `cfg()` passes `CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$T/managed"` in its `env -i` list (containment: without it the real installer reads `/Library` and calls the sudo stub). New section **K. configure.sh installs the Claude Code managed policy**:
     - `rm -rf "$T/managed/ClaudeCode"` (sections G–J have installed there already), `cfg fenrir fenrir fenrir fenrir`: `has "✓ Claude Code managed policy in place"`; `$T/managed/ClaudeCode/managed-settings.json` is `cmp`-equal to `$SRC/.scripts/claude-managed-settings.json`.
     - that file replaced by `{"pluginConfigs":{}}`: `cfg …`: `has "Claude Code managed policy NOT installed"`, the file still holds `{"pluginConfigs":{}}`, and `has "Configuring keyboard settings"` (configure.sh carried on; under this harness it never reaches its last line, because the LaunchAgents glob has no match).
