@@ -47,6 +47,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction.
+  `install-claude-managed-settings.sh` installs `claude-managed-settings.json`, the Claude Code
+  mods lock, into `/Library/Application Support/ClaudeCode/`; `configure.sh` runs it, or run it by
+  hand (`--replace` overwrites a different policy); `chezmoi apply` never does.
   `measure-interventions.py` sits beside them: the transcript metrics for the
   safe-autonomy evaluation. `skill-updates.sh` is non-interactive too and runs weekly in
   the `skill-updates` workflow. Mode `755` — git stores only the exec bit, so a clone

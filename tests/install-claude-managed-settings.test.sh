@@ -239,6 +239,12 @@ OUT=$(cd "$SRC" && CDPATH="$T/cdp" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$R" .scrip
 rc_is 0 "CDPATH decoy with a relative \$0: install still succeeds"
 ok "CDPATH decoy cannot change the installed policy" is_policy "$TGT"
 
+echo "K. configure.sh calls the installer without --replace"
+CFG="$SRC/.scripts/configure.sh"
+INVOKES=$(grep 'install-claude-managed-settings.sh' "$CFG" | grep -Ev '^[[:space:]]*(#|log_)' || true)
+ok "configure.sh invokes the installer" test -n "$INVOKES"
+case "$INVOKES" in *--replace*) _fail "no installer invocation in configure.sh passes --replace";; *) _pass "no installer invocation in configure.sh passes --replace";; esac
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

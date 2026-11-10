@@ -206,6 +206,7 @@ export API_KEY='{{ (onepasswordItemFields "vault" "item").api_key.value }}'
 The [configure.sh](.scripts/configure.sh) script:
 - Checks FileVault and warns when its state doesn't match the machine (it never changes it)
 - Enables the system firewall
+- Installs the Claude Code managed policy that limits mods to the organization's (`allowManagedModsOnly`) via [install-claude-managed-settings.sh](.scripts/install-claude-managed-settings.sh), refusing a different existing policy unless run with `--replace`; to uninstall: `sudo rm "/Library/Application Support/ClaudeCode/managed-settings.json"`
 - Applies secure Finder and system defaults
 
 ---

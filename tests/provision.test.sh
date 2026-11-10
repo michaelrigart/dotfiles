@@ -21,7 +21,7 @@ T=$(cd "$T" && pwd -P)                       # /tmp is a symlink to /private/tmp
 # and the suite would happily run against it.
 [ -n "$T" ] && [ -d "$T" ] || { echo "REFUSING: temp root did not resolve"; exit 2; }
 case "$T" in "$HOME"|"$HOME"/*) echo "REFUSING: temp root is inside the real HOME"; exit 2;; esac
-mkdir -p "$T"/{bin,home,src/.chezmoidata,src/.scripts,brew/bin}
+mkdir -p "$T"/{bin,home,src/.chezmoidata,src/.scripts,brew/bin,managed}
 CALLS="$T/calls"; IDDB="$T/identity"; MUTLOG="$T/refused"; SBX_ROOT="$T"
 cp "$SRC/.chezmoidata/machines.toml" "$T/src/.chezmoidata/"
 mkdir -p "$T/src/.git"
@@ -228,7 +228,7 @@ echo "G. configure.sh identity validation (the real script, not a stub)"
 cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
   OUT=$(cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
         FV="${FV:-Off}" \
-        CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
+        CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$T/managed" \
         zsh "$SRC/.scripts/configure.sh" --hostname "$4" 2>&1); RC=$?; }
 cfg fenrir fenrir fenrir fenrir
 has "identity verified" "matching identity passes validation"
@@ -275,6 +275,20 @@ FV=Off
 called "pmset -a autorestart 1" "hercules enables restart-after-power-loss"
 : > "$CALLS"; cfg fenrir fenrir fenrir fenrir
 not_called "pmset -a autorestart" "fenrir does not (it has a battery and a lid)"
+
+echo "K. configure.sh installs the Claude Code managed policy"
+rm -rf "$T/managed/ClaudeCode"; cfg fenrir fenrir fenrir fenrir
+has "✓ Claude Code managed policy in place" "the managed policy is installed"
+cmp -s "$T/managed/ClaudeCode/managed-settings.json" "$SRC/.scripts/claude-managed-settings.json" \
+  && _pass "the installed policy is the repo's policy" || _fail "the installed policy is the repo's policy"
+printf '%s\n' '{"pluginConfigs":{}}' > "$T/managed/ClaudeCode/managed-settings.json"
+cfg fenrir fenrir fenrir fenrir
+has "Claude Code managed policy NOT installed" "a different existing policy is refused, not replaced"
+[ "$(cat "$T/managed/ClaudeCode/managed-settings.json")" = '{"pluginConfigs":{}}' ] \
+  && _pass "the refused policy file is untouched" || _fail "the refused policy file is untouched"
+has "Configuring keyboard settings" "a refusal does not stop configure.sh"
+grep -q ClaudeCode "$CALLS" "$MUTLOG" 2>/dev/null \
+  && _fail "no sudo call and nothing outside the scratch root" || _pass "no sudo call and nothing outside the scratch root"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
