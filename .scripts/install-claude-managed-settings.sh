@@ -19,7 +19,8 @@ for arg in "$@"; do
   esac
 done
 
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P) || exit 2
+case $0 in */*) d=${0%/*}; [ -n "$d" ] || d=/ ;; *) d=. ;; esac
+SCRIPT_DIR=$(CDPATH= cd -P -- "$d" && pwd -P) || exit 2
 SOURCE="$SCRIPT_DIR/claude-managed-settings.json"
 
 TEST_MODE=0
