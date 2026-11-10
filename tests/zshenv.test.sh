@@ -83,8 +83,7 @@ got=$(probe '/usr/bin/printenv OP_BIOMETRIC_UNLOCK_ENABLED')
 # Regression: git's SSH commit signing failed with "No private key found" after a herdr
 # restart. herdr points every pane's SSH_AUTH_SOCK at a proxy that holds no keys until a
 # client registers its agent, so a local shell must use the 1Password agent directly; an SSH
-# login keeps its forwarded agent, and a machine without 1Password keeps its own. The socket
-# is bound by relative name because macOS caps socket paths at 104 bytes.
+# login keeps its forwarded agent, and a machine without 1Password keeps its own.
 HERDR_SOCK="$FAKE/.config/herdr/herdr.sock.agent"
 OP_DIR="$FAKE/Library/Group Containers/2BUA8C4S2C.com.1password/t"
 got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
