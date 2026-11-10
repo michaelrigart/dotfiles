@@ -66,11 +66,12 @@ error) and step 2 (export `HAMCP_ENV_FILE`) it chooses which file to export:
    quotes `squote` adds and one trailing slash. The launcher never sources the file and never
    reads the token line. No such line, or an empty value → `env`, without a probe; ha-mcp
    then reports its own configuration error, as today.
-3. Probe the home URL: `curl -k -s -o /dev/null --connect-timeout 1 --max-time 2 "<url>/"`.
+3. Probe the home URL: `curl -q -k -s --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 2 "<url>/"`.
    Any HTTP answer (curl exits 0, whatever the status) means home is reachable → `env`. The
    probe sends no token and discards its output. `-k` because it only asks whether something
    answers: a home certificate curl cannot verify must not send Michael to the remote address
-   while he is home.
+   while he is home. `-q` and `--noproxy '*'` keep a curlrc or an inherited proxy variable
+   from answering in Home Assistant's place, which would choose `env` away from home.
 4. Any other exit (no DNS answer, refused, timed out) → `env-remote`, and one line on stderr:
    `ha-mcp: home address unreachable; using env-remote`. The line names no address; stderr
    goes to the MCP log.
@@ -108,8 +109,9 @@ no `env-remote`, so `curl` must not run there. New cases:
   stderr is exactly the line in §3; the exec line is otherwise unchanged and the
   environment still holds no `HOMEASSISTANT_*` variable.
 - **Probe arguments:** `curl` received the home URL from `env` without its quotes, followed by
-  `/`, plus `-k`, `--connect-timeout 1` and `--max-time 2`; its arguments never contain the
-  token or the remote URL. A home URL with a trailing slash still gives a single `/`.
+  `/`, plus `-q` (first), `-k`, `--noproxy *`, `--connect-timeout 1` and `--max-time 2`; its
+  arguments never contain the token or the remote URL. A home URL with a trailing slash still
+  gives a single `/`.
 - **No URL line in `env`:** exports `env`; `curl` never ran.
 - **Inherited variables:** with `HOMEASSISTANT_URL` and `HOMEASSISTANT_TOKEN` set in the
   caller's environment, neither the `curl` stub nor `mise` sees either variable, both when
@@ -126,7 +128,8 @@ no `env-remote`, so `curl` must not run there. New cases:
 2. Michael runs `chezmoi apply`.
 3. Reconnect ha-mcp in Claude Code (`/mcp`); restart Claude Desktop.
 4. If Little Snitch asks about `curl` reaching the home address, or Python reaching
-   `*.ui.nabu.casa`, Michael allows it.
+   `*.ui.nabu.casa`, Michael allows it, then reconnects ha-mcp once more: while the alert is
+   open the probe times out and the launcher chooses `env-remote`.
 
 ## Acceptance
 
@@ -147,4 +150,5 @@ no `env-remote`, so `curl` must not run there. New cases:
 ## Calls made while writing, not by Michael
 
 - `-k` on the probe, and stripping one trailing slash from the home URL (§3).
+- `-q` and `--noproxy '*'` on the probe (final review).
 - The Little Snitch step in the Migration, and the firewall limit above.

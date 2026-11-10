@@ -2,6 +2,7 @@
 
 **Status:** Implemented (branch `feat/ha-mcp`; the dotfiles have no MR)
 **Date:** 2026-10-23
+**Amended:** 2026-11-10 - the launcher chooses between ~/.config/ha-mcp/env and env-remote by probing the home address: see [2026-11-10-ha-mcp-remote-design.md](2026-11-10-ha-mcp-remote-design.md).
 **Branch:** `feat/ha-mcp`
 
 ## Why

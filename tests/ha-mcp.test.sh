@@ -78,6 +78,7 @@ echo "B. launches uvx on mise's Python"
 printf "HOMEASSISTANT_URL='http://h:8123'\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
 run
 check "exits 0" "0" "$RC"
+check "stderr empty" "" "$ERR"
 check "execs uvx on mise's Python, passing the env file path only" "$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|$T/home/.config/ha-mcp/env|unset|unset|1" "$(cat "$LOG")"
 check "runs from HOME, not the caller's directory" "$T/home" "$(cut -d'|' -f1 "$LOG")"
 check "curl never ran" "" "$(cat "$T/curl.log")"
@@ -112,7 +113,7 @@ no_secret() { # no_secret <label>: the sentinel and the remote address stay out 
   case "$(cat "$T/curl.log")" in *"$SENTINEL"*|*r.example*) _fail "$1: curl never sees the token or remote address" "$(cat "$T/curl.log")" ;; *) _pass "$1: curl never sees the token or remote address" ;; esac
 }
 third() { cut -d'|' -f3 "$LOG"; }
-PROBE="-k -s -o /dev/null --connect-timeout 1 --max-time 2"
+PROBE="-q -k -s --noproxy * -o /dev/null --connect-timeout 1 --max-time 2"
 
 echo "F. env-remote unreadable"
 write_env 'http://h:8123' 'https://r.example'

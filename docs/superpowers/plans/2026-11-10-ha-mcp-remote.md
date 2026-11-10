@@ -18,7 +18,7 @@
 - No test, launcher line or log prints the token; every new case asserts it is absent from stdout and stderr.
 - No `HOMEASSISTANT_URL` or `HOMEASSISTANT_TOKEN` in any child of the launcher (`sed`, `curl`, `mise`).
 - The launcher stays POSIX `sh` (`#!/bin/sh`, `sh -n` clean) and calls `sed` and `curl` by name.
-- Exact strings from the spec: the probe is `curl -k -s -o /dev/null --connect-timeout 1 --max-time 2 "<home url>/"`; the stderr line is `ha-mcp: home address unreachable; using env-remote`.
+- Exact strings from the spec: the probe is `curl -q -k -s --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 2 "<home url>/"`; the stderr line is `ha-mcp: home address unreachable; using env-remote`.
 - Never run `op`, never read anything under `~/.config/ha-mcp`, and never run `chezmoi` yourself: rendering the real source (`apply`, `cat`, `diff`, `status`) calls 1Password and can print the token. The repository's own suites (`./tests/…`, `./tests/run.sh`) are exempt: they call `chezmoi` only for `managed` listings or to render secret-free templates and fixtures under temporary configs. `chezmoi apply` is Michael's, after merge.
 - Suites are executed directly (`./tests/<name>.test.sh`), never through an interpreter. Report results as passed/total.
 - Never start a Bash call with `cd`; use absolute paths or `git -C`.
@@ -78,7 +78,7 @@
   - Case B (no `env-remote`): add `check "curl never ran" "" "$(cat "$T/curl.log")"`.
   - New cases, each writing `env` as `HOMEASSISTANT_URL='http://h:8123'` plus the sentinel token, and `env-remote` as `HOMEASSISTANT_URL='https://r.example'` plus the sentinel, unless stated:
     - **F. `env-remote` unreadable** (`chmod 000`; restore after): mise log's third field is `$T/home/.config/ha-mcp/env`; curl log empty.
-    - **G. home answers** (`MOCK_CURL_RC=0`): third field is `env`; stderr empty; curl log is exactly `-k -s -o /dev/null --connect-timeout 1 --max-time 2 http://h:8123/|unset|unset`.
+    - **G. home answers** (`MOCK_CURL_RC=0`): third field is `env`; stderr empty; curl log is exactly `-q -k -s --noproxy * -o /dev/null --connect-timeout 1 --max-time 2 http://h:8123/|unset|unset`.
     - **H. home does not answer**, once with `MOCK_CURL_RC=6` and once with `28`: mise log is exactly `$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|$T/home/.config/ha-mcp/env-remote|unset|unset|1`; stderr is exactly `ha-mcp: home address unreachable; using env-remote`; exit 0.
     - **I. trailing slash:** `env` URL `'http://h:8123/'` → the curl log's URL argument is `http://h:8123/`.
     - **J. no URL line:** `env` holds only the token line → third field is `env`; curl log empty.
@@ -87,7 +87,7 @@
 - [ ] **Step 2: Run them to see them fail.** `./tests/ha-mcp.test.sh`: H, G (curl log), I and K fail.
 - [ ] **Step 3: Implement in `dot_local/bin/executable_ha-mcp`.**
   - Right after `set -eu`: `unset HOMEASSISTANT_URL HOMEASSISTANT_TOKEN`.
-  - After the existing `env` readability check, choose the file, in this order: `env-remote` not readable → `env`; home URL from the first `HOMEASSISTANT_URL='…'` line of `env` via `sed` (quotes stripped, one trailing `/` removed), empty → `env`; `if curl -k -s -o /dev/null --connect-timeout 1 --max-time 2 "$url/"` → `env`; else `env-remote` and the stderr line. Use `if`, not a bare call, so `set -e` does not end the launcher when curl fails.
+  - After the existing `env` readability check, choose the file, in this order: `env-remote` not readable → `env`; home URL from the first `HOMEASSISTANT_URL='…'` line of `env` via `sed` (quotes stripped, one trailing `/` removed), empty → `env`; `if curl -q -k -s --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 2 "$url/"` → `env`; else `env-remote` and the stderr line. Use `if`, not a bare call, so `set -e` does not end the launcher when curl fails.
   - `HAMCP_ENV_FILE` takes the chosen path; the rest of the launcher is unchanged. Update the header comment's first lines to say the launcher picks `env` or `env-remote`.
 - [ ] **Step 4: Run them to see them pass.** `./tests/ha-mcp.test.sh`: all pass, D (`sh -n`) included.
 - [ ] **Step 5: Commit** (controller): `git -C <checkout> add dot_local/bin/executable_ha-mcp tests/ha-mcp.test.sh`; `git -C <checkout> commit -m "Fall back to the remote Home Assistant address when home does not answer"`.

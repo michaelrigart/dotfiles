@@ -5,7 +5,7 @@
 # HOMEASSISTANT_TOKEN itself from the chosen file (via HAMCP_ENV_FILE), which chezmoi renders
 # from 1Password, so no secret sits in either app's config or in the launcher's environment.
 # The settings-UI sidecar is disabled, as it would inherit the token.
-# Spec: docs/superpowers/specs/2026-10-23-ha-mcp-design.md
+# Specs: docs/superpowers/specs/2026-10-23-ha-mcp-design.md and 2026-11-10-ha-mcp-remote-design.md
 set -eu
 unset HOMEASSISTANT_URL HOMEASSISTANT_TOKEN
 
@@ -18,7 +18,7 @@ fi
 remote_file="$HOME/.config/ha-mcp/env-remote"
 if [ -r "$remote_file" ]; then
   home_url=$(sed -n "/^HOMEASSISTANT_URL='/{s/^HOMEASSISTANT_URL='//;s/'.*\$//;s|/\$||;p;q;}" "$env_file") || home_url=""
-  if [ -n "$home_url" ] && ! curl -k -s -o /dev/null --connect-timeout 1 --max-time 2 "$home_url/"; then
+  if [ -n "$home_url" ] && ! curl -q -k -s --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 2 "$home_url/"; then
     echo "ha-mcp: home address unreachable; using env-remote" >&2
     env_file="$remote_file"
   fi
