@@ -48,10 +48,10 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction.
   `install-claude-managed-settings.sh` installs `claude-managed-settings.json`, the Claude Code
-  mods lock, into `/Library/Application Support/ClaudeCode/`; `configure.sh` runs it, and it
-  refuses a `managed-settings.d` beside the target; `chezmoi apply` never does. Running it for
-  real (sudo, `--replace` to overwrite a different policy) is Michael's; agents run it only
-  through `tests/install-claude-managed-settings.test.sh`.
+  mods lock, into `/Library/Application Support/ClaudeCode/`, and refuses a `managed-settings.d`
+  beside it. `configure.sh` runs it; `chezmoi apply` never does. Running it for real (sudo,
+  `--replace` to overwrite a different policy) is Michael's; agents run it only in test mode,
+  through its suite and `tests/provision.test.sh`.
   `measure-interventions.py` sits beside them: the transcript metrics for the
   safe-autonomy evaluation. `skill-updates.sh` is non-interactive too and runs weekly in
   the `skill-updates` workflow. The scripts are mode `755` (not the 644 policy file) — git

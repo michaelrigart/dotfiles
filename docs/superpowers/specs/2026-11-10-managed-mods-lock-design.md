@@ -1,6 +1,6 @@
 # Claude Code managed mods lock
 
-**Status:** In progress (signed off 2026-11-10; branch `feat/managed-mods-lock`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/managed-mods-lock`; the dotfiles have no MR; plan `docs/superpowers/plans/2026-11-10-managed-mods-lock.md`)
 **Date:** 2026-11-10
 **Branch:** `feat/managed-mods-lock`
 

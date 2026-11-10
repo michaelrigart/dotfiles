@@ -119,7 +119,7 @@ log_info "Installing the Claude Code managed policy..."
 if "${0:A:h}/install-claude-managed-settings.sh"; then
   log_info "✓ Claude Code managed policy in place"
 else
-  log_warn "Claude Code managed policy NOT installed — review the output above; re-run .scripts/install-claude-managed-settings.sh, with --replace to overwrite"
+  log_warn "Claude Code managed policy NOT installed — fix what the output above names, then re-run .scripts/install-claude-managed-settings.sh (--replace only overwrites a different policy file)"
 fi
 
 # ============================================================================

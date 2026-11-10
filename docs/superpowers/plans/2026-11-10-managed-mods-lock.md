@@ -1,6 +1,6 @@
 # Claude Code Managed Mods Lock Implementation Plan
 
-**Status:** In progress (branch `feat/managed-mods-lock`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/managed-mods-lock`; the dotfiles have no MR); executed once, do not run again. The Rulings at the end record where the run departed from the text below.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -137,3 +137,21 @@
 - [ ] Final whole-branch review (sp-architect), then Codex pre-merge on `main...feat/managed-mods-lock`. Record rulings in this plan under "Rulings" (no MR).
 - [ ] Set the spec's and this plan's Status to `Implemented (branch feat/managed-mods-lock; the dotfiles have no MR)`, mark this plan executed, commit, then `git -C <checkout> push origin feat/managed-mods-lock`.
 - [ ] Final report: the spec's Migration steps for Michael (fenrir: installer must say `unchanged`; hercules: install, restart, `/status`, `/plugin`), the out-of-scope `configure.sh` LaunchAgents glob failure (zsh `nomatch` with no `be.netronix.*.plist`), and the harness worktree cleanup after merge.
+
+## Rulings
+
+Recorded here because the dotfiles have no MR.
+
+- **R1. The plan's text is corrected by these rulings, not rewritten.**
+  - Task 2 calls the installer suite's configure.sh case "J". Task 1's fix round had already used J (a `dirname`/`CDPATH` case), so it is K.
+  - Task 2's containment rationale is wrong: without the test root, the real installer would call the real `/usr/bin/sudo`, not the sudo stub, because it runs only absolute paths. Only `CLAUDE_MANAGED_SETTINGS_TEST_ROOT` in `cfg()` keeps the run off `/Library`. Provision K now asserts the scratch target and the absence of the real path.
+- **R2. The validator checks only the shape, and extra keys stay allowed.** The source is the repo file beside the installer. Case A pins its bytes, so a policy change ships as a reviewed repo edit plus `--replace`. Cost if wrong: an extra key added in the repo installs without the installer objecting.
+- **R3. No test-only expected-uid variable.** The owner rule lives in one helper shared by the walk, the target check and the staged-copy check. A `/usr/share` test-root case and a static check that the normal branch expects uid 0 cover it. Cost if wrong: the target and staged-copy owner rules are tested only through the shared helper.
+- **R4. Fixed during the run, beyond the plan.** The policy source is now located without a `PATH` lookup, and `CDPATH` is ignored. The shebang is `#!/bin/bash -p`, which ignores `BASH_ENV` and exported functions. jq runs with `HOME=/var/empty`, so `~/.jq` cannot change it. Test mode prints `test mode: <root>`. The suite's real-mode guard case runs on a copy beside a broken source.
+- **R5. Spec amendment, Michael's call.** A `managed-settings.d` beside the target is refused even with `--replace` (spec §2, test 10).
+- **R6. Parked; each can wait.**
+  - A root `0700` `ClaudeCode` directory reports `staged copy failed: unreadable` instead of naming the directory. It still exits 1 and leaves the target untouched.
+  - An interrupt between `mktemp` and the staged-file assignment can leave a hidden root-owned staged file. Claude Code ignores dotfiles.
+  - The `verify failed:` branch and the verify-stage drop-in check have no test of their own.
+  - Running the installer through a symlink, or by bare name through `PATH`, resolves its source beside the link or in the current directory.
+- **R7. Text fixed by the driver after the last fix round.** In AGENTS.md, "`chezmoi apply` never does" referred to the wrong verb, and the sentence did not mention the provision harness. configure.sh's refusal line advised `--replace`, which cannot clear a drop-in or directory refusal.
