@@ -352,6 +352,7 @@ EXP_CREDENTIALS='[
   "~/.aws/credentials",
   "~/.config/op/config",
   "~/.config/ha-mcp/env",
+  "~/.config/ha-mcp/env-remote",
   "~/.config/unifi-network/env"
 ]'
 EXP_ALLOW_READ='[

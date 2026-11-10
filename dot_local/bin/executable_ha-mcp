@@ -1,16 +1,27 @@
 #!/bin/sh
 # Launcher for the Home Assistant MCP server (ha-mcp): a stdio server that Claude Code and
-# Claude Desktop both run. ha-mcp reads HOMEASSISTANT_URL and HOMEASSISTANT_TOKEN itself from
-# ~/.config/ha-mcp/env (via HAMCP_ENV_FILE), which chezmoi renders from 1Password, so no
-# secret sits in either app's config or in the launcher's environment. The settings-UI
-# sidecar is disabled, as it would inherit the token.
-# Spec: docs/superpowers/specs/2026-10-23-ha-mcp-design.md
+# Claude Desktop both run. It picks ~/.config/ha-mcp/env when the home Home Assistant address
+# answers and ~/.config/ha-mcp/env-remote otherwise. ha-mcp reads HOMEASSISTANT_URL and
+# HOMEASSISTANT_TOKEN itself from the chosen file (via HAMCP_ENV_FILE), which chezmoi renders
+# from 1Password, so no secret sits in either app's config or in the launcher's environment.
+# The settings-UI sidecar is disabled, as it would inherit the token.
+# Specs: docs/superpowers/specs/2026-10-23-ha-mcp-design.md and 2026-11-10-ha-mcp-remote-design.md
 set -eu
+unset HOMEASSISTANT_URL HOMEASSISTANT_TOKEN
 
 env_file="$HOME/.config/ha-mcp/env"
 if [ ! -r "$env_file" ]; then
   echo "ha-mcp: $env_file is missing or unreadable — run chezmoi apply" >&2
   exit 1
+fi
+
+remote_file="$HOME/.config/ha-mcp/env-remote"
+if [ -r "$remote_file" ]; then
+  home_url=$(sed -n "/^HOMEASSISTANT_URL='/{s/^HOMEASSISTANT_URL='//;s/'.*\$//;s|/\$||;p;q;}" "$env_file") || home_url=""
+  if [ -n "$home_url" ] && ! curl -q -k -s --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 2 "$home_url/"; then
+    echo "ha-mcp: home address unreachable; using env-remote" >&2
+    env_file="$remote_file"
+  fi
 fi
 
 HAMCP_ENV_FILE="$env_file"
