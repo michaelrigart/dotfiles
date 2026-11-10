@@ -1,6 +1,6 @@
 # Claude Code managed mods lock
 
-**Status:** In progress (spec under review; the dotfiles have no MR)
+**Status:** In progress (signed off 2026-11-10; branch `feat/managed-mods-lock`; the dotfiles have no MR)
 **Date:** 2026-11-10
 **Branch:** `feat/managed-mods-lock`
 
