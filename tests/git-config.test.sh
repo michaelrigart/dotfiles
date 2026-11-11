@@ -90,6 +90,13 @@ git -C "$T/c" fetch -q >/dev/null 2>&1 || bare_ok=0
 git ls-remote "$T/o.git" >/dev/null 2>&1 || bare_ok=0
 if [ "$bare_ok" -eq 1 ]; then ok "a bare remote works"; else bad "a bare remote works"; fi
 
+git -C "$T/r" "${CID[@]}" commit -q --allow-empty -m subject -m "body line" >/dev/null 2>&1
+if git -C "$T/r" show -s HEAD 2>/dev/null | grep -q 'body line'; then
+  ok "plain git show -s prints a commit body (no global format.pretty)"
+else
+  bad "plain git show -s prints a commit body (no global format.pretty)"
+fi
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

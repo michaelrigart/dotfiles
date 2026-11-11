@@ -39,12 +39,10 @@
     r = !git --no-pager l -20
     ra = !git r --all
     ff = merge --ff-only
-    l = log --graph --abbrev-commit --date=relative
+    l = log --graph --abbrev-commit --date=relative --pretty=\"format:%C(yellow)%h%Creset -%C(red)%d%Creset %s %Cgreen(%ar) %C(bold blue)<%an>%Creset\"
     la = !git l --all
     fa = fetch --all
     pom = push origin main
-[format]
-    pretty=format:%C(yellow)%h%Creset -%C(red)%d%Creset %s %Cgreen(%ar) %C(bold blue)<%an>%Creset
 [merge]
     tool = vimdiff
     conflictStyle = zdiff3
