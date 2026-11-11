@@ -43,7 +43,7 @@
 - **Labels:** an assertion is a line `run.sh` counts: `^\s*(ok|PASS)(\s|:)` passed, `^\s*(FAIL|not ok)(\s|:)` failed. The label is the rest of the line after the token and an optional `:`. Whitespace is collapsed. The copy's path becomes `<copy>`, and any path under `/tmp`, `/private/tmp`, `/var/folders` or `/private/var/folders` becomes `<tmp>`. The n-th repeat of a label (n ≥ 2) gets ` #n`.
 - **Attribution:** the baseline is green when it exits 0 and has at least one passed and no failed assertion. Without a green baseline, every mutant of that suite in that session is `baseline-red` and is not run. A mutant run is:
   - `inconclusive` when it did not complete: it timed out, printed fewer assertions (passed plus failed) than the baseline, or exited non-zero with no failed label. This test comes first, so a run that printed a FAIL and then hung or crashed is never `killed`.
-  - `killed` when it completed and a label failed. Killers are the failed labels that passed in the baseline; the other failed labels are `unmatched`.
+  - `killed` when it completed and a label failed. A failed label is a killer when it passed in the baseline, or when it is a baseline-passed label followed by ` (` and failure detail (`FAIL x (want a, got b)` against `ok x`); the longest such label is the killer. The other failed labels are `unmatched`.
   - `survived` otherwise.
   A survivor runs once more. A second-run kill makes the mutant `killed` with `flaky: true`, listed separately in the findings.
 - **Code mutants** apply only to shell (`bash`, `zsh`, `sh`) and Python files. Data files and chezmoi data templates get none. Prose gets rule mutants only where a rule is pinned.
@@ -500,4 +500,13 @@ Validation runs against one committed SHA, `<v>` (`git -C <checkout> rev-parse H
 
 ## Rulings
 
-None yet. Rulings made during the run are recorded here, because the dotfiles have no MR.
+Rulings made during the run are recorded here, because the dotfiles have no MR. Each gives the decision, why, and the cost if wrong.
+
+- **R1.** `report --compare STATE --kind K [--only …]` works with any `--section`, rules included; its lost and not-run lists print after the section. Task 8 needs it for rules, and validation compares rule mutants the same way. Cost: one more flag combination.
+- **R2.** `accept` reads Task 7's classification layout (a header row, labels split on ` | `), and the M8 fixture uses it. Cost: a parser change if Task 7's layout moves.
+- **R3.** Implementers do not commit; the controller commits each task after checking the branch. Cost: none.
+- **R4.** Task 4 ran beside Task 1: it needs only the `subjects.tsv` format, which the plan fixes. Cost: a format tweak.
+- **R5.** The survivor re-run and the `flaky` flag live in Task 2's sample and targeted loops, not in `try`, which writes no state. Cost: moving one call.
+- **R6.** The baseline run's own timeout is a constant 1800 s; the spec bounds only the mutant timeout, and the slowest baseline (`xreview`, 672 s) fits. Cost: a flag.
+- **R7.** Task 5's inventory and whole-run timings start once Task 1 is approved, beside Tasks 2 and 3; `plan` waits for Task 2. The suite uses its own lock. Cost: re-running `inventory` if a later task changes its rows; the timings carry some implementer load, noted in the findings.
+- **R8.** Killers include a failed label that extends a baseline-passed label with ` (` detail (Attribution, above). Twenty FAIL formats in six suites, `git-forge-guard` among them, append `(want …, got …)` or `(rc …)` to the failing label only, so the plan's exact-match rule left those kills with no killer and would have marked their targeted candidates `mis-targeted`. The spec's "a named assertion failed" is unchanged. Cost: a label that is another label plus a parenthesised suffix would be attributed to the shorter one; Task 5 checks the inventory's labels for such pairs.
