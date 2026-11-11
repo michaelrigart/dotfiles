@@ -180,6 +180,17 @@ cache_key() { # cache_key <forge> <slug>
   if [ "$1" = "github" ]; then printf 'github@%s' "$key"; else printf '%s' "$key"; fi
 }
 
+# Prints a cached table. GitHub's CI (column 5) is blanked once the file is older than
+# STALE_PIPELINE, the age limit GitLab's pipeline cache has: a stale answer to a failed lookup must
+# not keep showing a check result nobody has confirmed.
+read_table() { # read_table <cache_file>
+  local cache="$1" age now
+  now="$(date +%s)"
+  age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
+  if [ "$age" -lt "$STALE_PIPELINE" ]; then cat "$cache"
+  else awk -F'\t' -v OFS='\t' 'NF >= 5 { $5 = "" } { print }' "$cache"; fi
+}
+
 # The table: one row per branch, `branch<TAB>opened|merged<TAB><number><TAB>0|1[<TAB><ci>]`.
 # <ci> (ok, fail, run or empty) is a GitHub column only, empty on a merged row.
 # <force> is 0 or 1. A lookup that cannot answer falls back to the cached table, however old.
@@ -190,7 +201,7 @@ mr_table() { # mr_table <forge> <slug> <force>
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
     now="$(date +%s)"
     age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-    if [ "$age" -lt "$TTL" ]; then cat "$cache"; return 0; fi
+    if [ "$age" -lt "$TTL" ]; then read_table "$cache"; return 0; fi
   fi
 
   # <forge>_rows exits 0 for a full answer, 3 for the open rows alone (the merged half failed:
@@ -205,7 +216,7 @@ mr_table() { # mr_table <forge> <slug> <force>
       ;;
     3) ;;
     *)
-      if [ -f "$cache" ]; then cat "$cache"; return 0; fi
+      if [ -f "$cache" ]; then read_table "$cache"; return 0; fi
       return 1
       ;;
   esac
@@ -279,8 +290,33 @@ github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, el
   # beats a merged one on the same branch.
   # The two answers are separated by a line no JSON document can hold and each is parsed on its
   # own, so an empty answer can never let the other one take its place.
+  # An open PR's CI comes from its rollup, in gh pr checks' buckets: a CheckRun's state is its
+  # conclusion once COMPLETED and its status before; a StatusContext's is its state. Fail beats
+  # pending, pending beats success, and a state in no bucket (STALE, say) gives no badge.
   printf '%s\n@@\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
 import json, sys
+FAIL = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+PEND = {"QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"}
+GOOD = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+def ci(roll):
+    if not isinstance(roll, list) or not roll:
+        return ""
+    states = set()
+    for c in roll:
+        st = None
+        if isinstance(c, dict):
+            if "state" in c:
+                st = c["state"]
+            elif c.get("status") == "COMPLETED":
+                st = c.get("conclusion")
+            else:
+                st = c.get("status")
+        states.add(st if isinstance(st, str) else "")
+    if states & FAIL:
+        return "fail"
+    if states & PEND:
+        return "run"
+    return "ok" if states <= GOOD else ""
 def load(text):
     try:
         v = json.loads(text)
@@ -301,10 +337,11 @@ for pr in opened + (merged or []):
     if type(n) is not int or n < 1:
         continue
     # gh lists the newest first, so the first PR of a state is the one that counts.
-    rows[pr["state"]].setdefault(b, (n, "1" if pr.get("isDraft") is True else "0"))
-for b, (n, d) in rows["OPEN"].items():
-    print("\t".join([b, "opened", str(n), d, ""]))
-for b, (n, d) in rows["MERGED"].items():
+    rows[pr["state"]].setdefault(b, (n, "1" if pr.get("isDraft") is True else "0",
+                                          ci(pr.get("statusCheckRollup")) if pr["state"] == "OPEN" else ""))
+for b, (n, d, c) in rows["OPEN"].items():
+    print("\t".join([b, "opened", str(n), d, c]))
+for b, (n, d, c) in rows["MERGED"].items():
     if b not in rows["OPEN"]:
         print("\t".join([b, "merged", str(n), d, ""]))
 sys.exit(0 if merged is not None else 3)
@@ -485,7 +522,7 @@ cmd_refresh() {
     esac
   done
 
-  local list ws path root phase value last_root="" table="" forge="" slug="" out first second ci
+  local list ws path root phase value last_root="" table="" forge="" slug="" out first second ci iid
   list="$(spaces)"
   [ -n "$list" ] || return 0
 
@@ -514,9 +551,11 @@ cmd_refresh() {
     case "$second" in
       "open "*)
         # GitHub's CI comes with the table (derive's second line); GitLab's costs a call per MR.
-        set -- ${second#open }
-        if [ "$forge" = "gitlab" ]; then ci="$(pipeline_class "$slug" "$1" "$force")"
-        else ci="${2:-}"; fi
+        iid="${second#open }"; ci="${iid#* }"
+        [ "$ci" != "$iid" ] || ci=""
+        iid="${iid%% *}"
+        if [ "$forge" = "gitlab" ]; then ci="$(pipeline_class "$slug" "$iid" "$force")"
+        else case "$ci" in ok|fail|run) ;; *) ci="" ;; esac; fi
         ;;
     esac
     report "$ws" "$phase" "$value" "$ci"

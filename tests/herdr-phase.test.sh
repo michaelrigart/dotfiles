@@ -700,6 +700,16 @@ case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase to
   *) _fail "the phase token survives the failed api call (got: $(report_for w4))";; esac
 rm -f "$PIPEFAIL"
 
+# A cached GitLab row with no iid still refreshes cleanly: no unbound variable, no pipeline badge.
+rm -rf "$T/cache"; mkdir -p "$T/cache"
+printf 'feature/review\topened\t\t0\n' > "$T/cache/test%2Fproj.tsv"
+set_pipe 10 success
+run refresh --workspace w4
+check "$RC" "0" "a GitLab row with an empty iid refreshes with exit 0"
+case "$OUT" in *"unbound variable"*) _fail "an empty iid leaves stderr clean (got: $OUT)";; *) _pass "an empty iid leaves stderr clean";; esac
+ci_check w4 none "an empty iid shows no pipeline badge"
+rm -rf "$T/cache"; set_pipe
+
 # glab reads its configuration from the current directory's repository and runs git there, and a
 # key command or plugin hook starts phase.sh wherever the caller was. Started from inside a
 # repository, every glab call must still run from /.
@@ -882,6 +892,57 @@ phase_check wG2 review "$ICON_MR #22" "draft -> review when the PR is marked rea
 cp "$GH_OPEN.orig" "$GH_OPEN"
 ghrun refresh --force --workspace wG2
 phase_check wG2 draft "$ICON_DRAFT #22" "review -> draft when the PR goes back to draft"
+
+# CI comes from the open list's rollup (Ruling 2): no extra call, mixed CheckRuns and
+# StatusContexts, and an unknown state is never ok.
+cr() { printf '{"__typename":"CheckRun","name":"c","status":"%s","conclusion":"%s"}' "$1" "$2"; }
+sc() { printf '{"__typename":"StatusContext","context":"c","state":"%s"}' "$1"; }
+roll() { # roll <rollup json> -> the open list with #21 carrying it; #22 always carries a failure
+  printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":21,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":%s},\n' "$1"
+  printf ' {"headRefName":"feature/gh-draft","state":"OPEN","number":22,"isDraft":true,"isCrossRepository":false,"statusCheckRollup":[%s]}]\n' "$(cr COMPLETED FAILURE)"
+}
+gh_ci() { # gh_ci <ok|fail|run|none> <label> <rollup json>
+  roll "$3" > "$GH_OPEN"
+  rm -rf "$T/cache"; ghrun refresh --force --workspace wG1
+  ci_check wG1 "$1" "$2"
+}
+gh_ci none "an empty rollup shows no CI" '[]'
+gh_ci ok "all CheckRuns COMPLETED/SUCCESS -> ci_ok" "[$(cr COMPLETED SUCCESS),$(cr COMPLETED SUCCESS)]"
+gh_ci ok "SUCCESS, SKIPPED and NEUTRAL -> ci_ok" "[$(cr COMPLETED SUCCESS),$(cr COMPLETED SKIPPED),$(cr COMPLETED NEUTRAL)]"
+gh_ci fail "successes and one FAILURE -> ci_fail" "[$(cr COMPLETED SUCCESS),$(cr COMPLETED FAILURE),$(cr COMPLETED SUCCESS)]"
+for st in ERROR CANCELLED TIMED_OUT ACTION_REQUIRED STARTUP_FAILURE; do
+  gh_ci fail "a lone $st -> ci_fail" "[$(cr COMPLETED $st)]"
+done
+gh_ci run "IN_PROGRESS and SUCCESS -> ci_run" "[$(cr IN_PROGRESS ''),$(cr COMPLETED SUCCESS)]"
+gh_ci run "QUEUED -> ci_run" "[$(cr QUEUED '')]"
+gh_ci run "StatusContext PENDING -> ci_run" "[$(sc PENDING)]"
+gh_ci fail "StatusContext ERROR -> ci_fail" "[$(sc ERROR)]"
+gh_ci fail "FAILURE and IN_PROGRESS -> ci_fail" "[$(cr COMPLETED FAILURE),$(cr IN_PROGRESS '')]"
+gh_ci ok "CheckRun SUCCESS and StatusContext SUCCESS -> ci_ok" "[$(cr COMPLETED SUCCESS),$(sc SUCCESS)]"
+gh_ci none "SUCCESS and a COMPLETED/STALE give no badge, never ok" "[$(cr COMPLETED SUCCESS),$(cr COMPLETED STALE)]"
+gh_ci none "a rollup that is not a list shows no CI" '{"state":"SUCCESS"}'
+gh_ci none "a null rollup shows no CI" 'null'
+
+roll "[$(cr COMPLETED SUCCESS)]" > "$GH_OPEN"
+rm -rf "$T/cache"; ghrun refresh --force
+ci_check wG1 ok "the ready PR shows its CI"
+ci_check wG2 fail "the draft PR shows its CI too"
+ci_check wG3 none "a merged PR shows no CI"
+check "$(gh_calls)" "2" "CI costs no extra gh call"
+
+# A failed lookup keeps the cached CI for 30 minutes, then clears it and keeps the phase.
+rm -rf "$T/cache"; ghrun refresh
+echo fail > "$GHDIR/mode"
+aged_gh() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$GH_TSV"; }
+aged_gh 29
+TTL=0 ghrun refresh --workspace wG1
+ci_check wG1 ok "a failed lookup keeps GitHub CI from a cache 29 minutes old"
+aged_gh 31
+TTL=0 ghrun refresh --workspace wG1
+ci_check wG1 none "a failed lookup clears GitHub CI from a cache 31 minutes old"
+phase_check wG1 review "$ICON_MR #21" "the review phase survives the cleared CI"
+rm -f "$GHDIR/mode"; unset TTL
+cp "$GH_OPEN.orig" "$GH_OPEN"
 
 # Failures. A warm cache stands in for a failed lookup, whatever shape the failure has.
 rm -rf "$T/cache"; ghrun refresh
