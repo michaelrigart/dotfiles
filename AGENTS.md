@@ -18,14 +18,14 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   trees needs its own `!` entry, or `chezmoi add` silently drops it.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `tests/`, `.scripts/` are ignored so
   they never land in `$HOME`.
-- Edit the source in a `wt` checkout (never in the main one) and `chezmoi apply`; never
-  hand-edit a deployed file. `chezmoi apply` is Michael's. Agents preview with `command chezmoi cat <target>` and
-  `command chezmoi apply --dry-run --verbose`: sandboxed, so running the working tree's
-  scripts is safe. In a `wt` sibling a bare `command chezmoi` renders the main checkout, so
-  preview with `command chezmoi --source <checkout> cat <target>` and
-  `command chezmoi --source <checkout> apply --dry-run --verbose`. The zsh wrapper reaches
-  agent shells too (Claude Code's shell snapshot
-  omits every function whose name starts with a single `_`, so each public function in
+- Edit the source in a `wt` checkout (never in the main one); it deploys once merged, when
+  Michael runs `chezmoi apply`. Never hand-edit a deployed file. Agents preview with
+  `command chezmoi cat <target>` and `command chezmoi apply --dry-run --verbose`:
+  sandboxed, so running the working tree's scripts is safe. In a `wt` sibling a bare
+  `command chezmoi` renders the main checkout, so preview with `command chezmoi --source
+  <checkout> cat <target>` and `command chezmoi --source <checkout> apply --dry-run
+  --verbose`. The zsh wrapper reaches agent shells too (Claude Code's shell snapshot omits
+  every function whose name starts with a single `_`, so each public function in
   `~/.config/zsh/functions` that uses a helper reloads the file when it is missing): off
   main it refuses previews, and on main its clone into `~/.cache` hits a sandbox denial.
   Data variables (`.name`, `.email`, `.is_arm`) come from `.chezmoi.toml.tmpl`, which
@@ -40,17 +40,18 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   (`~/.config/agents/GLOBAL.md`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`);
   `claude-code.md` (Claude Code only, opening with `## Claude Code only`) is appended to
   `~/.claude/CLAUDE.md` alone; `codex.md` (Codex only, opening with `## Codex only`) is
-  appended to `~/.codex/AGENTS.md` alone. Edit a fragment, then `chezmoi apply`. This repo is
-  public: nothing private goes in them. `global.md` stays within 150 lines,
-  `claude-code.md` within 50 and `codex.md` within 30; `tests/agent-instructions.test.sh`
-  pins all three, and the renders.
-- The main checkout `~/.local/share/chezmoi` stays on a clean `main`: never switched, never
-  edited in place, because Michael applies from it and the wrapper needs a clean `main`. Every
-  branch is a `wt` checkout at `~/.local/share/chezmoi-<branch>`, run by its own session with
-  its own Codex pane. The sandbox grants a sibling's writes only to its own session's shell, so
-  another session (the driver in the main checkout) writes there only with its Edit/Write tools
-  and its git commands. Check `git branch --show-current` before each commit, since a session
-  can sit in the wrong checkout.
+  appended to `~/.codex/AGENTS.md` alone. Edit a fragment; it deploys once merged, when
+  Michael runs `chezmoi apply`. This repo is public: nothing private goes in them.
+  `global.md` stays within 150 lines, `claude-code.md` within 50 and `codex.md` within 30;
+  `tests/agent-instructions.test.sh` pins all three, and the renders.
+- The main checkout `~/.local/share/chezmoi` stays on a clean `main`: never switched,
+  never edited in place, because Michael applies from it and the wrapper needs a clean
+  `main`. Every branch is a `wt` checkout at `~/.local/share/chezmoi-<branch>`, run by its
+  own session with its own Codex pane. The sandbox grants a sibling's writes only to its
+  own session's shell, so another session (the driver in the main checkout) writes there
+  only with its Edit/Write tools and git commands that touch only the repository (`add`,
+  `commit`). Check `git branch --show-current` before each commit, since a session can sit
+  in the wrong checkout.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction.
