@@ -87,7 +87,7 @@ rb_start() {   # rb_start <slug> — fresh repo with a seeded log.txt, and the w
 rb_gone() {   # rb_gone <slug> <how> <base> <label> — after `run "$REPO" wt-rm <slug>`
   rc_is 0 "$4: the worktree is removed"
   has "deleted branch $1 ($2" "$4: the deletion line names the $2 test"
-  has " in $3)" "$4: the deletion line names the base $3"
+  has " in $3" "$4: the deletion line names the base $3"
   hasnt "not fully merged" "$4: no kept warning"
   run "$REPO" git branch --list --format='%(refname:short)' "$1"
   eq "$OUT" "" "$4: the branch is deleted"
