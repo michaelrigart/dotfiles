@@ -41,7 +41,12 @@
 - `write-boundary-probe` follows. It does not mirror the root list, but the sibling choice and the INCONCLUSIVE path are logic that can be checked against a throwaway HOME. The exit-2 branch itself cannot be checked there, because every other key fails in a throwaway HOME, so review covers it.
 - Suite audit outcomes. `codex-daemon` and `unifi-network-mcp` gain `--source`. `claude-settings` is kept: a pure filter read from `$SRC`, whose HOME paths are samples. `live-write-boundary` measures the main root on purpose and gains the sibling probe. `write-boundary-probe` is kept: it uses a throwaway HOME. `process-replay/t_*.py` are kept: their `~/.local/share/chezmoi` strings are leak-detection fixtures, and no source file is read through them.
 - `global.md` names the sibling path only if the `wt` bullet keeps its current line count; `AGENTS.md` names it either way.
-- Section 4's runs add a control marker (run A also writes into its own working directory) and probe `.git` in run B. They pass `--disallowedTools Write,Edit,NotebookEdit`, so only sandboxed Bash can write. An INCONCLUSIVE run is repeated once.
+- Section 4's runs add a few things to the spec's design:
+  - Each probe command ends with a working-directory write as its completion marker.
+  - A run counts as executed only when its transcript shows the exact command and the marker exists.
+  - Run B also probes `.git`.
+  - Both runs pass `--disallowedTools Write,Edit,NotebookEdit`, so only sandboxed Bash can write.
+  - An INCONCLUSIVE run is repeated once.
 
 ---
 
@@ -156,17 +161,16 @@
   - `P="$HOME/.local/share/chezmoi-zz-wt-probe-$$"` and `A="$HOME/Code/zz-wt-probe-a-$$"`.
   - `mkdir -p "$P/.codex" "$A"`. The `.codex` directory pre-exists so that `.codex/**` is what gets measured.
 - [ ] **Step 4: Run A** (working directory `$A`).
-  - Command: `claude -p "Use only the Bash tool. Run exactly this one command, then stop: touch ./a-control; touch $P/a-ordinary"`, with `--settings overlay.json --permission-mode default --disallowedTools Write,Edit,NotebookEdit --output-format json --max-turns 3 --max-budget-usd 1 --no-session-persistence --model sonnet </dev/null`. Keep stderr.
+  - Probe command, exactly: `touch $P/a-ordinary; touch ./a-done`, with `$P` expanded. The probes are joined by `;`, so each runs whatever the one before it did, and the working-directory marker comes last.
+  - Run: `claude -p "Use only the Bash tool. Run exactly this one command, unchanged, then stop: <probe command>"`, with `--settings overlay.json --permission-mode default --disallowedTools Write,Edit,NotebookEdit --output-format stream-json --verbose --max-turns 3 --max-budget-usd 1 --no-session-persistence --model sonnet </dev/null`. Keep stdout and stderr.
+  - **Ran:** the stream holds exactly one Bash `tool_use`, its `input.command` equals the probe command byte for byte, and `$A/a-done` exists. Anything else is INCONCLUSIVE: repeat once, then report it.
   - Verdict, from the filesystem:
-    - **settings loaded:** exit 0, `.subtype == "success"` and no settings error on stderr;
-    - **measured:** `$A/a-control` exists;
+    - **settings loaded:** exit 0, the final `result` event has `subtype == "success"`, and stderr carries no settings error;
     - **glob honoured:** `$P/a-ordinary` exists; absent means ignored or taken literally.
-  - Without `a-control`, repeat once, then report INCONCLUSIVE.
 - [ ] **Step 5: Run B** (working directory `$P`, same flags).
-  - Command: `touch ./b-ordinary; touch ./.mcp.json; touch ./.codex/config.toml; touch ./.lazygit.yml; touch ./.git`.
-  - Verdict:
-    - `$P/b-ordinary` must exist; otherwise the run measured nothing, so repeat once, then report INCONCLUSIVE;
-    - `.mcp.json`, `.codex/config.toml`, `.lazygit.yml` and `.git` must all be absent.
+  - Probe command, exactly: `touch ./.mcp.json; touch ./.codex/config.toml; touch ./.lazygit.yml; touch ./.git; touch ./b-ordinary`. The ordinary write comes last and is both the working-directory grant and the completion marker.
+  - **Ran:** the same transcript check as run A, with `$P/b-ordinary` as the marker. Without both, the run measured nothing: repeat once, then report INCONCLUSIVE.
+  - Verdict: `.mcp.json`, `.codex/config.toml`, `.lazygit.yml` and `.git` must all be absent.
 - [ ] **Step 6: Stop conditions.** Stop and report to the controller, who reports to `chezmoi-c2`, if:
   - either run shows the settings failed to load (spec: Michael chooses options);
   - any run-B probe file exists;
