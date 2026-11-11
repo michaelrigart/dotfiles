@@ -365,6 +365,7 @@ run --help
 check "$RC" "0" "--help exits 0"
 case "$OUT" in *"Phases: active, draft, review, merged."*) _pass "--help lists the four phases";; *) _fail "--help lists the four phases (got: $OUT)";; esac
 case "$OUT" in *refresh*) _pass "--help documents refresh";; *) _fail "--help documents refresh";; esac
+case "$OUT" in *--fresh*) _pass "--help documents --fresh";; *) _fail "--help documents --fresh (got: $OUT)";; esac
 case "$OUT" in *pin*) _fail "--help no longer offers pin";; *) _pass "--help no longer offers pin";; esac
 run bogus-subcommand
 [ "$RC" -ne 0 ] && _pass "unknown subcommand is an error" || _fail "unknown subcommand is an error"
@@ -789,7 +790,7 @@ ci_check w4 ok "slug a/b_c shows its own pipeline (success)"
 ci_check wA fail "slug a_b/c shows its own pipeline (failed), not a/b_c's"
 case "$(report_for wA)" in *"--token review=$ICON_MR !10 "*) _pass "slug a_b/c finds its own MR table, not a/b_c's";;
   *) _fail "slug a_b/c finds its own MR table, not a/b_c's (got: $(report_for wA))";; esac
-check "$(ls "$T/cache" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.lock a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lock a_b%2Fc.mr10.pipeline a_b%2Fc.tsv " "cache names encode the slug's / as %2F"
+check "$(ls "$T/cache" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.lock a%2Fb_c.lookup a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lock a_b%2Fc.lookup a_b%2Fc.mr10.pipeline a_b%2Fc.tsv " "cache names encode the slug's / as %2F"
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
 glab_stub
@@ -1326,6 +1327,160 @@ glab_stub
 rm -rf "$T/cache" "$GLD" "$T/held"
 
 echo
+echo "O. a focus refresh looks the space up fresh, at most once per FRESH_GAP"
+# `refresh --fresh` looks a repository up whatever the TTL, unless a lookup of it started less than
+# 10 s ago: every forge lookup writes the stamp <key>.lookup first, under the repository's lock, and
+# inside the gap a --fresh answers from the cache as a failed lookup would. --force ignores the
+# stamp, the TTL path does not read it.
+glab_stub
+rm -f "$PIPEFAIL" "$GHDIR/mode"
+STAMP="$T/cache/test%2Fproj.lookup"
+age_stamp() { touch -t "$(date -v-"$1"S +%Y%m%d%H%M.%S)" "$STAMP"; } # age_stamp <seconds>
+mr_calls() { grep -c -E '^(glab mr list|gh pr list)' "$CALLS"; }
+calls_of() { echo "$(glab_calls) $(glab_api_calls)"; } # "<mr list calls> <api calls>"
+rm -rf "$T/cache"; set_pipe 10 success
+run refresh --workspace w4
+check "$(calls_of)" "2 1" "PRECONDITION: a cold refresh looks the repository up (2 mr list, 1 api)"
+[ -e "$STAMP" ] && _pass "a lookup writes the repository's stamp" || _fail "a lookup writes the repository's stamp"
+
+# A fresh stamp holds the focus refresh off a warm cache; an aged one lets it through.
+run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "--fresh right after a lookup makes no call"
+ci_check w4 ok "and still renders the cached pipeline"
+age_stamp 11
+run refresh --fresh --workspace w4
+check "$(calls_of)" "2 1" "--fresh with the stamp aged 11 s looks the space up, whatever the TTL"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the fresh lookup reports review !10";;
+  *) _fail "the fresh lookup reports review !10 (got: $(report_for w4))";; esac
+run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "--fresh again at once makes no call"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "and the report is still review !10";;
+  *) _fail "and the report is still review !10 (got: $(report_for w4))";; esac
+ci_check w4 ok "with its pipeline"
+age_stamp 9
+run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "a stamp 9 s old is inside the gap"
+
+# --force ignores the stamp and renews it; the TTL path never reads it.
+run refresh --force --workspace w4
+check "$(calls_of)" "2 1" "--force right after a lookup makes its calls"
+run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "--fresh right after --force makes no call"
+TTL=0 run refresh --workspace w4
+check "$(calls_of)" "2 1" "a default refresh with an expired cache looks up inside the gap"
+run refresh --workspace w4
+check "$(calls_of)" "0 0" "a default refresh keeps the TTL rule inside the TTL"
+age_stamp 11
+run refresh --workspace w4
+check "$(calls_of)" "0 0" "an aged stamp does not make a default refresh look up"
+
+# A failing forge is rate-limited too, and its cached badge stands.
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+echo "error: could not reach gitlab.com" >&2
+exit 1
+G
+chmod 755 "$BIN/glab"
+age_stamp 11
+run refresh --fresh --workspace w4
+check "$(calls_of)" "1 1" "glab failing: --fresh after an aged stamp makes its calls (the open list, the pipeline)"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "and the cached badge stays";;
+  *) _fail "and the cached badge stays (got: $(report_for w4))";; esac
+ci_check w4 ok "with its cached pipeline"
+run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "glab failing: --fresh again at once makes no call"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "and the cached badge still stands";;
+  *) _fail "and the cached badge still stands (got: $(report_for w4))";; esac
+
+# The pipeline cache keeps its age limit under --fresh, inside the gap (no lookup) and after a failed one.
+aged_pipe() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$T/cache/test%2Fproj.mr10.pipeline"; }
+: > "$STAMP"
+aged_pipe 29; run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "a gated --fresh makes no call"
+ci_check w4 ok "a gated --fresh shows a pipeline cache 29 minutes old"
+aged_pipe 31; run refresh --fresh --workspace w4
+ci_check w4 none "a gated --fresh clears the pipeline tokens at 31 minutes"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase survives the cleared pipeline tokens";;
+  *) _fail "the phase survives the cleared pipeline tokens (got: $(report_for w4))";; esac
+aged_pipe 29; age_stamp 11; run refresh --fresh --workspace w4
+ci_check w4 ok "a failed --fresh lookup shows a pipeline cache 29 minutes old"
+aged_pipe 31; age_stamp 11; run refresh --fresh --workspace w4
+ci_check w4 none "a failed --fresh lookup clears the pipeline tokens at 31 minutes"
+
+# A focus right after a failed lookup, with no cache at all: no PR state is invented and no second
+# call is made inside the gap; after the gap, one.
+rm -rf "$T/cache"
+run refresh --fresh --workspace w4
+check "$(calls_of)" "1 0" "glab failing, nothing cached: a --fresh makes one call"
+case "$(report_for w4)" in *"--token review"*) _fail "no PR state is invented from nothing (got: $(report_for w4))";; *) _pass "no PR state is invented from nothing";; esac
+run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "a second focus inside the gap makes no call"
+case "$(report_for w4)" in *"--token review"*) _fail "and still no PR state (got: $(report_for w4))";; *) _pass "and still no PR state";; esac
+age_stamp 11
+run refresh --fresh --workspace w4
+check "$(calls_of)" "1 0" "after the gap, one call"
+
+# A cold cache with a fresh stamp (a lookup that just failed elsewhere): no PR state and no call.
+glab_stub; rm -rf "$T/cache"; mkdir -p "$T/cache"; : > "$STAMP"
+run refresh --fresh --workspace w4
+check "$(calls_of)" "0 0" "a cold cache with a fresh stamp makes no call"
+case "$(report_for w4)" in *"--token review"*) _fail "a cold cache with a fresh stamp has no PR state (got: $(report_for w4))";; *) _pass "a cold cache with a fresh stamp has no PR state";; esac
+check "$RC" "0" "and the refresh exits 0"
+
+# A GitHub space: two calls, then none inside the gap, and the stamp is its own repository's.
+cp "$GH_OPEN.orig" "$GH_OPEN"; cp "$GH_MERGED.orig" "$GH_MERGED"
+rm -rf "$T/cache"
+ghrun refresh --fresh --workspace wG1
+check "$(gh_calls)" "2" "a GitHub --fresh with no stamp makes two gh calls"
+phase_check wG1 review "$ICON_MR #21" "and reports the PR"
+ghrun refresh --fresh --workspace wG1
+check "$(gh_calls)" "0" "a GitHub --fresh again at once makes no gh call"
+phase_check wG1 review "$ICON_MR #21" "and the report is unchanged"
+[ -e "$T/cache/github@test%2Fproj3.lookup" ] && _pass "a GitHub lookup writes github@<key>.lookup" || _fail "a GitHub lookup writes github@<key>.lookup"
+
+# The stamp is replaced atomically, never touched in place (Ruling 12): a rename of a sibling
+# temporary file onto it, so its inode changes, and none is left behind.
+job_reset
+: > "$MVLOG"
+run refresh --force
+ino1="$(stat -f %i "$T/cache/test%2Fproj.lookup")"
+check "$(grep -cE "^mv -f $T/cache/test%2Fproj\.lookup\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
+  "the stamp is renamed into place from a sibling temporary file"
+run refresh --force
+ino2="$(stat -f %i "$T/cache/test%2Fproj.lookup")"
+[ "$ino1" != "$ino2" ] && _pass "a lookup replaces the stamp file (inode $ino1 -> $ino2)" \
+  || _fail "a lookup replaces the stamp file (inode $ino1 -> $ino2)"
+check "$(ls "$T/cache" | grep -Ec '\.lookup\.')" "0" "no temporary stamp file is left in the cache directory"
+: > "$T/cache/test%2Fproj.lookup.ABCDEF"
+run refresh --force
+check "$(ls "$T/cache" | grep -c 'lookup.ABCDEF')" "0" "a refresh sweeps its repository's stray temporary stamp"
+
+# Two --fresh refreshes of one repository at once: the lock serialises them, the second waits, sees
+# the stamp the first wrote and answers from its cache. One lookup's worth of calls is made.
+job_reset; mkdir -p "$T/cache"; : > "$STAMP"; age_stamp 11
+echo 1 > "$GLD/sleep-test__proj"
+rm -f "$T/conc-a.rc" "$T/conc-b.rc"; : > "$CALLS"
+conc_start() { # conc_start <tag> -> CONCPID: a --fresh refresh of w4 in the background; its status goes to conc-<tag>.rc
+  ( PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" HERDR_PHASE_CACHE_DIR="$T/cache" HERDR_PHASE_TTL=120 \
+      HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" refresh --fresh --workspace w4 >"$T/conc-$1.out" 2>&1
+    echo $? > "$T/conc-$1.rc" ) &
+  CONCPID=$!
+}
+conc_start a; ca=$CONCPID; conc_start b; cb=$CONCPID
+for ((i = 0; i < 200; i++)); do [ -e "$T/conc-a.rc" ] && [ -e "$T/conc-b.rc" ] && break; sleep 0.1; done
+for p in $ca $cb; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+[ -e "$T/conc-a.rc" ] && [ -e "$T/conc-b.rc" ] && _pass "both concurrent --fresh refreshes finished within 20 s" \
+  || _fail "both concurrent --fresh refreshes finished within 20 s"
+check "$(cat "$T/conc-a.rc" 2>/dev/null)$(cat "$T/conc-b.rc" 2>/dev/null)" "00" "both exit 0"
+check "$(glab_calls)" "2" "two concurrent --fresh refreshes make one lookup's worth of mr list calls"
+check "$(grep -c -E "^herdr workspace report-metadata w4 .*--token review=$ICON_MR !10 " "$CALLS")" "2" "both report review !10"
+check "$(lock_busy)" "0" "no lock outlives the concurrent refreshes"
+rm -rf "$GLD" "$T/held" "$T/conc-"*
+glab_stub
+rm -rf "$T/cache"
+
+echo
 echo "I. the wiring that makes the badges appear and persist"
 # These are static assertions about config, not behaviour of the script — but nothing else
 # catches them, and each one silently produces no badges rather than an error.
@@ -1349,6 +1504,14 @@ else
   grep -A3 'on = "workspace.focused"' "$MANIFEST" | grep -q 'HERDR_WORKSPACE_ID' \
     && _pass "the focus hook refreshes only the focused space" \
     || _fail "the focus hook refreshes only the focused space"
+  # Focus looks the space up fresh (Ruling 7); without --fresh a focus answers from a cache the TTL
+  # allows to be 120 s old, and the badge the user is about to read is the stale one.
+  grep -A3 'on = "workspace.focused"' "$MANIFEST" | grep -qF 'refresh --fresh --workspace \"$HERDR_WORKSPACE_ID\"' \
+    && _pass "the focus hook passes --fresh --workspace" \
+    || _fail "the focus hook passes --fresh --workspace"
+  grep -A3 'on = "workspace.focused"' "$MANIFEST" | grep -qF 'else exec \"$P\" refresh; fi' \
+    && _pass "the focus hook falls back to a plain refresh without a workspace id" \
+    || _fail "the focus hook falls back to a plain refresh without a workspace id"
 
   # A token the sidebar never references is reported into a void.
   for tok in active draft review merged; do
@@ -1378,14 +1541,18 @@ else
   # Invoking anything but `refresh` would load the agent and badge nothing.
   grep -q '<string>refresh</string>' "$PLIST" \
     && _pass "the agent runs phase.sh refresh" || _fail "the agent runs phase.sh refresh"
-  # An interval longer than the MR-table TTL means every run re-reads GitLab; a much longer
-  # one would make the badge stale for exactly as long as nobody switches spaces, which is
-  # the failure this exists to fix.
+  # The timer forces every lookup (Ruling 6): without it a focus refresh renews a cache and the
+  # next timer run reuses it, which is the ~323 s worst case.
+  grep -A1 '<string>refresh</string>' "$PLIST" | grep -q '<string>--force</string>' \
+    && _pass "the agent runs phase.sh refresh --force" || _fail "the agent runs phase.sh refresh --force"
+  # The timer forces every lookup, so the interval is the badge's worst-case staleness plus one run
+  # (about 8 s): 50 s keeps a change on screen within about 65 s, and a much longer one would make
+  # it stale for exactly as long as nobody switches spaces, which is the failure this exists to fix.
   ival="$(grep -A1 '<key>StartInterval</key>' "$PLIST" | grep -oE '[0-9]+' | head -1)"
-  if [ -n "$ival" ] && [ "$ival" -ge 60 ] && [ "$ival" -le 600 ]; then
-    _pass "the refresh interval is between 1 and 10 minutes ($ival s)"
+  if [ -n "$ival" ] && [ "$ival" -ge 30 ] && [ "$ival" -le 60 ]; then
+    _pass "the refresh interval is between 30 and 60 seconds ($ival s)"
   else
-    _fail "the refresh interval is between 1 and 10 minutes (got '${ival:-none}')"
+    _fail "the refresh interval is between 30 and 60 seconds (got '${ival:-none}')"
   fi
   # The agent must run at normal scheduling priority. ProcessType=Background puts every one of
   # the ~100 forks a refresh makes — git, python3, glab, herdr — in the lowest band, and
