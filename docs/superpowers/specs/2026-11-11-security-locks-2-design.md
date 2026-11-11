@@ -1,6 +1,6 @@
 # Security locks 2: seven small locks from the 2026-11-11 setup review
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-11-11
 **Branch:** `fix/security-locks`, in the `wt` checkout `~/.local/share/chezmoi-fix-security-locks`
 **Related:** `2026-11-01-security-locks-design.md` (first round; unchanged). Item 5 would supersede one
