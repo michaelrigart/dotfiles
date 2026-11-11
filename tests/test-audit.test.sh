@@ -108,6 +108,22 @@ run try bin/s.sh 'not in the file' x s
 rc_is 2 "a FIND that is absent exits 2"
 run try tests/s.test.sh 'check "' 'check  "' s
 rc_is 2 "a FIND that occurs several times exits 2"
+run try tests/s.test.sh "$FLAGCHK" 'bad "flag is set (want 1, got 2)"' s
+eq "$(jget verdict)" killed "B4: a FAIL label with a (want, got) detail is a kill"
+eq "$(jget killers)" '["flag is set"]' "B4: the killer is the baseline label it extends"
+eq "$(jget unmatched)" '[]' "B4: nothing is unmatched"
+run try tests/s.test.sh "$FLAGCHK" "bad \"y (z)\"; $FLAGCHK" s
+eq "$(jget killers)" '[]' "B4: a detail on a label the baseline lacks is no killer"
+eq "$(jget unmatched)" '["y (z)"]' "B4: it is unmatched"
+sum=$(cksum <"$T/repo/bin/s.sh")
+run try "$T/repo/bin/s.sh" "$ADD" "$SUB" s
+rc_is 2 "B5: an absolute FILE is refused"
+has "outside the copy" "B5: the refusal says why" "$ERR"
+run try ../../repo/bin/s.sh "$ADD" "$SUB" s
+rc_is 2 "B5: a ../ FILE is refused"
+eq "$(cksum <"$T/repo/bin/s.sh")" "$sum" "B5: the checkout's file is byte-identical"
+run try bin/s.sh "$ADD" "$SUB" ../../repo/tests/s
+rc_is 2 "B5: a ../ suite is refused"
 clean B
 
 echo "C. hangs and crashes"
@@ -142,22 +158,24 @@ eq "$(runs red)" 1 "D: only the baseline ran, not the mutant"
 clean D
 
 echo "F. interrupted"
-mk F
-# Not through aud(): a backgrounded function is a subshell, and SIGTERM must reach the harness itself.
-"$AUDIT" --repo "$T/repo" --state "$T/state" --copy-root "$T/copies" --lock "$T/lock" --probe-dir "$T/ro" \
-  --timeout-floor 60 try bin/s.sh 'FLAG=on' "$HANG" s >"$T/out" 2>"$T/err" &
-pid=$!
-for i in $(seq 1 100); do started && break; sleep 0.1; done
-kill -TERM "$pid"
-wait "$pid"; RC=$?
-[ "$RC" -ne 0 ] && _pass "F: the harness exits on SIGTERM (rc=$RC)" || _fail "F: the harness exits on SIGTERM (rc=0)"
-gone && _pass "F: the hanging suite is killed" || _fail "F: the hanging suite survived SIGTERM"
-eq "$(ls "$T/copies" 2>/dev/null | wc -l | tr -d ' ')" 0 "F: its copy directory is gone"
-lockf -t 0 "$T/lock" true; RC=$?
-rc_is 0 "F: the lock is free"
-clean F
-run try bin/s.sh "$ADD" "$SUB" s
-eq "$(jget verdict)" killed "F: the next run starts from a clean baseline"
+for sig in TERM HUP; do
+  mk "F-$sig"
+  # Not through aud(): a backgrounded function is a subshell, and the signal must reach the harness itself.
+  "$AUDIT" --repo "$T/repo" --state "$T/state" --copy-root "$T/copies" --lock "$T/lock" --probe-dir "$T/ro" \
+    --timeout-floor 60 try bin/s.sh 'FLAG=on' "$HANG" s >"$T/out" 2>"$T/err" &
+  pid=$!
+  for i in $(seq 1 100); do started && break; sleep 0.1; done
+  kill -"$sig" "$pid"
+  wait "$pid"; RC=$?
+  [ "$RC" -ne 0 ] && _pass "F: the harness exits on SIG$sig (rc=$RC)" || _fail "F: the harness exits on SIG$sig (rc=0)"
+  gone && _pass "F: the hanging suite is killed on SIG$sig" || _fail "F: the hanging suite survived SIG$sig"
+  eq "$(ls "$T/copies" 2>/dev/null | wc -l | tr -d ' ')" 0 "F: its copy directory is gone after SIG$sig"
+  lockf -t 0 "$T/lock" true; RC=$?
+  rc_is 0 "F: the lock is free after SIG$sig"
+  clean "F-$sig"
+  run try bin/s.sh "$ADD" "$SUB" s
+  eq "$(jget verdict)" killed "F: the next run after SIG$sig starts from a clean baseline"
+done
 
 echo "G. the run lock"
 mk G
@@ -171,6 +189,12 @@ for i in $(seq 1 50); do lockf -k -t 0 "$T/lock" true 2>/dev/null; [ $? -eq 75 ]
 run --timeout-floor 2 try bin/s.sh "$ADD" "$SUB" s
 eq "$(jget verdict)" killed "G2: waiting for the lock does not trip the timeout"
 has "waiting for the test-run lock $T/lock" "G2: it says it is waiting" "$ERR"
+wait
+lockf -k "$T/lock" sleep 4 &
+for i in $(seq 1 50); do lockf -k -t 0 "$T/lock" true 2>/dev/null; [ $? -eq 75 ] && break; sleep 0.1; done
+run try bin/s.sh "$ADD" "$SUB" red
+eq "$(jget verdict)" baseline-red "G2: a lock wait before a red baseline still reports it"
+awk -v s="$(jget seconds)" 'BEGIN{exit !(s < 2)}' && _pass "G2: the 4 s lock wait is not in the run's seconds" || _fail "G2: the run's seconds include the lock wait ($(jget seconds))"
 wait
 clean G
 
@@ -210,6 +234,77 @@ second=$("${GIT[@]}" -C "$T/repo" rev-parse HEAD)
 run --ref "$second" inventory s
 rc_is 2 "a second commit into the same state is refused"
 has "state is bound to" "I: the refusal names the binding" "$ERR"
+
+echo "J. hardening"
+mk J
+run --probe-dir "$T/nope" inventory s
+rc_is 2 "J: a probe directory that cannot be probed is refused"
+has "refusing: cannot probe $T/nope" "J: the refusal names the error" "$ERR"
+eq "$(runs s)" 0 "J: nothing ran after it"
+run try tests/s.test.sh "$FLAGCHK" "mkdir -p \"\$here/../rodir/sub\"; touch \"\$here/../rodir/sub/f\"; chmod 555 \"\$here/../rodir/sub\"; $FLAGCHK" s
+eq "$(jget verdict)" survived "J: a suite that leaves a read-only tree still finishes"
+eq "$(ls "$T/copies" 2>/dev/null | wc -l | tr -d ' ')" 0 "J: its copy is removed anyway"
+case "$ERR" in *"copy left behind"*) _fail "J: no leftover warning when the retry works";; *) _pass "J: no leftover warning when the retry works";; esac
+run try tests/s.test.sh "$FLAGCHK" "trap 'bad \"term reaches the suite\"' TERM; kill -TERM \$\$; sleep 0.3; $FLAGCHK" s
+eq "$(jget unmatched)" '["term reaches the suite"]' "J: a suite starts with SIGTERM unblocked"
+clean J
+U=$(python3 - "$AUDIT" "$ROOT/unit" <<'PY'
+import contextlib, importlib.util, io, json, os, subprocess, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("audit", sys.argv[1])
+a = importlib.util.module_from_spec(spec); spec.loader.exec_module(a)
+root = Path(sys.argv[2]); root.mkdir()
+out = {}
+R = lambda passed, failed, rc=1: a.Run(rc, 0.1, False, passed, failed, "")
+out["longest"] = list(a.attribute(R(["x", "x (a)", "w"], [], 0), R(["w", "q"], ["x (a) (b)"]))[1:])
+st = a.Store(root / "state"); st.state.mkdir()
+(st.state / "runs-k.jsonl").write_text('{"a": 1}\n{"a": 2')
+out["torn"] = st.records("k")
+(st.state / "runs-m.jsonl").write_text('{"a": \n{"a": 2}\n')
+try:
+    st.records("m"); out["middle"] = "parsed"
+except ValueError:
+    out["middle"] = "raised"
+src = root / "src"; src.mkdir()
+def vcs(*x, cwd=src):
+    return subprocess.run(["git", "-c", "user.name=u", "-c", "user.email=u@l", "-c", "commit.gpgsign=false", *x],
+                          cwd=cwd, check=True, capture_output=True)
+vcs("init", "-q"); (src / "f").write_text("x"); vcs("add", "-A"); vcs("commit", "-q", "-m", "m")
+sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, capture_output=True, text=True).stdout.strip()
+tpl = root / "tpl"; (tpl / "hooks").mkdir(parents=True)
+(tpl / "TEMPLATE_MARKER").write_text("t")
+hook = tpl / "hooks" / "pre-commit"; hook.write_text("#!/bin/sh\nexit 1\n"); hook.chmod(0o755)
+cfg = root / "gitconfig"
+cfg.write_text("[init]\n\tdefaultBranch = trunk\n\ttemplateDir = %s\n[core]\n\thooksPath = %s\n" % (tpl, tpl / "hooks"))
+os.environ["GIT_CONFIG_GLOBAL"] = str(cfg)
+try:
+    copy = a.build_copy(src, sha, root / "copies", "unit")
+    out["copy"] = "built"
+    out["template"] = "leaked" if (copy / ".git" / "TEMPLATE_MARKER").exists() else "clean"
+    out["branch"] = subprocess.run(["git", "-C", str(copy), "symbolic-ref", "HEAD"], capture_output=True, text=True).stdout.strip()
+except Exception as e:
+    out["copy"] = "failed: %s" % e
+a.SESSION.cleanup()
+d = root / "stuck"; d.mkdir()
+a.SESSION.copies.append(d)
+a.shutil.rmtree = lambda *x, **k: None
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    a.SESSION.cleanup()
+out["left"] = err.getvalue().strip()
+print(json.dumps(out))
+PY
+)
+uget(){ python3 -c 'import json,sys
+v=json.loads(sys.argv[1])[sys.argv[2]]
+print(v if isinstance(v,str) else json.dumps(v))' "$U" "$1"; }
+eq "$(uget longest)" '[["x (a)"], []]' "J: the longest qualifying baseline label is the killer"
+eq "$(uget torn)" '[{"a": 1}]' "J: a torn last line of a run file is skipped"
+eq "$(uget middle)" raised "J: a bad line that is not the last still raises"
+eq "$(uget copy)" built "J: the copy builds despite a global hook and template"
+eq "$(uget template)" clean "J: the user's init template never reaches the copy"
+eq "$(uget branch)" refs/heads/main "J: the copy's branch is main, not the user's default"
+eq "$(uget left)" "copy left behind: $ROOT/unit/stuck" "J: an unremovable copy is reported"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

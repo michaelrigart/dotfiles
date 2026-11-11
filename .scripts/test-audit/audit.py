@@ -6,6 +6,7 @@ their assertions the way tests/run.sh counts them, and attributes kills. Stdlib 
 """
 import argparse
 import dataclasses
+import errno
 import fcntl
 import json
 import os
@@ -31,9 +32,42 @@ KV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[A-Za-z_]+$")
 TMP_RE = re.compile(r"(?<![\w.~-])(?:/private)?/(?:tmp|var/folders)(?:/[^\s'\"]*)?")
 
 
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
 def die(message):
     print(message, file=sys.stderr)
     sys.exit(2)
+
+
+def make_writable(path):
+    if os.path.islink(path) or not os.path.isdir(path):
+        return
+    try:
+        os.chmod(path, 0o700)
+        for name in os.listdir(path):
+            make_writable(os.path.join(path, name))
+    except OSError:
+        pass
+
+
+def remove_tree(path):
+    shutil.rmtree(path, ignore_errors=True)
+    if not os.path.lexists(path):
+        return
+    make_writable(path)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        print(f"copy left behind: {path}", file=sys.stderr)
+
+
+def inside_copy(copy, relative):
+    """The caller-supplied path joined onto the copy, which must resolve inside it."""
+    copy = Path(copy).resolve()
+    target = (copy / relative).resolve()
+    if copy not in target.parents:
+        die(f"refusing: {relative} resolves to {target}, outside the copy {copy}")
+    return target
 
 
 def kill_group(proc):
@@ -80,7 +114,7 @@ class Session:
         path.write_text(text)
 
     def cleanup(self):
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        for sig in STOP_SIGNALS:
             signal.signal(sig, signal.SIG_IGN)
         if self.proc is not None:
             kill_group(self.proc)
@@ -92,7 +126,7 @@ class Session:
                 pass
         self.restores.clear()
         for copy in self.copies:
-            shutil.rmtree(copy, ignore_errors=True)
+            remove_tree(copy)
         self.copies.clear()
         for lock in self.locks:
             lock.release()
@@ -128,7 +162,15 @@ class Store:
         path = self._path(kind)
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        lines = [line for line in path.read_text().splitlines() if line.strip()]
+        records = []
+        for n, line in enumerate(lines):
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                if n < len(lines) - 1:
+                    raise
+        return records
 
     def meta(self):
         path = self.state / "meta.json"
@@ -143,7 +185,7 @@ def build_copy(repo, sha, root, command):
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     copy = root / f"{sha[:12]}-{command}-{os.getpid()}"
-    shutil.rmtree(copy, ignore_errors=True)
+    remove_tree(copy)
     copy.mkdir()
     SESSION.copies.append(copy)
     archive = subprocess.Popen(["git", "-C", str(repo), "archive", sha], stdout=subprocess.PIPE)
@@ -151,7 +193,8 @@ def build_copy(repo, sha, root, command):
     archive.stdout.close()
     if archive.wait() != 0 or untar.returncode != 0:
         die(f"cannot archive {sha} from {repo}")
-    for args in (["init", "-q"], ["add", "-A"], [*GIT_IDENT, "commit", "-q", "-m", "audit copy"]):
+    for args in (["-c", "init.templateDir=", "init", "-q", "-b", "main"], ["add", "-A"],
+                 [*GIT_IDENT, "commit", "-q", "-m", "audit copy"]):
         subprocess.run(["git", "-C", str(copy), *args], check=True, stdout=subprocess.DEVNULL)
     return copy
 
@@ -209,10 +252,17 @@ def run_suite(copy, suite, timeout, lock):
     timed_out = False
     with tempfile.TemporaryFile() as out:
         start = time.monotonic()
-        proc = subprocess.Popen([f"./{suite}.test.sh", *args], cwd=copy / "tests",
-                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                env=env, start_new_session=True)
-        SESSION.proc = proc
+        # A stop signal between Popen and the assignment would leave the new-session suite
+        # running, so it waits; the child gets an empty mask back before it execs.
+        signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
+        try:
+            proc = subprocess.Popen([f"./{suite}.test.sh", *args], cwd=copy / "tests",
+                                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                    env=env, start_new_session=True,
+                                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, ()))
+            SESSION.proc = proc
+        finally:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, STOP_SIGNALS)
         try:
             rc = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -239,10 +289,22 @@ def attribute(baseline, run):
             or (run.rc != 0 and not run.failed)):
         return "inconclusive", [], []
     if run.failed:
-        known = set(baseline.passed)
-        return ("killed", [x for x in run.failed if x in known],
-                [x for x in run.failed if x not in known])
+        killers, unmatched = [], []
+        for label in run.failed:
+            killer = killer_label(label, baseline.passed)
+            (unmatched if killer is None else killers).append(killer or label)
+        return "killed", killers, unmatched
     return "survived", [], []
+
+
+def killer_label(failed, baseline_passed):
+    """The baseline-passed label a failed label stands for: itself, or the longest one it
+    extends with ` (detail)`, as git-forge-guard prints `FAIL x (want a, got b)` for `ok x`."""
+    known = set(baseline_passed)
+    if failed in known:
+        return failed
+    cands = [p for p in known if failed.startswith(p + " (")]
+    return max(cands, key=len) if cands else None
 
 
 def suite_row(copy, suite):
@@ -278,8 +340,10 @@ def refuse_if_writable(probe_dir):
     probe = os.path.join(probe_dir, f".test-audit-probe-{os.getpid()}")
     try:
         fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except OSError:
-        return
+    except OSError as err:
+        if err.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+            return
+        die(f"refusing: cannot probe {probe_dir}: {err.strerror}")
     os.close(fd)
     os.unlink(probe)
     die(f"refusing: {probe_dir} is writable, so this shell is not sandboxed")
@@ -343,8 +407,8 @@ def cmd_inventory(args):
 
 def cmd_try(args):
     copy = prepare(args, "try", bind=False)
-    target = copy / args.file
-    script = copy / "tests" / f"{args.suite}.test.sh"
+    target = inside_copy(copy, args.file)
+    script = inside_copy(copy, Path("tests") / f"{args.suite}.test.sh")
     if not script.exists():
         die(f"no such suite: {args.suite}")
     if header(script, "test-requires") not in ("", "heavy"):
@@ -426,8 +490,8 @@ def main(argv=None):
     args.state = args.state or os.path.join(args.repo, ".superpowers", "test-audit")
     args.subjects_explicit = args.subjects is not None
     args.subjects = args.subjects or str(args.harness_dir / "subjects.tsv")
-    signal.signal(signal.SIGINT, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, on_signal)
     try:
         args.func(args)
     finally:
