@@ -102,8 +102,9 @@ If no base says yes, the branch is kept with today's message.
 
 > **2026-11-11 — amended during the build.** Both `diff-tree` calls also pass
 > `--ignore-submodules=none`, because `submodule.<name>.ignore` hides a gitlink change from plumbing
-> too, and a hidden commit would count as empty (found by the final review; it can only keep more
-> branches). The tests judge `refs/heads/<branch>`, so a tag of the same name is never judged in
+> too, and a hidden commit would count as empty (found by the final review). The flag makes every
+> change visible to the ids, so a hidden change can no longer be skipped (the bug), and a branch is
+> deleted only when the base has that change too. The tests judge `refs/heads/<branch>`, so a tag of the same name is never judged in
 > the branch's place. The plan's cases `rb9`–`rb15` add to the spec's eight.
 
 Both new tests find candidates by **verbatim patch id**. A matching id only nominates a pair; the
