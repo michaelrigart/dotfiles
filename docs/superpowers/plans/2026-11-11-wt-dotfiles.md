@@ -1,6 +1,6 @@
 # `wt` Checkouts for the Dotfiles Implementation Plan
 
-**Status:** In progress (branch `feat/wt-dotfiles`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/wt-dotfiles`; the dotfiles have no MR); executed once, do not run again. The Rulings at the end record where the run departed from the text below.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -229,4 +229,23 @@
 
 ## Rulings
 
-Rulings made during the run go here, each with its reason.
+Made during the run, each with its reason. Plan review approved: `xr-1794357300-27308c6f`.
+
+1. **Measured result.** Run A found that `allowWrite` does not honour the `chezmoi-*` glob. Step 7 therefore ran: the entry left `allowWrite` and stays in `$roots`, the sibling `.git` denial stays, and the spec's section 1 records both runs. A sibling is written only by its own session.
+2. **Post-merge check, replacing Finishing step 5's "a fresh session".** The sibling probe measures only from a session started in a sibling. From anywhere else it reads FAIL (exit 2) with an `INCONCLUSIVE: sibling:` line. A sibling session that predates the apply shows the pre-apply `sibling_*` failures. Michael's order:
+   1. `chezmoi apply`.
+   2. Quit and restart Claude Code in `~/.local/share/chezmoi-feat-wt-dotfiles`.
+   3. `./tests/run.sh live-write-boundary`, sandboxed. Expect `ok`, with `sibling_write=WRITABLE` and no `failed_keys`.
+   4. Only then `wt-rm feat/wt-dotfiles`. After that, the check needs a throwaway `wt` line.
+3. **Run B attribution.** With no overlay, Claude Code already denies `.mcp.json`, `.git/config*` and the checkout's `.git` file under a session's working directory. Task 2 measured this before the apply. Run B's verdict that the root-keyed denials bite therefore rests on `.codex/config.toml` and `.lazygit.yml`, as section 1 says. This also shows that the spec's background line ("Claude Code's built-in denial covers only the session's own `.claude/settings*.json`") is incomplete. It has no design consequence, and the spec otherwise stays as signed off.
+4. **run.sh.** Under a kv suite's FAIL row, `tests/run.sh` now prints that suite's `INCONCLUSIVE:` lines, so an inconclusive sibling run explains itself. This adds files to Task 2's list (`tests/run.sh`, `tests/run.test.sh`). No kv value is echoed, because only INCONCLUSIVE lines and their indented continuations are shown, and of the four kv suites only `live-write-boundary` prints one.
+5. **Task 5 wording.** The cap ruled for `global.md`: naming the sibling path made it 151 lines, so `global.md` says "a sibling checkout `<repo>-<branch>` beside the main one" and `AGENTS.md` names `~/.local/share/chezmoi-<branch>`. `README.md` keeps its "Managing Dotfiles" example, which is Michael's own flow on `main` and needs no branch switch.
+6. **Batch and commits.** Tasks 1–3 ran as one parallel batch, under the global "Parallel tasks" rule. Implementers did not commit; the controller committed each task and each fix round.
+7. **Minor findings left.**
+   - The decoy setup is duplicated in two standalone suites (codex-daemon and unifi-network-mcp).
+   - Under a kv FAIL row, `run.sh` prints the INCONCLUSIVE line after `failed_keys`.
+   - A ragged comment wrap in `tests/claude-settings.test.sh`.
+   All are display or comment only; the final review triaged them as leave.
+8. **Process.**
+   - Task 5's third fix round was a pure reflow. The controller checked it with a word diff instead of a reviewer seat, and the final review covers it.
+   - This Status and these Rulings were committed before the Codex pre-merge review, not after it, so the approved commit is the last one.
