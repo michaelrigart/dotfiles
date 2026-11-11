@@ -26,8 +26,10 @@
 #   - the timer forces every lookup (--force), so a change shows within about a minute. Without
 #     --force a focus refresh would renew a cache and the next timer run would reuse it;
 #   - a focus refresh (--fresh --workspace) looks its space's repository up whatever the TTL, so the
-#     badge being read is at most FRESH_GAP (10 s) old, unless a lookup of that repository started
-#     less than FRESH_GAP ago: then it answers from the cache, as a failed lookup would;
+#     phase being read is at most about FRESH_GAP (10 s) old, unless a lookup of that repository
+#     started less than FRESH_GAP ago: then it answers from the cache, as a failed lookup would. The
+#     stamp is per repository but the lookup is only the focused space's: a CI token is as old as
+#     the last lookup of that space's own pipeline;
 #   - the startup and worktree hooks use the TTL (120 s), and the keybinding is `--force`.
 # The gap is measured from <key>.lookup, a stamp every forge lookup writes before it calls out. It
 # is written and read only under the repository's lock, so a failing forge, or two refreshes at
@@ -135,7 +137,7 @@ usage() {
     '' \
     '  phase.sh refresh [--force | --fresh] [--workspace ID]   report phases (all spaces, or one)' \
     '      --force  look every repository up now' \
-    '      --fresh  look up now, unless that repository was looked up in the last 10 s' \
+    "      --fresh  look up now, unless that repository was looked up in the last $FRESH_GAP s" \
     '  phase.sh --help' \
     '' \
     'Phases: active, draft, review, merged.'
@@ -557,7 +559,7 @@ for w in d.get("result", {}).get("workspaces", []):
 # a background subshell, never in the main shell: the lock is on that subshell's fd 9, and it is
 # released only when the job and every child that inherited fd 9 have exited.
 refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>path<TAB>root lines>
-  local root="$1" run="$2" spaces="$3" ws path r phase value table="" forge="" slug="" key out first second ci iid mode="ttl"
+  local root="$1" run="$2" spaces="$3" ws path r phase value table="" forge="" slug="" key out first second ci iid age mode="ttl"
   slug="$(repo_slug "$root" || true)"
   if [ -n "$slug" ]; then
     forge="${slug%% *}"; slug="${slug#* }"
@@ -574,7 +576,10 @@ refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>pa
     # while a lookup of this repository began less than FRESH_GAP ago, and looks up otherwise.
     case "$run" in
       force) mode="force" ;;
-      fresh) if [ "$(age_of "$CACHE_DIR/$key.lookup")" -lt "$FRESH_GAP" ]; then mode="cached"; else mode="force"; fi ;;
+      fresh)
+        # A stamp dated in the future (the clock stepped back) is no evidence of a recent lookup.
+        age="$(age_of "$CACHE_DIR/$key.lookup")"
+        if [ "$age" -ge 0 ] && [ "$age" -lt "$FRESH_GAP" ]; then mode="cached"; else mode="force"; fi ;;
     esac
     table="$(mr_table "$forge" "$slug" "$mode" || true)"
   fi

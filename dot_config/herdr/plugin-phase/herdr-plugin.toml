@@ -25,9 +25,11 @@ command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
 # the event ever arrives without an id.
 #
 # --fresh looks that space's repository up on the forge whatever the cache TTL (120 s), so the
-# badge being read is at most 10 s old, unless a lookup of the repository began less than 10 s
-# ago (the timer's, another focus): then it answers from the cache. A fallback without an id is
-# a plain `refresh`, on the TTL like the hooks below.
+# phase being read is at most about 10 s old, unless a lookup of the repository began less than
+# 10 s ago (the timer's, another focus): then it answers from the cache. The 10 s limit is per
+# repository but the lookup is only the focused space's, so a CI token is as old as the last
+# lookup of that space's own pipeline. A fallback without an id is a plain `refresh`, on the TTL
+# like the hooks below.
 #
 # Not load-bearing on its own, for two reasons. It cannot see an MR opened or merged while you
 # sit in the same space — that state lives on GitLab and fires no Herdr event — and on herdr
