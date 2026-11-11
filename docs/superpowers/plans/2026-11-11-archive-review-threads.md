@@ -60,8 +60,8 @@
   - `read_started(path: str) -> list[tuple[str, str]]`: (id, path) for each well-formed line, in order. A malformed line is skipped; a missing file is `[]`.
   - CLI: `xreview-rpc thread-start --cwd DIR [--started FILE]`.
 
-- [ ] **Step 1: Write the failing tests (section `ST`)**, with `XDG_STATE_HOME="$T/st"` and `F="$T/st/xreview/r/started"`:
-  - ST1: `rpc thread-start --cwd "$T/w/link" --started "$F"` (the `link` symlink of section R) prints `th-new-1`, exits 0, and `F` holds exactly `{"id": "th-new-1", "path": "<realpath of $T/w/link>"}` (compare with `jq -c`).
+- [ ] **Step 1: Write the failing tests (section `ST`)**, with `XDG_STATE_HOME="$T/st"` and `F="$T/st/xreview/r/started"`. The section makes its own fixtures, because section R's `$T/w` does not exist yet when ST runs: `SR="$(mkdir -p "$T/st/repo" && cd "$T/st/repo" && pwd -P)"`, and `ln -s "$SR" "$T/st/link"`.
+  - ST1: `rpc thread-start --cwd "$T/st/link" --started "$F"` prints `th-new-1` and exits 0. `F` holds exactly `{"id": "th-new-1", "path": "$SR"}` (compare with `jq -c`).
   - ST2: two starts (`th-new-1`, then `th-new-2`) leave two lines, in that order.
   - ST3: with `F` pre-seeded with `{"id":"a","path":"/x"}` and no newline, a start leaves `read_started(F)` = `[("a","/x"),("th-new-1",<path>)]`. With `F` seeded as `{"id":"a","pa` (a partial line), it is `[("th-new-1",<path>)]`.
   - ST4: when `F` is a directory, the id is still printed and the exit status is 0. Stderr contains `could not record th-new-1`.
@@ -90,7 +90,9 @@
   - `gone(path: str) -> bool | None`. `os.lstat` raising `FileNotFoundError` is True, success is False, and any other `OSError` is None.
   - `started_drop(path: str, ids: set[str]) -> None`: under the lock, rewrites `path` without those ids (tmp + `os.replace`), and removes the file when nothing is left.
   - `clear_review_thread(sd: str, tid: str) -> bool`: removes `sd/review-thread` when its stripped content is `tid`.
-  - `archive_for_good(c, tid: str, cwd: str) -> str | None`. None means the archive is confirmed: `thread/archive` answered, or it was refused while `archived(c, tid, cwd)` is True. Otherwise it returns the reason: `archive failed: <message>`, or `archive not confirmed`.
+  - `archive_for_good(c, tid: str, cwd: str) -> str | None`. It sends `thread/archive`, then always asks `archived(c, tid, cwd)`. It returns None only when that answer is True, whether `thread/archive` answered or was refused (spec §2: the archived listing confirms, C9). Otherwise it returns the reason:
+    - `archive failed: <message>` when the archive was refused and the listing does not show the thread;
+    - `archive not confirmed` when the archive answered but the listing is False or unreadable.
   - CLI: `xreview-rpc archive-checkout --dir DIR`.
     - stdout: one `archived <id>` per confirmed thread.
     - Exit codes: 0 when everything is done or there is nothing to do; 1 on any failure; 2 when `DIR` still exists; 5 when the daemon is unreachable and there are candidates.
@@ -119,8 +121,10 @@
       - expected: exit 1, stderr has `<id>: archive failed`, then the retry line;
       - the entry and `review-thread` stay.
     - AC9: `thread/archive` is refused but `thread/list` lists the thread. It is printed `archived <id>`, its entry is dropped, and the exit status is 0.
-    - AC10: `--dir "$T/w/link/gone"` (a symlinked parent) matches `started` paths recorded under `$W/gone`.
+    - AC10: the section makes its own symlink, `ln -s "$W" "$T/ac/wlink"`. Section R's `$T/w/link` points at `$W/repo`, so it is not used. `--dir "$T/ac/wlink/gone"` matches `started` paths recorded under `$W/gone`.
     - AC11: the daemon reads the thread as `active`. Exit 1, `<id>: running a turn`, and no `thread/archive` is sent.
+    - AC12: `thread/archive` answers, but `thread/list` does not list the thread. Exit 1, stderr has `<id>: archive not confirmed`, and the entry and `review-thread` stay.
+    - AC13: `thread/archive` answers, but `thread/list` errors. The result is the same as AC12.
 - [ ] **Step 3: Run them; they fail.** `./tests/run.sh xreview-rpc`. Expected: K2 and AC FAIL.
 - [ ] **Step 4: Implement.**
   - `cmd_thread_archive`: on an error answer, `thread/read` the thread. When its `cwd` is a non-empty string and `archived(c, tid, cwd) is True`, return 0.
@@ -158,7 +162,7 @@
     - `"packet"` when the first message is a packet;
     - `"old pane"` when there are at least two messages, the first is not a packet, and every later one is;
     - otherwise None.
-  - `user_messages(c, tid: str) -> list[str] | None`: the texts of every `userMessage` item, oldest first, from `thread/turns/list` with `itemsView: "summary"` across all pages. None on an error answer.
+  - `user_messages(c, tid: str) -> list[str] | None`: the texts of every `userMessage` item, oldest first, from `thread/turns/list` with `itemsView: "summary"`, following `nextCursor` across every page. None when any page answers with an error, or when a cursor repeats. Such a thread goes under "could not read", never selected.
   - `rollout_origin(path: str) -> str | None`: the `payload.cwd` of the rollout's first `session_meta` line. A `.zst` file goes through `zstd -dc --`. None when the file cannot be read.
   - CLI: `xreview-rpc cleanup [--archive]`. Exit 0, or 1 when an archive fails, or 5 when the daemon is unreachable.
 
@@ -193,12 +197,20 @@
   - CL5b: a cwd whose existence cannot be read (a mode 000 parent) goes under `could not read`.
   - CL6: `XREVIEW_RPC_STDIO=false` exits 5.
   - CL7: `thread/list` in two pages (`nextCursor`) lists threads from both pages.
+  - CL8: user history across pages (`by_thread` lists for `thread/turns/list`):
+    - `h1` has a greeting and packets on one page, and a personal message on the next. It is listed nowhere, and is not archived with `--archive`.
+    - `h2` has packets on its first page, and its second page errors. It goes under `could not read`, and is not archived with `--archive`.
+    - `h3` has a greeting on one page and packets only on the next. It goes under the old pane heading, which shows the pages are joined in order.
 - [ ] **Step 2: Run them; they fail.** `./tests/run.sh xreview-rpc`. Expected: CL FAIL.
 - [ ] **Step 3: Implement `cmd_cleanup(a)`.**
   1. List every unarchived thread (`thread/list`, `archived: False`, every source kind, all pages).
   2. Skip a thread whose `gone(cwd)` is False. File one whose `gone(cwd)` is None under "could not read".
   3. File pinned ids (any `<root>/*/pin`) under "pinned".
-  4. A thread in some `started` list is `started`, and its origin is its `started` path. Otherwise classify it from `user_messages`: a thread with no messages is counted for the limit line and not listed, and an unclassified one is not listed. Its origin is `rollout_origin(thread.path)`.
+  4. A thread in some `started` list is `started`, and its origin is its `started` path. Otherwise classify it from `user_messages`:
+     - a None answer goes under "could not read";
+     - a thread with no messages is counted for the limit line and not listed;
+     - an unclassified one is not listed.
+     Its origin is `rollout_origin(thread.path)`.
   5. An unreadable origin goes under "could not read". An origin whose real path is not the real path of `cwd` goes under "differs".
   - Each line: `  <id>  <cwd>  <%Y-%m-%d %H:%M of updatedAt>  <started|packet|old pane>`, plus the reason or `origin <path>` for the not-selected headings.
   - Print every heading, in the order above, as `== <heading> (<n>)`.
