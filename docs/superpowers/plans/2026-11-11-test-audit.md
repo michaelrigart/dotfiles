@@ -180,11 +180,11 @@
     - It prints `[sample] <file>: <done>/<n> (killed a, survived b, inconclusive c)` as each file completes, and `remaining: <n>` at exit.
     - A second process on the same state and command exits 2 with `another sample run holds <state>`.
   - `targeted [--max-minutes N] MANIFEST`: the same resume and lock rules, over `runs-targeted.jsonl`.
-  - `report --section kills|gaps|targeted [--compare STATE]`:
+  - `report --section kills|gaps|targeted [--compare STATE --kind KIND [--only FILE...]]`:
     - `kills`: a row per file (`sampled, killed, flaky, survived, inconclusive, baseline-red, stale, kill rate = killed ÷ (killed + survived)`) and a row per assertion (`suite, label`, and the count and ids of the mutants it killed).
     - `gaps`: every survivor (`file:line, op, before → after`).
     - `targeted`: a row per candidate with its verdict and each mutant's killers.
-    - `--compare STATE [--only FILE...]`: of STATE's killed mutants on the selected files, it lists `lost` (run here, not killed) and `not run` (no final record here). Without `--only`, the selection is the files with any final record here, so mutants that were never rerun do not show as lost. Any kind of mutant counts.
+    - `--compare STATE --kind code|targeted|rule [--only FILE...]`: of STATE's killed mutants of that kind on the selected files, it lists `lost` (run here, not killed) and `not run` (no final record here). `--kind` is required. Without `--only`, the selection is the files with a final record of that kind here, so mutants that were never rerun do not show as lost.
   - `accept CLASSIFICATION_TSV MANIFEST` runs the greedy acceptance above over the `delete` and `merge` rows, in rank order: estimated seconds saved from the inventory, descending, with ties broken by suite and line. It prints one row per candidate: `accepted`, or `rejected` with the reason. The reasons are `not evidenced` (a targeted candidate whose verdict is not `evidenced`), `class evidence in a safety suite`, or `would leave <mutant id> without a killer`. Labels and killers are compared as `suite::label`.
 - The manifest is one JSONL object per candidate:
   - `candidate`, `suite`, `labels` (normalized as in Task 1), `claim` (`duplicate|wording|stub|other`), `duplicate_of` (`["suite::label"]`), `safety` (bool).
@@ -197,7 +197,7 @@
   - **M4. run and resume** (a lost or repeated run): `sample` leaves a final record for every sampled mutant, and every survivor has an attempt 2. A second `sample` prints `remaining: 0` and adds no line to `runs-sample.jsonl`. `--max-minutes 0` runs nothing and prints the remaining count.
   - **M5. reports** (miscounted kill rate): `report --section kills` shows the fixture's exact killed and survived counts and its rate. `gaps` names the uncovered line's mutants.
   - **M6. targeted verdicts** (a deletion justified by its own kill, or by an untargeted mutant): a fixture manifest with four candidates gets `evidenced`, `unique`, `mis-targeted`, and a cross-suite duplicate whose second killer lives in `s2`, which runs only because the claim is `duplicate`, so that one is `evidenced` too. A `find` that occurs twice exits 2 naming its candidate.
-  - **M7. compare** (a cut that loses a kill, or unrun mutants reported as lost): in a state against a commit where `s.test.sh` lacks the killing case, `sample --sample-from <first> --only bin/s.sh` then `report --compare <first>` lists that mutant as `lost`. It does not list `bin/p.py`'s killed mutants. `--only bin/s.sh bin/p.py` lists them as `not run`.
+  - **M7. compare** (a cut that loses a kill, or unrun mutants reported as lost): in a state against a commit where `s.test.sh` lacks the killing case, `sample --sample-from <first> --only bin/s.sh` then `report --compare <first> --kind code` lists that mutant as `lost`. It does not list `bin/p.py`'s killed mutants, nor a targeted mutant on `bin/s.sh` that `<first>` killed. `--only bin/s.sh bin/p.py` lists `bin/p.py`'s as `not run`.
   - **M8. acceptance** (two deletions that each rely on the other's test): a classification has candidates A, B and W in rank order. A's mutant is killed by A and B; B's mutant is killed by B and C; W is a class-evidence wording pin and is the only other killer of a fourth candidate D's mutant (D ranked after W). `accept` accepts A, rejects B with `would leave <A's mutant> without a killer`, accepts W, and rejects D. A class-evidence row in a safety suite is rejected with `class evidence in a safety suite`.
 - [ ] **Step 2: Watch the new cases fail.** Run the suite.
 - [ ] **Step 3: Implement** `mutators.py` and the new commands. A per-state, per-command `flock` on `<state>/<command>.lock` gives the "another run holds" refusal.
@@ -349,7 +349,7 @@
   Each revision `<n>` of the proposal (1, 2, …) gets fresh states. The harness refuses a reused state anyway, because it binds the rule set and the checker.
   - `audit.py --state .superpowers/test-audit-pins-<n> --ref 523a95d rules .scripts/test-audit/proposed-rules.tsv` runs the old pins on the proposal's mutants.
   - `audit.py --state .superpowers/test-audit-checks-<n> --ref 523a95d rules --check-cmd '<checkout>/.scripts/test-audit/rule-check.sh <checkout>/.scripts/test-audit/proposed-rules.tsv {copy}' .scripts/test-audit/proposed-rules.tsv` runs the draft checks on the same mutants.
-  - `report --section rules --compare .superpowers/test-audit-pins-<n>`, in the checks state, must list nothing `lost` and nothing `not run`, and no rule may be `missing`. Revise the terms until it is clean, or record the rule as a gap.
+  - `report --section rules --compare .superpowers/test-audit-pins-<n> --kind rule`, in the checks state, must list nothing `lost` and nothing `not run`, and no rule may be `missing`. Revise the terms until it is clean, or record the rule as a gap.
   - The final revision's states are the ones Task 15 compares against. Record `<n>` in the findings.
 - [ ] **Step 5: Commit** `Measure the pinned instruction rules and propose their replacement`.
 
@@ -404,11 +404,11 @@ No task. Michael approves the list, wholly or in part, through the driver. Gaps 
 - [ ] **Step 1: Record the approval.** Add an "Approved" section to the findings with the date and the approved items. Record any partial approval under Rulings.
 - [ ] **Step 2: Rebase.** `git -C <checkout> rebase main`, and resolve any conflicts. Run `./tests/test-audit.test.sh` afterwards.
 - [ ] **Step 3: Find what changed.** `git -C <checkout> diff --name-only 523a95d main -- tests/` plus the `subjects.tsv` files give the affected suites and files. Update `subjects.tsv` for new or moved files.
-- [ ] **Step 4: Refresh against the new main** in `--state .superpowers/test-audit-refresh --ref main`:
+- [ ] **Step 4: Refresh against the new main** in `--state .superpowers/test-audit-refresh --ref <new main SHA>` (record the SHA in the findings; every refresh state below takes the same `--ref`):
   - `inventory` of the affected suites;
   - `sample --sample-from .superpowers/test-audit --only <affected files>`;
   - `targeted` for the approved candidates in affected suites;
-  - when a fragment changed: `rules .scripts/test-audit/pinned-rules.tsv` there, and `rules .scripts/test-audit/proposed-rules.tsv` in `--state .superpowers/test-audit-refresh-pins --ref main` (the old pins on the proposal's mutants, Task 15's counterpart).
+  - when a fragment changed: `rules .scripts/test-audit/pinned-rules.tsv` there, and `rules .scripts/test-audit/proposed-rules.tsv` in `--state .superpowers/test-audit-refresh-pins --ref <new main SHA>` (the old pins on the proposal's mutants, Task 15's counterpart).
 
   An approved deletion whose evidence no longer holds is dropped from the cut and reported to the driver.
 - [ ] **Step 5: Commit** the refreshed findings section.
@@ -459,20 +459,22 @@ No task. Michael approves the list, wholly or in part, through the driver. Gaps 
   - `sp-architect.md` and `sp-reviewer.md`: the finding list becomes `a speculative abstraction, a workaround where a refactor belongs, a test that pins wording instead of behaviour, a test added for a review finding whose bug could not plausibly return, or a test that would still pass with the bug back`.
 - [ ] **Step 3: Update the rule set.** The testing rule's row in `rules.tsv` gets the anchor `Test behaviour, not wording` and these terms, following Task 8's terms rule: `extend a case before adding one;A real bug fix ships with a test;a review finding, only if its bug could plausibly return;revert the fix;see it fail;restore it;Never special-case code to pass a test`. Rows for the `SKILL.md` and agent restatements, if approved, are updated to the new text by the same rule.
 - [ ] **Step 4: Run** `./tests/run.sh agent-instructions xreview-skill review agent-skills`: green (passed/total).
-- [ ] **Step 5: Mutate the rows this task changed.** In a fresh state with `--ref` set to the working commit (commit first if needed), run `audit.py rules` on a TSV holding only those rows. It must exit 0, and `report --section rules` must show every mutant killed. Fix the terms until it does.
+- [ ] **Step 5: Mutate the rows this task changed.** Commit, then, in a new state for each attempt with `--ref` set to that commit's SHA, run `audit.py rules` on a TSV holding only those rows. It must exit 0, and `report --section rules` must show every mutant killed. Fix the terms until it does.
 - [ ] **Step 6: Commit** `Tighten the testing rule: behaviour over wording, findings tested only when they can recur`.
 
 ### Task 15: Validate the final state
 
 **Depends on:** Tasks 12, 13 and 14.
 
+Validation runs against one committed SHA, `<v>` (`git -C <checkout> rev-parse HEAD` after the last edit is committed). Every state in this task is new for that SHA and passes `--ref <v>`. The names are `.superpowers/test-audit-after-<v12>-code`, `-targeted` and `-rules`, where `<v12>` is the SHA's first 12 characters. A repeat after a fix gets a new `<v>`, and so new states. The findings record which `<v>` supplied the final results.
+
 - [ ] **Step 1: Code mutants.**
   - The selection is every file whose own suite this branch changed: `git diff --name-only main...chore/test-audit -- tests/`, joined with `subjects.tsv`.
   - `<before>` is the refresh state for files Task 11 refreshed, and the phase 1 state otherwise.
-  - In `--state .superpowers/test-audit-after --ref chore/test-audit`, run `sample --sample-from <before> --only <selection>`, once per `<before>` with its share of the selection.
-  - `report --compare <before> --only <the same files>` must list nothing `lost` and nothing `not run`.
-- [ ] **Step 2: Targeted mutants.** Run `targeted` over the approved deletions' manifest entries. Every mutant must still be killed, now by an assertion that remains.
-- [ ] **Step 3: Rule mutants.** In a fresh state, run `rules tests/fixtures/agent-instructions/rules.tsv`, regenerated from the final text. It must exit 0: every approved rule resolves, and none is `missing`. Every approved rule must have at least one mutant. Every mutant must be killed. The only exception is a survivor whose counterpart (same rule id, operator and removed word or item) also survived in the counterpart state, which is `.superpowers/test-audit-refresh-pins` if Task 11 made one and otherwise Task 8's final `.superpowers/test-audit-pins-<n>`; list each one. The tightened testing rule has no counterpart, so all its mutants must be killed.
+  - In the `-code` state, run `sample --sample-from <before> --only <selection>`, once per `<before>` with its share of the selection.
+  - `report --compare <before> --kind code --only <the same files>` must list nothing `lost` and nothing `not run`.
+- [ ] **Step 2: Targeted mutants.** In the `-targeted` state, run `targeted` over a manifest holding only the approved deletions' entries. Every mutant must still be killed, now by an assertion that remains.
+- [ ] **Step 3: Rule mutants.** In the `-rules` state, run `rules tests/fixtures/agent-instructions/rules.tsv`, regenerated from the final text at `<v>`. It must exit 0: every approved rule resolves, and none is `missing`. Every approved rule must have at least one mutant. Every mutant must be killed. The only exception is a survivor whose counterpart (same rule id, operator and removed word or item) also survived in the counterpart state, which is `.superpowers/test-audit-refresh-pins` if Task 11 made one and otherwise Task 8's final `.superpowers/test-audit-pins-<n>`; list each one. The tightened testing rule has no counterpart, so all its mutants must be killed.
 - [ ] **Step 4: The whole runs.** Run `./tests/run.sh` and `./tests/run.sh xreview git-forge-guard wt-functions`: both green, with passed/total and wall times recorded.
 - [ ] **Step 5: Record the after-numbers** beside the before-numbers in the findings, then commit `Record the test audit's after-numbers`. A fix after this step repeats Task 15.
 
