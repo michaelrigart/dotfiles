@@ -66,6 +66,9 @@ for line in sys.stdin:
         # An unscripted mcpServerStatus/list answers "no servers"; the barrier refuses any other shape.
         dflt = {"result": {"data": [], "nextCursor": None}} if meth == "mcpServerStatus/list" else {"result": {}}
         resp = run.get("responses", {}).get(meth, dflt)
+        gate = run.get("cwd_gate", {}).get(meth)   # answers only when the cwd filter has gate["cwd"] (for the "archived" value of the gate, if it has one)
+        if gate is not None and gate.get("archived", (m.get("params") or {}).get("archived")) == (m.get("params") or {}).get("archived"):
+            resp = gate["resp"] if gate["cwd"] in ((m.get("params") or {}).get("cwd") or []) else {"result": {"data": []}}
         key = meth
         # "by_thread": {method: {threadId: response-or-list}} is consulted before "responses",
         # keyed on params.threadId.
@@ -1676,6 +1679,18 @@ is "AC11 a thread running a turn is exit 1, never archived" "$rc/$(cat "$T/out")
 is "AC11 stderr says so, then the retry line" "$(tail -n 2 "$T/err")" "xreview-rpc: a: running a turn"$'\n'"$RETRY"
 is "AC11 the entry stays" "$(ac_ids g)" a
 
+# The listing's cwd filter matches where a thread began, not where the daemon records it now: a thread
+# whose recorded cwd differs from its started path (both under the directory) is confirmed only when
+# the filter carries both.
+ac_clean
+ac_started g a "$G/sub"; ac_review g a
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" '{}'
+scenario "$(jq -c --arg d "$G/sub" '. + {cwd_gate:{"thread/list":{cwd:$d,resp:{result:{data:[{id:"a"}]}}}}}' "$FAKE_SCENARIO")"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC20 a thread recorded elsewhere than it began is confirmed through its started path: archived, exit 0" "$rc/$out/$(cat "$T/err")" "0/archived a/"
+is "AC20 one listing carries the recorded cwd and the started path" "$(jq -c 'select(.method == "thread/list") | .params.cwd' "$FAKE_LOG" | paste -sd' ' -)" "[\"$G\",\"$G/sub\"]"
+is "AC20 and its records are cleaned" "$([ -e "$ACR/g/started" ] || [ -e "$ACR/g/review-thread" ] && echo left || echo gone)" gone
+
 ac_clean
 ac_started g a "$G"; ac_review g a
 ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$LIST_NONE"
@@ -2023,6 +2038,17 @@ is "CL15 a started thread recorded elsewhere keeps its entry" "$(ac_ids g)" r4
 is "CL15 a thread/read that fails is could-not-read when the listed cwd is gone, and silent when it exists" \
    "$(cl_sec "$T/out" "$H_UNREAD")" "  r2  $G  2023-11-14 22:13  cannot read it from the daemon"
 is "CL15 a thread whose thread/read failed has no history read, whichever its listed cwd" "$(ac_sent thread/turns/list)" "p,r1"
+
+# The same for cleanup: the archived listing is filtered by the cwd the thread was listed under.
+G2="$W/gone2"
+cl_clean
+ac_started g a "$G"
+cl_th a "$G2" "$G" "$G"
+cl_scn "[$(cl_full), $(cl_full)]"
+scenario "$(jq -c --arg d "$G2" '. + {cwd_gate:{"thread/list":{cwd:$d,archived:true,resp:{result:{data:[{id:"a"}]}}}}}' "$FAKE_SCENARIO")"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL16 a selected thread is confirmed through the cwd it was listed under" "$rc/$(grep -c '^archived a$' "$T/out")/$(tail -n 1 "$T/out")/$(cat "$T/err")" "0/1/Archived 1 of 1./"
+is "CL16 the confirmation filter carries the recorded cwd and the listed one" "$(jq -c 'select(.method == "thread/list" and .params.archived == true) | .params.cwd' "$FAKE_LOG" | paste -sd' ' -)" "[\"$G\",\"$G2\"]"
 
 # A thread whose recorded cwd exists but whose origin is gone is listed under differs and never
 # touched; one whose origin is its cwd, or still exists, costs no history read and is not listed.

@@ -976,12 +976,15 @@ def read_started(path):
 
 def archived(c, tid, cwd):
     """Whether thread/list shows tid archived (C9): True, False, or None when a page answers
-    with an error. A timeout or lost connection raises Closed/Unreachable from Client.call;
+    with an error. cwd is one path or a list of them: the listing's cwd filter matches the cwd a
+    thread began in, not the one the daemon records now, so a caller that cannot tell which
+    one lists the thread passes every candidate. A timeout or lost connection raises Closed/Unreachable from Client.call;
     callers handle that. Only False confirms a restore; thread/unarchive's own answer
     cannot (C5)."""
     cursor = None
     while True:
-        p = {"archived": True, "cwd": [cwd], "sourceKinds": list(SOURCE_KINDS)}
+        p = {"archived": True, "cwd": [cwd] if isinstance(cwd, str) else list(cwd),
+             "sourceKinds": list(SOURCE_KINDS)}
         if cursor:
             p["cursor"] = cursor
         r = c.call("thread/list", p)
@@ -1237,12 +1240,12 @@ def clear_review_thread(sd, tid):
     return True
 
 
-def archive_for_good(c, tid, cwd):
-    """None once the archived listing shows tid, else why not. The listing decides, whatever
+def archive_for_good(c, tid, cwds):
+    """None once the archived listing, filtered by every cwd in cwds, shows tid, else why not. The listing decides, whatever
     thread/archive answered (C9): an archive refused because it already landed is done, and one
     that answered is not done until the listing says so."""
     r = c.call("thread/archive", {"threadId": tid})
-    if archived(c, tid, cwd) is True:
+    if archived(c, tid, cwds) is True:
         return None
     if "error" in r:
         e = r["error"]
@@ -1259,9 +1262,9 @@ def archive_candidates(root, d):
     return out
 
 
-def archive_thread(c, d, tid, sds):
+def archive_thread(c, d, tid, sds, paths=()):
     """Archive tid for good if the daemon records it under d too: 0 done or kept, 1 failed.
-    sds: the state directories whose started list named it under d."""
+    sds: the state directories whose started list named it under d; paths: the paths they named."""
     r = c.call("thread/read", {"threadId": tid, "includeTurns": False})
     th = None if "error" in r else (r.get("result") or {}).get("thread")
     cwd = th.get("cwd") if isinstance(th, dict) else None
@@ -1275,13 +1278,13 @@ def archive_thread(c, d, tid, sds):
     if isinstance(status, dict) and status.get("type") == "active":
         err(f"{tid}: running a turn")
         return 1
-    return archive_and_clean(c, tid, cwd, sds)[1]
+    return archive_and_clean(c, tid, list(dict.fromkeys([cwd, *paths])), sds)[1]
 
 
-def archive_and_clean(c, tid, cwd, sds):
-    """Archive tid for good, then clean its records in the state directories sds: (archived,
-    status). Status is 0 when all went, 1 when the archive failed or a record stayed."""
-    why = archive_for_good(c, tid, cwd)
+def archive_and_clean(c, tid, cwds, sds):
+    """Archive tid for good (confirmed by the archived listing under cwds), then clean its
+    records in the state directories sds: (archived, status). Status is 0 when all went, 1 when the archive failed or a record stayed."""
+    why = archive_for_good(c, tid, cwds)
     if why:
         err(f"{tid}: {why}")
         return False, 1
@@ -1328,11 +1331,14 @@ def archive_checkout(a):
         return 1
     if not cands:
         return 0
-    sds = {}
-    for sd, tid, _ in cands:
+    sds, paths = {}, {}
+    for sd, tid, p in cands:
         sds.setdefault(tid, [])
         if sd not in sds[tid]:
             sds[tid].append(sd)
+        paths.setdefault(tid, [])
+        if p not in paths[tid]:
+            paths[tid].append(p)
     # About three calls per thread: the budget grows with the work, 60 s plus 10 s per thread.
     # XREVIEW_RPC_ARCHIVE_UNIT (a test knob) is that 10 s.
     unit = env_secs("XREVIEW_RPC_ARCHIVE_UNIT", 10)
@@ -1346,7 +1352,7 @@ def archive_checkout(a):
     rc, left = 0, list(sds)
     try:
         for tid in sds:
-            rc |= archive_thread(c, d, tid, sds[tid])
+            rc |= archive_thread(c, d, tid, sds[tid], paths[tid])
             left.remove(tid)
     except (Unreachable, Closed) as e:
         if time.monotonic() >= c.deadline:
@@ -1541,7 +1547,7 @@ def vanished_origin(rollout, cwd, paths):
 
 def cleanup_survey(c, fresh, started, pinned):
     """(groups, selected, empty): the report lines by CLEANUP_HEADINGS key, the threads to
-    archive as [(id, cwd)], and how many threads of gone checkouts had no turns and no started
+    archive as [(id, recorded cwd, listed cwd)], and how many threads of gone checkouts had no turns and no started
     entry."""
     threads = unarchived_threads(c, fresh)
     if threads is None:
@@ -1616,7 +1622,7 @@ def cleanup_survey(c, fresh, started, pinned):
             add("differs", how, f"origin {bad}")
             continue
         add(how, how)
-        selected.append((tid, cwd))
+        selected.append((tid, cwd, th.get("cwd")))
     return groups, selected, empty
 
 
@@ -1672,7 +1678,7 @@ def cmd_cleanup(a):
         return 0
     rc, done = 0, 0
     try:
-        for tid, cwd in selected:
+        for tid, cwd, listed in selected:
             fresh()
             # The survey may be minutes old: a checkout recreated at this path since then keeps its thread.
             now = gone(cwd)
@@ -1680,7 +1686,9 @@ def cmd_cleanup(a):
                 err(f"kept {tid}: " + (f"{cwd} exists again" if now is False
                                        else f"cannot tell whether {cwd} exists now"))
                 continue
-            ok, r = archive_and_clean(c, tid, cwd, record_dirs(root, tid))
+            # The listing's cwd filter matches where the thread began, which is `listed`.
+            cwds = [x for x in dict.fromkeys([cwd, listed]) if isinstance(x, str) and x]
+            ok, r = archive_and_clean(c, tid, cwds, record_dirs(root, tid))
             done += ok
             rc |= r
     except (Unreachable, Closed) as e:
