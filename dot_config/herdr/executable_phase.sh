@@ -44,6 +44,11 @@
 # started for). Cache files are replaced atomically, so a refresh killed mid-write leaves the
 # previous table, and each job sweeps its repository's stray temporary files under the lock.
 #
+# A stuck job is ended at the run deadline: the refresh waits for its jobs at most RUN_DEADLINE
+# (40 s, under the 50 s interval), then sends TERM to each unfinished job's process group (KILL
+# 2 s later), which takes its forge call with it and frees its lock. The other repositories are
+# reported as usual, and the exit status stays 0.
+#
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
 # glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
 # where freshness matters, is cached with a TTL: the table per repo (GitLab through glab, GitHub
@@ -72,6 +77,7 @@ TTL="${HERDR_PHASE_TTL:-120}"
 STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
 FRESH_GAP=10          # seconds a --fresh refresh trusts the cache after a lookup of the repository began
 LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"   # seconds a refresh waits for a repository's lock; the suite lowers it
+RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE:-40}"   # seconds a refresh waits for its jobs before ending them; the suite lowers it
 
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
@@ -206,11 +212,14 @@ cache_key() { # cache_key <forge> <slug>
   if [ "$1" = "github" ]; then printf 'github@%s' "$key"; else printf '%s' "$key"; fi
 }
 
-# One rule for how old a cache file is: seconds since its mtime, a large number when it is missing.
+# One rule for how old a cache file is: seconds since its mtime. A missing file is as old as can be,
+# and so is one dated in the future (the clock stepped back): it is evidence of nothing recent.
 age_of() { # age_of <file>
-  local mtime
+  local mtime age
   mtime="$(stat -f %m "$1" 2>/dev/null)"
-  if [ -n "$mtime" ]; then echo $(( $(date +%s) - mtime )); else echo 999999999; fi
+  [ -n "$mtime" ] || { echo 999999999; return 0; }
+  age=$(( $(date +%s) - mtime ))
+  if [ "$age" -ge 0 ]; then echo "$age"; else echo 999999999; fi
 }
 
 # Replaces a cache file atomically: a temporary file beside it, then a rename. A refresh killed
@@ -555,6 +564,25 @@ for w in d.get("result", {}).get("workspaces", []):
 }
 
 # ------------------------------------------------------------------ commands
+# Removes the stray temporary files a refresh killed mid-write (write_cache) left for this key. Keys
+# hold no glob characters. A sibling key shares the prefix (test/proj.mrx and test/proj.tsv beside
+# test/proj), so a candidate counts only when what sits between the key and the six random
+# characters is exactly one of this key's own file names: .tsv, .lookup, or .mr<digits>.pipeline.
+# The lock keeps this from deleting a live job's temporary file.
+sweep_temps() { # sweep_temps <key>
+  local key="$1" f mid
+  for f in "$CACHE_DIR/$key".tsv.?????? "$CACHE_DIR/$key".lookup.??????; do
+    [ -e "$f" ] || continue
+    # A sibling key's real stamp (test/proj.tsv's test%2Fproj.tsv.lookup) is six letters too.
+    [ "${f##*.}" = lookup ] || rm -f "$f"
+  done
+  for f in "$CACHE_DIR/$key".mr*.pipeline.??????; do
+    [ -e "$f" ] || continue
+    mid="${f#"$CACHE_DIR/$key".mr}"; mid="${mid%.pipeline.??????}"
+    case "$mid" in ''|*[!0-9]*) ;; *) rm -f "$f" ;; esac
+  done
+}
+
 # One repository's refresh: its table, then derive, CI and a report for each of its spaces. Runs in
 # a background subshell, never in the main shell: the lock is on that subshell's fd 9, and it is
 # released only when the job and every child that inherited fd 9 have exited.
@@ -565,21 +593,20 @@ refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>pa
     forge="${slug%% *}"; slug="${slug#* }"
     key="$(cache_key "$forge" "$slug")"
     # The kernel releases the lock only when every process holding fd 9 has exited, so a parent
-    # that dies while this job lives on does not free it, and nothing reclaims or breaks it.
+    # that dies while this job lives on does not free it, and nothing reclaims or breaks it. A job
+    # stuck in a forge call is ended at the run deadline, with its process group.
     mkdir -p "$CACHE_DIR"
     exec 9>>"$CACHE_DIR/$key.lock" || { echo "phase.sh: skipped $key: cannot open its lock file" >&2; return 0; }
     /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || { echo "phase.sh: skipped $key: its lock is held" >&2; return 0; }
-    # Stray temporary files come from a refresh killed mid-write (write_cache); keys hold no glob
-    # characters, and the lock keeps this from deleting a live job's file.
-    rm -f "$CACHE_DIR/$key".tsv.?????? "$CACHE_DIR/$key".mr*.pipeline.?????? "$CACHE_DIR/$key".lookup.??????
+    sweep_temps "$key"
     # The lookup mode is decided here, once, with the lock held: a --fresh refresh trusts the cache
     # while a lookup of this repository began less than FRESH_GAP ago, and looks up otherwise.
     case "$run" in
       force) mode="force" ;;
       fresh)
-        # A stamp dated in the future (the clock stepped back) is no evidence of a recent lookup.
+        # age_of calls a stamp dated in the future expired: no evidence of a recent lookup.
         age="$(age_of "$CACHE_DIR/$key.lookup")"
-        if [ "$age" -ge 0 ] && [ "$age" -lt "$FRESH_GAP" ]; then mode="cached"; else mode="force"; fi ;;
+        if [ "$age" -lt "$FRESH_GAP" ]; then mode="cached"; else mode="force"; fi ;;
     esac
     table="$(mr_table "$forge" "$slug" "$mode" || true)"
   fi
@@ -609,6 +636,65 @@ refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>pa
   return 0
 }
 
+# Starts a repository's job in its own process group (job control on just for the fork, so the job's
+# group is its PID and a group signal reaches the forge call it runs inside $(...)), with no stdin.
+# Records the PID in JOB_PIDS and PID<TAB>root in JOB_ROOTS.
+spawn_job() { # spawn_job <root> <run> <spaces>
+  set -m
+  ( refresh_repo "$1" "$2" "$3" ) </dev/null &
+  set +m
+  JOB_PIDS="$JOB_PIDS $!"
+  JOB_ROOTS="$JOB_ROOTS$!"$'\t'"$1"$'\n'
+}
+
+live_jobs() { # live_jobs -> LEFT: the jobs of JOB_PIDS that are still running
+  local pid
+  LEFT=""
+  for pid in $JOB_PIDS; do
+    if kill -0 "$pid" 2>/dev/null; then LEFT="$LEFT $pid"; fi
+  done
+}
+
+job_key() { # job_key <pid> -> the cache key of that job's repository, for its stderr line
+  local root slug
+  root="$(printf '%s' "$JOB_ROOTS" | awk -F'\t' -v p="$1" '$1 == p { print $2; exit }')"
+  slug="$(repo_slug "$root" || true)"
+  if [ -n "$slug" ]; then cache_key "${slug%% *}" "${slug#* }"; else echo "(no forge)"; fi
+}
+
+# Waits for the jobs at most RUN_DEADLINE seconds (bash 3.2 has no `wait -n` and no timeout on
+# `wait`, so it polls), then ends every unfinished job: TERM to its process group, KILL to what is
+# left after 2 s. That reaches the forge call too, so no process of a job outlives the run, and the
+# kernel frees the job's lock. A stuck forge call therefore holds up no other repository and not the
+# next timer run. Each job is then reaped on its own, so one that died abnormally is named too. A
+# failed lookup is not a failed refresh: the status stays 0. Runs with stderr on /dev/null and
+# writes its own lines to fd 8.
+wait_jobs() {
+  local i pid st late=""
+  for ((i = 0; i < RUN_DEADLINE * 10; i++)); do
+    live_jobs
+    [ -n "$LEFT" ] || break
+    sleep 0.1
+  done
+  late="$LEFT"
+  if [ -n "$late" ]; then
+    for pid in $late; do kill -TERM -- "-$pid" 2>/dev/null; done
+    for ((i = 0; i < 20; i++)); do
+      live_jobs
+      [ -n "$LEFT" ] || break
+      sleep 0.1
+    done
+    for pid in $LEFT; do kill -KILL -- "-$pid" 2>/dev/null; done
+  fi
+  for pid in $JOB_PIDS; do
+    wait "$pid"; st=$?
+    case " $late " in
+      *" $pid "*) echo "phase.sh: $(job_key "$pid"): killed at the run deadline" >&8 ;;
+      *) [ "$st" -eq 0 ] || echo "phase.sh: a refresh job ended abnormally (status $st)" >&8 ;;
+    esac
+  done
+}
+
 cmd_refresh() {
   local run="ttl" only=""
   while [ $# -gt 0 ]; do
@@ -620,9 +706,10 @@ cmd_refresh() {
     esac
   done
 
-  local list ws path root group="" last_root="" nl=$'\n' tab=$'\t' pids="" pid
+  local list ws path root group="" last_root="" nl=$'\n' tab=$'\t'
   list="$(spaces)"
   [ -n "$list" ] || return 0
+  JOB_PIDS=""; JOB_ROOTS=""
 
   # `spaces` sorts by repo, so each repository's spaces are one run of lines; every run is a job.
   while IFS=$'\t' read -r ws path root; do
@@ -630,19 +717,18 @@ cmd_refresh() {
     [ -z "$only" ] || [ "$ws" = "$only" ] || continue
     [ -d "$path" ] || continue
     if [ "$root" != "$last_root" ] && [ -n "$group" ]; then
-      ( refresh_repo "$last_root" "$run" "$group" ) &
-      pids="$pids $!"
+      spawn_job "$last_root" "$run" "$group"
       group=""
     fi
     last_root="$root"
     group="${group:+$group$nl}$ws$tab$path$tab$root"
   done < <(printf '%s\n' "$list")
-  if [ -n "$group" ]; then ( refresh_repo "$last_root" "$run" "$group" ) & pids="$pids $!"; fi
-  # Each job is waited for on its own, so one that died abnormally (killed, or crashed) is named.
-  # A failed lookup is not a failed refresh, so the exit status stays 0.
-  for pid in $pids; do
-    wait "$pid" || echo "phase.sh: a refresh job ended abnormally (status $?)" >&2
-  done
+  if [ -n "$group" ]; then spawn_job "$last_root" "$run" "$group"; fi
+  # The shell's own notices about a signalled job go nowhere; the script's lines use fd 8, opened
+  # only now so that no job holds it.
+  exec 8>&2
+  wait_jobs 2>/dev/null
+  exec 8>&-
   return 0
 }
 
