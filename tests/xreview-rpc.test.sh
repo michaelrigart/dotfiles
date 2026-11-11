@@ -1786,6 +1786,34 @@ is "AC19 a spent budget is exit 1, with the retry line last" "$rc/$(cat "$T/out"
 is "AC19 and is reported as the time budget, not a lost connection" "$(grep -c 'the time budget for this run ran out' "$T/err")/$(grep -c 'a: not archived: the time budget ran out' "$T/err")/$(grep -c 'connection' "$T/err")" "1/1/0"
 is "AC19 the entry stays" "$(ac_ids g)" a
 
+# A checkout recreated while the run is under way keeps the threads not yet archived: the fake
+# creates the directory when the first archive arrives.
+ac_clean
+ac_started g a "$G"; ac_started g x "$G/sub"
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" --argjson x "$(th x "$G/sub" idle)" '{a:$a,x:$x}')" "$LIST_AX"
+scenario "$(jq -c --arg d "$G" '. + {mkdir_on:{"thread/archive":[$d]}}' "$FAKE_SCENARIO")"
+rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC21 a checkout that exists again keeps the later threads: only the first is archived, exit 1" "$rc/$(cat "$T/out")/$(ac_sent thread/archive)" "1/archived a/a"
+is "AC21 stderr names the one not archived, then the retry line" "$(cat "$T/err")" "xreview-rpc: x: not archived: $G exists again"$'\n'"$RETRY"
+is "AC21 its entry stays" "$(ac_ids g)" x
+is "AC21 and it was not even read after the checkout came back" "$(ac_sent thread/read)" "a"
+
+# The same when whether the checkout exists can no longer be told.
+if [ "$(id -u)" = 0 ]; then
+  echo "  skip: AC22 (root ignores a mode 000 directory)"
+else
+  ac_clean
+  LK="$W/locked/gone"
+  ac_started g a "$LK"; ac_started g x "$LK/sub"
+  ac_scn "$(jq -nc --argjson a "$(th a "$LK" idle)" --argjson x "$(th x "$LK/sub" idle)" '{a:$a,x:$x}')" "$LIST_AX"
+  scenario "$(jq -c --arg d "$W/locked" '. + {mkdir_on:{"thread/archive":[$d, 0]}}' "$FAKE_SCENARIO")"
+  rpc archive-checkout --dir "$LK" >"$T/out" 2>"$T/err"; rc=$?
+  chmod 755 "$W/locked"
+  is "AC22 a checkout that cannot be tested keeps the later threads: exit 1" "$rc/$(cat "$T/out")/$(ac_sent thread/archive)" "1/archived a/a"
+  is "AC22 stderr says it cannot tell, then the retry line" "$(cat "$T/err")" "xreview-rpc: x: not archived: cannot tell whether $LK exists"$'\n'"xreview-rpc: retry: xreview-rpc archive-checkout --dir $LK"
+  is "AC22 its entry stays" "$(ac_ids g)" x
+fi
+
 echo "CL. cleanup [--archive]"
 CLD="$T/cl"
 E="$W/exists-cl"
@@ -1837,6 +1865,7 @@ H_STARTED="Started by xreview (started record)"
 H_PACKET="First message is a review packet"
 H_OLD="Old pane sessions (a greeting, then only review packets)"
 H_PINNED="Not selected: pinned"
+H_NOGREET="Not selected: old pane, first message is not a greeting"
 H_DIFFERS="Not selected: recorded cwd differs from the origin"
 H_UNREAD="Not selected: could not read"
 cl_fixture() {
@@ -1872,7 +1901,7 @@ is "CL1 a greeting then a packet then a message of Michael's, and a thread in an
 is "CL1 a thread in an existing checkout has no history read" "$(ac_sent thread/turns/list)" "p,o,m,z,d$(cl_zs ,zs '')"
 is "CL1 each line carries the cwd, the update time and how it was identified" "$(grep '^  s  ' "$T/out")" "  s  $G  2023-11-14 22:13  started"
 is "CL1 the headings come in order with their counts" "$(grep '^== ' "$T/out" | paste -sd'|' -)" \
-   "== $H_STARTED (1)|== $H_PACKET ($(cl_zs 2 1))|== $H_OLD (1)|== $H_PINNED (1)|== $H_DIFFERS (1)|== $H_UNREAD (0)"
+   "== $H_STARTED (1)|== $H_PACKET ($(cl_zs 2 1))|== $H_OLD (1)|== $H_PINNED (1)|== $H_NOGREET (0)|== $H_DIFFERS (1)|== $H_UNREAD (0)"
 is "CL1 the unarchived listing asks for every source kind" "$(jq -c 'select(.method == "thread/list") | .params | [.archived, (.sourceKinds | length)]' "$FAKE_LOG" | head -1)" "[false,10]"
 is "CL1 the limit lines and the dry-run line close the output" "$(tail -n 4 "$T/out")" "Selected: $((N)). Only threads whose recorded cwd is gone are selected; a thread in a checkout that exists is never touched.
 Not selected: 1 threads in gone checkouts with no turns and no started record (the historical coverage limit).
@@ -2075,6 +2104,45 @@ rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
 is "CL17 a thread running a turn at archive time is kept, and the others are archived: exit 0" "$rc/$(ac_sent thread/archive)/$(tail -n 1 "$T/out")" "0/a/Archived 1 of 3."
 is "CL17 stderr says why each was kept" "$(cat "$T/err")" "xreview-rpc: kept b: running a turn"$'\n'"xreview-rpc: kept c: cannot read it from the daemon"
 is "CL17 their started entries stay" "$(ac_ids g)" b,c
+
+# The daemon records a thread's cwd, and a completed turn can move it: b is read in a gone checkout
+# by the survey and in one that exists at archive time. The fresh read decides, so b is kept.
+cl_clean; mkdir -p "$E"
+ac_started g a "$G"; ac_started g b "$G"; ac_started g c "$G"
+cl_th a "$G" "$G"; cl_th b "$G" "$G"; cl_th c "$G" "$G"
+cl_scn "[$(cl_full), $(cl_full)]"
+scenario "$(jq -c --arg e "$E" '.by_thread["thread/read"].b = [.by_thread["thread/read"].b, {result:{thread:{id:"b",cwd:$e}}}]' "$FAKE_SCENARIO")"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL19 a thread whose recorded cwd moved to a checkout that exists is kept, the others archived: exit 0" "$rc/$(ac_sent thread/archive)/$(tail -n 1 "$T/out")" "0/a,c/Archived 2 of 3."
+is "CL19 stderr names where it moved" "$(cat "$T/err")" "xreview-rpc: kept b: its recorded cwd moved to $E"
+is "CL19 its started entry stays" "$(ac_ids g)" b
+
+# A thread that moved to another gone path is kept too; one that stays under the same gone
+# directory is archived, and the confirmation filter carries the fresh cwd and the listed one.
+cl_clean
+ac_started g a "$G"; ac_started g b "$G"
+cl_th a "$G" "$G"; cl_th b "$G" "$G"
+cl_scn "[$(cl_full), $(cl_full)]"
+scenario "$(jq -c --arg o "$W/other-gone" --arg s "$G/sub" '.by_thread["thread/read"].a = [.by_thread["thread/read"].a, {result:{thread:{id:"a",cwd:$o}}}]
+  | .by_thread["thread/read"].b = [.by_thread["thread/read"].b, {result:{thread:{id:"b",cwd:$s}}}]' "$FAKE_SCENARIO")"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL19b a thread moved to another gone path is kept; one still under the same gone directory is archived" "$rc/$(ac_sent thread/archive)/$(cat "$T/err")" "0/b/xreview-rpc: kept a: its recorded cwd moved to $W/other-gone"
+is "CL19b the archive is confirmed through the fresh cwd and the listed one" "$(jq -c 'select(.method == "thread/list" and .params.archived == true) | .params.cwd' "$FAKE_LOG" | paste -sd' ' -)" "[\"$G/sub\",\"$G\"]"
+
+# An old pane session opens with a greeting, one word, then only packets. A first message that is
+# anything else, however many packets follow, is Michael's own work: listed apart, never selected.
+cl_clean; mkdir -p "$E"
+cl_th n1 "$G" "$G"; cl_hist n1 "Please implement the parser change" "$PK" "$PK"
+cl_th n2 "$G" "$G"; cl_hist n2 "Hi!" "$PK"
+cl_th n3 "$G" "$G"; cl_hist n3 "  Ready.  " "$PK"
+cl_th n4 "$G" "$G"; cl_hist n4 hi
+cl_th n5 "$E" "$W/vanished"; cl_hist n5 "Please implement the parser change" "$PK"
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL20 a substantive first message then packets is not selected, and is listed under its own heading" "$rc/$(cl_ids "$T/out" "$H_NOGREET")/$(cl_ids "$T/out" "$H_OLD")" "0/n1/n2,n3"
+is "CL20 its line says how it was identified" "$(cl_sec "$T/out" "$H_NOGREET")" "  n1  $G  2023-11-14 22:13  old pane"
+is "CL20 only the greeted ones are archived; a lone greeting is listed nowhere" "$(ac_sent thread/archive)/$(grep -c '^  n4  ' "$T/out")" "n2,n3/0"
+is "CL20 in an existing checkout the differs heading still applies, with how it was identified" "$(cl_sec "$T/out" "$H_DIFFERS")" "  n5  $E  2023-11-14 22:13  old pane  origin $W/vanished"
 
 # A listing entry without updatedAt shows unknown, not the time of the run.
 cl_clean

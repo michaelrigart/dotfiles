@@ -36,7 +36,7 @@ tests' fake daemon cannot listen on one.
                   the removed checkout DIR (its "started" lists); prints "archived <id>" per thread.
                   Spec: docs/superpowers/specs/2026-11-11-archive-review-threads-design.md
   cleanup [--archive]                                        lists the review threads whose recorded checkout is gone
-                  (started by xreview, a first message that is a review packet, or an old pane session) and the
+                  (started by xreview, a first message that is a review packet, or an old pane session: a one-word greeting, then only packets) and the
                   ones it will not select; with --archive, archives the selected ones for good.
 
 Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
@@ -1357,6 +1357,14 @@ def archive_checkout(a):
     rc, left = 0, list(sds)
     try:
         for tid in sds:
+            # The checkout may have been recreated since the start, or while earlier threads were
+            # archived: from then on nothing is archived, and the rest keep their records.
+            now = gone(d)
+            if now is not True:
+                for t in left:
+                    err(f"{t}: not archived: " + (f"{d} exists again" if now is False
+                                                  else f"cannot tell whether {d} exists"))
+                return 1
             rc |= archive_thread(c, d, tid, sds[tid], paths[tid])
             left.remove(tid)
     except (Unreachable, Closed) as e:
@@ -1401,6 +1409,7 @@ CLEANUP_HEADINGS = (
     ("packet", "First message is a review packet"),
     ("old pane", "Old pane sessions (a greeting, then only review packets)"),
     ("pinned", "Not selected: pinned"),
+    ("no greeting", "Not selected: old pane, first message is not a greeting"),
     ("differs", "Not selected: recorded cwd differs from the origin"),
     ("unread", "Not selected: could not read"),
 )
@@ -1410,9 +1419,15 @@ def is_packet(text):
     return text.lstrip().startswith(PACKET_TAG)
 
 
+def is_greeting(text):
+    """True when text is one word, whatever its case and punctuation ("Hi!", "ready")."""
+    return len(re.sub(r"[^\w\s]", "", text).split()) == 1
+
+
 def classify(messages):
     """"packet" when the first user message is a review packet; "old pane" when it is not but
-    there is more than one and every later one is; otherwise None."""
+    there is more than one and every later one is; otherwise None. Whether an old pane session
+    opened with a greeting is is_greeting's to say."""
     if messages and is_packet(messages[0]):
         return "packet"
     if len(messages) >= 2 and all(is_packet(m) for m in messages[1:]):
@@ -1629,6 +1644,9 @@ def cleanup_survey(c, fresh, started, pinned):
         if bad is not None:
             add("differs", how, f"origin {bad}")
             continue
+        if how == "old pane" and not is_greeting(msgs[0]):
+            add("no greeting", how)
+            continue
         add(how, how)
         selected.append((tid, cwd, th.get("cwd")))
     return groups, selected, empty
@@ -1700,12 +1718,25 @@ def cmd_cleanup(a):
             if not isinstance(th, dict):
                 err(f"kept {tid}: cannot read it from the daemon")
                 continue
+            # The fresh read decides, not the survey's: a turn since then may have moved the thread.
+            now_cwd = th.get("cwd")
+            if not isinstance(now_cwd, str) or not now_cwd:
+                err(f"kept {tid}: cannot read its recorded cwd from the daemon")
+                continue
+            if not under(now_cwd, cwd):
+                err(f"kept {tid}: its recorded cwd moved to {now_cwd}")
+                continue
+            now = gone(now_cwd)
+            if now is not True:
+                err(f"kept {tid}: " + (f"{now_cwd} exists again" if now is False
+                                       else f"cannot tell whether {now_cwd} exists now"))
+                continue
             status = th.get("status")
             if isinstance(status, dict) and status.get("type") == "active":
                 err(f"kept {tid}: running a turn")
                 continue
             # The listing's cwd filter matches where the thread began, which is `listed`.
-            cwds = [x for x in dict.fromkeys([cwd, listed]) if isinstance(x, str) and x]
+            cwds = [x for x in dict.fromkeys([now_cwd, listed]) if isinstance(x, str) and x]
             ok, r = archive_and_clean(c, tid, cwds, record_dirs(root, tid))
             done += ok
             rc |= r
