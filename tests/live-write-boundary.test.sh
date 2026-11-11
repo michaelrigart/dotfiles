@@ -125,6 +125,7 @@ sib_ok=0
 sib_path=$sib
 if [ "$sib_mode" = existing ] || mkdir "$sib" 2>/dev/null; then
   sib_path="$sib/$stamp-w"
+  probes+=("$sib_path")
   if try f "$sib_path"; then sib_ok=1; fi
 fi
 if [ "$sib_ok" = 1 ]; then

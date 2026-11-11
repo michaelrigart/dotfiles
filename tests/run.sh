@@ -205,9 +205,13 @@ for f in ./*.test.sh; do
   else
     printf '  FAIL  %-28s %s/%s (exit=%s)%s\n' "$name" "$p" "$tot" "$rc" "$note"
     if [ "$idiom" = kv ]; then
-      # A kv suite closes with failed_keys=<key>,<key> when it fails. Only that line is shown, and only
-      # when it is made of key characters: nothing else a suite prints is echoed, so no value leaks.
+      # A kv suite closes with failed_keys=<key>,<key> when it fails. That line is shown, and only when
+      # it is made of key characters; no other line is echoed except INCONCLUSIVE: ones (below), so no
+      # status value leaks.
       printf '%s\n' "$out" | grep -E '^failed_keys=[A-Za-z0-9_.,-]+$' | tail -n 1 | sed 's/^/          /'
+      # A suite that could not measure one probe says so on INCONCLUSIVE: lines, which carry a
+      # reason and a command, never a status value; a run that exits on that alone has no failed_keys.
+      show_inconclusive
       problems+=("$name (exit=$rc)")
     else
       # Each failure with up to 3 continuation lines (the suite's `| got:` detail).

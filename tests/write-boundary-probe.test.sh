@@ -44,6 +44,17 @@ done
 exec /bin/mkdir "$@"
 STUB
 chmod 755 "$T/bin/mkdir"
+# With STUB_RM_KEEP_W set, rm refuses the ordinary-write file the sibling probe creates (*-w).
+cat > "$T/bin/rm" <<'STUB'
+#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    *zz-write-boundary-*-w) if [ -n "${STUB_RM_KEEP_W:-}" ]; then printf 'rm: %s: Operation not permitted\n' "$a" >&2; exit 1; fi ;;
+  esac
+done
+exec /bin/rm "$@"
+STUB
+chmod 755 "$T/bin/rm"
 
 # run_suite <stub message> <session start dir> [sibling stub message]: the suite's output, with the
 # stub refusing as told; mkdir arguments go to $T/mkdir.log.
@@ -126,7 +137,7 @@ cp "$sw/.git" "$T/git-file.before"
 out=$(run_suite "Operation not permitted" "$sw")
 w=$(value "$out" sibling_write); g=$(value "$out" sibling_git_file)
 if [ "$w" = WRITABLE ]; then _pass "W3 a session sibling is writable"; else _fail "W3 a session sibling is writable" "sibling_write=$w"; fi
-case $g in "<none>"|SKIPPED|ABSENT) _fail "W3 sibling_git_file is measured on the session's .git file" "sibling_git_file=$g" ;; *) _pass "W3 sibling_git_file is measured on the session's .git file" ;; esac
+if [ "$g" = WRITABLE ]; then _pass "W3 sibling_git_file is measured on the session's .git file"; else _fail "W3 sibling_git_file is measured on the session's .git file" "sibling_git_file=$g, wanted WRITABLE (the file exists and nothing is denied)"; fi
 if cmp -s "$sw/.git" "$T/git-file.before"; then _pass "W3 the session's .git file is unchanged"; else _fail "W3 the session's .git file is unchanged" "$(cat "$sw/.git" 2>&1)"; fi
 if grep -q 'chezmoi-zz-write-boundary' "$T/mkdir.log"; then _fail "W3 no scratch sibling is made" "$(grep chezmoi-zz-write-boundary "$T/mkdir.log" | head -n 1)"; else _pass "W3 no scratch sibling is made"; fi
 
@@ -134,9 +145,28 @@ if grep -q 'chezmoi-zz-write-boundary' "$T/mkdir.log"; then _fail "W3 no scratch
 chmod 555 "$sw"
 out=$(run_suite "Operation not permitted" "$sw")
 chmod 755 "$sw"
-w=$(value "$out" sibling_write)
+w=$(value "$out" sibling_write); g=$(value "$out" sibling_git_file); m=$(value "$out" sibling_mcp_json)
 if [ "$w" = DENIED ]; then _pass "W4 a read-only session sibling reads sibling_write=DENIED"; else _fail "W4 a read-only session sibling reads sibling_write=DENIED" "sibling_write=$w"; fi
 if has_line "$out" '^INCONCLUSIVE: sibling:'; then _pass "W4 and prints an INCONCLUSIVE: sibling: line"; else _fail "W4 and prints an INCONCLUSIVE: sibling: line" "$out"; fi
+if [ "$g" = SKIPPED ]; then _pass "W4 sibling_git_file is SKIPPED"; else _fail "W4 sibling_git_file is SKIPPED" "sibling_git_file=$g"; fi
+if [ "$m" = "<none>" ]; then _pass "W4 the sibling battery does not run"; else _fail "W4 the sibling battery does not run" "sibling_mcp_json=$m"; fi
+
+# W5: an ordinary-write file the sandbox lets be created but not unlinked is reported as a leftover.
+out=$(STUB_RM_KEEP_W=1 run_suite "Operation not permitted" "$sw")
+/bin/rm -f "$sw"/zz-write-boundary-*-w
+if has_line "$out" '^cleanup=LEFT$'; then _pass "W5 a leftover ordinary-write file is reported cleanup=LEFT"; else _fail "W5 a leftover ordinary-write file is reported cleanup=LEFT" "no cleanup=LEFT line"; fi
+
+# W6: with ~/.config present the symlink probe really writes through the link, which reads WRITABLE
+# in a throwaway HOME (nothing is denied); it leaves nothing in ~/.config or ~/.local/share.
+mkdir -p "$H/.config"
+out=$(run_suite "Operation not permitted" "$T/start")
+e=$(value "$out" sibling_symlink_escape)
+if [ "$e" = WRITABLE ]; then _pass "W6 a write through the sibling-shaped link into ~/.config reads WRITABLE"; else _fail "W6 a write through the sibling-shaped link into ~/.config reads WRITABLE" "sibling_symlink_escape=$e"; fi
+line=$(printf '%s\n' "$out" | grep -E '^failed_keys=' | tail -n 1)
+case ",${line#failed_keys=}," in *,sibling_symlink_escape,*) _pass "W6 and the key is listed in failed_keys" ;; *) _fail "W6 and the key is listed in failed_keys" "$line" ;; esac
+left=$(ls -A "$H/.config" "$shared" | grep 'zz-write-boundary-' || true)
+if [ -z "$left" ]; then _pass "W6 nothing is left in ~/.config or ~/.local/share"; else _fail "W6 nothing is left in ~/.config or ~/.local/share" "$left"; fi
+rmdir "$H/.config"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
