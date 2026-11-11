@@ -199,11 +199,13 @@ Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: 
 `live-write-boundary` suites share (the first three also so they never print key material). A kv suite
 encodes failures in its values and exits with the count, so it is judged on exit status
 alone — the prose cross-check does not apply to it. A kv suite that fails a probe closes with one
-`failed_keys=<key>,<key>` line (not when it dies early, before any key); `run.sh` shows that line (and only it, so no value is echoed)
-under the FAIL row and does not count it as an assertion. A new kv suite should print it.
+`failed_keys=<key>,<key>` line (not when it dies early, before any key); `run.sh` shows that line
+and any `INCONCLUSIVE:` lines under the FAIL row, never a `KEY=VALUE` line, so no value is echoed,
+and does not count it as an assertion. A new kv suite should print it.
 `tests/write-boundary-probe.test.sh` drives `live-write-boundary` against a throwaway `HOME`
-and a stubbed `mkdir`, so its `.git/modules` probe and `failed_keys` line are tested without
-measuring a sandbox.
+and a stubbed `mkdir`, so its `.git/modules` probe, its sibling probe (including the INCONCLUSIVE-only
+exit 2, through the `WRITE_BOUNDARY_SIBLING_ONLY` seam, refused against the real home) and `failed_keys` line are
+tested without measuring a sandbox.
 
 **Inside a Herdr pane, `HERDR_SESSION` does not pick the session.** herdr 0.9.3 reads
 `HERDR_SESSION`, but `HERDR_SOCKET_PATH`, which herdr exports into every pane, outranks it;

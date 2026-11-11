@@ -168,5 +168,21 @@ left=$(ls -A "$H/.config" "$shared" | grep 'zz-write-boundary-' || true)
 if [ -z "$left" ]; then _pass "W6 nothing is left in ~/.config or ~/.local/share"; else _fail "W6 nothing is left in ~/.config or ~/.local/share" "$left"; fi
 rmdir "$H/.config"
 
+# W7: with the seam on and nothing else measured, a refused sibling is the only open question: the run
+# exits 2 (not 0, not a failure count) and prints no failed_keys line. This is the exit-2 branch of cleanup.
+out=$(WRITE_BOUNDARY_SIBLING_ONLY=1 run_suite "Operation not permitted" "$T/start" "Operation not permitted"); rc=$?
+if [ "$rc" -eq 2 ]; then _pass "W7 an inconclusive-only run exits 2"; else _fail "W7 an inconclusive-only run exits 2" "exit $rc"; fi
+if has_line "$out" '^INCONCLUSIVE: sibling:'; then _pass "W7 and prints an INCONCLUSIVE: sibling: line"; else _fail "W7 and prints an INCONCLUSIVE: sibling: line" "$out"; fi
+if has_line "$out" '^failed_keys='; then _fail "W7 and prints no failed_keys line" "$(printf '%s\n' "$out" | grep '^failed_keys=')"; else _pass "W7 and prints no failed_keys line"; fi
+if has_line "$out" '^(local_bin|config|code)='; then _fail "W7 the seam skips every non-sibling probe" "$out"; else _pass "W7 the seam skips every non-sibling probe"; fi
+
+# W8: the seam is refused against the account's real home (from the user database, not $HOME) before
+# any probe runs. Nothing is measured, so this is safe sandboxed.
+real_home=$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')
+out=$(HOME="$real_home" WRITE_BOUNDARY_SIBLING_ONLY=1 RUN_SH_START_DIR="$T/start" "$SUITE" 2>&1); rc=$?
+if [ "$rc" -eq 2 ]; then _pass "W8 the seam against the real home exits 2"; else _fail "W8 the seam against the real home exits 2" "exit $rc"; fi
+if has_line "$out" '^REFUSED:'; then _pass "W8 and says it was refused"; else _fail "W8 and says it was refused" "$out"; fi
+if has_line "$out" '^sibling_'; then _fail "W8 and no probe ran" "$(printf '%s\n' "$out" | grep '^sibling_' | head -n 1)"; else _pass "W8 and no probe ran"; fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

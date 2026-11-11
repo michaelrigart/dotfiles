@@ -12,6 +12,10 @@
 # replace the sibling battery, that key is not a failure, and the run exits 2 unless something else
 # failed. sibling_symlink_escape runs in both modes: a sibling-shaped symlink to ~/.config must not
 # give a write into ~/.config.
+# Test seam: WRITE_BOUNDARY_SIBLING_ONLY=1 runs only the sibling selection, its ordinary write and the
+# sibling probes, so tests/write-boundary-probe.test.sh can reach the INCONCLUSIVE-only exit status in
+# a throwaway HOME. It is refused (exit 2, no probe run) when HOME is the invoking account's real home
+# directory, read from the user database, so it can never shorten a real measurement.
 # test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed every denial reads WRITABLE
 set -u
 fail=0
@@ -43,6 +47,14 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+only=${WRITE_BOUNDARY_SIBLING_ONLY:-}
+if [ "$only" = 1 ]; then
+  real_home=$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null)
+  if [ -z "$real_home" ] || [ "$HOME" = "$real_home" ] || [ "$(cd "$HOME" 2>/dev/null && pwd -P)" = "$(cd "$real_home" 2>/dev/null && pwd -P)" ]; then
+    echo "REFUSED: WRITE_BOUNDARY_SIBLING_ONLY is a test seam and may not run against the account's real home; no probe was run"
+    exit 2
+  fi
+fi
 # try <d|f> <path>: create it (never over an existing file) and remove it again on success.
 try() {
   if [ "$1" = d ]; then
@@ -102,18 +114,21 @@ allowed_off_base() {
   allowed "$1" "$2"
 }
 V="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/MSB"
-denied local_bin "$HOME/.local/bin/$stamp"
-denied config "$HOME/.config/$stamp"
-denied config_zsh "$HOME/.config/zsh/$stamp"
-denied config_git "$HOME/.config/git/$stamp"
-denied config_mise "$HOME/.config/mise/$stamp"
-denied config_herdr "$HOME/.config/herdr/$stamp"
-denied vault_obsidian "$V/.obsidian/$stamp"
+if [ "$only" != 1 ]; then
+  denied local_bin "$HOME/.local/bin/$stamp"
+  denied config "$HOME/.config/$stamp"
+  denied config_zsh "$HOME/.config/zsh/$stamp"
+  denied config_git "$HOME/.config/git/$stamp"
+  denied config_mise "$HOME/.config/mise/$stamp"
+  denied config_herdr "$HOME/.config/herdr/$stamp"
+  denied vault_obsidian "$V/.obsidian/$stamp"
+fi
 # The sibling: the session's own checkout when it started in ~/.local/share/chezmoi-<x> (existing mode),
 # otherwise a scratch ~/.local/share/chezmoi-<stamp> (scratch mode, removed by cleanup). Its battery is
 # the loop below with root=$sib and k=sibling, and runs only once an ordinary write has succeeded.
 roots=("$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
        "$HOME/Library/Mobile Documents/iCloud~md~obsidian")
+if [ "$only" = 1 ]; then roots=(); fi
 sib_mode=scratch
 case $base in
   "$HOME/.local/share/chezmoi-"*)
@@ -275,6 +290,7 @@ probes+=("$sib_link" "$HOME/.config/$stamp")
 if ! ln -s "$HOME/.config" "$sib_link" 2>/dev/null; then echo "sibling_symlink_escape=DENIED"
 elif try f "$sib_link/$stamp"; then echo "sibling_symlink_escape=WRITABLE"; bad sibling_symlink_escape
 else echo "sibling_symlink_escape=DENIED"; fi
+if [ "$only" = 1 ]; then exit "$fail"; fi
 # The agent configuration directly under a work root (~/Code/.claude and ~/Documents/.claude exist).
 denied code_root_claude_settings "$HOME/Code/.claude/settings.json"
 denied documents_root_claude_settings "$HOME/Documents/.claude/settings.json"

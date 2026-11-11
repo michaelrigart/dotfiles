@@ -249,3 +249,4 @@ Made during the run, each with its reason. Plan review approved: `xr-1794357300-
 8. **Process.**
    - Task 5's third fix round was a pure reflow. The controller checked it with a word diff instead of a reviewer seat, and the final review covers it.
    - This Status and these Rulings were committed before the Codex pre-merge review, not after it, so the approved commit is the last one.
+9. **Exit-2 guard (Codex pre-merge, round 1).** "Calls made" left the INCONCLUSIVE-only exit 2 to review, because a throwaway HOME fails every other key. Codex showed that a regression there would pass every test. `live-write-boundary` therefore gained a test seam, `WRITE_BOUNDARY_SIBLING_ONLY=1`, which runs only the sibling probes. It is refused under the account's real home, so it can never shorten a real measurement. `write-boundary-probe` uses it to pin exit 2 with no `failed_keys`.
