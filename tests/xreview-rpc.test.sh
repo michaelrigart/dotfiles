@@ -878,6 +878,19 @@ is "K2 the listing is asked for the thread's own cwd" "$(params thread/list | jq
 k2 '[]'
 rpc thread-archive --thread th 2>/dev/null; rc=$?
 is "K2 a refused archive of a thread the listing does not show exits 1" "$rc" 1
+# A thread recorded in the main checkout now but begun in a harness worktree is listed under the
+# worktree: the listing is confirmed through the rollout's origin as well as the recorded cwd.
+printf '%s\n' '{"type":"session_meta","payload":{"cwd":"/orig/wt"}}' > "$T/k2-rollout.jsonl"
+scenario "$(jq -nc --argjson e "$K2ERR" --arg p "$T/k2-rollout.jsonl" \
+  '{responses:{"thread/archive":$e,"thread/read":{result:{thread:{id:"th",cwd:"/rec/main",path:$p,status:{type:"notLoaded"}}}}},
+    cwd_gate:{"thread/list":{cwd:"/orig/wt",archived:true,resp:{result:{data:[{id:"th"}]}}}}}')"
+rpc thread-archive --thread th 2>/dev/null; rc=$?
+is "K2 a refused archive of a thread begun elsewhere is confirmed through its rollout's origin too" "$rc" 0
+is "K2 the listing carries the recorded cwd and the origin" "$(params thread/list | jq -c '.cwd')" '["/rec/main","/orig/wt"]'
+scenario "$(jq -nc --arg p "$T/k2-rollout.jsonl" \
+  '{responses:{"thread/read":{result:{thread:{id:"th",cwd:"/rec/main",path:$p}}}}}')"
+rpc thread-archive --thread th 2>/dev/null; rc=$?
+is "K2 an archive that is accepted asks for no listing" "$rc/$(params thread/list)" "0/"
 
 echo "TT. thread-turns"
 # A listed turn as itemsView "full" shows it: ti <id> <items-json>.
@@ -2049,6 +2062,27 @@ scenario "$(jq -c --arg d "$G2" '. + {cwd_gate:{"thread/list":{cwd:$d,archived:t
 rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
 is "CL16 a selected thread is confirmed through the cwd it was listed under" "$rc/$(grep -c '^archived a$' "$T/out")/$(tail -n 1 "$T/out")/$(cat "$T/err")" "0/1/Archived 1 of 1./"
 is "CL16 the confirmation filter carries the recorded cwd and the listed one" "$(jq -c 'select(.method == "thread/list" and .params.archived == true) | .params.cwd' "$FAKE_LOG" | paste -sd' ' -)" "[\"$G\",\"$G2\"]"
+
+# A selected thread that is running a turn when the archive comes is kept, as archive-checkout keeps
+# it; one whose read fails then is kept too. Neither is a failure, and neither counts as archived.
+cl_clean
+ac_started g a "$G"; ac_started g b "$G"; ac_started g c "$G"
+cl_th a "$G" "$G"; cl_th b "$G" "$G"; cl_th c "$G" "$G"; cl_hist a "$PK"
+cl_scn "[$(cl_full), $(cl_full)]"
+scenario "$(jq -c --argjson e "$ERRNO" '.by_thread["thread/read"].b.result.thread.status = {type:"active"}
+  | .by_thread["thread/read"].c = [.by_thread["thread/read"].c, $e]' "$FAKE_SCENARIO")"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL17 a thread running a turn at archive time is kept, and the others are archived: exit 0" "$rc/$(ac_sent thread/archive)/$(tail -n 1 "$T/out")" "0/a/Archived 1 of 3."
+is "CL17 stderr says why each was kept" "$(cat "$T/err")" "xreview-rpc: kept b: running a turn"$'\n'"xreview-rpc: kept c: cannot read it from the daemon"
+is "CL17 their started entries stay" "$(ac_ids g)" b,c
+
+# A listing entry without updatedAt shows unknown, not the time of the run.
+cl_clean
+ac_started g s "$G"; cl_th s "$G" "$G"; cl_hist s "$PK"
+jq -c 'del(.updatedAt)' "$CLD/ents.jsonl" > "$CLD/ents.new" && mv "$CLD/ents.new" "$CLD/ents.jsonl"
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup >"$T/out" 2>"$T/err"; rc=$?
+is "CL18 a thread without updatedAt shows unknown as its last update" "$rc/$(grep '^  s  ' "$T/out")" "0/  s  $G  unknown  started"
 
 # A thread whose recorded cwd exists but whose origin is gone is listed under differs and never
 # touched; one whose origin is its cwd, or still exists, costs no history read and is not listed.

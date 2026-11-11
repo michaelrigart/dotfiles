@@ -669,8 +669,13 @@ def cmd_thread_archive(c, a):
         t = c.call("thread/read", {"threadId": a.thread, "includeTurns": False})
         th = None if "error" in t else (t.get("result") or {}).get("thread")
         cwd = th.get("cwd") if isinstance(th, dict) else None
-        if isinstance(cwd, str) and cwd and archived(c, a.thread, cwd) is True:
-            return 0
+        if isinstance(cwd, str) and cwd:
+            # The listing's cwd filter matches where the thread began, which the recorded cwd
+            # may no longer be: its rollout says where.
+            cwds = [x for x in dict.fromkeys([cwd, rollout_origin(th.get("path"))])
+                    if isinstance(x, str) and x]
+            if archived(c, a.thread, cwds) is True:
+                return 0
         err("thread/archive refused: " + json.dumps(r["error"]))
         return 1
     return 0
@@ -1506,6 +1511,9 @@ def read_pinned(root):
 
 
 def stamp(t):
+    # None would be "now" to localtime, and a boolean is not a time.
+    if isinstance(t, bool) or not isinstance(t, (int, float)):
+        return "unknown"
     try:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
     except (TypeError, ValueError, OverflowError, OSError):
@@ -1685,6 +1693,16 @@ def cmd_cleanup(a):
             if now is not True:
                 err(f"kept {tid}: " + (f"{cwd} exists again" if now is False
                                        else f"cannot tell whether {cwd} exists now"))
+                continue
+            # archive-checkout keeps a thread that is running a turn; so does this.
+            r = c.call("thread/read", {"threadId": tid, "includeTurns": False})
+            th = None if "error" in r else (r.get("result") or {}).get("thread")
+            if not isinstance(th, dict):
+                err(f"kept {tid}: cannot read it from the daemon")
+                continue
+            status = th.get("status")
+            if isinstance(status, dict) and status.get("type") == "active":
+                err(f"kept {tid}: running a turn")
                 continue
             # The listing's cwd filter matches where the thread began, which is `listed`.
             cwds = [x for x in dict.fromkeys([cwd, listed]) if isinstance(x, str) and x]
