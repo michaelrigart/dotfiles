@@ -712,17 +712,23 @@ cmd_init() {
 # $(state_dir)/superseded holds a LIST, one id per line, oldest first: `round --reset`
 # APPENDS to it rather than overwriting, so a thread that a failed pane step left un-archived
 # stays queued across however many later resets happen before a pane step finally succeeds -
-# nothing is ever silently dropped. It runs once turn-start has answered, so it never exits: a list
-# that cannot be read or removed is left for the next pane step that succeeds.
+# nothing is ever silently dropped. A thread whose archive fails stays queued the same way: the
+# list is rewritten to the failed ids, and removed only when none failed. It runs once turn-start
+# has answered, so it never exits: a list that cannot be read or rewritten is left for the next
+# pane step that succeeds.
 archive_superseded() { # archive_superseded <current-thread>
-  local f old; f="$(state_dir)/superseded"
+  local f old failed=""; f="$(state_dir)/superseded"
   [ -r "$f" ] || return 0
   while IFS= read -r old || [ -n "$old" ]; do
     if [ -n "$old" ] && [ "$old" != "$1" ]; then
-      xreview-rpc thread-archive --thread "$old" >/dev/null 2>&1 || true
+      xreview-rpc thread-archive --thread "$old" >/dev/null 2>&1 || failed+="$old"$'\n'
     fi
   done < "$f" || true
-  rm -f "$f" || true
+  if [ -z "$failed" ]; then
+    rm -f "$f" || true
+  else
+    { printf '%s' "$failed" > "$f.tmp" && mv -f "$f.tmp" "$f"; } 2>/dev/null || true
+  fi
   return 0
 }
 
@@ -1382,7 +1388,7 @@ Report the remaining disagreement, or: xreview round --reset"
   local old="$thread" fresh_thread=0 PRE_TURN_TRAP
   if [ -z "$thread" ] || [ "$action" != send ]; then
     fresh_thread=1
-    thread="$(xreview-rpc thread-start --cwd "$(repo_root)")" \
+    thread="$(xreview-rpc thread-start --cwd "$(repo_root)" --started "$(state_dir)/started")" \
       || die "could not start a new review thread; no review was started"
     assert_id "$thread"
   fi
@@ -1841,7 +1847,7 @@ _slice_start() {
   proc="$(pane_proc "$pane")" \
     || die "cannot read the Codex pane $pane's process (herdr pane process-info)"
   pane_guard "$pane" "$proc"
-  th="$(xreview-rpc thread-start --cwd "$(repo_root)")" || die "could not start a new review thread"
+  th="$(xreview-rpc thread-start --cwd "$(repo_root)" --started "$(state_dir)/started")" || die "could not start a new review thread"
   assert_id "$th"
   # Until the thread's turn exists, nothing names the thread, and nothing else would ever archive
   # it: a refusal from here on - its check, the pane step, turn-start - archives it, and
