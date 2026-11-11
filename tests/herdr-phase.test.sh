@@ -1064,7 +1064,8 @@ echo "N. each repository is its own job"
 #                      the first open list answers this, creates started-<repo> and stalls until
 #                      a second `herdr workspace list` is in the call log (a second refresh has
 #                      started), 10 s at most, then 2 s more
-#   hang-<repo>        every list call records its PID in pid-<repo> and sleeps 30 s
+#   hang-<repo>        every list call records its PID in pid-<repo> and sleeps 30 s; when the file
+#                      says ignore-term, it ignores TERM first (the ignore survives the exec)
 #   api-fail           every api call fails
 # With $TSLOG set, the stubs log `<seconds.millis> list|open|merged` for workspace lists and list calls.
 # Every wait is bounded, so a regression fails the case and never hangs the suite.
@@ -1084,7 +1085,11 @@ done
 [ ! -e "$GLD/fail-$repo" ] || { echo "glab: HTTP 502" >&2; exit 1; }
 state=open; case " $* " in *" --merged "*) state=merged ;; esac
 [ -z "${TSLOG:-}" ] || echo "$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.3f", time') $state" >> "$TSLOG"
-if [ -e "$GLD/hang-$repo" ]; then echo "$$" > "$GLD/pid-$repo"; exec /bin/sleep 30; fi
+if [ -e "$GLD/hang-$repo" ]; then
+  echo "$$" > "$GLD/pid-$repo"
+  [ "$(cat "$GLD/hang-$repo")" != ignore-term ] || trap '' TERM
+  exec /bin/sleep 30
+fi
 if [ "$state" = open ]; then
   if [ -r "$GLD/wait-$repo" ]; then
     pat="$(cat "$GLD/wait-$repo")"; got=timeout
@@ -1311,32 +1316,37 @@ ino2="$(stat -f %i "$T/cache/test%2Fproj.tsv")"; pino2="$(stat -f %i "$T/cache/t
 [ "$pino1" != "$pino2" ] && _pass "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)" \
   || _fail "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)"
 check "$(ls "$T/cache" | grep -Ec '\.(tsv|pipeline)\.')" "0" "no temporary file is left in the cache directory"
+check "$({ ls "$T/cache/.tmp/test%2Fproj"; ls "$T/cache/.tmp/test%2Fproj2"; } | grep -c .)" "0" "and none is left in a repository's staging directory"
 check "$(grep -c . "$T/cache/test%2Fproj.tsv")" "7" "the replaced table is whole"
 
 # The replacement is a rename of a sibling temporary file onto the target, for both forges (a
 # delete-then-write would change the inode too, and leave a gap a reader could fall into).
 : > "$MVLOG"; job_reset
 run refresh --force
-check "$(grep -cE "^mv -f $T/cache/test%2Fproj\.tsv\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.tsv\$" "$MVLOG")" "1" \
-  "the GitLab table is renamed into place from a sibling temporary file"
-check "$(grep -cE "^mv -f $T/cache/test%2Fproj\.mr10\.pipeline\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.mr10\.pipeline\$" "$MVLOG")" "1" \
-  "the GitLab pipeline status is renamed into place from a sibling temporary file"
+check "$(grep -cE "^mv -f $T/cache/\.tmp/test%2Fproj/test%2Fproj\.tsv\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.tsv\$" "$MVLOG")" "1" \
+  "the GitLab table is renamed into place from a temporary file in the repository's staging directory"
+check "$(grep -cE "^mv -f $T/cache/\.tmp/test%2Fproj/test%2Fproj\.mr10\.pipeline\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.mr10\.pipeline\$" "$MVLOG")" "1" \
+  "the GitLab pipeline status is renamed into place from a temporary file in the repository's staging directory"
 : > "$MVLOG"; rm -rf "$T/cache"
 ghrun refresh --force
-check "$(grep -cE "^mv -f $T/cache/github@test%2Fproj3\.tsv\.[A-Za-z0-9]{6} $T/cache/github@test%2Fproj3\.tsv\$" "$MVLOG")" "1" \
-  "the GitHub table is renamed into place from a sibling temporary file"
+check "$(grep -cE "^mv -f $T/cache/\.tmp/github@test%2Fproj3/github@test%2Fproj3\.tsv\.[A-Za-z0-9]{6} $T/cache/github@test%2Fproj3\.tsv\$" "$MVLOG")" "1" \
+  "the GitHub table is renamed into place from a temporary file in the repository's staging directory"
 
-# A job sweeps its repository's stray temporary files (left by a refresh that was killed mid-write)
-# while it holds the lock, and no other repository's: not another slug's file, and not a sibling
-# key's (test/proj.mrx and test/proj.tsv share test/proj's file-name prefix).
-job_reset; mkdir -p "$T/cache"
-: > "$T/cache/test%2Fproj.tsv.ABCDEF"; : > "$T/cache/test%2Fproj.mr10.pipeline.ABCDEF"; : > "$T/cache/other%2Frepo.tsv.ABCDEF"
-: > "$T/cache/test%2Fproj.mr5.pipeline.ABCDEF"; : > "$T/cache/test%2Fproj.mrx.mr5.pipeline.ABCDEF"
-: > "$T/cache/test%2Fproj.tsv.lookup"
+# A job sweeps its repository's staging directory (stray temporary files of a refresh killed
+# mid-write) under the lock, and nothing else: no name pattern over the shared cache directory
+# exists, so a sibling key's real files (test/proj.tsv.a's lock, test/proj.tsv.ab's table, and so
+# on) and another repository's staging directory are never touched.
+job_reset; mkdir -p "$T/cache/.tmp/test%2Fproj" "$T/cache/.tmp/other%2Frepo"
+: > "$T/cache/.tmp/test%2Fproj/test%2Fproj.tsv.ABCDEF"; : > "$T/cache/.tmp/test%2Fproj/test%2Fproj.mr10.pipeline.ABCDEF"
+: > "$T/cache/.tmp/other%2Frepo/other%2Frepo.tsv.ABCDEF"
+: > "$T/cache/test%2Fproj.tsv.a.lock"; : > "$T/cache/test%2Fproj.tsv.ab.tsv"
+: > "$T/cache/test%2Fproj.lookup.a.lock"; : > "$T/cache/test%2Fproj.mr5.pipeline.lookup"
+: > "$T/cache/test%2Fproj.tsv.lookup"; : > "$T/cache/test%2Fproj.mrx.mr5.pipeline.ABCDEF"
 run refresh --force
-check "$(ls "$T/cache" | grep 'ABCDEF' | tr '\n' ' ')" "other%2Frepo.tsv.ABCDEF test%2Fproj.mrx.mr5.pipeline.ABCDEF " \
-  "a refresh sweeps its repository's stray temporary files and no other key's"
-check "$(ls "$T/cache" | grep -c '^test%2Fproj.tsv.lookup$')" "1" "and a sibling key's stamp, whose name looks like a temporary file, stays"
+check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "a refresh sweeps its repository's staging directory"
+check "$(ls "$T/cache/.tmp/other%2Frepo" | tr '\n' ' ')" "other%2Frepo.tsv.ABCDEF " "and leaves another repository's staging directory alone"
+check "$(ls "$T/cache" | grep -E '^test%2Fproj\.(tsv\.a\.lock|tsv\.ab\.tsv|lookup\.a\.lock|mr5\.pipeline\.lookup|tsv\.lookup|mrx\.mr5\.pipeline\.ABCDEF)$' | wc -l | tr -d ' ')" "6" \
+  "and never deletes a sibling key's real files from the shared cache directory"
 
 # A job that dies abnormally is not folded into a clean exit: it is named on stderr, the other
 # repository's job is unaffected, and the refresh still exits 0.
@@ -1394,6 +1404,36 @@ job_reset
 t0="$(now_s)"; DEADLINE=2 run refresh --force --workspace w4; t1="$(now_s)"
 hung_check "a hung --workspace refresh" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
 
+# A forge call that ignores TERM is KILLed after the grace: the first process of a job always dies
+# on TERM, so only a check of the whole process group sees the survivor.
+job_reset
+printf 'ignore-term' > "$GLD/hang-test__proj"
+t0="$(now_s)"; DEADLINE=2 run refresh --force; t1="$(now_s)"
+hung_check "a TERM-ignoring forge call" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
+
+# TERM to the main shell (launchd's bootout): the jobs sit in groups of their own, out of reach of
+# launchd's group kill, so the main shell ends them itself and exits, well inside launchd's 20 s
+# ExitTimeOut. The deadline is left at its default, so only the trap can have ended them.
+job_reset
+: > "$GLD/hang-test__proj"
+bg_phase refresh --force; mpid=$BGPID
+waitfor "$GLD/pid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
+t0="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
+i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done
+t1="$(now_s)"
+if kill -0 "$mpid" 2>/dev/null; then _fail "the main shell exits within 5 s of TERM"; kill -9 "$mpid" 2>/dev/null
+else _pass "the main shell exits within 5 s of TERM ($(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }') s)"; fi
+wait "$mpid" 2>/dev/null; mrc=$?
+check "$mrc" "143" "and exits with status 143"
+spid="$(cat "$GLD/pid-test__proj" 2>/dev/null || echo 0)"
+if kill -0 "$spid" 2>/dev/null; then _fail "the hung forge call is dead once the main shell is gone"; kill -9 "$spid" 2>/dev/null
+else _pass "the hung forge call is dead once the main shell is gone"; fi
+check "$(lock_busy)" "0" "and its repository's lock is free"
+
+# The grace between TERM and KILL has to fit inside launchd's ExitTimeOut (20 s).
+kg="$(sed -n 's/^KILL_GRACE=\([0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p' "$PHASE")"
+check "$([ -n "$kg" ] && [ "$kg" -le 5 ] && echo ok || echo "bad (${kg:-none})")" "ok" "the TERM-to-KILL grace is at most 5 s (${kg:-none})"
+
 # A job killed in the middle of a cache write leaves the previous table, byte for byte, and the
 # next run sweeps the temporary file: the write is a rename, so there is no half-written table.
 job_reset
@@ -1405,9 +1445,9 @@ MVHANG="$T/mvhang" DEADLINE=2 run refresh --force
 check "$RC" "0" "a refresh killed inside a cache write exits 0"
 check "$(printf '%s\n' "$OUT" | grep -c 'test%2Fproj: killed at the run deadline')" "1" "the job killed inside the write is named on stderr"
 check "$(cmp -s "$T/cache/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the killed write"
-check "$(ls "$T/cache" | grep -Ec '^test%2Fproj\.tsv\.[A-Za-z0-9]{6}$')" "1" "the killed write left its temporary file"
+check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -Ec '^test%2Fproj\.tsv\.[A-Za-z0-9]{6}$')" "1" "the killed write left its temporary file in the staging directory"
 run refresh --force
-check "$(ls "$T/cache" | grep -Ec '^test%2Fproj\.tsv\.[A-Za-z0-9]{6}$')" "0" "the next run sweeps the temporary file"
+check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "the next run sweeps the temporary file"
 check "$(grep -c . "$T/cache/test%2Fproj.tsv")" "3" "and replaces the table with the new answer (1 open row, 2 merged)"
 check "$(lock_busy)" "0" "no lock outlives the killed write"
 
@@ -1533,16 +1573,16 @@ job_reset
 : > "$MVLOG"
 run refresh --force
 ino1="$(stat -f %i "$T/cache/test%2Fproj.lookup")"
-check "$(grep -cE "^mv -f $T/cache/test%2Fproj\.lookup\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
-  "the stamp is renamed into place from a sibling temporary file"
+check "$(grep -cE "^mv -f $T/cache/\.tmp/test%2Fproj/test%2Fproj\.lookup\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
+  "the stamp is renamed into place from a temporary file in the repository's staging directory"
 run refresh --force
 ino2="$(stat -f %i "$T/cache/test%2Fproj.lookup")"
 [ "$ino1" != "$ino2" ] && _pass "a lookup replaces the stamp file (inode $ino1 -> $ino2)" \
   || _fail "a lookup replaces the stamp file (inode $ino1 -> $ino2)"
-check "$(ls "$T/cache" | grep -Ec '\.lookup\.')" "0" "no temporary stamp file is left in the cache directory"
-: > "$T/cache/test%2Fproj.lookup.ABCDEF"
+check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "no temporary stamp file is left in the staging directory"
+mkdir -p "$T/cache/.tmp/test%2Fproj"; : > "$T/cache/.tmp/test%2Fproj/test%2Fproj.lookup.ABCDEF"
 run refresh --force
-check "$(ls "$T/cache" | grep -c 'lookup.ABCDEF')" "0" "a refresh sweeps its repository's stray temporary stamp"
+check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "a refresh sweeps its repository's stray temporary stamp"
 
 # A stamp whose mtime is in the future (the clock stepped back) is not evidence of a recent lookup:
 # trusted, it would hold --fresh off the forge until the clock caught up.
