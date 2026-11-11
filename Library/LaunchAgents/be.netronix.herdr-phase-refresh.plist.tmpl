@@ -7,7 +7,7 @@
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist
 
   The dev.phase plugin's event hooks cannot keep an MR badge current on their own: the
-  state that changes lives on GitLab, and opening or merging an MR fires no Herdr event.
+  state that changes lives on GitLab or GitHub, and opening or merging an MR or PR fires no Herdr event.
   See the header of ~/.config/herdr/phase.sh for the full reasoning.
 
   phase.sh is invoked directly rather than through a login shell. Its shebang is absolute and
@@ -15,7 +15,7 @@
   to the XDG defaults when the variables are unset, which is exactly the environment launchd
   hands it. When no Herdr server is
   running the run is a sub-100ms no-op: `spaces` is empty and refresh returns before any
-  git or glab work.
+  git, glab or gh work.
 -->
 <plist version="1.0">
 <dict>
@@ -26,13 +26,18 @@
     <array>
         <string>{{ .chezmoi.homeDir }}/.config/herdr/phase.sh</string>
         <string>refresh</string>
+        <string>--force</string>
     </array>
 
-    <!-- 180s against phase.sh's 120s MR-table TTL: every run re-reads GitLab, so a badge
-         is at most three minutes stale. Cheap because it is one `glab mr list` per repo,
-         not per worktree. -->
+    <!-- Forced every 50 s: --force looks every repository up whatever the cache TTL (120 s), which
+         now applies only to the startup and worktree hooks. Without it a focus refresh would renew
+         a cache and the next timer run would reuse it. A run takes about 8 s (one background job
+         per repository, and one refresh of a repository at a time), so the cadence is about 58 s
+         and a change shows within about 65 s. A focus refresh (--fresh) looks its space's
+         repository up whenever the last lookup is more than 10 s old, so the phase being read is at
+         most about 10 s old (its CI token as the header of phase.sh says). -->
     <key>StartInterval</key>
-    <integer>180</integer>
+    <integer>50</integer>
 
     <key>RunAtLoad</key>
     <true/>
@@ -50,9 +55,9 @@
          puts every one of them in the lowest band and LowPriorityIO throttles them further.
          Measured 2026-09-11, same script and arguments: 13 s at normal priority, still
          unfinished after 4 minutes under `taskpolicy -b`, and a real `launchctl kickstart` of
-         this agent took ~6 minutes. launchd never overlaps a StartInterval job, so at 180 s the
-         timer could not finish one cycle — it reported runs=739, last exit code=0, while the MR
+         this agent took ~6 minutes. launchd never overlaps a StartInterval job, so at the old 180 s
+         interval the timer could not finish one cycle — it reported runs=739, last exit code=0, while the MR
          caches sat 5 and 53 minutes stale and worktrees with open MRs showed no badge. Nothing
-         is gained by throttling a 13-second job that runs once every three minutes. -->
+         is gained by throttling a job that runs for seconds once a minute. -->
 </dict>
 </plist>

@@ -114,9 +114,11 @@ case "$CODEX" in *terminal_title_stripped*) _fail "codex override keeps only row
 
 echo "space rows"
 SPACES="$(section ui.sidebar.spaces | flat)"
-if in_order "$SPACES" '$active' '$review' '$merged' '$ci_ok' '$ci_fail' '$ci_run' 'token = "branch"'; then
+if in_order "$SPACES" '$active' '$draft' '$review' '$merged' '$ci_ok' '$ci_fail' '$ci_run' 'token = "branch"'; then
   _pass "row 2: \$ci_* follow the phase tokens and precede branch"
 else _fail "row 2: \$ci_* follow the phase tokens and precede branch (got: $SPACES)"; fi
+case "$SPACES" in *'{ token = "$draft", fg = "#ff9e64", bold = true }'*) _pass "row 2: \$draft is orange, bold";;
+  *) _fail "row 2: \$draft is orange, bold (got: $SPACES)";; esac
 if in_order "$SPACES" '{ token = "$ci_ok", fg = "#9ece6a", bold = true }' \
   '{ token = "$ci_fail", fg = "#f7768e", bold = true }' '{ token = "$ci_run", fg = "#e0af68", bold = true }'; then
   _pass "row 2: \$ci_* carry green, red and yellow, bold"

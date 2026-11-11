@@ -8,24 +8,101 @@
 # is the only thing keeping the badges alive. It must be cheap and safely re-runnable, and
 # it must never read back state it previously reported.
 #
-# Each report carries six tokens in one `herdr workspace report-metadata` call: the phase
-# (active, review or merged) and, for a space with an open MR (draft or not), the head
+# Each report carries seven keys in one `herdr workspace report-metadata` call: the phase
+# (active, draft, review or merged) and, for a space with an open MR (draft or not), the head
 # pipeline's status (ci_ok, ci_fail or ci_run). One of each group is set and the rest cleared.
 #
 # Three things drive it, and the periodic one is not redundant:
 #   - the dev.phase plugin's [[startup]] hook, which repaints every badge after a restart;
 #   - its [[events]] hooks on workspace.focused / worktree.created / worktree.removed;
-#   - a LaunchAgent (be.netronix.herdr-phase-refresh) running `refresh` every 3 minutes.
+#   - a LaunchAgent (be.netronix.herdr-phase-refresh) running `refresh --force` every 50 seconds.
 #
 # The event hooks alone cannot keep an MR badge true: opening or merging an MR produces no
 # Herdr event, and UI-driven workspace switches may not fire workspace.focused. The
 # LaunchAgent must not be throttled (no ProcessType=Background or LowPriorityIO): a run
-# that outlasts its 180 s interval makes launchd skip cycles while reporting exit code 0.
+# that outlasts its interval makes launchd skip cycles while reporting exit code 0.
 #
-# When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
-# glab work. It never fetches: `origin/<branch>` is read as-is, and only the MR state, where
-# freshness matters, is cached with a TTL: the MR table per repo, each open MR's pipeline
-# status per repo and MR number.
+# How fresh a badge is depends on who asked:
+#   - the timer forces every lookup (--force), so a change shows within about a minute. Without
+#     --force a focus refresh would renew a cache and the next timer run would reuse it;
+#   - a focus refresh (--fresh --workspace) looks its space's repository up whatever the TTL, so the
+#     phase being read is at most about FRESH_GAP (10 s) old, unless a lookup of that repository
+#     started less than FRESH_GAP ago: then it answers from the cache, as a failed lookup would. The
+#     stamp is per repository but the lookup is only the focused space's: a CI token is as old as
+#     the last lookup of that space's own pipeline;
+#   - the startup and worktree hooks use the TTL (120 s), and the keybinding is `--force`.
+# The gap is measured from <key>.lookup, a stamp every forge lookup writes before it calls out. It
+# is written and read only under the repository's lock, so a failing forge, or two refreshes at
+# once, are rate-limited too, and --force ignores it.
+#
+# A refresh runs one background job per repository, side by side, and each job holds a kernel lock
+# on that repository's lock file (<key>.lock in the cache directory, fd 9, /usr/bin/lockf) from its
+# stamp check to its last report. Two refreshes of one repository (the timer and a focus hook, say) run
+# one after the other, and an older lookup can never publish after a newer one. A job that cannot
+# take the lock within LOCK_WAIT seconds skips its repository and says so on stderr; that run's
+# spaces keep their last badge until the next run (the holder reports only the spaces it was
+# started for). Cache files are replaced atomically, so a refresh killed mid-write leaves the
+# previous table, and each job sweeps its repository's stray temporary files under the lock.
+#
+# A stuck job is ended at the run deadline: the refresh waits for its jobs at most RUN_DEADLINE
+# (40 s, under the 50 s interval), then sends TERM to each unfinished job's process group (KILL
+# KILL_GRACE s later to any group that still has a member), which takes its forge call with it and
+# frees its lock. The other repositories are reported as usual, and the exit status stays 0. The
+# jobs sit in process groups of their own, out of reach of launchd's group kill, so the main shell
+# traps TERM, HUP and INT and ends them itself.
+# Temporary files stage in .tmp/<key> of the cache directory, one directory per repository.
+#
+# Accepted limits:
+#   - SIGKILL of the main shell cannot be trapped, and nothing bounds a job it orphans: forge calls
+#     have no timeout and a job has no deadline of its own. If that job's forge call hangs, the
+#     repository's badges stay frozen until the call ends (every later run skips the repository,
+#     whose lock the call holds). `pkill -f phase.sh` ends the job's shells but not the forge call,
+#     which keeps the lock: `lsof -t <cache dir>/<key>.lock` names every process to end.
+#   - A TERM, HUP or INT that lands between a job's fork and the recording of its PID (microseconds)
+#     orphans that one job, bounded only by its forge calls, as above.
+#   - The tick cap on the wait is RUN_DEADLINE x 10 + 10 ticks of 0.1 s plus a fork each: about 44 s
+#     at the default 40. On a working clock it is reached only after the clock steps back by less
+#     than the time already waited (a larger step reads as expired at once, and a steady clock ends
+#     the wait at 40 s).
+#   - A fork that fails in the main shell (a full process table, or the user's process limit) ends
+#     it at once with status 128, as bash 3.2 does in a non-interactive shell; during the wait that
+#     is silent, its stderr being on /dev/null. end_jobs never runs, so its jobs are orphaned and
+#     bounded only by their forge calls, as under a SIGKILL of the main shell (first entry).
+#   - The suite drives the deadline through a fake clock(), so nothing pins that the real one
+#     advances: one that stood still would be masked by the cap, about 4 s more per run with a hung
+#     job.
+#   - RUN_DEADLINE has no upper bound, and the cap (RUN_DEADLINE x 10 + 10) wraps from about 9.2e17
+#     on. A value that wraps it to 0 or below (922337203685477580 gives a negative cap,
+#     9223372036854775807 gives 0) ends every job at once (each named, exit 0), as does any value
+#     past 9223372036854775807; one that wraps it to a large positive cap waits as usual.
+#   - The sweep's `rm -rf <cache dir>/.tmp/<key>` follows a symlinked .tmp and deletes <key>
+#     wherever it points. That needs a cache directory a sandboxed command can write, which only a
+#     caller environment can name: HERDR_PHASE_CACHE_DIR (meant for the suite, but honoured
+#     everywhere, as PINNED_PATH is) or XDG_CACHE_HOME. The default ~/.cache/herdr-phase is not
+#     sandbox-writable.
+#   - A sandboxed command can hold a repository's lock, because flock needs only read access to the
+#     lock file: that repository's badges freeze and each run pays LOCK_WAIT (bounded by the run
+#     deadline). Denying the cache directory to reads in the sandbox is the follow-up.
+#   - `spaces()` (`herdr workspace list`) runs before the deadline clock and has no bound: a hung
+#     Herdr server holds the run, and launchd never overlaps runs.
+#   - glab runs in the caller's environment (GITLAB_TOKEN, GLAB_CONFIG_DIR, proxy and CA variables
+#     reach it), unlike gh, which runs under `env -i`. The GitLab lookup is unchanged by design.
+#   - A partial answer (exit 3: the merged half failed) publishes fresh open rows without caching them,
+#     so a `--fresh` within the gap or a TTL hook can republish the older cached table until the next
+#     timer run.
+#   - bash 3.2 occasionally prints `child setpgid (<pid> to <pid>): Operation not permitted` on stderr
+#     (about 1 run in 100): the child's own setpgid races the parent's, which has already moved it
+#     into its group. It is cosmetic and does not affect the deadline kill; it reaches a hook's
+#     stderr (launchd's goes to /dev/null).
+#   - bash's own startup inputs are not scrubbed: it sources BASH_ENV and imports exported functions
+#     (BASH_FUNC_<name>%%) before the first line, and one named like a command called here (git,
+#     glab, herdr) runs in its place. Like PINNED_PATH and HERDR_PHASE_*, the caller's environment
+#     reaches the script.
+#
+# When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
+# glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
+# where freshness matters, is cached with a TTL: the table per repo (GitLab through glab, GitHub
+# through gh), and each open GitLab MR's pipeline status per repo and MR number.
 #
 # Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
 # sandboxed command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang,
@@ -48,6 +125,13 @@ HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
 STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
+FRESH_GAP=10          # seconds a --fresh refresh trusts the cache after a lookup of the repository began
+LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"   # seconds a refresh waits for a repository's lock; the suite lowers it
+RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE:-40}"   # seconds a refresh waits for its jobs before ending them; the suite lowers it
+# Seconds between TERM and KILL when jobs are ended. On `launchctl bootout` launchd sends TERM and
+# KILLs the main shell after its ExitTimeOut (20 s by default); the trap's grace, KILL and reap
+# must finish well inside that, so this stays small (the suite pins it at 5 s or less).
+KILL_GRACE=2
 
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
@@ -111,28 +195,69 @@ usage() {
   printf '%s\n' \
     'phase.sh — badge Herdr spaces with their merge phase' \
     '' \
-    '  phase.sh refresh [--force] [--workspace ID]   report phases (all spaces, or one)' \
+    '  phase.sh refresh [--force | --fresh] [--workspace ID]   report phases (all spaces, or one)' \
+    '      --force  look every repository up now' \
+    "      --fresh  look up now, unless that repository was looked up in the last $FRESH_GAP s" \
     '  phase.sh --help' \
     '' \
-    'Phases: active, review, merged.'
+    'Phases: active, draft, review, merged.'
 }
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
 
+# whole_seconds <variable name> <value>: dies unless the value is a whole number of seconds, 0 included
+# and no leading zero. The numeric overrides reach `[ -lt ]`, lockf and shell arithmetic, which would
+# run a value such as PATH[$(cmd)] or fail on 1.5 or 08 with a misleading message. The digits are
+# listed, as in slug_chars_ok: under a UTF-8 locale bash 3.2 lets a character such as U+2185 through
+# the range [0-9].
+whole_seconds() {
+  case "$2" in ''|*[!0123456789]*|0?*) die "HERDR_PHASE_$1 is not a whole number of seconds" ;; esac
+}
+
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
-# Prints nothing and fails when the repo is not on GitLab or the lookup did not work.
-repo_slug() { # repo_slug <repo_root> -> the GitLab slug (group/project) on stdout, or fails
+# Prints nothing and fails when the repo is on neither GitLab nor GitHub or the lookup did not work.
+
+# Whether a slug holds only [A-Za-z0-9._/-]. The characters are listed one by one: bash 3.2
+# resolves a bracket range such as [A-Z] by collation, so under a UTF-8 locale (the one Herdr's
+# hooks and keybindings inherit) a range lets "é", "ẞ" and fullwidth letters through.
+slug_chars_ok() { # slug_chars_ok <slug>
+  case "$1" in
+    *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-]*) return 1 ;;
+  esac
+}
+repo_slug() { # repo_slug <repo_root> -> "<forge> <slug>" on stdout (gitlab or github), or fails
   local url slug
   url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
-  case "$url" in *gitlab.com*) ;; *) return 1 ;; esac
-  slug="${url#*gitlab.com}"; slug="${slug#:}"; slug="${slug#/}"; slug="${slug%.git}"
-  [ -n "$slug" ] || return 1
-  # The remote URL is repository configuration, which a sandboxed command can rewrite, and the
-  # slug lands in glab's repository argument and in an API path under Michael's token: accept
-  # only a plain group/project path, so nothing can leave the project's own path.
-  case "$slug" in *[!A-Za-z0-9._/-]*|*..*) return 1 ;; esac
-  printf '%s\n' "$slug"
+  # The three GitHub forms are matched on their exact prefix before the GitLab test, so a host
+  # that merely contains "github.com" (github.com.evil.com, evil.com/github.com/...) is neither.
+  case "$url" in
+    git@github.com:*) slug="${url#git@github.com:}" ;;
+    https://github.com/*) slug="${url#https://github.com/}" ;;
+    ssh://git@github.com/*) slug="${url#ssh://git@github.com/}" ;;
+    *)
+      case "$url" in *gitlab.com*) ;; *) return 1 ;; esac
+      slug="${url#*gitlab.com}"; slug="${slug#:}"; slug="${slug#/}"; slug="${slug%.git}"
+      [ -n "$slug" ] || return 1
+      # The remote URL is repository configuration, which a sandboxed command can rewrite, and the
+      # slug lands in glab's repository argument and in an API path under Michael's token: accept
+      # only a plain group/project path, so nothing can leave the project's own path.
+      slug_chars_ok "$slug" || return 1
+      case "$slug" in *..*) return 1 ;; esac
+      printf 'gitlab %s\n' "$slug"
+      return 0
+      ;;
+  esac
+  slug="${slug%.git}"
+  # The same applies to gh's -R argument: exactly owner/repo, each part from [A-Za-z0-9._-]+,
+  # no "..", and no part that is a bare ".".
+  slug_chars_ok "$slug" || return 1
+  case "$slug" in
+    */*/*|/*|*/|*..*|./*|*/.) return 1 ;;
+    */*) ;;
+    *) return 1 ;;
+  esac
+  printf 'github %s\n' "$slug"
 }
 
 # glab takes the host from the current directory's git repository, whose configuration a
@@ -142,37 +267,96 @@ repo_slug() { # repo_slug <repo_root> -> the GitLab slug (group/project) on stdo
 GITLAB_HOST_NAME="gitlab.com"
 
 # repo_slug admits no "%", so encoding "/" as %2F maps each slug to its own file name: a "_"
-# replacement made a/b_c and a_b/c share one.
-cache_key() { printf '%s' "$1" | sed 's|/|%2F|g'; }
+# replacement made a/b_c and a_b/c share one. GitHub keys carry a "github@" prefix, a character no
+# GitLab slug can hold, so a GitHub o/r never meets a GitLab o/r, and GitLab's names stay as they were.
+cache_key() { # cache_key <forge> <slug>
+  local key
+  key="$(printf '%s' "$2" | sed 's|/|%2F|g')"
+  if [ "$1" = "github" ]; then printf 'github@%s' "$key"; else printf '%s' "$key"; fi
+}
 
-mr_table() { # mr_table <slug> <force>
-  local slug="$1" force="$2" cache age now
+# One rule for how old a cache file is: seconds since its mtime. A missing file is as old as can be,
+# and so is one dated in the future (the clock stepped back): it is evidence of nothing recent.
+age_of() { # age_of <file>
+  local mtime age
+  mtime="$(stat -f %m "$1" 2>/dev/null)"
+  [ -n "$mtime" ] || { echo 999999999; return 0; }
+  age=$(( $(date +%s) - mtime ))
+  if [ "$age" -ge 0 ]; then echo "$age"; else echo 999999999; fi
+}
 
-  cache="$CACHE_DIR/$(cache_key "$slug").tsv"
-  if [ "$force" != "1" ] && [ -f "$cache" ]; then
-    now="$(date +%s)"
-    age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-    if [ "$age" -lt "$TTL" ]; then cat "$cache"; return 0; fi
+# Replaces a cache file atomically: a temporary file in the repository's own staging directory
+# (.tmp/<key>, on the same filesystem), then a rename onto the target. A refresh killed mid-write
+# leaves the previous file, never half of a new one that would later read as a valid, shorter table.
+# The staging directory is the repository's alone (a key holds no /), so what is in it is that
+# repository's stray temporary files and nothing else.
+write_cache() { # write_cache <key> <file> <content>
+  local stage="$CACHE_DIR/.tmp/$1" tmp
+  mkdir -p "$stage" || return 1
+  tmp="$(mktemp "$stage/${2##*/}.XXXXXX")" || return 1
+  if printf '%s\n' "$3" > "$tmp" && mv -f "$tmp" "$2"; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Prints a cached table. GitHub's CI (column 5) is blanked once the file is older than
+# STALE_PIPELINE, the age limit GitLab's pipeline cache has: a stale answer to a failed lookup must
+# not keep showing a check result nobody has confirmed.
+read_table() { # read_table <cache_file>
+  local cache="$1"
+  if [ "$(age_of "$cache")" -lt "$STALE_PIPELINE" ]; then cat "$cache"
+  else awk -F'\t' -v OFS='\t' 'NF >= 5 { $5 = "" } { print }' "$cache"; fi
+}
+
+# The table: one row per branch, `branch<TAB>opened|merged<TAB><number><TAB>0|1[<TAB><ci>]`.
+# <ci> (ok, fail, run or empty) is a GitHub column only, empty on a merged row.
+# <mode> is ttl (look up once the cache is older than TTL), force (always look up) or cached (never
+# call out: answer as a failed lookup would). A lookup that cannot answer falls back to the cached
+# table: the phases stand however old it is, but read_table drops GitHub's CI column once it is
+# older than STALE_PIPELINE. Every lookup writes the repository's stamp first (see the header).
+mr_table() { # mr_table <forge> <slug> <mode: ttl|force|cached>
+  local forge="$1" slug="$2" mode="$3" key cache rows rc
+
+  key="$(cache_key "$forge" "$slug")"
+  cache="$CACHE_DIR/$key.tsv"
+  if [ "$mode" = "ttl" ] && [ -f "$cache" ]; then
+    if [ "$(age_of "$cache")" -lt "$TTL" ]; then read_table "$cache"; return 0; fi
   fi
 
+  # <forge>_rows exits 0 for a full answer, 3 for the open rows alone (the merged half failed:
+  # use them, do not cache them) and anything else for a failed lookup. A failed lookup is not
+  # evidence that the MRs went away: returning nothing would wipe every review badge at once, so
+  # a stale table beats a table asserted to be empty.
+  if [ "$mode" = "cached" ]; then rows=""; rc=1
+  else
+    write_cache "$key" "$CACHE_DIR/$key.lookup" "" || true
+    rows="$("${forge}_rows" "$slug")"; rc=$?
+  fi
+  case "$rc" in
+    0) write_cache "$key" "$cache" "$rows" ;;
+    3) ;;
+    *)
+      if [ -f "$cache" ]; then read_table "$cache"; return 0; fi
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$rows"
+}
+
+gitlab_rows() { # gitlab_rows <slug> -> table rows; 0 full, 3 open rows only, else failed
+  local slug="$1" open_json merged_json
   # Two queries, not one: `glab mr list` caps --per-page at 100 and this never paginates, so
   # a single --all query drops the oldest rows once a repo passes 100 MRs. The OPEN list on
   # its own keeps the rows a review badge depends on far from the cap.
-  local open_json merged_json table
   open_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
-  if [ -z "$open_json" ]; then
-    # A failed lookup is not evidence that the MRs went away: returning nothing would wipe
-    # every review badge at once. A stale table beats a table asserted to be empty.
-    if [ -f "$cache" ]; then cat "$cache"; return 0; fi
-    return 1
-  fi
+  [ -n "$open_json" ] || return 1
   # Merged state is best-effort: if only this half fails the open rows still stand, and the
   # table is not cached, so the miss lasts one cycle instead of a TTL.
   local cacheable=1
   merged_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
-  table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
+  printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
 import json, sys
 # Two concatenated JSON documents rather than one, so read them off the stream in turn.
 dec, data, i, rows = json.JSONDecoder(), sys.stdin.read(), 0, []
@@ -199,39 +383,118 @@ for m in rows:
 for b, m in seen.items():
     print("\t".join([b, m.get("state") or "", str(m.get("iid") or ""),
                      "1" if m.get("draft") else "0"]))
-' 2>/dev/null)" || { [ -f "$cache" ] && { cat "$cache"; return 0; }; return 1; }
+' 2>/dev/null || return 1
+  [ "$cacheable" = "1" ] || return 3
+}
 
-  if [ "$cacheable" = "1" ]; then
-    mkdir -p "$CACHE_DIR"
-    printf '%s\n' "$table" > "$cache"
-  fi
-  printf '%s\n' "$table"
+# gh gets the environment launchd gives it (HOME and PATH), the one it was measured to authenticate
+# in: a Herdr server started under direnv or mise carries GH_CONFIG_DIR, GH_HOST, GH_TOKEN, a proxy
+# or a CA bundle into its hooks, and none of them may steer a call made under Michael's token.
+# -R names the host (gh otherwise reads the current directory's repository) and the call runs
+# from "/". The open query also asks for statusCheckRollup, for the CI badge; the merged one does
+# not (measured: 5.1 s and 240 KB with it, 0.54 s without).
+github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, else failed
+  local slug="$1" open_json merged_json rc
+  open_json="$(env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state open --limit 100 \
+    --json headRefName,state,number,isDraft,isCrossRepository,statusCheckRollup 2>/dev/null)" || return 1
+  # Each status is taken on its own, never through a pipe into the parser. The merged half is
+  # best-effort, as on GitLab: "null" stands for a failed call and the parser reads it as not
+  # being a list.
+  merged_json="$(env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state merged --limit 100 \
+    --json headRefName,state,number,isDraft,isCrossRepository 2>/dev/null)" || merged_json="null"
+
+  # Exit 1: the open answer is not a list. Exit 3: the rows are the open ones alone, because the
+  # merged answer is not a list. A row is dropped unless it is a PR of this repository (a fork's
+  # branch name is not this checkout's branch) with a branch name that holds no tab or newline and
+  # an integer number. OPEN is "opened", MERGED is "merged", CLOSED has no badge, and an open PR
+  # beats a merged one on the same branch.
+  # The two answers are separated by a line no JSON document can hold and each is parsed on its
+  # own, so an empty answer can never let the other one take its place.
+  # An open PR's CI comes from its rollup, in gh pr checks' buckets: a CheckRun's state is its
+  # conclusion once COMPLETED and its status before; a StatusContext's is its state. Fail beats
+  # pending, pending beats success, and a state in no bucket (STALE, say) gives no badge.
+  printf '%s\n@@\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
+import json, sys
+FAIL = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+PEND = {"QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"}
+GOOD = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+def ci(roll):
+    if not isinstance(roll, list) or not roll:
+        return ""
+    states = set()
+    for c in roll:
+        st = None
+        if isinstance(c, dict):
+            if "state" in c:
+                st = c["state"]
+            elif c.get("status") == "COMPLETED":
+                st = c.get("conclusion")
+            else:
+                st = c.get("status")
+        states.add(st if isinstance(st, str) else "")
+    if states & FAIL:
+        return "fail"
+    if states & PEND:
+        return "run"
+    return "ok" if states <= GOOD else ""
+def load(text):
+    try:
+        v = json.loads(text)
+    except Exception:
+        return None
+    return v if isinstance(v, list) else None
+a, _, b = sys.stdin.read().partition("\n@@\n")
+opened, merged = load(a), load(b)
+if opened is None:
+    sys.exit(1)
+rows = {"OPEN": {}, "MERGED": {}}
+for pr in opened + (merged or []):
+    if not isinstance(pr, dict) or pr.get("state") not in rows or pr.get("isCrossRepository") is not False:
+        continue
+    b, n = pr.get("headRefName"), pr.get("number")
+    if not isinstance(b, str) or not b or "\t" in b or "\n" in b:
+        continue
+    if type(n) is not int or n < 1:
+        continue
+    # gh lists the newest first, so the first PR of a state is the one that counts.
+    rows[pr["state"]].setdefault(b, (n, "1" if pr.get("isDraft") is True else "0",
+                                          ci(pr.get("statusCheckRollup")) if pr["state"] == "OPEN" else ""))
+for b, (n, d, c) in rows["OPEN"].items():
+    print("\t".join([b, "opened", str(n), d, c]))
+for b, (n, d, c) in rows["MERGED"].items():
+    if b not in rows["OPEN"]:
+        print("\t".join([b, "merged", str(n), d, ""]))
+sys.exit(0 if merged is not None else 3)
+' 2>/dev/null
+  rc=$?
+  case "$rc" in 0|3) return "$rc" ;; *) return 1 ;; esac
 }
 
 # The list endpoint carries no head_pipeline, so the status costs one call per open MR. It is
 # cached per repo AND iid: a branch reused after a merge gets a new MR number and must not show
 # the old MR's pipeline. Prints ok, fail or run, or nothing (no pipeline, a status that is not
 # a badge, or no answer at all).
-pipeline_class() { # pipeline_class <slug> <iid> <force>
-  local slug="$1" iid="$2" force="$3" cache age now status json
-  case "$iid" in ''|*[!0-9]*) return 0 ;; esac
+pipeline_class() { # pipeline_class <slug> <iid> <mode: ttl|force|cached>
+  local slug="$1" iid="$2" mode="$3" key cache status json
+  # The digits are listed: a range such as [0-9] is resolved by collation (see slug_chars_ok).
+  case "$iid" in ''|*[!0123456789]*) return 0 ;; esac
 
-  cache="$CACHE_DIR/$(cache_key "$slug").mr$iid.pipeline"
+  key="$(cache_key gitlab "$slug")"
+  cache="$CACHE_DIR/$key.mr$iid.pipeline"
   status=""
-  if [ "$force" != "1" ] && [ -f "$cache" ]; then
-    now="$(date +%s)"
-    age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-    if [ "$age" -lt "$TTL" ]; then status="$(cat "$cache")"; fi
+  if [ "$mode" = "ttl" ] && [ -f "$cache" ]; then
+    if [ "$(age_of "$cache")" -lt "$TTL" ]; then status="$(cat "$cache")"; fi
   fi
   if [ -z "$status" ]; then
-    # glab prints an API error's JSON body on stdout and exits non-zero (a 401, 404, 429 or
-    # 5xx), so its status is taken on its own, never through a pipe into the parser. An empty
-    # status is a failed call or a body that is not this MR; a pipeline-less MR prints "none".
-    json="$(glab api --hostname "$GITLAB_HOST_NAME" \
-      "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
-    status=""
-    if [ -n "$json" ]; then
-      status="$(printf '%s' "$json" | "$PY" -I -c '
+    if [ "$mode" != "cached" ]; then
+      write_cache "$key" "$CACHE_DIR/$key.lookup" "" || true
+      # glab prints an API error's JSON body on stdout and exits non-zero (a 401, 404, 429 or
+      # 5xx), so its status is taken on its own, never through a pipe into the parser. An empty
+      # status is a failed call or a body that is not this MR; a pipeline-less MR prints "none".
+      json="$(glab api --hostname "$GITLAB_HOST_NAME" \
+        "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
+      if [ -n "$json" ]; then
+        status="$(printf '%s' "$json" | "$PY" -I -c '
 import json, re, sys
 try:
     d = json.load(sys.stdin)
@@ -243,17 +506,14 @@ p = d.get("head_pipeline")
 s = p.get("status") if isinstance(p, dict) else None
 print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
 ' "$iid" 2>/dev/null)" || status=""
+      fi
+      [ -z "$status" ] || write_cache "$key" "$cache" "$status"
     fi
-    if [ -n "$status" ]; then
-      mkdir -p "$CACHE_DIR"
-      printf '%s\n' "$status" > "$cache"
-    elif [ -f "$cache" ]; then
-      # A failed call is not evidence that the pipeline went away, so a stale status beats none,
-      # but only for a while: a cached "run" glyph would otherwise stay on for as long as glab
-      # keeps failing. Past STALE_PIPELINE the tokens are cleared.
-      now="$(date +%s)"
-      age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-      if [ "$age" -lt "$STALE_PIPELINE" ]; then status="$(cat "$cache")"; fi
+    if [ -z "$status" ] && [ -f "$cache" ]; then
+      # A failed call (or none, in cached mode) is not evidence that the pipeline went away, so a
+      # stale status beats none, but only for a while: a cached "run" glyph would otherwise stay
+      # on for as long as glab keeps failing. Past STALE_PIPELINE the tokens are cleared.
+      if [ "$(age_of "$cache")" -lt "$STALE_PIPELINE" ]; then status="$(cat "$cache")"; fi
     fi
   fi
 
@@ -265,15 +525,18 @@ print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
 }
 
 # ------------------------------------------------------------------ derivation
-# Prints "<phase> <value>" for one checkout, and "open <iid>" on a second line when the
-# branch's MR is open (draft or not). Order matters: an open MR outranks every local signal;
-# local work outranks a merged MR.
-derive() { # derive <checkout_path> <repo_root> <mr_table>
-  local path="$1" root="$2" table="$3" branch base row state iid draft
+# Prints "<phase> <value>" for one checkout, and "open <number>" on a second line when the
+# branch's MR or PR is open (draft or not), with " <ci>" after it when the table's fifth column
+# holds one; a draft's phase is draft. The ref is !<iid> on GitLab and #<number> on GitHub, by the
+# forge argument. Order matters: an open MR outranks every local signal; local work outranks a
+# merged MR.
+derive() { # derive <checkout_path> <repo_root> <mr_table> <forge>
+  local path="$1" root="$2" table="$3" forge="$4" branch base row state iid draft ci ref='!'
+  [ "$forge" != "github" ] || ref='#'
 
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || { echo none; return 0; }
 
-  state=""; iid=""; draft=""
+  state=""; iid=""; draft=""; ci=""
   # Whole-field equality, not a substring search: `grep -F` collides in both directions
   # (`mr-suffix` inside `owner/mr-suffix`, `feature/rev` against `feature/review`). The
   # branch travels in the environment, not `awk -v`, which processes escape sequences.
@@ -282,14 +545,15 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
     state="$(printf '%s' "$row" | cut -f2)"
     iid="$(printf '%s' "$row" | cut -f3)"
     draft="$(printf '%s' "$row" | cut -f4)"
+    ci="$(printf '%s' "$row" | cut -f5)"
   fi
 
   # An open MR outranks everything git can see locally: it says somebody else is waiting on
   # this branch, and an untracked file or an unpushed review fix does not change that.
   if [ "$state" = "opened" ]; then
-    if [ "$draft" = "1" ]; then printf 'active %s\n' "$ICON_DRAFT"
-    else printf 'review %s !%s\n' "$ICON_MR" "$iid"; fi
-    printf 'open %s\n' "$iid"
+    if [ "$draft" = "1" ]; then printf 'draft %s %s%s\n' "$ICON_DRAFT" "$ref" "$iid"
+    else printf 'review %s %s%s\n' "$ICON_MR" "$ref" "$iid"; fi
+    printf 'open %s%s\n' "$iid" "${ci:+ $ci}"
     return 0
   fi
 
@@ -312,7 +576,7 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   # Merged stays BELOW the local tests, unlike opened: once landed, nobody is waiting, so
   # new work in that worktree is new work.
   if [ "$state" = "merged" ]; then
-    printf 'merged %s !%s\n' "$ICON_MERGE" "$iid"; return 0
+    printf 'merged %s %s%s\n' "$ICON_MERGE" "$ref" "$iid"; return 0
   fi
 
   # No local work and no MR: still yours, so active. Do NOT infer "HEAD is contained in the
@@ -322,15 +586,15 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
 }
 
 # Herdr keeps a token until told otherwise, so the unused ones are cleared on every report;
-# otherwise a space moving review -> merged renders both icons at once. Six keys per call:
-# the phase group (active, review, merged) with one set, and the pipeline group (ci_ok,
+# otherwise a space moving review -> merged renders both icons at once. Seven keys per call:
+# the phase group (active, draft, review, merged) with one set, and the pipeline group (ci_ok,
 # ci_fail, ci_run) with at most one set, none when <ci> is empty.
 report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
   local ws="$1" phase="$2" value="$3" ci="${4:-}" g=""
   local -a args
   args=(workspace report-metadata "$ws" --source "$SOURCE_ID")
   local t
-  for t in active review merged; do
+  for t in active draft review merged; do
     if [ "$t" = "$phase" ]; then args+=(--token "$t=$value")
     else args+=(--clear-token "$t"); fi
   done
@@ -346,8 +610,8 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
 # Only linked worktrees are badged: a main checkout is nearly always dirty, and would read
 # permanently active.
 #
-# Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh holds
-# one MR table at a time. The sort is stable, so Herdr order holds within a repo.
+# Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh starts one
+# job per run of equal roots. The sort is stable, so Herdr order holds within a repo.
 spaces() {
   herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -I -c '
 import json, sys
@@ -366,32 +630,41 @@ for w in d.get("result", {}).get("workspaces", []):
 }
 
 # ------------------------------------------------------------------ commands
-cmd_refresh() {
-  local force=0 only=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --force) force=1; shift ;;
-      --workspace) only="${2:-}"; [ -n "$only" ] || die "--workspace needs an id"; shift 2 ;;
-      *) die "unknown option for refresh: $1" ;;
+# One repository's refresh: its table, then derive, CI and a report for each of its spaces. Runs in
+# a background subshell, never in the main shell: the lock is on that subshell's fd 9, and it is
+# released only when the job and every child that inherited fd 9 have exited.
+refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>path<TAB>root lines>
+  local root="$1" run="$2" spaces="$3" ws path r phase value table="" forge="" slug="" key out first second ci iid age mode="ttl"
+  slug="$(repo_slug "$root" || true)"
+  if [ -n "$slug" ]; then
+    forge="${slug%% *}"; slug="${slug#* }"
+    key="$(cache_key "$forge" "$slug")"
+    # The kernel releases the lock only when every process holding fd 9 has exited, so a parent
+    # that dies while this job lives on does not free it, and nothing reclaims or breaks it. A job
+    # stuck in a forge call is ended at the run deadline, with its process group.
+    mkdir -p "$CACHE_DIR"
+    exec 9>>"$CACHE_DIR/$key.lock" || { echo "phase.sh: skipped $key: cannot open its lock file" >&2; return 0; }
+    /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || { echo "phase.sh: skipped $key: its lock is held" >&2; return 0; }
+    # Stray temporary files come from a refresh killed mid-write; they live in this repository's
+    # staging directory alone (a key holds no /), whole: a key, and so a temporary file's name, can
+    # start with a dot. The lock keeps this from deleting a live job's file; write_cache makes the
+    # directory again.
+    rm -rf "$CACHE_DIR/.tmp/$key"
+    # The lookup mode is decided here, once, with the lock held: a --fresh refresh trusts the cache
+    # while a lookup of this repository began less than FRESH_GAP ago, and looks up otherwise.
+    case "$run" in
+      force) mode="force" ;;
+      fresh)
+        # age_of calls a stamp dated in the future expired: no evidence of a recent lookup.
+        age="$(age_of "$CACHE_DIR/$key.lookup")"
+        if [ "$age" -lt "$FRESH_GAP" ]; then mode="cached"; else mode="force"; fi ;;
     esac
-  done
+    table="$(mr_table "$forge" "$slug" "$mode" || true)"
+  fi
 
-  local list ws path root phase value last_root="" table="" slug="" out first second ci
-  list="$(spaces)"
-  [ -n "$list" ] || return 0
-
-  while IFS=$'\t' read -r ws path root; do
+  while IFS=$'\t' read -r ws path r; do
     [ -n "$ws" ] || continue
-    [ -z "$only" ] || [ "$ws" = "$only" ] || continue
-    [ -d "$path" ] || continue
-    # `spaces` sorts by repo, so one lookup per repo falls out of iterating it.
-    if [ "$root" != "$last_root" ]; then
-      slug="$(repo_slug "$root" || true)"
-      table=""
-      [ -z "$slug" ] || table="$(mr_table "$slug" "$force" || true)"
-      last_root="$root"
-    fi
-    out="$(derive "$path" "$root" "$table")"
+    out="$(derive "$path" "$root" "$table" "$forge")"
     first="${out%%$'\n'*}"
     second=""
     case "$out" in *$'\n'*) second="${out#*$'\n'}" ;; esac
@@ -400,10 +673,172 @@ cmd_refresh() {
     value="$*"
     ci=""
     case "$second" in
-      "open "*) [ -z "$slug" ] || ci="$(pipeline_class "$slug" "${second#open }" "$force")" ;;
+      "open "*)
+        # GitHub's CI comes with the table (derive's second line); GitLab's costs a call per MR.
+        iid="${second#open }"; ci="${iid#* }"
+        [ "$ci" != "$iid" ] || ci=""
+        iid="${iid%% *}"
+        if [ "$forge" = "gitlab" ]; then ci="$(pipeline_class "$slug" "$iid" "$mode")"
+        else case "$ci" in ok|fail|run) ;; *) ci="" ;; esac; fi
+        ;;
     esac
     report "$ws" "$phase" "$value" "$ci"
+  done < <(printf '%s\n' "$spaces")
+  return 0
+}
+
+# Starts a repository's job in its own process group (job control on just for the fork, so the job's
+# group is its PID and a group signal reaches the forge call it runs inside $(...)), with no stdin.
+# Records the PID in JOB_PIDS and PID<TAB>root in JOB_ROOTS.
+spawn_job() { # spawn_job <root> <run> <spaces>
+  set -m
+  ( refresh_repo "$1" "$2" "$3" ) </dev/null &
+  set +m
+  JOB_PIDS="$JOB_PIDS $!"
+  JOB_ROOTS="$JOB_ROOTS$!"$'\t'"$1"$'\n'
+}
+
+live_jobs() { # live_jobs -> LEFT: the jobs of JOB_PIDS whose first process is still running
+  local pid
+  LEFT=""
+  for pid in $JOB_PIDS; do
+    if kill -0 "$pid" 2>/dev/null; then LEFT="$LEFT $pid"; fi
+  done
+}
+
+live_groups() { # live_groups -> LEFT: the jobs of JOB_PIDS whose process group still has a member
+  local pid
+  LEFT=""
+  for pid in $JOB_PIDS; do
+    if kill -0 -- "-$pid" 2>/dev/null; then LEFT="$LEFT $pid"; fi
+  done
+}
+
+# Ends every job that still has a process: TERM to its group, then KILL to each group that still has
+# a member after KILL_GRACE seconds. The first process of a job (bash) always dies on TERM, so the
+# grace is judged on the whole group: a forge call that ignores TERM is still a member. TERMED holds
+# the jobs that were signalled.
+end_jobs() {
+  local i pid
+  live_groups
+  TERMED="$LEFT"
+  for pid in $TERMED; do kill -TERM -- "-$pid" 2>/dev/null; done
+  for ((i = 0; i < KILL_GRACE * 10; i++)); do
+    live_groups
+    [ -n "$LEFT" ] || break
+    sleep 0.1
+  done
+  for pid in $LEFT; do kill -KILL -- "-$pid" 2>/dev/null; done
+}
+
+# TERM, HUP or INT to the main shell (launchd's bootout, a kill, ^C): launchd's group kill cannot
+# reach the jobs, which sit in groups of their own, so the main shell ends them itself, then exits.
+# SIGKILL of the main shell cannot be caught: its jobs run on, and the next run waits for their lock.
+# The signals are ignored from here on, not reset: a second one during the grace would otherwise end
+# the main shell before its KILL, and a TERM still trapped keeps bash's notice of each ended job off
+# stderr.
+abort_run() { # abort_run <exit status>
+  local pid
+  trap '' TERM HUP INT
+  end_jobs
+  for pid in $JOB_PIDS; do wait "$pid" 2>/dev/null; done
+  exit "$1"
+}
+
+job_key() { # job_key <pid> -> the cache key of that job's repository, for its stderr line
+  local root slug
+  root="$(printf '%s' "$JOB_ROOTS" | awk -F'\t' -v p="$1" '$1 == p { print $2; exit }')"
+  slug="$(repo_slug "$root" || true)"
+  if [ -n "$slug" ]; then cache_key "${slug%% *}" "${slug#* }"; else echo "(no forge)"; fi
+}
+
+# The clock the run deadline is read on, in whole seconds; the suite replaces it with a fake one. In
+# bash 3.2 $SECONDS is time(NULL) minus the shell's start, so it follows the wall clock.
+clock() { NOW=$SECONDS; }
+
+# Waits for the jobs at most RUN_DEADLINE seconds (bash 3.2 has no `wait -n` and no timeout on
+# `wait`, so it polls), then ends every job that still has a process (end_jobs). That reaches the
+# forge call too, so no process of a job outlives the run, and the kernel frees the job's lock. A
+# stuck forge call therefore holds up no other repository and not the next timer run.
+# A clock stepped back would stretch the wait, so an elapsed time below zero counts as expired (as
+# age_of treats a future mtime), and the ticks, which no clock step moves, cap the wait at
+# RUN_DEADLINE x 10 + 10 of them whichever way the clock goes: about 44 s at 40, each being 0.1 s and
+# a fork (on a steady clock the elapsed time ends it first).
+# Each job is then reaped on its own. One whose first process was still running at the deadline
+# sample and that died of a signal (status 128 or more) is named as killed at the run deadline; any
+# other that ended abnormally is named as such. A failed lookup is not a failed refresh: the status
+# stays 0. Runs with stderr on /dev/null and writes its own lines to fd 8.
+wait_jobs() {
+  local pid st late start elapsed ticks=0 cap=$((RUN_DEADLINE * 10 + 10))
+  LEFT=""; TERMED=""
+  clock; start=$NOW
+  while :; do
+    clock; elapsed=$((NOW - start))
+    [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$RUN_DEADLINE" ] && [ "$ticks" -lt "$cap" ] || break
+    live_jobs
+    [ -n "$LEFT" ] || break
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  # The deadline sample: only a job whose first process is still running now is ended by the
+  # deadline. One whose first process died on its own was not, even if its group has a member left.
+  live_jobs; late="$LEFT"
+  end_jobs
+  for pid in $JOB_PIDS; do
+    wait "$pid"; st=$?
+    case " $late " in
+      *" $pid "*)
+        if [ "$st" -ge 128 ]; then echo "phase.sh: $(job_key "$pid"): killed at the run deadline" >&8; continue; fi ;;
+    esac
+    [ "$st" -eq 0 ] || echo "phase.sh: a refresh job ended abnormally (status $st)" >&8
+  done
+}
+
+cmd_refresh() {
+  local run="ttl" only=""
+  # wait_jobs does arithmetic with RUN_DEADLINE, which runs a value such as PATH[$(cmd)] and ends the
+  # shell, its jobs orphaned and its stderr on /dev/null, on one such as 1.5 or 08. So each numeric
+  # override is checked before a job starts. 0 is allowed for all three: a deadline that ends every
+  # job at once, a TTL that always looks up, and a wait that skips a held repository at once.
+  whole_seconds RUN_DEADLINE "$RUN_DEADLINE"
+  whole_seconds LOCK_WAIT "$LOCK_WAIT"
+  whole_seconds TTL "$TTL"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) run="force"; shift ;;
+      --fresh) [ "$run" = "force" ] || run="fresh"; shift ;;
+      --workspace) only="${2:-}"; [ -n "$only" ] || die "--workspace needs an id"; shift 2 ;;
+      *) die "unknown option for refresh: $1" ;;
+    esac
+  done
+
+  local list ws path root group="" last_root="" nl=$'\n' tab=$'\t'
+  list="$(spaces)"
+  [ -n "$list" ] || return 0
+  JOB_PIDS=""; JOB_ROOTS=""
+  trap 'abort_run 143' TERM
+  trap 'abort_run 129' HUP
+  trap 'abort_run 130' INT
+
+  # `spaces` sorts by repo, so each repository's spaces are one run of lines; every run is a job.
+  while IFS=$'\t' read -r ws path root; do
+    [ -n "$ws" ] || continue
+    [ -z "$only" ] || [ "$ws" = "$only" ] || continue
+    [ -d "$path" ] || continue
+    if [ "$root" != "$last_root" ] && [ -n "$group" ]; then
+      spawn_job "$last_root" "$run" "$group"
+      group=""
+    fi
+    last_root="$root"
+    group="${group:+$group$nl}$ws$tab$path$tab$root"
   done < <(printf '%s\n' "$list")
+  if [ -n "$group" ]; then spawn_job "$last_root" "$run" "$group"; fi
+  # The shell's own notices about a signalled job go nowhere; the script's lines use fd 8, opened
+  # only now so that no job holds it.
+  exec 8>&2
+  wait_jobs 2>/dev/null
+  exec 8>&-
+  return 0
 }
 
 case "${1:---help}" in
