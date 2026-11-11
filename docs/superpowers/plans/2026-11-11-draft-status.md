@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress on `feat/draft-status` (dotfiles: no MR)
+**Status:** Implemented on `feat/draft-status` (dotfiles: no MR). Completed 2026-11-11: do not run
+this plan again; its execution notes and rulings bind that run only.
 
 **Goal:** Give an open draft MR or PR its own `draft` phase badge, look GitHub PRs up beside GitLab
 MRs, and make a status change reach the Herdr sidebar within about 60 s.

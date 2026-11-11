@@ -1,6 +1,6 @@
 # Draft status for MR and PR spaces
 
-**Status:** In progress on `feat/draft-status` (dotfiles: no MR)
+**Status:** Implemented on `feat/draft-status` (dotfiles: no MR)
 **Date:** 2026-11-11
 **Sign-off:** Michael, 2026-11-11 (Codex spec review approved, `xr-1794357508-3017fb0b`); section 5
 (freshness) was added at his sign-off and is reviewed with the plan
