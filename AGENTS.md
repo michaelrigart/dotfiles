@@ -181,7 +181,7 @@ otherwise look clean, so it is reported `INCONSISTENT` instead of folded into a 
 Two suite-specific gotchas worth keeping: `codex-config` drives the `modify_` **template**
 via `chezmoi execute-template --with-stdin --file` — without `--with-stdin` every case dies
 on "map has no entry for key stdin", and its empty-input fixture is `''`, not `'{}'`,
-because that file is TOML. `herdr-phase` stubs `herdr` and `glab` on `PATH`; the script it
+because that file is TOML. `herdr-phase` stubs `herdr`, `glab` and `gh` on `PATH`; the script it
 tests is not runnable sandboxed, since `phase.sh` wraps `herdr` and fails silently when the
 socket is denied.
 

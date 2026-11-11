@@ -22,10 +22,10 @@
 # LaunchAgent must not be throttled (no ProcessType=Background or LowPriorityIO): a run
 # that outlasts its 180 s interval makes launchd skip cycles while reporting exit code 0.
 #
-# When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
-# glab work. It never fetches: `origin/<branch>` is read as-is, and only the MR state, where
-# freshness matters, is cached with a TTL: the MR table per repo, each open MR's pipeline
-# status per repo and MR number.
+# When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
+# glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
+# where freshness matters, is cached with a TTL: the table per repo (GitLab through glab, GitHub
+# through gh), and each open GitLab MR's pipeline status per repo and MR number.
 #
 # Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
 # sandboxed command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang,
@@ -121,18 +121,37 @@ die() { echo "phase.sh: $*" >&2; exit 2; }
 
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
-# Prints nothing and fails when the repo is not on GitLab or the lookup did not work.
-repo_slug() { # repo_slug <repo_root> -> the GitLab slug (group/project) on stdout, or fails
+# Prints nothing and fails when the repo is on neither GitLab nor GitHub or the lookup did not work.
+repo_slug() { # repo_slug <repo_root> -> "<forge> <slug>" on stdout (gitlab or github), or fails
   local url slug
   url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
-  case "$url" in *gitlab.com*) ;; *) return 1 ;; esac
-  slug="${url#*gitlab.com}"; slug="${slug#:}"; slug="${slug#/}"; slug="${slug%.git}"
-  [ -n "$slug" ] || return 1
-  # The remote URL is repository configuration, which a sandboxed command can rewrite, and the
-  # slug lands in glab's repository argument and in an API path under Michael's token: accept
-  # only a plain group/project path, so nothing can leave the project's own path.
-  case "$slug" in *[!A-Za-z0-9._/-]*|*..*) return 1 ;; esac
-  printf '%s\n' "$slug"
+  # The three GitHub forms are matched on their exact prefix before the GitLab test, so a host
+  # that merely contains "github.com" (github.com.evil.com, evil.com/github.com/...) is neither.
+  case "$url" in
+    git@github.com:*) slug="${url#git@github.com:}" ;;
+    https://github.com/*) slug="${url#https://github.com/}" ;;
+    ssh://git@github.com/*) slug="${url#ssh://git@github.com/}" ;;
+    *)
+      case "$url" in *gitlab.com*) ;; *) return 1 ;; esac
+      slug="${url#*gitlab.com}"; slug="${slug#:}"; slug="${slug#/}"; slug="${slug%.git}"
+      [ -n "$slug" ] || return 1
+      # The remote URL is repository configuration, which a sandboxed command can rewrite, and the
+      # slug lands in glab's repository argument and in an API path under Michael's token: accept
+      # only a plain group/project path, so nothing can leave the project's own path.
+      case "$slug" in *[!A-Za-z0-9._/-]*|*..*) return 1 ;; esac
+      printf 'gitlab %s\n' "$slug"
+      return 0
+      ;;
+  esac
+  slug="${slug%.git}"
+  # The same applies to gh's -R argument: exactly owner/repo, each part from [A-Za-z0-9._-]+,
+  # no "..", and no part that is a bare ".".
+  case "$slug" in
+    */*/*|/*|*/|*[!A-Za-z0-9._/-]*|*..*|./*|*/.) return 1 ;;
+    */*) ;;
+    *) return 1 ;;
+  esac
+  printf 'github %s\n' "$slug"
 }
 
 # glab takes the host from the current directory's git repository, whose configuration a
@@ -142,37 +161,60 @@ repo_slug() { # repo_slug <repo_root> -> the GitLab slug (group/project) on stdo
 GITLAB_HOST_NAME="gitlab.com"
 
 # repo_slug admits no "%", so encoding "/" as %2F maps each slug to its own file name: a "_"
-# replacement made a/b_c and a_b/c share one.
-cache_key() { printf '%s' "$1" | sed 's|/|%2F|g'; }
+# replacement made a/b_c and a_b/c share one. GitHub keys carry a "github@" prefix, a character no
+# GitLab slug can hold, so a GitHub o/r never meets a GitLab o/r, and GitLab's names stay as they were.
+cache_key() { # cache_key <forge> <slug>
+  local key
+  key="$(printf '%s' "$2" | sed 's|/|%2F|g')"
+  if [ "$1" = "github" ]; then printf 'github@%s' "$key"; else printf '%s' "$key"; fi
+}
 
-mr_table() { # mr_table <slug> <force>
-  local slug="$1" force="$2" cache age now
+# The table: one row per branch, `branch<TAB>opened|merged<TAB><number><TAB>0|1[<TAB><ci>]`.
+# <ci> (ok, fail, run or empty) is a GitHub column only, empty on a merged row.
+# <force> is 0 or 1. A lookup that cannot answer falls back to the cached table, however old.
+mr_table() { # mr_table <forge> <slug> <force>
+  local forge="$1" slug="$2" force="$3" cache age now rows rc
 
-  cache="$CACHE_DIR/$(cache_key "$slug").tsv"
+  cache="$CACHE_DIR/$(cache_key "$forge" "$slug").tsv"
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
     now="$(date +%s)"
     age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
     if [ "$age" -lt "$TTL" ]; then cat "$cache"; return 0; fi
   fi
 
+  # <forge>_rows exits 0 for a full answer, 3 for the open rows alone (the merged half failed:
+  # use them, do not cache them) and anything else for a failed lookup. A failed lookup is not
+  # evidence that the MRs went away: returning nothing would wipe every review badge at once, so
+  # a stale table beats a table asserted to be empty.
+  rows="$("${forge}_rows" "$slug")"; rc=$?
+  case "$rc" in
+    0)
+      mkdir -p "$CACHE_DIR"
+      printf '%s\n' "$rows" > "$cache"
+      ;;
+    3) ;;
+    *)
+      if [ -f "$cache" ]; then cat "$cache"; return 0; fi
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$rows"
+}
+
+gitlab_rows() { # gitlab_rows <slug> -> table rows; 0 full, 3 open rows only, else failed
+  local slug="$1" open_json merged_json
   # Two queries, not one: `glab mr list` caps --per-page at 100 and this never paginates, so
   # a single --all query drops the oldest rows once a repo passes 100 MRs. The OPEN list on
   # its own keeps the rows a review badge depends on far from the cap.
-  local open_json merged_json table
   open_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
-  if [ -z "$open_json" ]; then
-    # A failed lookup is not evidence that the MRs went away: returning nothing would wipe
-    # every review badge at once. A stale table beats a table asserted to be empty.
-    if [ -f "$cache" ]; then cat "$cache"; return 0; fi
-    return 1
-  fi
+  [ -n "$open_json" ] || return 1
   # Merged state is best-effort: if only this half fails the open rows still stand, and the
   # table is not cached, so the miss lasts one cycle instead of a TTL.
   local cacheable=1
   merged_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
-  table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
+  printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
 import json, sys
 # Two concatenated JSON documents rather than one, so read them off the stream in turn.
 dec, data, i, rows = json.JSONDecoder(), sys.stdin.read(), 0, []
@@ -199,13 +241,66 @@ for m in rows:
 for b, m in seen.items():
     print("\t".join([b, m.get("state") or "", str(m.get("iid") or ""),
                      "1" if m.get("draft") else "0"]))
-' 2>/dev/null)" || { [ -f "$cache" ] && { cat "$cache"; return 0; }; return 1; }
+' 2>/dev/null || return 1
+  [ "$cacheable" = "1" ] || return 3
+}
 
-  if [ "$cacheable" = "1" ]; then
-    mkdir -p "$CACHE_DIR"
-    printf '%s\n' "$table" > "$cache"
-  fi
-  printf '%s\n' "$table"
+# gh gets the environment launchd gives it (HOME and PATH), the one it was measured to authenticate
+# in: a Herdr server started under direnv or mise carries GH_CONFIG_DIR, GH_HOST, GH_TOKEN, a proxy
+# or a CA bundle into its hooks, and none of them may steer a call made under Michael's token.
+# -R names the host (gh otherwise reads the current directory's repository) and the call runs
+# from "/". The open query also asks for statusCheckRollup, for the CI badge; the merged one does
+# not (measured: 5.1 s and 240 KB with it, 0.54 s without).
+github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, else failed
+  local slug="$1" open_json merged_json rc
+  open_json="$(env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state open --limit 100 \
+    --json headRefName,state,number,isDraft,isCrossRepository,statusCheckRollup 2>/dev/null)" || return 1
+  # Each status is taken on its own, never through a pipe into the parser. The merged half is
+  # best-effort, as on GitLab: "null" stands for a failed call and the parser reads it as not
+  # being a list.
+  merged_json="$(env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state merged --limit 100 \
+    --json headRefName,state,number,isDraft,isCrossRepository 2>/dev/null)" || merged_json="null"
+
+  # Exit 1: the open answer is not a list. Exit 3: the rows are the open ones alone, because the
+  # merged answer is not a list. A row is dropped unless it is a PR of this repository (a fork's
+  # branch name is not this checkout's branch) with a branch name that holds no tab or newline and
+  # an integer number. OPEN is "opened", MERGED is "merged", CLOSED has no badge, and an open PR
+  # beats a merged one on the same branch.
+  printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
+import json, sys
+dec, data = json.JSONDecoder(), sys.stdin.read()
+def take(i):
+    while i < len(data) and data[i].isspace():
+        i += 1
+    try:
+        obj, i = dec.raw_decode(data, i)
+    except Exception:
+        return None, i
+    return (obj if isinstance(obj, list) else None), i
+opened, i = take(0)
+if opened is None:
+    sys.exit(1)
+merged, i = take(i)
+rows = {"OPEN": {}, "MERGED": {}}
+for pr in opened + (merged or []):
+    if not isinstance(pr, dict) or pr.get("state") not in rows or pr.get("isCrossRepository") is not False:
+        continue
+    b, n = pr.get("headRefName"), pr.get("number")
+    if not isinstance(b, str) or not b or "\t" in b or "\n" in b:
+        continue
+    if type(n) is not int or n < 1:
+        continue
+    # gh lists the newest first, so the first PR of a state is the one that counts.
+    rows[pr["state"]].setdefault(b, (n, "1" if pr.get("isDraft") is True else "0"))
+for b, (n, d) in rows["OPEN"].items():
+    print("\t".join([b, "opened", str(n), d, ""]))
+for b, (n, d) in rows["MERGED"].items():
+    if b not in rows["OPEN"]:
+        print("\t".join([b, "merged", str(n), d, ""]))
+sys.exit(0 if merged is not None else 3)
+' 2>/dev/null
+  rc=$?
+  case "$rc" in 0|3) return "$rc" ;; *) return 1 ;; esac
 }
 
 # The list endpoint carries no head_pipeline, so the status costs one call per open MR. It is
@@ -216,7 +311,7 @@ pipeline_class() { # pipeline_class <slug> <iid> <force>
   local slug="$1" iid="$2" force="$3" cache age now status json
   case "$iid" in ''|*[!0-9]*) return 0 ;; esac
 
-  cache="$CACHE_DIR/$(cache_key "$slug").mr$iid.pipeline"
+  cache="$CACHE_DIR/$(cache_key gitlab "$slug").mr$iid.pipeline"
   status=""
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
     now="$(date +%s)"
@@ -265,15 +360,18 @@ print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
 }
 
 # ------------------------------------------------------------------ derivation
-# Prints "<phase> <value>" for one checkout, and "open <iid>" on a second line when the
-# branch's MR is open (draft or not); a draft MR's phase is draft, and it carries its !<iid>. Order matters: an open MR outranks every local signal;
-# local work outranks a merged MR.
-derive() { # derive <checkout_path> <repo_root> <mr_table>
-  local path="$1" root="$2" table="$3" branch base row state iid draft
+# Prints "<phase> <value>" for one checkout, and "open <number>" on a second line when the
+# branch's MR or PR is open (draft or not), with " <ci>" after it when the table's fifth column
+# holds one; a draft's phase is draft. The ref is !<iid> on GitLab and #<number> on GitHub, by the
+# forge argument. Order matters: an open MR outranks every local signal; local work outranks a
+# merged MR.
+derive() { # derive <checkout_path> <repo_root> <mr_table> <forge>
+  local path="$1" root="$2" table="$3" forge="$4" branch base row state iid draft ci ref='!'
+  [ "$forge" != "github" ] || ref='#'
 
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || { echo none; return 0; }
 
-  state=""; iid=""; draft=""
+  state=""; iid=""; draft=""; ci=""
   # Whole-field equality, not a substring search: `grep -F` collides in both directions
   # (`mr-suffix` inside `owner/mr-suffix`, `feature/rev` against `feature/review`). The
   # branch travels in the environment, not `awk -v`, which processes escape sequences.
@@ -282,14 +380,15 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
     state="$(printf '%s' "$row" | cut -f2)"
     iid="$(printf '%s' "$row" | cut -f3)"
     draft="$(printf '%s' "$row" | cut -f4)"
+    ci="$(printf '%s' "$row" | cut -f5)"
   fi
 
   # An open MR outranks everything git can see locally: it says somebody else is waiting on
   # this branch, and an untracked file or an unpushed review fix does not change that.
   if [ "$state" = "opened" ]; then
-    if [ "$draft" = "1" ]; then printf 'draft %s !%s\n' "$ICON_DRAFT" "$iid"
-    else printf 'review %s !%s\n' "$ICON_MR" "$iid"; fi
-    printf 'open %s\n' "$iid"
+    if [ "$draft" = "1" ]; then printf 'draft %s %s%s\n' "$ICON_DRAFT" "$ref" "$iid"
+    else printf 'review %s %s%s\n' "$ICON_MR" "$ref" "$iid"; fi
+    printf 'open %s%s\n' "$iid" "${ci:+ $ci}"
     return 0
   fi
 
@@ -312,7 +411,7 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   # Merged stays BELOW the local tests, unlike opened: once landed, nobody is waiting, so
   # new work in that worktree is new work.
   if [ "$state" = "merged" ]; then
-    printf 'merged %s !%s\n' "$ICON_MERGE" "$iid"; return 0
+    printf 'merged %s %s%s\n' "$ICON_MERGE" "$ref" "$iid"; return 0
   fi
 
   # No local work and no MR: still yours, so active. Do NOT infer "HEAD is contained in the
@@ -376,7 +475,7 @@ cmd_refresh() {
     esac
   done
 
-  local list ws path root phase value last_root="" table="" slug="" out first second ci
+  local list ws path root phase value last_root="" table="" forge="" slug="" out first second ci
   list="$(spaces)"
   [ -n "$list" ] || return 0
 
@@ -387,11 +486,14 @@ cmd_refresh() {
     # `spaces` sorts by repo, so one lookup per repo falls out of iterating it.
     if [ "$root" != "$last_root" ]; then
       slug="$(repo_slug "$root" || true)"
-      table=""
-      [ -z "$slug" ] || table="$(mr_table "$slug" "$force" || true)"
+      forge=""; table=""
+      if [ -n "$slug" ]; then
+        forge="${slug%% *}"; slug="${slug#* }"
+        table="$(mr_table "$forge" "$slug" "$force" || true)"
+      fi
       last_root="$root"
     fi
-    out="$(derive "$path" "$root" "$table")"
+    out="$(derive "$path" "$root" "$table" "$forge")"
     first="${out%%$'\n'*}"
     second=""
     case "$out" in *$'\n'*) second="${out#*$'\n'}" ;; esac
@@ -400,7 +502,12 @@ cmd_refresh() {
     value="$*"
     ci=""
     case "$second" in
-      "open "*) [ -z "$slug" ] || ci="$(pipeline_class "$slug" "${second#open }" "$force")" ;;
+      "open "*)
+        # GitHub's CI comes with the table (derive's second line); GitLab's costs a call per MR.
+        set -- ${second#open }
+        if [ "$forge" = "gitlab" ]; then ci="$(pipeline_class "$slug" "$1" "$force")"
+        else ci="${2:-}"; fi
+        ;;
     esac
     report "$ws" "$phase" "$value" "$ci"
   done < <(printf '%s\n' "$list")

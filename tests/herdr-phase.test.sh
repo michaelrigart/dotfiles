@@ -19,9 +19,9 @@
 #      the sidebar and nothing anywhere reports an error, so the exact bytes are pinned here.
 #
 # `git` is real throughout — dirty trees, unpushed commits and linked worktrees have enough
-# semantics that stubbing them would test the stub. `herdr` and `glab` are stubbed: one to
-# capture what would be reported, the other to make MR state deterministic and to count calls,
-# which is how the per-repo caching is proved.
+# semantics that stubbing them would test the stub. `herdr`, `glab` and `gh` are stubbed: one to
+# capture what would be reported, the others to make MR and PR state deterministic and to count
+# calls, which is how the per-repo caching is proved.
 #
 # Run: ./tests/herdr-phase.test.sh
 set -u
@@ -144,6 +144,33 @@ done
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
 
+# A third repository on GitHub, with one worktree per PR shape section M exercises, and a fourth
+# on GitLab under the same owner/name, so the two forges' cache keys can be told apart.
+mkrepo() { # mkrepo <dir> <origin-url> <branch>...
+  local d="$T/$1" url="$2" b; shift 2
+  q git init --bare -b main "$d.git"
+  q git clone "$d.git" "$d"
+  echo base > "$d/f"
+  q git -C "$d" add f
+  q git -C "$d" commit -m base
+  q git -C "$d" push -u origin main
+  for b in "$@"; do
+    q git -C "$d" worktree add -b "feature/$b" "$d-$b" main
+    echo "$b" > "$d-$b/f"
+    q git -C "$d-$b" add f
+    q git -C "$d-$b" commit -m "$b"
+    q git -C "$d-$b" push -u origin "feature/$b"
+  done
+  q git -C "$d" remote set-url origin "$url"
+}
+REPO3="$T/repo3"; REPO4="$T/repo4"
+mkrepo repo3 git@github.com:test/proj3.git gh-ready gh-draft gh-merged gh-cross gh-reused
+mkrepo repo4 git@gitlab.com:test/proj3.git gl3
+for _d in gh-ready gh-draft gh-merged gh-cross gh-reused; do
+  [ -d "$REPO3-$_d" ] || { echo "FIXTURE BROKEN: $REPO3-$_d was not created" >&2; exit 2; }
+done
+[ -d "$REPO4-gl3" ] || { echo "FIXTURE BROKEN: $REPO4-gl3 was not created" >&2; exit 2; }
+
 # Assert the fixture before asserting anything about the script. Every git call above is
 # silenced by q(), so a setup that failed reached the phase assertions as "no output" and
 # read as the script itself being broken.
@@ -218,6 +245,53 @@ G
 chmod 755 "$BIN/glab"
 }
 glab_stub
+
+# Models what the script depends on in `gh pr list`: it answers per `-R github.com/<owner>/<repo>`
+# and per `--state open|merged` from fixture files ($GHDIR/<state>-<owner>__<repo>.json, `[]` when
+# absent), and refuses any other -R form, a missing `--limit 100` or a missing `--json`. The script
+# runs gh under `env -i`, so the stub gets no suite variable: the paths below are written into it,
+# and the failure mode comes from $GHDIR/mode (fail: exit 1 with a message on stderr; garbage and
+# object: exit 0 with an answer that is not a list; merged-fail and merged-garbage: only the
+# merged query misbehaves). Every call records its arguments, its working directory and its
+# environment.
+GHDIR="$T/gh"; GHENV="$T/gh-env"; mkdir -p "$GHDIR"; : > "$GHENV"
+cat > "$T/gh.stub" <<'G'
+#!/usr/bin/env bash
+GHDIR=@GHDIR@
+echo "gh $*" >> @CALLS@
+echo "$PWD" >> @PWDS@
+env >> @GHENV@
+mode=""; [ -r "$GHDIR/mode" ] && mode="$(cat "$GHDIR/mode")"
+[ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ] || { echo "gh: unsupported command" >&2; exit 1; }
+shift 2
+repo=""; state=""; limit=""; json=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -R) repo="${2:-}"; shift 2 ;;
+    --state) state="${2:-}"; shift 2 ;;
+    --limit) limit="${2:-}"; shift 2 ;;
+    --json) json="${2:-}"; shift 2 ;;
+    *) echo "gh: unexpected argument $1" >&2; exit 1 ;;
+  esac
+done
+case "$repo" in github.com/*/*) ;; *) echo "gh: -R must name the host" >&2; exit 1 ;; esac
+[ "$limit" = "100" ] || { echo "gh: --limit 100 is required" >&2; exit 1; }
+[ -n "$json" ] || { echo "gh: --json is required" >&2; exit 1; }
+case "$state" in open|merged) ;; *) echo "gh: bad --state" >&2; exit 1 ;; esac
+case "$mode" in
+  fail) echo "gh: HTTP 502" >&2; exit 1 ;;
+  garbage) echo garbage; exit 0 ;;
+  object) echo '{"message":"x"}'; exit 0 ;;
+  merged-fail) [ "$state" = "merged" ] && { echo "gh: HTTP 502" >&2; exit 1; } ;;
+  merged-garbage) [ "$state" = "merged" ] && { echo garbage; exit 0; } ;;
+esac
+slug="${repo#github.com/}"
+f="$GHDIR/$state-${slug%%/*}__${slug#*/}.json"
+if [ -r "$f" ]; then cat "$f"; else echo '[]'; fi
+G
+sed -e "s|@GHDIR@|$GHDIR|" -e "s|@CALLS@|$T/calls|" -e "s|@PWDS@|$T/pwds|" -e "s|@GHENV@|$GHENV|" \
+  "$T/gh.stub" > "$BIN/gh"
+chmod 755 "$BIN/gh"
 
 # Deliberately interleaved between the two repos, the way the live session returns it.
 WSJSON="$T/ws.json"
@@ -406,11 +480,12 @@ case "$(report_for w4)" in *"--token review="*) _pass "refresh --workspace repor
   *) _fail "refresh --workspace reports the right space";; esac
 
 echo
-echo "G. a repo Herdr cannot resolve to GitLab degrades to git-only"
-q git -C "$REPO" remote set-url origin git@github.com:test/proj.git
+echo "G. a repo Herdr cannot resolve to GitLab or GitHub degrades to git-only"
+q git -C "$REPO" remote set-url origin git@codeberg.org:test/proj.git
 rm -rf "$T/cache"   # a cached table would answer for the repo that no longer resolves
 run refresh
-check "$(grep -c -- 'gitlab.com/test/proj ' "$CALLS")" "0" "no glab call for a non-GitLab remote"
+check "$(grep -c -- 'gitlab.com/test/proj ' "$CALLS")" "0" "no glab call for a remote on neither forge"
+check "$(grep -c '^gh ' "$CALLS")" "0" "no gh call for a remote on neither forge"
 case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "git-derived phases still reported";;
   *) _fail "git-derived phases still reported (got: $(report_for w2))";; esac
 # feature/review has an open MR upstream, but without GitLab the script cannot know that.
@@ -713,6 +788,181 @@ move; phase_check w5 merged "$ICON_MERGE !11" "draft -> merged when the MR lands
 cp "$MROPEN.orig" "$MROPEN"; cp "$MRMERGED.orig" "$MRMERGED"; rm -f "$MROPEN.orig" "$MRMERGED.orig"
 
 echo
+echo "M. GitHub PRs are looked up like GitLab MRs"
+GH_OPEN="$GHDIR/open-test__proj3.json"; GH_MERGED="$GHDIR/merged-test__proj3.json"
+# Besides the five shapes under test, the open list holds rows the parse must drop: a branch with
+# a tab in it, and two PR numbers that are not integers.
+cat > "$GH_OPEN" <<'J'
+[{"headRefName":"feature/gh-ready","state":"OPEN","number":21,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},
+ {"headRefName":"feature/gh-draft","state":"OPEN","number":22,"isDraft":true,"isCrossRepository":false,"statusCheckRollup":[]},
+ {"headRefName":"feature/gh-cross","state":"OPEN","number":24,"isDraft":false,"isCrossRepository":true,"statusCheckRollup":[]},
+ {"headRefName":"feature/gh-reused","state":"OPEN","number":26,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},
+ {"headRefName":"feature/tab\tbranch","state":"OPEN","number":27,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},
+ {"headRefName":"feature/gh-badnum","state":"OPEN","number":"28","isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},
+ {"headRefName":"feature/gh-badnum2","state":"OPEN","number":2.5,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]
+J
+cat > "$GH_MERGED" <<'J'
+[{"headRefName":"feature/gh-merged","state":"MERGED","number":23,"isDraft":false,"isCrossRepository":false},
+ {"headRefName":"feature/gh-reused","state":"MERGED","number":25,"isDraft":false,"isCrossRepository":false}]
+J
+cp "$GH_OPEN" "$GH_OPEN.orig"; cp "$GH_MERGED" "$GH_MERGED.orig"
+cat > "$T/ws-gh.json" <<J
+{"id":"x","result":{"type":"workspace_list","workspaces":[
+ {"workspace_id":"wG1","label":"gh-ready","worktree":{"checkout_path":"$REPO3-gh-ready","is_linked_worktree":true,"repo_root":"$REPO3"}},
+ {"workspace_id":"wG2","label":"gh-draft","worktree":{"checkout_path":"$REPO3-gh-draft","is_linked_worktree":true,"repo_root":"$REPO3"}},
+ {"workspace_id":"wG3","label":"gh-merged","worktree":{"checkout_path":"$REPO3-gh-merged","is_linked_worktree":true,"repo_root":"$REPO3"}},
+ {"workspace_id":"wG4","label":"gh-cross","worktree":{"checkout_path":"$REPO3-gh-cross","is_linked_worktree":true,"repo_root":"$REPO3"}},
+ {"workspace_id":"wG5","label":"gh-reused","worktree":{"checkout_path":"$REPO3-gh-reused","is_linked_worktree":true,"repo_root":"$REPO3"}}
+]}}
+J
+gh_calls() { grep -c '^gh pr list' "$CALLS"; }
+ghrun() { WSJSON="$T/ws-gh.json" run "$@"; }
+rm -f "$GHDIR/mode"; rm -rf "$T/cache"
+
+ghrun refresh
+check "$RC" "0" "a GitHub refresh exits 0"
+phase_check wG1 review "$ICON_MR #21" "an open ready PR -> review, carries #21"
+phase_check wG2 draft "$ICON_DRAFT #22" "an open draft PR -> draft, carries #22"
+phase_check wG3 merged "$ICON_MERGE #23" "a merged PR -> merged, carries #23"
+# A fork's branch name is not this checkout's branch, so a cross-repository PR badges nothing.
+phase_check wG4 active "$ICON_BRANCH" "a branch whose only PR is cross-repository stays active"
+phase_check wG5 review "$ICON_MR #26" "a branch with a merged #25 and an open #26 reports #26"
+
+# The table the parse produced: five columns, no row for what it must drop.
+GH_TSV="$T/cache/github@test%2Fproj3.tsv"
+check "$(grep -c . "$GH_TSV")" "4" "the table keeps four rows: three open and one merged, nothing dropped by mistake"
+check "$(awk -F'\t' 'NF != 5' "$GH_TSV" | wc -l | tr -d ' ')" "0" "every GitHub row has five columns"
+check "$(grep -c 'tab\|badnum\|gh-cross' "$GH_TSV")" "0" "cross-repository, tab-in-branch and non-integer rows are dropped"
+
+# Calls: two per repository, host named, run from /, no rollup on the merged query.
+rm -rf "$T/cache"
+ghrun refresh
+check "$(gh_calls)" "2" "a cold refresh makes two gh pr list calls for the repository"
+check "$(grep -c -- '--state open ' "$CALLS")" "1" "one of them asks for open PRs"
+check "$(grep -c -- '--state merged ' "$CALLS")" "1" "the other asks for merged PRs"
+check "$(grep -- '--state merged ' "$CALLS" | grep -c statusCheckRollup)" "0" "the merged query does not request statusCheckRollup"
+check "$(grep -- '--state open ' "$CALLS" | grep -c statusCheckRollup)" "1" "the open query requests statusCheckRollup"
+check "$(grep '^gh ' "$CALLS" | grep -vc -- ' -R github.com/test/proj3 ')" "0" "every gh call names the host and the repository in -R"
+[ "$(wc -l < "$PWDS" | tr -d ' ')" = "2" ] && _pass "the cwd check saw both gh calls" || _fail "the cwd check saw both gh calls"
+check "$(grep -vxc / "$PWDS")" "0" "every gh call runs from /"
+ghrun refresh
+check "$(gh_calls)" "0" "a second refresh inside the TTL makes no gh call"
+ghrun refresh --force
+check "$(gh_calls)" "2" "--force bypasses the GitHub cache"
+TTL=0 ghrun refresh
+check "$(gh_calls)" "2" "an expired GitHub cache is refetched"
+unset TTL
+
+# gh runs under env -i with HOME and PATH only: a Herdr server started under direnv or mise carries
+# these into its hooks, and none may reach the token's lookup.
+: > "$GHENV"
+GH_HOST=evil.example GH_REPO=x/y GH_CONFIG_DIR=/nonexistent GH_TOKEN=t GITHUB_TOKEN=t \
+  XDG_CONFIG_HOME=/nonexistent HTTPS_PROXY=http://evil.invalid:1 SSL_CERT_FILE=/nonexistent \
+  ghrun refresh --force
+[ "$(grep -c '^HOME=' "$GHENV")" -gt 0 ] && _pass "the gh environment was recorded" || _fail "the gh environment was recorded"
+check "$(grep -cE '^(GH_HOST|GH_REPO|GH_CONFIG_DIR|GH_TOKEN|GITHUB_TOKEN|XDG_CONFIG_HOME|HTTPS_PROXY|SSL_CERT_FILE)=' "$GHENV")" "0" \
+  "no caller GH_*, token, XDG_CONFIG_HOME, proxy or CA variable reaches gh"
+check "$(grep -vcE '^(HOME|PATH|PWD|OLDPWD|SHLVL|_)=' "$GHENV")" "0" "gh gets nothing but HOME and PATH from the suite"
+
+# Draft to ready moves the space to review, and back.
+sed 's/"isDraft":true/"isDraft":false/' "$GH_OPEN.orig" > "$GH_OPEN"
+ghrun refresh --force --workspace wG2
+phase_check wG2 review "$ICON_MR #22" "draft -> review when the PR is marked ready"
+cp "$GH_OPEN.orig" "$GH_OPEN"
+ghrun refresh --force --workspace wG2
+phase_check wG2 draft "$ICON_DRAFT #22" "review -> draft when the PR goes back to draft"
+
+# Failures. A warm cache stands in for a failed lookup, whatever shape the failure has.
+rm -rf "$T/cache"; ghrun refresh
+for m in fail garbage object; do
+  echo "$m" > "$GHDIR/mode"
+  TTL=0 ghrun refresh
+  check "$RC" "0" "refresh survives gh answering '$m'"
+  phase_check wG1 review "$ICON_MR #21" "gh answering '$m' keeps the cached review badge"
+  phase_check wG3 merged "$ICON_MERGE #23" "gh answering '$m' keeps the cached merged badge"
+done
+rm -f "$GHDIR/mode"
+
+# The merged half alone failing (an error exit, or an answer that is not a list): the open rows
+# stand, merged state is not invented, and the table is not cached.
+for m in merged-fail merged-garbage; do
+  rm -rf "$T/cache"; echo "$m" > "$GHDIR/mode"
+  ghrun refresh
+  phase_check wG1 review "$ICON_MR #21" "$m: open PRs still badge"
+  phase_check wG3 active "$ICON_BRANCH" "$m: no merged state is invented"
+  ghrun refresh
+  check "$(gh_calls)" "2" "$m: a half-answered lookup is not cached, so the next run retries"
+done
+rm -f "$GHDIR/mode"
+
+# Nothing cached and nothing answered: no PR state at all.
+rm -rf "$T/cache"; echo fail > "$GHDIR/mode"
+ghrun refresh
+check "$RC" "0" "refresh survives gh failing with a cold cache"
+phase_check wG1 active "$ICON_BRANCH" "a cold cache plus a failed lookup invents no PR state"
+rm -f "$GHDIR/mode"
+
+# A valid empty answer is an answer: a closed PR's badge must go, not linger from the cache.
+rm -rf "$T/cache"; ghrun refresh
+phase_check wG1 review "$ICON_MR #21" "PRECONDITION: the cache warms"
+echo '[]' > "$GH_OPEN"; echo '[]' > "$GH_MERGED"
+TTL=0 ghrun refresh
+phase_check wG1 active "$ICON_BRANCH" "an empty open list replaces the table: #21 goes back to active"
+phase_check wG3 active "$ICON_BRANCH" "an empty merged list replaces the table too"
+cp "$GH_OPEN.orig" "$GH_OPEN"; cp "$GH_MERGED.orig" "$GH_MERGED"
+
+# The slug comes from a remote URL a sandboxed command can rewrite and reaches gh's -R argument
+# under Michael's token. These forms are GitHub's own and make a call; the rest make none.
+for good in git@github.com:test/proj3.git https://github.com/test/proj3 \
+            https://github.com/test/proj3.git ssh://git@github.com/test/proj3.git; do
+  q git -C "$REPO3" remote set-url origin "$good"
+  rm -rf "$T/cache"; ghrun refresh
+  check "$(grep -c -- '^gh pr list -R github.com/test/proj3 ' "$CALLS")" "2" "remote '$good' is looked up as test/proj3"
+done
+for bad in git@github.com:a/b/c.git 'https://github.com/a/../b' 'https://github.com/a/b?x=1' \
+           git@github.com.evil.com:a/b.git https://evil.com/github.com/a/b \
+           'https://github.com/a/b c' 'https://github.com/a/' 'https://github.com//b' 'https://github.com/a/b%2Fc'; do
+  q git -C "$REPO3" remote set-url origin "$bad"
+  rm -rf "$T/cache"; ghrun refresh
+  check "$(grep -c '^gh ' "$CALLS")" "0" "remote '$bad': no gh call"
+  phase_check wG1 active "$ICON_BRANCH" "remote '$bad': no PR state"
+done
+q git -C "$REPO3" remote set-url origin git@github.com:test/proj3.git
+
+# A GitLab test/proj3 and a GitHub test/proj3 in one run: each has its own cache file and its own
+# badge, and neither answers for the other.
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+if [ "${1:-}" = "api" ]; then echo '{"iid":31,"head_pipeline":null}'; exit 0; fi
+case " $* " in
+  *" --repo https://gitlab.com/test/proj3 "*) ;;
+  *) echo '[]'; exit 0 ;;
+esac
+case " $* " in
+  *" --merged "*) echo '[]' ;;
+  *) echo '[{"iid":31,"source_branch":"feature/gl3","state":"opened","draft":false}]' ;;
+esac
+G
+chmod 755 "$BIN/glab"
+cat > "$T/ws-both.json" <<J
+{"id":"x","result":{"type":"workspace_list","workspaces":[
+ {"workspace_id":"wG1","label":"gh-ready","worktree":{"checkout_path":"$REPO3-gh-ready","is_linked_worktree":true,"repo_root":"$REPO3"}},
+ {"workspace_id":"wL1","label":"gl3","worktree":{"checkout_path":"$REPO4-gl3","is_linked_worktree":true,"repo_root":"$REPO4"}}
+]}}
+J
+rm -rf "$T/cache"
+WSJSON="$T/ws-both.json" run refresh
+phase_check wG1 review "$ICON_MR #21" "the GitHub test/proj3 space shows its own PR, with a # prefix"
+phase_check wL1 review "$ICON_MR !31" "the GitLab test/proj3 space shows its own MR, with a ! prefix"
+check "$(ls "$T/cache" | grep '\.tsv$' | LC_ALL=C sort | tr '\n' ' ')" "github@test%2Fproj3.tsv test%2Fproj3.tsv " \
+  "the two forges' tables live in separate cache files"
+check "$(grep -c 'feature/gl3' "$T/cache/test%2Fproj3.tsv")" "1" "the GitLab file holds the GitLab table"
+check "$(grep -c 'gh-ready' "$T/cache/github@test%2Fproj3.tsv")" "1" "the GitHub file holds the GitHub table"
+glab_stub
+rm -rf "$T/cache"
+
+echo
 echo "I. the wiring that makes the badges appear and persist"
 # These are static assertions about config, not behaviour of the script — but nothing else
 # catches them, and each one silently produces no badges rather than an error.
@@ -917,7 +1167,7 @@ echo "C. the pinned PATH"
 HOSTILE="$T/hostile"; HM="$T/hostile-marks"; mkdir -p "$HOSTILE" "$HM"
 printf '#!/bin/sh\necho "${0##*/}" >> "%s/marker"\nexit 0\n' "$HM" > "$HOSTILE/.marker"
 chmod 755 "$HOSTILE/.marker"
-for _t in git herdr bash zsh python3 jq glab awk cut tr sort stat date; do ln -s .marker "$HOSTILE/$_t"; done
+for _t in git herdr bash zsh python3 jq glab gh awk cut tr sort stat date; do ln -s .marker "$HOSTILE/$_t"; done
 marked() { if [ -e "$HM/marker" ]; then tr '\n' ' ' < "$HM/marker"; else printf clean; fi; }
 cp "$PHASE" "$T/phase-pinned.sh"; chmod 755 "$T/phase-pinned.sh"
 
@@ -943,6 +1193,17 @@ check "$RC" "0" "refresh exits 0 with a hostile directory first on the caller's 
 case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the refresh still derived and reported a phase";;
   *) _fail "the refresh still derived and reported a phase (got: $(report_for w20); $OUT)";; esac
 check "$(marked)" "clean" "a refresh runs none of the hostile tools"
+
+# The same for a GitHub repository, which is the only way a hostile gh would ever be reached.
+rm -f "$HM/marker"; : > "$CALLS"
+OUT=$(env -i HOME="$T" PATH="$HOSTILE:$BIN:/usr/bin:/bin" \
+      PINNED_PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
+      WSJSON="$T/ws-gh.json" HERDR_PHASE_CACHE_DIR="$T/cache-hostile-gh" \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      "$T/phase-pinned.sh" refresh 2>&1); RC=$?
+check "$RC" "0" "a GitHub refresh exits 0 with a hostile directory first on the caller's PATH"
+phase_check wG1 review "$ICON_MR #21" "the GitHub refresh still reached the pinned gh and reported a phase"
+check "$(marked)" "clean" "a GitHub refresh runs none of the hostile tools, gh included"
 
 # The two Python calls run isolated: the current directory (a repository) is not on sys.path.
 # The fixture must bite first, or "no import" proves nothing.
