@@ -1136,9 +1136,9 @@ waitfor() { # waitfor <file> -> 0 once the file exists, 1 after 5 s
   local i=0
   while [ ! -e "$1" ]; do i=$((i + 1)); [ "$i" -le 50 ] || return 1; sleep 0.1; done
 }
-bg_phase() { # bg_phase <args...> -> BGPID: phase.sh in the background, as run() starts it; stderr to $BGERR
+bg_phase() { # bg_phase <args...> -> BGPID: phase.sh in the background, as run() starts it
   PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" HERDR_PHASE_CACHE_DIR="$T/cache" HERDR_PHASE_TTL=120 \
-    HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" "$@" >/dev/null 2>"${BGERR:-/dev/null}" &
+    HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" "$@" >/dev/null 2>/dev/null &
   BGPID=$!
 }
 lock_busy() { # lock_busy -> how many lock files in the cache dir are still held
@@ -1540,9 +1540,9 @@ fake_wait_gone "a clock that stands still"
 # signal during the grace (HUP 0.5 s after the TERM) is ignored: the abort still runs to its end.
 abort_case() { # abort_case <label> [<second signal>]
   local i n=50 mrc spid
-  job_reset; : > "$T/bg.err"
+  job_reset
   printf 'ignore-term' > "$GLD/hang-test__proj"
-  BGERR="$T/bg.err" bg_phase refresh --force; mpid=$BGPID
+  bg_phase refresh --force; mpid=$BGPID
   waitfor "$GLD/pid-test__proj" && _pass "$1: the hung forge call started" || _fail "$1: the hung forge call started"
   t0="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
   if [ -n "${2:-}" ]; then sleep 0.5; kill -"$2" "$mpid" 2>/dev/null; n=45; fi

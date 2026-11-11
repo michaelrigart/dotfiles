@@ -90,6 +90,10 @@
 #   - A partial answer (exit 3: the merged half failed) publishes fresh open rows without caching them,
 #     so a `--fresh` within the gap or a TTL hook can republish the older cached table until the next
 #     timer run.
+#   - bash 3.2 occasionally prints `child setpgid (<pid> to <pid>): Operation not permitted` on stderr
+#     (about 1 run in 100): the child's own setpgid races the parent's, which has already moved it
+#     into its group. It is cosmetic and does not affect the deadline kill; it reaches a hook's
+#     stderr (launchd's goes to /dev/null).
 #   - bash's own startup inputs are not scrubbed: it sources BASH_ENV and imports exported functions
 #     (BASH_FUNC_<name>%%) before the first line, and one named like a command called here (git,
 #     glab, herdr) runs in its place. Like PINNED_PATH and HERDR_PHASE_*, the caller's environment
