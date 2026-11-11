@@ -79,13 +79,13 @@ This will:
 ## 🔧 Daily Usage
 
 ```bash
-# Edit a dotfile
-chezmoi edit ~/.zshrc
+# Get a checkout of the source at ~/.local/share/chezmoi-<branch>, and edit the dotfile there
+wt <branch>
 
 # Preview changes
-chezmoi diff
+command chezmoi --source ~/.local/share/chezmoi-<branch> diff
 
-# Apply changes
+# After the branch is merged, apply it
 chezmoi apply
 
 # Update from repository
@@ -106,14 +106,16 @@ be read. `merge` and `merge-all` need it too. `chezmoi init` is refused in the s
 ### Managing Dotfiles
 
 ```bash
-# Add a new file to dotfiles
-chezmoi add ~/.config/newapp/config.toml
+# Add a new file to dotfiles, into the wt checkout
+command chezmoi --source ~/.local/share/chezmoi-<branch> add ~/.config/newapp/config.toml
 
-# Commit and push changes
-cd ~/.local/share/chezmoi
-git add .
-git commit -m "Update configuration"
-git push
+# Commit and push the branch
+git -C ~/.local/share/chezmoi-<branch> add .
+git -C ~/.local/share/chezmoi-<branch> commit -m "Update configuration"
+git -C ~/.local/share/chezmoi-<branch> push origin <branch>
+
+# After the merge, deploy it
+chezmoi apply
 ```
 
 ### Re-running Scripts
@@ -149,8 +151,8 @@ brew install chezmoi 1password-cli
 # 3. Sign in to 1Password
 eval $(op signin)
 
-# 4. Set the machine identity BEFORE chezmoi runs: `chezmoi init` records ComputerName,
-#    and the Brewfile refuses a machine not listed in .chezmoidata/machines.toml.
+# 4. Set the machine identity BEFORE chezmoi runs: the Brewfile render refuses a machine
+#    whose live ComputerName is not listed in .chezmoidata/machines.toml.
 #    <name> is one of those listed names (fenrir, hercules).
 sudo scutil --set ComputerName  <name>
 sudo scutil --set HostName      <name>
@@ -171,6 +173,7 @@ brew bundle install --file "$HOMEBREW_BUNDLE_FILE"
 
 # 8. Default shell, then Oh My Zsh (~/.zshrc sources it unconditionally).
 #    KEEP_ZSHRC=yes stops the installer replacing the chezmoi-managed ~/.zshrc.
+grep -qx "$(brew --prefix)/bin/zsh" /etc/shells || echo "$(brew --prefix)/bin/zsh" | sudo tee -a /etc/shells
 chsh -s $(brew --prefix)/bin/zsh
 export ZSH="$HOME/.local/share/oh-my-zsh"
 KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
