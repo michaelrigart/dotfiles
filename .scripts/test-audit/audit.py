@@ -1395,7 +1395,8 @@ def parser():
     pn.set_defaults(func=cmd_pins)
     ru = sub.add_parser("rules")
     ru.add_argument("--max-minutes", type=float)
-    ru.add_argument("--check-cmd")
+    ru.add_argument("--check-cmd", help="a command to run instead of the loader suites; arguments that name "
+                    "a file are resolved against the harness's cwd, so paths inside the copy must use {copy}")
     ru.add_argument("rules_tsv")
     ru.set_defaults(func=cmd_rules)
     rep = sub.add_parser("report")

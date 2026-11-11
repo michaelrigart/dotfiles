@@ -872,6 +872,13 @@ out["lead_last"] = flatten_all("- **Lead** before x.\n", "before x", "delete-sen
 bs = "- **Never store** secrets, keys, tokens.\n"
 out["bold_weaken"] = flatten_all(bs, "secrets", "weaken")
 out["bold_drop"] = list(drops(bs, "secrets")[0])
+out["fronted"] = [drops("- It dispatches the work; if `wt` fails, it stops and tells Michael.\n", "It dispatches"),
+                  drops("- When it rains, we stay and read.\n", "When it rains"),
+                  drops("- Before you push, run the tests and lint.\n", "Before you push")]
+out["fronted_list"] = drops("- If it fails, drop `a`, `b` and `c`.\n", "If it fails")
+out["walk_when"] = drops("- It sends work at the checkpoints and when genuinely stuck, sending the artifact and its constraints, never its reasoning.\n", "It sends work")
+out["colon_later"] = drops("- Needs the escape: `op`, and writes: `init`, `clone`, `config`, or a new branch.\n", "Needs the escape")
+out["bold_period"] = flatten_all("- **Lead**. A. B.\n", "**Lead**.", "delete-sentence")
 out["interior_bad"] = drops("- Keep a, b is c, d.\n", "Keep")
 out["walk_stop"] = list(drops("- Specs are never old files, tmp old dirs, caches.\n", "Specs")[0])
 out["bt_tail"] = list(drops("- Keep `a`, `b` and `c` files here.\n", "Keep")[0])
@@ -908,12 +915,20 @@ eq "$(ruget lead)" '["- **Lead** Y."]' "R2: a bold lead phrase stays, the rest o
 eq "$(ruget lead_last)" '["- **Lead**"]' "R2: and when it is the last sentence"
 eq "$(ruget bold_weaken)" '["- **Prefer not to store** secrets, keys, tokens."]' "R2: a strength word inside a bold lead phrase is still weakened"
 eq "$(ruget bold_drop)" '["secrets", "keys", "tokens"]' "R2: and its list is still read"
+eq "$(ruget fronted)" '[[{}, 0], [{}, 0], [{}, 0]]' "R2: a fronted if, when or before clause is not the first item of a list (the p248 shape and its repros)"
+eq "$(ruget fronted_list)" '[{"`a`": "- If it fails, drop `b` and `c`.", "`b`": "- If it fails, drop `a` and `c`.", "`c`": "- If it fails, drop `a`, `b`."}, 0]' "R2: a real list after a fronted clause is still dropped item by item"
+eq "$(ruget walk_when)" '[{}, 1]' "R2: a first item that would start at a subordinator makes the list unparsed"
+eq "$(ruget colon_later)" '[{"`init`": "- Needs the escape: `op`, and writes: `clone`, `config`, or a new branch.", "`clone`": "- Needs the escape: `op`, and writes: `init`, `config`, or a new branch.", "`config`": "- Needs the escape: `op`, and writes: `init`, `clone`, or a new branch.", "a new branch": "- Needs the escape: `op`, and writes: `init`, `clone`, `config`."}, 0]' "R2: a list introduced by a colon in a later segment is read from the colon"
+eq "$(ruget bold_period)" '["- **Lead**. B.", "- **Lead**. A."]' "R2: a bold lead followed by a period outside the asterisks stays"
 eq "$(ruget interior_bad)" '[{}, 1]' "R2: an item that holds a copula makes the list unparsed"
 eq "$(ruget walk_stop)" '["old files", "tmp old dirs", "caches"]' "R2: the first item stops at a negation however many words the next item has"
 eq "$(ruget bt_tail)" '["`a`", "`b`", "`c`"]' "R2: a backticked name ends the last item, the words after it are not part of it"
 eq "$(ruget bracket_tail)" '[{}, 1]' "R2: an item that would cut a bracket in half makes the list unparsed"
 eq "$(ruget label_weaken)" '[]' "R2: the words of a bold label are never weakened"
 eq "$(ruget ambiguous)" '[[], true, 1]' "R2: an anchor in two blocks gives no mutants and is ambiguous"
+run rules --help
+helptext=$(printf '%s' "$OUT" | tr '\n' ' ' | tr -s ' ')
+has "paths inside the copy must use {copy}" "R3: the usage of --check-cmd says that file arguments are resolved against the harness's cwd" "$helptext"
 printf 'R1\tdocs/rules.md\tNever push\tyes\t-\tconfirm\n' > "$T/rules.tsv"
 run rules "$T/rules.tsv"
 rc_is 0 "R3: rules with the exact pin succeeds"

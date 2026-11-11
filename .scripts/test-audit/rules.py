@@ -22,6 +22,10 @@ STOP_WORDS = {"without", "in", "on", "of", "with", "for", "to", "at", "from", "b
               "until", "that", "which", "because", "if", "as", "before", "after", "but", "so", "except",
               "then", "than", "per", "via", "into", "onto", "over", "under", "about", "against", "within",
               "between", "through", "during", "while", "where", "whose", "who", "whom"}
+# A clause that starts with one of these has a fronted subordinate clause or phrase: its first comma
+# ends it, and what follows is the main clause.
+SUBORDINATORS = {"if", "when", "whenever", "before", "after", "unless", "until", "while", "because", "since",
+                 "once", "for", "as", "where", "although"}
 MAX_DROPS = 4
 MAX_ITEM_WORDS = 8
 
@@ -29,7 +33,7 @@ START_RE = re.compile(r"\s*(?:[-*+]|\d+[.)])\s|\s{0,3}#{1,6}\s|\s*\|")
 SINGLE_RE = re.compile(r"\s{0,3}#{1,6}\s|\s*\|")
 BULLET_RE = re.compile(r"(?:[-*+]|\d+[.)])\s+")
 HEAD_RE = re.compile(r"#{1,6}\s+")
-BOLD_RE = re.compile(r"\*\*[^*\n]+?\*\*:?(?=\s|$)")
+BOLD_RE = re.compile(r"\*\*[^*\n]+?\*\*[:.]?(?=\s|$)")
 TOKEN_RE = re.compile(r"`[^`]*`\S*|\S+")
 CONJ_RE = re.compile(r"(?<=\s)(?:or|and)(?=\s)")
 
@@ -114,8 +118,9 @@ def prefix_end(flat):
     if not bold:
         return start, start
     end = bold.end()
-    inner = flat[start + 2:end].rstrip(":").rstrip()[:-2]
-    is_label = inner.endswith((".", ":")) or flat[end - 1] == ":" or end >= len(flat)
+    close = flat.rfind("**", start + 2, end)
+    is_label = (flat[start + 2:close].endswith((".", ":")) or flat[close + 2:end] in (":", ".")
+                or end >= len(flat))
     skip = end
     while skip < len(flat) and flat[skip] == " ":
         skip += 1
@@ -204,7 +209,13 @@ def parse_clause(flat, code, depth, ca, cb):
               and not code[i]]
     if not commas:
         return "none"
+    first_word = words_of(flat, ca, cb)[:1]
+    if first_word and word_key(flat, code, *first_word[0]) in SUBORDINATORS:
+        return parse_clause(flat, code, depth, commas[0] + 2, cb)
     segs = list(zip([ca] + [c + 2 for c in commas], commas + [cb]))
+    for j in range(1, len(segs)):
+        if any(flat[i:i + 2] == ": " and depth[i] == 0 and not code[i] for i in range(*segs[j])):
+            return parse_clause(flat, code, depth, segs[j][0], cb)
     ls, le = segs[-1]
     final_conj = (re.match(r"(?:or|and) ", flat[ls:le]) is not None
                   or any(not code[m.start()] and depth[m.start()] == 0 for m in CONJ_RE.finditer(flat, ls, le)))
@@ -254,7 +265,11 @@ def parse_clause(flat, code, depth, ca, cb):
         walk, n_next = [], min(4, len(words_of(flat, *items[0])))
         for s, e in reversed(words_of(flat, fs, fe)):
             key = word_key(flat, code, s, e)
-            if len(walk) >= n_next or key in FORBIDDEN or key in STOP_WORDS or flat[e - 1] == ":":
+            if len(walk) >= n_next:
+                break
+            if key in SUBORDINATORS:
+                return "unparsed"
+            if key in FORBIDDEN or key in STOP_WORDS or flat[e - 1] == ":":
                 break
             walk.append((s, e))
         if not walk:
