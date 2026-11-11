@@ -98,7 +98,8 @@ Trade-offs inside the spec, decided by the line:
    touches before it calls out. The stamp is read and touched only while the repository's lock is
    held (Ruling 11), so a failing forge, or two refreshes at once, are rate-limited too.
    `--force` ignores the stamp (the keybinding and the timer), and the TTL path does not read it.
-8. **Cache files are replaced atomically** (`mktemp` beside the file, then `mv -f`). A refresh killed
+8. **Cache files are replaced atomically** (`mktemp`, then `mv -f`; the temporary file is staged in
+   `$CACHE_DIR/.tmp/<key>/` since Ruling 12). A refresh killed
    mid-write then leaves the previous table, never half of a new one that would later read as a
    valid, shorter table.
 9. **Jobs are not capped.** Each repository is refreshed as its own background job (`&` and
@@ -121,12 +122,13 @@ Trade-offs inside the spec, decided by the line:
       when the holder ends, and a holder killed with `SIGKILL` keeps it until its last child
       exits).
     - A refresh that cannot take the lock within `LOCK_WAIT` = 30 s skips that repository and
-      reports none of its spaces; the holder reports them.
+      reports none of its spaces; they keep their last badge until a run reports them (a `--workspace`
+      holder reports only its own space).
     - A stuck holder (a forge call that never returns) is ended by the run deadline (Ruling 12).
     - The lock files stay in place (empty files). Different repositories have different locks, so
       per-repository jobs still run side by side.
 
-12. **A run deadline (driver ruling, 2026-11-12).** The main script waits for its jobs for at
+12. **A run deadline (driver ruling, 2026-11-11).** The main script waits for its jobs for at
     most `RUN_DEADLINE` = 40 s, under the 50 s interval. Then it ends every unfinished job and
     exits. A hung forge call therefore never holds up the timer for the other repositories.
     - Each job runs in its own process group: `set -m` just for the fork, then `set +m`. At the
@@ -142,7 +144,7 @@ Trade-offs inside the spec, decided by the line:
       `$CACHE_DIR/.tmp/<key>/` and renamed into place with `mv`. That covers the MR/PR table, the
       pipeline status and the focus stamp. A job killed at the deadline therefore leaves its cache
       as it was. Under the lock, a job empties only its own staging directory.
-    - **Correction (driver ruling, 2026-11-12).** The first version of this ruling relied on
+    - **Correction (driver ruling, 2026-11-11).** The first version of this ruling relied on
       launchd's group kill as a second line of defence. That kill cannot reach the jobs, because
       `set -m` puts each one in its own process group. In its place:
       - the main shell traps TERM, HUP and INT;
@@ -158,19 +160,19 @@ Trade-offs inside the spec, decided by the line:
       phase.sh` does not recover it, because the forge call inherits the lock (measured). Find
       every process holding the lock with `lsof -t <cache>/<key>.lock`. Only a manual `kill -9`,
       or a grace longer than `ExitTimeOut`, reaches this.
-13. **Accepted limit (driver ruling, 2026-11-12).** A sandboxed command can take a repository's
+13. **Accepted limit (driver ruling, 2026-11-11).** A sandboxed command can take a repository's
     lock, because `flock` needs only read access and the lock files are readable from the
     sandbox. That freezes the repository's badges, and every run pays `LOCK_WAIT` for it, bounded
     by the deadline. It writes nothing and runs nothing. The fix is a read-deny for
     `~/.cache/herdr-phase` in the sandbox settings, which `feat/wt-dotfiles` owns. It is a
     follow-up for Michael to decide, not part of this line.
-14. **Task 4 supervision hunt stopped after round 4** (driver ruling, 2026-11-12), per the
+14. **Task 4 supervision hunt stopped after round 4** (driver ruling, 2026-11-11), per the
     2026-10-31 push-guard precedent. Remaining corners are documented in the phase.sh header.
     Option B, job supervision in a `/usr/bin/python3 -I` helper, is deferred to Michael.
 15. **Numeric overrides are validated.** `HERDR_PHASE_RUN_DEADLINE` must be a whole number of
     seconds; any other value exits 2 with a message. Shell arithmetic on an unvalidated value
-    runs `a[$(cmd)]`, which was measured. The whole-branch review checks every other numeric
-    override for the same class.
+    runs `a[$(cmd)]`, which was measured. Since the whole-branch review, `HERDR_PHASE_LOCK_WAIT`
+    and `HERDR_PHASE_TTL` are validated the same way, through one helper (`whole_seconds`).
 
 **Call budget at 72 runs/h:**
 - GitLab: 2 per repository plus 1 per open MR per run, so 18 per run today, ~1,300/h, against
@@ -425,7 +427,8 @@ Rulings 8 and 11.
     `/usr/bin/lockf -s -t "$LOCK_WAIT" 9` (Ruling 11). When that fails, the job exits 0 without
     reporting.
   - `age_of <file>` prints seconds since the file's mtime, or a large number when it is missing.
-  - Every cache write goes through `mktemp "$cache.XXXXXX"` and `mv -f`.
+  - Every cache write goes through `mktemp` and `mv -f` (staged in `$CACHE_DIR/.tmp/<key>/` since
+    Ruling 12).
 
 - [ ] **Step 1: Write the failing tests.** Add a section, "each repository is its own job":
   - **No repository waits for another.** `test/proj`'s `glab mr list` stub blocks until a report
@@ -569,8 +572,10 @@ Rulings 8 and 11.
    - `launchctl bootout gui/$(id -u)/be.netronix.herdr-phase-refresh` and then
      `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist`;
    - a Herdr config reload, or a server restart, for `$draft`;
-   - check that `launchctl kickstart -k gui/$(id -u)/be.netronix.herdr-phase-refresh` during a run
-     leaves no `phase.sh` job behind (Ruling 12's trap);
+   - (optional) `launchctl kickstart -k gui/$(id -u)/be.netronix.herdr-phase-refresh` during a run
+     shows only that the run restarts: jobs finish within seconds either way, so it does not prove
+     the trap; `tests/herdr-phase.test.sh`'s `abort_case` does (TERM to the main shell ends a
+     TERM-ignoring job within 5 s);
    - check that a UI-driven space switch fires `workspace.focused` on 0.9.5 (badge current within
      a few seconds of focus);
    - `wt-rm feat/draft-status`.

@@ -201,7 +201,7 @@ Constraints, each pinned in `tests/herdr-phase.test.sh`:
 - one repository's slow or failing lookup never stops or corrupts another repository's reports;
 - a run's total time stays well inside the interval.
 
-Rulings on this amendment, from the driver (chezmoi-c2), 2026-11-12, for Michael's review:
+Rulings on this amendment, from the driver (chezmoi-c2), 2026-11-11, for Michael's review:
 - **Run deadline.** A run waits for its jobs for at most 40 s, then ends every unfinished
   job's whole process group itself, the forge call included, and exits. Every cache write is
   atomic, so a job killed at the deadline leaves its cache as it was. This is how the
