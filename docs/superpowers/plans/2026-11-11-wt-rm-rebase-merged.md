@@ -100,7 +100,7 @@ rb_kept() {   # rb_kept <slug> <label> — after `run "$REPO" wt-rm <slug>`
 }
 ```
 
-"Base moves" below is `rbc "$REPO" other.txt "base moves" o1`. "Copied" is `git -C "$REPO" cherry-pick <commits>` with output discarded, and each case asserts once that the copy has a new SHA where the case depends on it (`rb1`). Every case ends with `run "$REPO" wt-rm <slug>` and then `rb_gone` or `rb_kept`.
+"Base moves" below is `rbc "$REPO" other.txt "base moves" o1`. Every git command of a fixture names its directory with `-C`; the suite never changes its own. "Copied" is `git -C "$REPO" cherry-pick <commits>` with output discarded, and each case asserts once that the copy has a new SHA where the case depends on it (`rb1`). Every case ends with `run "$REPO" wt-rm <slug>` and then `rb_gone` or `rb_kept`.
 
 | Case | Fixture, after `rb_start <slug>` | Expect |
 |---|---|---|
@@ -109,10 +109,10 @@ rb_kept() {   # rb_kept <slug> <label> — after `run "$REPO" wt-rm <slug>`
 | `rb3` (spec 3) | Branch: `rbc "$WT" a.txt a a1`, `rbc "$WT" b.txt b b1`. Base moves. Copy the first commit only (`rb3~1`). | `rb_kept` |
 | `rb4` (spec 4) | Branch: `rbc "$WT" x.txt add x1`, then `git -C "$WT" revert --no-edit HEAD`. Base moves. Copy `main..rb4`. | `rb_kept` |
 | `rb5` (spec 5) | Before `wt`, the seed also commits `dup.txt`: `A1 A2 A3 old A4 A5 A6 ---- A1 A2 A3 old A4 A5 A6` (one word per line; use `setup` and `rbc` directly instead of `rb_start`). Branch: one commit changing the first `old` to `new`. Base: one commit changing the second `old` to `new`. Assert the fixture: both commits have the same `git patch-id --verbatim`. | `rb_kept` |
-| `rb6` (spec 6) | Branch: `rbc "$WT" a.txt c1 a1`. Side branch in the worktree: `git -C "$WT" switch -q -c rb6-side main`, `rbc "$WT" b.txt s b1`, `git -C "$WT" switch -q rb6`. Merge with content of its own: `git -C "$WT" merge -q --no-ff --no-commit rb6-side`, `print own > "$WT/c.txt"`, `git add -A`, `git commit -q -m merge`. Base moves. Copy `rb6~1` (c1) and `rb6-side`. | `rb_kept` |
+| `rb6` (spec 6) | Branch: `rbc "$WT" a.txt c1 a1`. Side branch in the worktree: `git -C "$WT" switch -q -c rb6-side main`, `rbc "$WT" b.txt s b1`, `git -C "$WT" switch -q rb6`. Merge with content of its own: `git -C "$WT" merge -q --no-ff --no-commit rb6-side`, `print own > "$WT/c.txt"`, `git -C "$WT" add -A`, `git -C "$WT" commit -q -m merge`. Base moves. Copy `rb6~1` (c1) and `rb6-side`. | `rb_kept` |
 | `rb7` (spec 7) | Branch: `rbc "$WT" x.txt apply x1`, `git -C "$WT" revert --no-edit HEAD`, `rbc "$WT" x.txt again x1`. Base moves. Copy the first two (`rb7~2 rb7~1`). | `rb_kept` |
 | `rb8` (spec 8) | The `rb5` seed. Branch: first `old` to `mid`, then `mid` to `new`, in two commits. Base: one commit changing the second `old` to `new`. | `rb_kept` |
-| `rb9` (focus 1) | Branch: `rbc "$WT" log.txt a l1 l2 l3 rb9-a`. In `$REPO`: `git switch -q -c up`, base moves, copy `rb9`, the later commit changing the `rb9-a` line, `git switch -q main`, then `git update-ref refs/remotes/origin/main up` and `git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main`. | `rb_gone rb9 rebase-merged origin/main` |
+| `rb9` (focus 1) | Branch: `rbc "$WT" log.txt a l1 l2 l3 rb9-a`. `git -C "$REPO" switch -q -c up`, base moves, copy `rb9`, the later commit changing the `rb9-a` line, `git -C "$REPO" switch -q main`, then `git -C "$REPO" update-ref refs/remotes/origin/main up` and `git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main`. | `rb_gone rb9 rebase-merged origin/main` |
 | `rb10` (focus 2) | Branch: `rbc "$WT" log.txt a l1 l2 l3 rb10-a`, `git -C "$WT" commit -q --allow-empty -m empty`, `rbc "$WT" feature.txt b f1`. Base moves. Copy `rb10~2` and `rb10`. Later commit changing the `rb10-a` line. | `rb_gone rb10 rebase-merged main` |
 | `rb11` (focus 3) | The `rb1` fixture with one branch commit (the `log.txt` one), no config. Run `wt-rm` as `PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='merge-tree --write-tree' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" wt-rm rb11` (no `WT_FAIL_SKIP`: the real git prints its tree, then the stub exits 128). Assert the fixture: line 1 of `$FLOG` contains `--merge-base=`. | `rb_kept` |
 
