@@ -58,6 +58,9 @@ unset op_agent
 export BUNDLE_USER_CACHE="$XDG_CACHE_HOME/bundler/cache"
 export BUNDLE_USER_CONFIG="$XDG_CONFIG_HOME/bundler/config"
 export BUNDLE_USER_PLUGIN="$XDG_CACHE_HOME/bundler/plugin"
+# Non-secret settings live here: the user config holds tokens and is unreadable in the agent sandbox
+export BUNDLE_JOBS=8
+export BUNDLE_BUILD__PG="--with-opt-dir=/opt/homebrew/opt/libpq"
 
 # GEMRC file location
 export GEMRC="$XDG_CONFIG_HOME/gem/config"

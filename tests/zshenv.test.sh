@@ -79,6 +79,14 @@ else
   _pass "zshenv calls no brew --prefix"
 fi
 
+# The user's Bundler config holds tokens and is unreadable in the agent sandbox, so its
+# non-secret settings are exported; read from a child process, as bundler sees only those.
+got=$(probe '/usr/bin/printenv BUNDLE_JOBS')
+[ "$got" = 8 ] && _pass "zshenv exports BUNDLE_JOBS" || _fail "zshenv exports BUNDLE_JOBS" "${got:-unset}"
+got=$(probe '/usr/bin/printenv BUNDLE_BUILD__PG')
+[ "$got" = "--with-opt-dir=/opt/homebrew/opt/libpq" ] && _pass "zshenv exports the pg build option" \
+  || _fail "zshenv exports the pg build option" "${got:-unset}"
+
 # Regression: op asks for the account password instead of Touch ID. Since macOS 27.2 the
 # terminal may not read the 1Password app's group-container settings, so op cannot see that
 # the app integration is on unless the environment says so. Read from a child process: op
