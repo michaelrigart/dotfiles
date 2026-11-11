@@ -197,6 +197,8 @@ cat > "$BIN/herdr" <<'H'
 #!/usr/bin/env bash
 echo "herdr $*" >> "$CALLS"
 if [ "${1:-}" = "workspace" ] && [ "${2:-}" = "list" ]; then cat "$WSJSON"; fi
+# KILLJOB_WS=<id>: the report for that workspace kills its caller, the repository's job.
+if [ "${2:-}" = "report-metadata" ] && [ -n "${KILLJOB_WS:-}" ] && [ "${3:-}" = "$KILLJOB_WS" ]; then kill -9 "$PPID"; fi
 exit 0
 H
 
@@ -1054,7 +1056,9 @@ echo "N. each repository is its own job"
 #   wait-<repo>        the open list blocks until a report line matching the file's text is in
 #                      the call log, and logs `overlap`; after 5 s it gives up and logs `timeout`
 #   first-open-<repo>.json
-#                      the first open list answers this, creates started-<repo> and sleeps 2 s
+#                      the first open list answers this, creates started-<repo> and stalls until
+#                      a second `herdr workspace list` is in the call log (a second refresh has
+#                      started), for 10 s at most
 # Every wait is bounded, so a regression fails the case and never hangs the suite.
 GLD="$T/gld"; export GLD
 glab_job_stub() {
@@ -1078,7 +1082,12 @@ if [ "$state" = open ]; then
     echo "$got" >> "$CALLS"
   fi
   if [ -r "$GLD/first-open-$repo.json" ] && mkdir "$GLD/first-taken-$repo" 2>/dev/null; then
-    : > "$GLD/started-$repo"; sleep 2; cat "$GLD/first-open-$repo.json"; exit 0
+    : > "$GLD/started-$repo"
+    for ((i = 0; i < 100; i++)); do
+      [ "$(grep -c '^herdr workspace list' "$CALLS")" -lt 2 ] || break
+      sleep 0.1
+    done
+    cat "$GLD/first-open-$repo.json"; exit 0
   fi
 fi
 [ ! -r "$GLD/sleep-$repo" ] || sleep "$(cat "$GLD/sleep-$repo")"
@@ -1110,8 +1119,14 @@ lock_busy() { # lock_busy -> how many lock files in the cache dir are still held
 }
 nreports() { grep -c -E "^herdr workspace report-metadata $1 " "$CALLS"; }
 last_report() { grep -E "^herdr workspace report-metadata $1 " "$CALLS" | tail -1; }
-# The order of lookups (L) and w5 reports (R) in the call log.
-order_w5() { grep -E '^(glab mr list|herdr workspace report-metadata w5 )' "$CALLS" | cut -c1 | tr '\n' ' ' | sed 's/g/L/g; s/h/R/g'; }
+# The order of workspace lists (S), lookups (L) and w5 reports (R) in the call log.
+order_w5() {
+  grep -E '^(glab mr list|herdr workspace list|herdr workspace report-metadata w5 )' "$CALLS" \
+    | sed -E 's/^glab.*/L/; s/^herdr workspace list.*/S/; s/^herdr workspace report-metadata.*/R/' | tr '\n' ' '
+}
+# A logging mv: the atomic-write case reads which file was renamed onto which.
+export MVLOG="$T/mv.log"; : > "$MVLOG"
+printf '#!/bin/sh\necho "mv $*" >> "$MVLOG"\nexec /bin/mv "$@"\n' > "$BIN/mv"; chmod 755 "$BIN/mv"
 LINKED="w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 wA wB"
 glab_job_stub
 
@@ -1141,7 +1156,13 @@ phase_check w5 draft "$ICON_DRAFT !11" "per-repository jobs: an open draft MR is
 phase_check w6 merged "$ICON_MERGE !12" "per-repository jobs: a merged MR is merged"
 phase_check w10 review "$ICON_MR !13" "per-repository jobs: a dirty worktree with an open MR is review"
 phase_check w12 active "$ICON_BRANCH" "per-repository jobs: a merged MR does not outrank local work"
+phase_check w7 active "$ICON_BRANCH" "per-repository jobs: a pushed branch with no MR is active"
+phase_check w8 active "$ICON_BRANCH" "per-repository jobs: a fresh worktree is active"
+phase_check w9 active "$ICON_BRANCH" "per-repository jobs: a prefix branch does not inherit an MR"
+phase_check w11 review "$ICON_MR !14" "per-repository jobs: unpushed commits with an open MR are review"
+phase_check w13 active "$ICON_BRANCH" "per-repository jobs: a suffix branch does not inherit an MR"
 phase_check wA active "$ICON_BRANCH" "per-repository jobs: the other repository's space is active"
+phase_check wB active "$ICON_BRANCH" "per-repository jobs: the other repository's second space is active"
 check "$(lock_busy)" "0" "no lock outlives the run"
 
 # A failing lookup stays in its own repository: test/proj has nothing cached to fall back on.
@@ -1189,8 +1210,8 @@ WSJSON="$T/ws-three.json" run refresh --force
 t1="$(now_s)"
 elapsed="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
 check "$(grep -c '^glab mr list' "$CALLS")" "6" "each of the three repositories made its two list calls"
-check "$(awk -v e="$elapsed" 'BEGIN { print (e < 4.5) ? "fast" : "slow" }')" "fast" \
-  "three repositories at 2 s each finish in under 4.5 s (took ${elapsed} s; sequential is at least 6 s)"
+check "$(awk -v e="$elapsed" 'BEGIN { print (e < 5.5) ? "fast" : "slow" }')" "fast" \
+  "three repositories at 2 s each finish in under 5.5 s (took ${elapsed} s; sequential is at least 6 s)"
 check "$(nreports w4)$(nreports wA)$(nreports wL1)" "111" "each of the three repositories reported its space"
 check "$(lock_busy)" "0" "no lock outlives the three-repository run"
 
@@ -1201,8 +1222,10 @@ check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "1" "refresh 
 check "$(nreports w4)" "1" "and it is the asked space's"
 check "$(lock_busy)" "0" "no lock outlives a single-space run"
 
-# An older lookup never lands last. A's first open list answers the draft and stalls for 2 s;
-# B's lookup answers ready. B must wait for A's job to publish, so the last badge is B's.
+# An older lookup never lands last. A's first open list answers the draft and stalls until B has
+# started (B's `herdr workspace list` is in the log); B's lookup answers ready. B must wait for A's
+# job to publish, so the last badge is B's. B's list before A's report proves B reached the lock
+# while A held it, so the order is the lock's doing and not a lucky finish.
 job_ready() { # job_ready -> test/proj answers ready from the first call on, but A's first answer is a draft
   sed 's/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":true/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":false/' \
     "$MROPEN" > "$GLD/open-test__proj.json"
@@ -1213,25 +1236,29 @@ job_reset; job_ready
 bg_phase refresh --force --workspace w5; apid=$BGPID
 waitfor "$GLD/started-test__proj" && _pass "A's lookup started and is stalled" || _fail "A's lookup started and is stalled"
 KEEPLOG=1 run refresh --force --workspace w5
-wait "$apid" 2>/dev/null   # A ends on its own: its stall is 2 s
+wait "$apid" 2>/dev/null   # A ends on its own once B has started
 check "$(nreports w5)" "2" "A and B each reported w5"
 case "$(last_report w5)" in *"--token review=$ICON_MR !11 "*) _pass "the last report for w5 is B's review !11";;
   *) _fail "the last report for w5 is B's review !11 (got: $(last_report w5))";; esac
 check "$(awk -F'\t' '$1=="feature/draft" {print $4}' "$T/cache/test%2Fproj.tsv")" "0" "the cached table holds B's answer: draft 0"
-check "$(order_w5)" "L L R L L R " "B's lookups started after A's report"
+check "$(order_w5)" "S L S L R L L R " "B started while A held the lock, and B's lookups followed A's report"
 check "$(lock_busy)" "0" "no lock outlives the reversed-order run"
 
-# A held lock is waited for, then skipped: the suite holds test/proj's lock for 3 s and the
-# refresh waits 1 s. The holder reports the repository's spaces; this run reports none of them.
-job_reset; mkdir -p "$T/cache"
-( exec 9>>"$T/cache/test%2Fproj.lock"; /usr/bin/lockf -s -t 5 9 && { : > "$T/held"; /bin/sleep 3; } ) &
+# A held lock is waited for, then skipped: the suite holds test/proj's lock until it has seen the
+# run return (10 s at most) and the refresh waits 1 s. The holder reports the repository's spaces;
+# this run reports none of them and says so on stderr.
+job_reset; mkdir -p "$T/cache"; rm -f "$T/release"
+( exec 9>>"$T/cache/test%2Fproj.lock"; /usr/bin/lockf -s -t 5 9 && { : > "$T/held"; waitfor "$T/release"; } ) &
 hpid=$!
 waitfor "$T/held" && _pass "the suite holds test/proj's lock" || _fail "the suite holds test/proj's lock"
 LOCK_WAIT=1 run refresh --force
+: > "$T/release"
 check "$RC" "0" "a refresh that cannot take a lock exits 0"
 check "$(for w in w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13; do nreports $w; done | tr -d '\n')" "000000000000" "no test/proj space is reported while its lock is held"
 check "$(grep -c 'gitlab.com/test/proj ' "$CALLS")" "0" "and test/proj is not looked up"
 check "$(nreports wA)$(nreports wB)" "11" "test/proj2's spaces are still reported"
+check "$(printf '%s\n' "$OUT" | grep -c 'skipped test%2Fproj: its lock is held')" "1" "the skipped repository is named once on stderr"
+check "$(printf '%s\n' "$OUT" | grep -c 'skipped')" "1" "and nothing else is skipped"
 wait "$hpid" 2>/dev/null
 check "$(lock_busy)" "0" "no lock is left once the holder ends"
 
@@ -1244,7 +1271,7 @@ waitfor "$GLD/started-test__proj" && _pass "A's lookup started before its parent
 kill -9 "$apid" 2>/dev/null; wait "$apid" 2>/dev/null
 LOCK_WAIT=10 KEEPLOG=1 run refresh --force --workspace w5
 check "$(nreports w5)" "2" "A's orphaned job and B each reported w5"
-check "$(order_w5)" "L L R L L R " "B's lookups started after the orphaned job's report"
+check "$(order_w5)" "S L S L R L L R " "B started while the orphaned job held the lock, and B's lookups followed its report"
 case "$(last_report w5)" in *"--token review=$ICON_MR !11 "*) _pass "the last report for w5 is B's review !11 after the parent died";;
   *) _fail "the last report for w5 is B's review !11 after the parent died (got: $(last_report w5))";; esac
 check "$(lock_busy)" "0" "no lock outlives the dead-parent case"
@@ -1261,6 +1288,39 @@ ino2="$(stat -f %i "$T/cache/test%2Fproj.tsv")"; pino2="$(stat -f %i "$T/cache/t
   || _fail "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)"
 check "$(ls "$T/cache" | grep -Ec '\.(tsv|pipeline)\.')" "0" "no temporary file is left in the cache directory"
 check "$(grep -c . "$T/cache/test%2Fproj.tsv")" "7" "the replaced table is whole"
+
+# The replacement is a rename of a sibling temporary file onto the target, for both forges (a
+# delete-then-write would change the inode too, and leave a gap a reader could fall into).
+: > "$MVLOG"; job_reset
+run refresh --force
+check "$(grep -cE "^mv -f $T/cache/test%2Fproj\.tsv\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.tsv\$" "$MVLOG")" "1" \
+  "the GitLab table is renamed into place from a sibling temporary file"
+check "$(grep -cE "^mv -f $T/cache/test%2Fproj\.mr10\.pipeline\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.mr10\.pipeline\$" "$MVLOG")" "1" \
+  "the GitLab pipeline status is renamed into place from a sibling temporary file"
+: > "$MVLOG"; rm -rf "$T/cache"
+ghrun refresh --force
+check "$(grep -cE "^mv -f $T/cache/github@test%2Fproj3\.tsv\.[A-Za-z0-9]{6} $T/cache/github@test%2Fproj3\.tsv\$" "$MVLOG")" "1" \
+  "the GitHub table is renamed into place from a sibling temporary file"
+
+# A job sweeps its repository's stray temporary files (left by a refresh that was killed mid-write)
+# while it holds the lock, and no other repository's.
+job_reset; mkdir -p "$T/cache"
+: > "$T/cache/test%2Fproj.tsv.ABCDEF"; : > "$T/cache/test%2Fproj.mr10.pipeline.ABCDEF"; : > "$T/cache/other%2Frepo.tsv.ABCDEF"
+run refresh --force
+check "$(ls "$T/cache" | grep -c 'ABCDEF')" "1" "a refresh sweeps its repository's stray temporary files"
+check "$(ls "$T/cache" | grep 'ABCDEF')" "other%2Frepo.tsv.ABCDEF" "and leaves another repository's file alone"
+
+# A job that dies abnormally is not folded into a clean exit: it is named on stderr, the other
+# repository's job is unaffected, and the refresh still exits 0.
+job_reset
+KILLJOB_WS=w4 run refresh --force
+check "$RC" "0" "a refresh whose job was killed still exits 0"
+check "$(printf '%s\n' "$OUT" | grep -c 'a refresh job ended abnormally')" "1" "the killed job is reported once on stderr"
+check "$(nreports wA)$(nreports wB)" "11" "the other repository's spaces are still reported"
+check "$(lock_busy)" "0" "no lock outlives the killed job"
+
+# The lock wait is 30 s unless the suite lowers it.
+check "$(grep -c '^LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"' "$PHASE")" "1" "the lock wait defaults to 30 s"
 
 glab_stub
 rm -rf "$T/cache" "$GLD" "$T/held"

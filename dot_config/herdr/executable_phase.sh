@@ -26,8 +26,10 @@
 # on that repository's lock file (<key>.lock in the cache directory, fd 9, /usr/bin/lockf) from its
 # lookups to its last report. Two refreshes of one repository (the timer and a focus hook, say) therefore run
 # one after the other, and an older lookup can never publish after a newer one. A job that cannot
-# take the lock within LOCK_WAIT seconds skips its repository: the holder reports it. Cache files
-# are replaced atomically, so a refresh killed mid-write leaves the previous table.
+# take the lock within LOCK_WAIT seconds skips its repository and says so on stderr; that run's
+# spaces keep their last badge until the next run (the holder reports only the spaces it was
+# started for). Cache files are replaced atomically, so a refresh killed mid-write leaves the
+# previous table, and each job sweeps its repository's stray temporary files under the lock.
 #
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
 # glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
@@ -529,8 +531,8 @@ for w in d.get("result", {}).get("workspaces", []):
 
 # ------------------------------------------------------------------ commands
 # One repository's refresh: its table, then derive, CI and a report for each of its spaces. Runs in
-# a background subshell (the lock lives on that subshell's fd 9 and dies with it, and with every
-# child that inherited it), never in the main shell.
+# a background subshell, never in the main shell: the lock is on that subshell's fd 9, and it is
+# released only when the job and every child that inherited fd 9 have exited.
 refresh_repo() { # refresh_repo <root> <force:0|1> <spaces: ws<TAB>path<TAB>root lines>
   local root="$1" force="$2" spaces="$3" ws path r phase value table="" forge="" slug="" key out first second ci iid
   slug="$(repo_slug "$root" || true)"
@@ -540,8 +542,11 @@ refresh_repo() { # refresh_repo <root> <force:0|1> <spaces: ws<TAB>path<TAB>root
     # The kernel releases the lock only when every process holding fd 9 has exited, so a parent
     # that dies while this job lives on does not free it, and nothing reclaims or breaks it.
     mkdir -p "$CACHE_DIR"
-    exec 9>>"$CACHE_DIR/$key.lock" || return 0
-    /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || return 0
+    exec 9>>"$CACHE_DIR/$key.lock" || { echo "phase.sh: skipped $key: cannot open its lock file" >&2; return 0; }
+    /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || { echo "phase.sh: skipped $key: its lock is held" >&2; return 0; }
+    # Stray temporary files come from a refresh killed mid-write (write_cache); keys hold no glob
+    # characters, and the lock keeps this from deleting a live job's file.
+    rm -f "$CACHE_DIR/$key".tsv.?????? "$CACHE_DIR/$key".mr*.pipeline.??????
     table="$(mr_table "$forge" "$slug" "$force" || true)"
   fi
 
@@ -567,6 +572,7 @@ refresh_repo() { # refresh_repo <root> <force:0|1> <spaces: ws<TAB>path<TAB>root
     esac
     report "$ws" "$phase" "$value" "$ci"
   done < <(printf '%s\n' "$spaces")
+  return 0
 }
 
 cmd_refresh() {
@@ -579,7 +585,7 @@ cmd_refresh() {
     esac
   done
 
-  local list ws path root group="" last_root="" nl=$'\n' tab=$'\t'
+  local list ws path root group="" last_root="" nl=$'\n' tab=$'\t' pids="" pid
   list="$(spaces)"
   [ -n "$list" ] || return 0
 
@@ -590,13 +596,18 @@ cmd_refresh() {
     [ -d "$path" ] || continue
     if [ "$root" != "$last_root" ] && [ -n "$group" ]; then
       ( refresh_repo "$last_root" "$force" "$group" ) &
+      pids="$pids $!"
       group=""
     fi
     last_root="$root"
     group="${group:+$group$nl}$ws$tab$path$tab$root"
   done < <(printf '%s\n' "$list")
-  if [ -n "$group" ]; then ( refresh_repo "$last_root" "$force" "$group" ) & fi
-  wait
+  if [ -n "$group" ]; then ( refresh_repo "$last_root" "$force" "$group" ) & pids="$pids $!"; fi
+  # Each job is waited for on its own, so one that died abnormally (killed, or crashed) is named.
+  # A failed lookup is not a failed refresh, so the exit status stays 0.
+  for pid in $pids; do
+    wait "$pid" || echo "phase.sh: a refresh job ended abnormally (status $?)" >&2
+  done
   return 0
 }
 
