@@ -115,6 +115,8 @@ rb_kept() {   # rb_kept <slug> <label> — after `run "$REPO" wt-rm <slug>`
 | `rb9` (focus 1) | Branch: `rbc "$WT" log.txt a l1 l2 l3 rb9-a`. `git -C "$REPO" switch -q -c up`, base moves, copy `rb9`, the later commit changing the `rb9-a` line, `git -C "$REPO" switch -q main`, then `git -C "$REPO" update-ref refs/remotes/origin/main up` and `git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main`. | `rb_gone rb9 rebase-merged origin/main` |
 | `rb10` (focus 2) | Branch: `rbc "$WT" log.txt a l1 l2 l3 rb10-a`, `git -C "$WT" commit -q --allow-empty -m empty`, `rbc "$WT" feature.txt b f1`. Base moves. Copy `rb10~2` and `rb10`. Later commit changing the `rb10-a` line. | `rb_gone rb10 rebase-merged main` |
 | `rb11` (focus 3) | The `rb1` fixture with one branch commit (the `log.txt` one), no config. Run `wt-rm` as `PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='merge-tree --write-tree' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" wt-rm rb11` (no `WT_FAIL_SKIP`: the real git prints its tree, then the stub exits 128). Assert the fixture: line 1 of `$FLOG` contains `--merge-base=`. | `rb_kept` |
+| `rb12` (task review) | Seed `log.txt` = `l1`–`l5`. Branch: one commit turns `l3` into `A`, a second adds `feature.txt`. Base: one commit changes `l1` to `L1` (context drift, so no patch id matches), then one commit applies `l3` to `A` and adds `feature.txt`. Pins the merge-tree fallback (spec, Order 3). | `rb_gone rb12 merged main` |
+| `rb13` (task review) | The `rb11` fixture. Run `wt-rm` as `PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='rev-list --no-merges' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" wt-rm rb13`. Assert the fixture: line 1 of `$FLOG` contains `rev-list --no-merges`. Pins that a patch-id pipeline whose first command fails after printing keeps the branch. | `rb_kept` |
 
 Why `rb6` uses a merge with an added file instead of a resolved conflict: the spec's point is a merge commit with content of its own, and this fixture has it without making the copies conflict (a ruling inside the spec).
 
@@ -162,8 +164,9 @@ One variant at a time: apply the edit, run `./tests/wt-functions.test.sh > "$TMP
 | V7b | `_wt_squash_merged`: remove the stand-aside for the branch's own commits | `rb7` |
 | V8 | `_wt_squash_merged`: the replay check always succeeds | `rb8` |
 | V11 | `_wt_replays_as`: ignore `merge-tree`'s exit status | `rb11` |
+| V13 | `_wt_patch_ids`: judge by the pipeline's output alone, ignoring a failed `rev-list` | `rb13` |
 
-- [ ] **Step 1: Run V3, V4, V5, V6, V7a, V7b, V8 and V11**, in that order, as above.
+- [ ] **Step 1: Run V3, V4, V5, V6, V7a, V7b, V8, V11 and V13**, in that order, as above.
 - [ ] **Step 2: Record** each run in the table under "Mutation record" at the end of this plan: the date, the suite's exit status and the FAIL lines of the named case, verbatim.
 - [ ] **Step 3: Confirm the functions are restored**: `git diff --stat -- dot_config/zsh/functions` prints nothing, then run the suite once more; expected exit 0 and no FAIL line.
 - [ ] **Step 4: Commit**
@@ -223,9 +226,11 @@ Filled in by Task 2.
 | V7b | | | |
 | V8 | | | |
 | V11 | | | |
+| V13 | | | |
 
 ## Rulings
 
 - Cases 3–8 drive `wt-rm`, like the `sq` cases, so that each asserts the real outcome (the kept message and the surviving branch).
 - `rb6` gives its merge commit content of its own with an added file instead of a resolved conflict (see Task 1).
+- `rb12`, `rb13` and V13 were added after Task 1's review (2026-11-11): with the rebase test in front, `sq1` and `sq2` no longer reach the merge-tree test's yes, so `rb12` pins that fallback and its `merged` line; `rb13` pins that a failed patch-id pipeline keeps the branch. Every case also asserts that its fixture built.
 - `rb9`–`rb11` and the configuration lines in `rb1` come from Review Focus, not from the spec's list. V11 is added so that `rb11` is shown to fail without the status check.
