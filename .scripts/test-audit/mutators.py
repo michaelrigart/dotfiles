@@ -8,6 +8,7 @@ import ast
 import hashlib
 import re
 import subprocess
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 OPS = ("negate", "delete", "exit", "andor", "compare")
@@ -222,7 +223,9 @@ def compare_candidates(code, mask):
 def syntax_ok(lang, text):
     try:
         if lang == "py":
-            compile(text, "<mutant>", "exec")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                compile(text, "<mutant>", "exec")
             return True
         cmd = {"bash": ["bash", "-n"], "zsh": ["zsh", "-f", "-n"], "sh": ["sh", "-n"]}[lang]
         return subprocess.run(cmd, input=text.encode(), capture_output=True, timeout=30).returncode == 0
@@ -232,7 +235,9 @@ def syntax_ok(lang, text):
 
 def python_candidates(text, lines):
     try:
-        tree = ast.parse(text)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(text)
     except SyntaxError:
         return []
     out = []

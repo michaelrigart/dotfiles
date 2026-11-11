@@ -13,15 +13,23 @@ import mutators
 WEAKEN = (("Never", "Prefer not to"), ("never", "preferably not"), ("must", "should"),
           ("Must", "Should"), ("always", "usually"), ("Always", "Usually"), ("only", "mostly"),
           ("Every", "Most"), ("every", "most"))
+# Words a list item never contains: the weaken table, negations, copulas and auxiliaries.
+FORBIDDEN = {"never", "not", "no", "must", "always", "only", "every", "is", "are", "be", "was", "were",
+             "been", "being", "has", "have", "had", "does", "do", "did", "can", "cannot", "may", "might",
+             "should", "shall", "will", "would", "could"}
+# Words that end a list: prepositions and conjunctions that start what follows it.
 STOP_WORDS = {"without", "in", "on", "of", "with", "for", "to", "at", "from", "by", "when", "unless",
-              "until", "that", "which", "because", "if", "as", "before", "after", "but", "so"}
+              "until", "that", "which", "because", "if", "as", "before", "after", "but", "so", "except",
+              "then", "than", "per", "via", "into", "onto", "over", "under", "about", "against", "within",
+              "between", "through", "during", "while", "where", "whose", "who", "whom"}
 MAX_DROPS = 4
+MAX_ITEM_WORDS = 8
 
 START_RE = re.compile(r"\s*(?:[-*+]|\d+[.)])\s|\s{0,3}#{1,6}\s|\s*\|")
 SINGLE_RE = re.compile(r"\s{0,3}#{1,6}\s|\s*\|")
 BULLET_RE = re.compile(r"(?:[-*+]|\d+[.)])\s+")
 HEAD_RE = re.compile(r"#{1,6}\s+")
-LABEL_RE = re.compile(r"\*\*[^*]+?[.:]\*\*:?(?=\s|$)")
+BOLD_RE = re.compile(r"\*\*[^*\n]+?\*\*:?(?=\s|$)")
 TOKEN_RE = re.compile(r"`[^`]*`\S*|\S+")
 CONJ_RE = re.compile(r"(?<=\s)(?:or|and)(?=\s)")
 
@@ -81,19 +89,37 @@ def code_mask(flat):
     return mask
 
 
+def bracket_depth(flat, code):
+    """depth[i]: the bracket nesting before flat[i], brackets in backticks not counted."""
+    out, d = [], 0
+    for i, c in enumerate(flat):
+        out.append(d)
+        if not code[i]:
+            if c in "([":
+                d += 1
+            elif c in ")]":
+                d = max(0, d - 1)
+    return out
+
+
 def prefix_end(flat):
-    """Offset where a block's content starts: after the bullet or heading marker and a leading bold
-    label such as `**Sizing.**`. The prefix is never mutated."""
+    """(content, protected): where a block's sentences start, and where its protected prefix ends.
+    The prefix is the bullet or heading marker and a leading bold span, in a bullet, heading or
+    paragraph. A bold span ending in . or : (inside or after the asterisks) is a label: the sentences
+    start after it. Any other bold span is the lead of a sentence that goes on: the sentence starts
+    at the bold span (its words can be weakened) but delete-sentence leaves the span."""
     m = BULLET_RE.match(flat) or HEAD_RE.match(flat)
-    if not m:
-        return 0
-    end = m.end()
-    label = LABEL_RE.match(flat, end)
-    if label:
-        end = label.end()
-    while end < len(flat) and flat[end] == " ":
-        end += 1
-    return end
+    start = m.end() if m else 0
+    bold = BOLD_RE.match(flat, start)
+    if not bold:
+        return start, start
+    end = bold.end()
+    inner = flat[start + 2:end].rstrip(":").rstrip()[:-2]
+    is_label = inner.endswith((".", ":")) or flat[end - 1] == ":" or end >= len(flat)
+    skip = end
+    while skip < len(flat) and flat[skip] == " ":
+        skip += 1
+    return (skip if is_label else start), skip
 
 
 def sentences(flat, code, lo):
@@ -115,93 +141,156 @@ def sentences(flat, code, lo):
     return out
 
 
-def locate(text, anchor):
-    """(block, flat, start, end, anchor_from, anchor_to) for the first block that holds the anchor in
-    whitespace-flattened form, or None."""
+def locate_all(text, anchor):
+    """[(block, flat, start, end, anchor_from, anchor_to)] for every block that holds the anchor in
+    whitespace-flattened form, in document order."""
     wanted = " ".join(anchor.split())
+    found = []
     if not wanted:
-        return None
+        return found
     for block in split_blocks(text):
         flat, start, end = flatten(block["text"])
         i = flat.find(wanted)
         if i >= 0:
-            return block, flat, start, end, i, i + len(wanted)
-    return None
+            found.append((block, flat, start, end, i, i + len(wanted)))
+    return found
 
 
 def anchor_found(text, anchor):
-    return locate(text, anchor) is not None
+    return bool(locate_all(text, anchor))
 
 
 def words_of(flat, lo, hi):
     return [(lo + m.start(), lo + m.end()) for m in TOKEN_RE.finditer(flat[lo:hi])]
 
 
+def word_key(flat, code, s, e):
+    return None if code[s] else flat[s:e].strip("`*.,;:()[]\"'").lower()
+
+
+def is_bad(flat, code, s, e):
+    """A token an item never holds: a forbidden word, a table pipe."""
+    return "|" in flat[s:e] or word_key(flat, code, s, e) in FORBIDDEN
+
+
+def valid_item(flat, code, a, b):
+    """An item is non-empty, short, balanced, and holds no forbidden word and no pipe."""
+    if a >= b or any(is_bad(flat, code, s, e) for s, e in words_of(flat, a, b)):
+        return False
+    if len(words_of(flat, a, b)) > MAX_ITEM_WORDS or sum(1 for i in range(a, b) if flat[i] == "`") % 2:
+        return False
+    plain = [flat[i] for i in range(a, b) if not code[i]]
+    return plain.count("(") == plain.count(")") and plain.count("[") == plain.count("]")
+
+
+def trim_last(flat, code, a, b):
+    """The last item of a list: the words from a up to the first forbidden or stop word or opening
+    bracket, ending early after a backticked name. None when no word is left."""
+    taken = []
+    for s, e in words_of(flat, a, b):
+        key = word_key(flat, code, s, e)
+        if taken and (key in FORBIDDEN or key in STOP_WORDS or flat[s] == "("):
+            break
+        taken.append((s, e))
+        if code[s]:
+            break
+    return (taken[0][0], taken[-1][1]) if taken else None
+
+
+def parse_clause(flat, code, depth, ca, cb):
+    """The item spans of the comma list in flat[ca:cb], 'none' when it is no list, 'unparsed' when
+    it looks like one and cannot be read with confidence."""
+    commas = [i for i in range(ca, cb - 1) if flat[i] == "," and flat[i + 1] == " " and depth[i] == 0
+              and not code[i]]
+    if not commas:
+        return "none"
+    segs = list(zip([ca] + [c + 2 for c in commas], commas + [cb]))
+    ls, le = segs[-1]
+    final_conj = (re.match(r"(?:or|and) ", flat[ls:le]) is not None
+                  or any(not code[m.start()] and depth[m.start()] == 0 for m in CONJ_RE.finditer(flat, ls, le)))
+    if len(segs) < (2 if final_conj else 3):
+        return "none"
+    items, stopped_at = [], len(segs)
+    for k in range(1, len(segs)):
+        s, e = segs[k]
+        words = words_of(flat, s, e)
+        key = word_key(flat, code, *words[0]) if words else None
+        if key in STOP_WORDS or key in FORBIDDEN:
+            stopped_at = k
+            break
+        if key in ("or", "and") and not code[words[0][0]]:
+            tail = trim_last(flat, code, words[1][0], e) if len(words) > 1 else None
+            if tail is None:
+                return "unparsed"
+            items.append(tail)
+            stopped_at = k + 1
+            break
+        conj = next((m for m in CONJ_RE.finditer(flat, s, e) if not code[m.start()] and depth[m.start()] == 0), None)
+        if conj:
+            tail = trim_last(flat, code, conj.end() + 1, e) if conj.end() + 1 < e else None
+            if tail is None or conj.start() - 1 <= s:
+                return "unparsed"
+            items += [(s, conj.start() - 1), tail]
+            stopped_at = k + 1
+            break
+        items.append((s, e))
+    if stopped_at < len(segs):
+        rest = words_of(flat, *segs[stopped_at])
+        lead = word_key(flat, code, *rest[0]) if rest else None
+        if lead not in STOP_WORDS and lead not in FORBIDDEN:
+            return "unparsed"
+    elif items and stopped_at == len(segs):
+        last = trim_last(flat, code, *items[-1])
+        if last is None:
+            return "unparsed"
+        items[-1] = last
+    if not items:
+        return "none"
+    fs, fe = segs[0]
+    colon = max((i for i in range(fs, fe - 1) if flat[i:i + 2] == ": " and not code[i]), default=-1)
+    if colon >= 0:
+        first = (colon + 2, fe)
+    else:
+        walk, n_next = [], min(4, len(words_of(flat, *items[0])))
+        for s, e in reversed(words_of(flat, fs, fe)):
+            key = word_key(flat, code, s, e)
+            if len(walk) >= n_next or key in FORBIDDEN or key in STOP_WORDS or flat[e - 1] == ":":
+                break
+            walk.append((s, e))
+        if not walk:
+            return "unparsed"
+        first = (walk[-1][0], fe)
+    items = [first] + items
+    if not all(valid_item(flat, code, a, b) for a, b in items):
+        return "unparsed"
+    return items if len(items) >= 3 else "none"
+
+
 def clause_lists(flat, code, lo, hi):
-    """Item spans (start, end) of each comma list of three or more in flat[lo:hi], one list per
-    `;`-separated clause. The first item is what follows the last colon or opening bracket of the
-    first segment, else as many trailing words as the next item has; a last item after a bare
-    `or`/`and` is the words up to the first preposition or conjunction."""
+    """(lists, unparsed): the item spans of each comma list of three or more in flat[lo:hi], one list
+    per `;`- or `|`-separated clause, and how many lists looked like lists but could not be read."""
+    depth = bracket_depth(flat, code)
+    end = hi
+    while end > lo and flat[end - 1] in ".?!":
+        end -= 1
     cuts, start = [], lo
-    for i in range(lo, hi - 1):
-        if flat[i] == ";" and not code[i] and flat[i + 1] == " ":
+    for i in range(lo, end):
+        if depth[i] == 0 and not code[i] and (flat[i] == "|" or (flat[i] == ";" and i + 1 < end and flat[i + 1] == " ")):
             cuts.append((start, i))
-            start = i + 2
-    cuts.append((start, hi))
-    lists = []
+            start = i + 1
+    cuts.append((start, end))
+    lists, unparsed = [], 0
     for ca, cb in cuts:
-        while cb > ca and flat[cb - 1] in ".?!":
+        while ca < cb and flat[ca] == " ":
+            ca += 1
+        while cb > ca and flat[cb - 1] == " ":
             cb -= 1
-        depth, commas = 0, []
-        for i in range(ca, cb):
-            if code[i]:
-                continue
-            if flat[i] in "([":
-                depth += 1
-            elif flat[i] in ")]":
-                depth = max(0, depth - 1)
-            elif flat[i] == "," and depth == 0 and i + 1 < cb and flat[i + 1] == " ":
-                commas.append(i)
-        segs = list(zip([ca] + [c + 2 for c in commas], commas + [cb]))
-        if len(segs) < 2:
-            continue
-        ls, le = segs[-1]
-        oxford = re.match(r"(?:or|and) ", flat[ls:le])
-        if oxford:
-            tail = [(ls + oxford.end(), le)]
-        else:
-            conj = next((m for m in CONJ_RE.finditer(flat, ls, le) if not code[m.start()]), None)
-            if conj:
-                words = words_of(flat, conj.end() + 1, le)
-                taken = []
-                for ws, we in words:
-                    if taken and flat[ws:we].lower() in STOP_WORDS:
-                        break
-                    taken.append((ws, we))
-                tail = [(ls, conj.start() - 1), (words[0][0], taken[-1][1])] if taken else []
-            else:
-                tail = [(ls, le)]
-        items_after_first = segs[1:-1] + tail
-        if not items_after_first or not tail:
-            continue
-        fs, fe = segs[0]
-        colon = max((i for i in range(fs, fe - 1) if flat[i:i + 2] == ": " and not code[i]), default=-1)
-        bracket = max((i for i in range(fs, fe) if flat[i] == "(" and not code[i]), default=-1)
-        if max(colon, bracket) >= 0:
-            first_start = colon + 2 if colon > bracket else bracket + 1
-        else:
-            words = words_of(flat, fs, fe)
-            if not words:
-                continue
-            n_next = len(words_of(flat, *items_after_first[0]))
-            n = max(1, min(n_next, len(words) - 1 if len(words) > 1 else 1))
-            first_start = words[-n][0]
-        if first_start >= fe:
-            continue
-        items = [(first_start, fe)] + items_after_first
-        if len(items) >= 3 and all(a < b for a, b in items):
-            lists.append(items)
-    return lists
+        got = parse_clause(flat, code, depth, ca, cb) if cb > ca else "none"
+        if got == "unparsed":
+            unparsed += 1
+        elif got != "none":
+            lists.append(got)
+    return lists, unparsed
 
 
 def spread(items, n):
@@ -212,29 +301,34 @@ def spread(items, n):
     return [items[i] for i in picks]
 
 
-def rule_mutants(file, text, rule_id, anchor):
-    """Every rule mutant of the rule `anchor` in `text`, in document order; [] when the anchor is not
-    found (see anchor_found). The sentences the anchor touches are in scope (all of the block's when
-    the anchor is only its label): each is deleted in turn, each strength word of the table is
-    weakened in turn, and at most four items of the lists of three or more are dropped."""
-    found = locate(text, anchor)
-    if found is None:
-        return []
-    block, flat, start, end, a_from, a_to = found
+def rule_plan(file, text, rule_id, anchor):
+    """(mutants, info) for the rule `anchor` in `text`. info: found (the anchor is in a block),
+    ambiguous (it is in several), unparsed (comma lists in scope that could not be read, which get no
+    drop-item mutant). The sentences the anchor touches are in scope (all of the block's when the
+    anchor is only its prefix): each is deleted in turn (a leading bold lead stays), each strength
+    word of the table is weakened in turn, and at most four items of the lists are dropped."""
+    matches = locate_all(text, anchor)
+    info = {"found": bool(matches), "ambiguous": len(matches) > 1, "unparsed": 0}
+    if len(matches) != 1:
+        return [], info
+    block, flat, start, end, a_from, a_to = matches[0]
     code = code_mask(flat)
-    lo = prefix_end(flat)
+    lo, protected = prefix_end(flat)
     sents = sentences(flat, code, lo)
-    scope = sents if a_to <= lo else [s for s in sents if s[0] < a_to and s[1] > a_from]
+    scope = sents if a_to <= protected else [s for s in sents if s[0] < a_to and s[1] > a_from]
     edits = []
 
     for sa, sb in scope:
+        da = max(sa, protected)
+        if da >= sb:
+            continue
         if sb < len(flat):
-            span = (sa, sb + 1)
-        elif sa > 0 and flat[sa - 1] == " ":
-            span = (sa - 1, sb)
+            span = (da, sb + 1)
+        elif da > 0 and flat[da - 1] == " ":
+            span = (da - 1, sb)
         else:
-            span = (sa, sb)
-        edits.append(("delete-sentence", flat[sa:sb], span[0], span[1], ""))
+            span = (da, sb)
+        edits.append(("delete-sentence", flat[da:sb], span[0], span[1], ""))
 
     weaken = []
     for sa, sb in scope:
@@ -246,7 +340,9 @@ def rule_mutants(file, text, rule_id, anchor):
 
     drops = []
     for sa, sb in scope:
-        for items in clause_lists(flat, code, sa, sb):
+        lists, unparsed = clause_lists(flat, code, sa, sb)
+        info["unparsed"] += unparsed
+        for items in lists:
             for k, (a, b) in enumerate(items):
                 span = (a, items[1][0]) if k == 0 else (items[k - 1][1], b)
                 drops.append(("drop-item", flat[a:b], span[0], span[1], ""))
@@ -266,7 +362,12 @@ def rule_mutants(file, text, rule_id, anchor):
         m["rule"], m["item"] = rule_id, item
         m["id"] = hashlib.sha1((m["id"] + "\0" + rule_id).encode()).hexdigest()[:12]
         out.append(m)
-    return out
+    return out, info
+
+
+def rule_mutants(file, text, rule_id, anchor):
+    """The mutants of rule_plan; [] when the anchor is missing or ambiguous."""
+    return rule_plan(file, text, rule_id, anchor)[0]
 
 
 class Unresolved(Exception):
@@ -364,6 +465,41 @@ def logical_lines(text):
         i += 1
 
 
+def stray_call(line):
+    """True when need, need_flat or need_in is an unquoted word of the line other than its first."""
+    tokens, cur, quoted, quote, i, n = [], [], False, None, 0, len(line)
+
+    def flush():
+        nonlocal cur, quoted
+        if cur or quoted:
+            tokens.append(("".join(cur), quoted))
+        cur, quoted = [], False
+
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = None
+            elif c == "\\" and quote == '"':
+                i += 1
+            i += 1
+            continue
+        if c in "'\"":
+            quote, quoted = c, True
+        elif c == "\\":
+            i += 1
+            quoted = True
+        elif c == "#" and not cur and not quoted:
+            break
+        elif c in " \t;&|(){}<>":
+            flush()
+        else:
+            cur.append(c)
+        i += 1
+    flush()
+    return any(text in ("need", "need_flat", "need_in") and not q for k, (text, q) in enumerate(tokens) if k > 0)
+
+
 def pins(text):
     """Rows (id, file, anchor, safety, terms, note) for each need, need_flat or need_in call in a suite.
     Raises PinError naming the line of a call whose arguments cannot be resolved."""
@@ -377,6 +513,8 @@ def pins(text):
             except Unresolved:
                 env[assign.group(1)] = None
             continue
+        if stray_call(line):
+            raise PinError(number, "need, need_flat or need_in is not the first word of the line")
         call = NEED_RE.match(line)
         if not call:
             continue

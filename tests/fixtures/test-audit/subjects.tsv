@@ -3,3 +3,4 @@ bin/s.sh	bash	s	s,s2
 bin/p.py	py	s2	s2
 bin/loop.sh	bash	-	-
 docs/rules.md	prose	pins	pins
+docs/gated.md	prose	gated	gated

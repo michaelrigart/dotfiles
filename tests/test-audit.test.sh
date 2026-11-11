@@ -313,6 +313,11 @@ eq "$(mget s_valid)" true "M1: every bin/s.sh mutant, applied, passes bash -n"
 eq "$(mget p_valid)" true "M1: every bin/p.py mutant, applied, compiles"
 eq "$(mget s_inert)" '[]' "M1: none sits on the comment line or inside the heredoc"
 run mutants bin/loop.sh
+run mutants bin/esc.py
+rc_is 0 "M1: mutants on a file with an invalid escape sequence succeeds"
+eq "$ERR" "" "M1: and prints nothing on stderr (no SyntaxWarning per mutant)"
+[ -n "$OUT" ] && _pass "M1: and still lists its mutants" || _fail "M1: and still lists its mutants"
+run mutants bin/loop.sh
 eq "$(printf '%s\n' "$OUT" | python3 -c 'import json,sys
 print(json.dumps([json.loads(l)["context"] for l in sys.stdin if l.strip() and json.loads(l)["op"]=="negate"]))')" '["while [ \"$count\" -lt 3 ]; do"]' "M1: while and until over read get no negate mutant, another while still does"
 
@@ -782,6 +787,8 @@ has "copy rebuilt after nogit0000001" "Q10: a copy without its .git is rebuilt" 
 has "copy rebuilt after nocopy000001" "Q10: a vanished copy is rebuilt" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived', 'survived']" "Q10: the mutants after the damage run in a clean copy, none is stale"
+eq "$(python3 -c 'import json,sys
+print([r.get("rerun") for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[None, 'skipped', None]" "Q10: a survivor whose second run could not happen is marked rerun skipped"
 
 echo "R. rule mutants"
 mk R
@@ -802,6 +809,16 @@ printf '#!/bin/sh\n\nneed_in "$UNSET" %s %s\n' "'x'" '"y"' > "$T/unset.sh"
 run pins "$T/unset.sh"
 rc_is 1 "R1: an argument that cannot be resolved exits 1"
 has "line 3" "R1: naming the line" "$ERR"
+printf '#!/bin/sh\n\n[ -f x ] && need_in "$R" %s %s\n' "'y'" '"z"' > "$T/stray.sh"
+run pins "$T/stray.sh"
+rc_is 1 "R1: a call that is not at the start of its line exits 1"
+has "line 3" "R1: naming the line" "$ERR"
+printf 'if need claude-code.md %s %s; then :; fi\n' "'x'" '"y"' > "$T/stray2.sh"
+run pins "$T/stray2.sh"
+rc_is 1 "R1: a call after if exits 1"
+printf 'echo "need claude-code.md" # need_flat x\nneed claude-code.md %s %s\n' "'x'" '"y"' > "$T/quoted.sh"
+run pins "$T/quoted.sh"
+eq "$OUT" "p2${TAB}.chezmoitemplates/agents/claude-code.md${TAB}x${TAB}?${TAB}-${TAB}y" "R1: the helper names in a quoted string or a comment are not calls"
 run pins "$T/repo/tests/pins.test.sh"
 eq "$OUT" "p$(grep -n '^need_in "\$R"' "$T/repo/tests/pins.test.sh" | cut -d: -f1)${TAB}docs/rules.md${TAB}Never push, delete or merge without asking.${TAB}?${TAB}-${TAB}the confirm rule asks first" "R1: the helper definitions are not calls"
 run pins "$SRC/tests/agent-instructions.test.sh"
@@ -836,6 +853,32 @@ three = "- Keep `x. y`, `z`, or `w`; must stay.\n"
 out["three"] = [(m["op"], m["item"]) for m in rules.rule_mutants("f", three, "R6", "Keep")]
 words = "Every case must hold, only once, and never twice, not `must`. Always check.\n"
 out["words"] = [(m["item"], flat(mutators.apply(words, m))) for m in rules.rule_mutants("f", words, "R7", "Every case") if m["op"] == "weaken"]
+def flatten_all(text, anchor, op, rid="X"):
+    return [flat(mutators.apply(text, m)) for m in rules.rule_mutants("f", text, rid, anchor) if m["op"] == op]
+def drops(text, anchor):
+    ms, info = rules.rule_plan("f", text, "X", anchor)
+    return {m["item"]: flat(mutators.apply(text, m)) for m in ms if m["op"] == "drop-item"}, info["unparsed"]
+p224 = "- Specs and plans are never deleted, pruned or gitignored, except material that must go on security or legal grounds (secrets, PII, customer data; rotate anything exposed).\n"
+out["p224"] = drops(p224, "Specs and plans")
+out["p271"] = drops("- `a`, `b`, `c` and `d` are declared unsandboxed in `x`.\n", "`a`")
+tab = "| `sp-standard` | integration, debugging, scoped review, fix rounds, plan-run controllers, merges |\n"
+d, _ = drops(tab, "integration, debugging")
+out["table"] = [list(d), [v.count("|") for v in d.values()]]
+out["sub"] = drops("- Skip `x`, `y` and `z` (red, green, blue), never twice.\n", "Skip")
+out["unparsed"] = drops("- Keep one canonical spec, referenced by repository and path, preferably as a forge link and never as a bare path.\n", "Keep one canonical spec")
+out["para"] = flatten_all("**Roles.** A. B.\n", "**Roles.**", "delete-sentence")
+out["lead"] = flatten_all("- **Lead** before x. Y.\n", "before x", "delete-sentence")
+out["lead_last"] = flatten_all("- **Lead** before x.\n", "before x", "delete-sentence")
+bs = "- **Never store** secrets, keys, tokens.\n"
+out["bold_weaken"] = flatten_all(bs, "secrets", "weaken")
+out["bold_drop"] = list(drops(bs, "secrets")[0])
+out["interior_bad"] = drops("- Keep a, b is c, d.\n", "Keep")
+out["walk_stop"] = list(drops("- Specs are never old files, tmp old dirs, caches.\n", "Specs")[0])
+out["bt_tail"] = list(drops("- Keep `a`, `b` and `c` files here.\n", "Keep")[0])
+out["bracket_tail"] = drops("- Use (red, green, blue), `x`, `y`.\n", "Use")
+out["label_weaken"] = flatten_all("- **Never push.** Keep notes.\n", "Keep notes", "weaken")
+two = "- **A.** Keep notes.\n- **B.** Keep notes too.\n"
+out["ambiguous"] = [rules.rule_mutants("f", two, "X", "Keep notes"), rules.rule_plan("f", two, "X", "Keep notes")[1]["ambiguous"], len(rules.rule_mutants("f", two, "X", "Keep notes too"))]
 print(json.dumps(out))
 PY
 )
@@ -855,6 +898,22 @@ eq "$(ruget prefix)" '["- **Sizing.**"]' "R2: deleting the only sentence keeps t
 eq "$(ruget cap)" '["a", "c", "d", "f"]' "R2: a six-item list gives four drops, spread over it"
 eq "$(ruget three)" '[["delete-sentence", "Keep `x. y`, `z`, or `w`; must stay."], ["weaken", "must"], ["drop-item", "`x. y`"], ["drop-item", "`z`"], ["drop-item", "`w`"]]' "R2: a Keep ... list of backtick items drops each item; clauses split at semicolons"
 eq "$(ruget words)" '[["Every", "Most case must hold, only once, and never twice, not `must`. Always check."], ["must", "Every case should hold, only once, and never twice, not `must`. Always check."], ["only", "Every case must hold, mostly once, and never twice, not `must`. Always check."], ["never", "Every case must hold, only once, and preferably not twice, not `must`. Always check."]]' "R2: weakening takes the table's words one occurrence each, skipping code"
+eq "$(ruget p224)" '[{"deleted": "- Specs and plans are never pruned or gitignored, except material that must go on security or legal grounds (secrets, PII, customer data; rotate anything exposed).", "pruned": "- Specs and plans are never deleted or gitignored, except material that must go on security or legal grounds (secrets, PII, customer data; rotate anything exposed).", "gitignored": "- Specs and plans are never deleted, pruned, except material that must go on security or legal grounds (secrets, PII, customer data; rotate anything exposed)."}, 0]' "R2: a predicate and a negation are not list items: deleted, pruned and gitignored are dropped one by one, the brackets stay balanced"
+eq "$(ruget p271)" '[{"`a`": "- `b`, `c` and `d` are declared unsandboxed in `x`.", "`b`": "- `a`, `c` and `d` are declared unsandboxed in `x`.", "`c`": "- `a`, `b` and `d` are declared unsandboxed in `x`.", "`d`": "- `a`, `b`, `c` are declared unsandboxed in `x`."}, 0]' "R2: a list of backticked names ending in a verb drops only the names"
+eq "$(ruget table)" '[["integration", "scoped review", "fix rounds", "merges"], [3, 3, 3, 3]]' "R2: a table row keeps its pipes, and the four picks are real items"
+eq "$(ruget sub)" '[{"`x`": "- Skip `y` and `z` (red, green, blue), never twice.", "`y`": "- Skip `x` and `z` (red, green, blue), never twice.", "`z`": "- Skip `x`, `y` (red, green, blue), never twice."}, 0]' "R2: a parenthesised sub-list is skipped, never one item of the outer list"
+eq "$(ruget unparsed)" '[{}, 1]' "R2: a list that cannot be read gives no drop-item mutant and is counted as unparsed"
+eq "$(ruget para)" '["**Roles.** B.", "**Roles.** A."]' "R2: a paragraph's bold label stays when a sentence is deleted"
+eq "$(ruget lead)" '["- **Lead** Y."]' "R2: a bold lead phrase stays, the rest of its sentence goes"
+eq "$(ruget lead_last)" '["- **Lead**"]' "R2: and when it is the last sentence"
+eq "$(ruget bold_weaken)" '["- **Prefer not to store** secrets, keys, tokens."]' "R2: a strength word inside a bold lead phrase is still weakened"
+eq "$(ruget bold_drop)" '["secrets", "keys", "tokens"]' "R2: and its list is still read"
+eq "$(ruget interior_bad)" '[{}, 1]' "R2: an item that holds a copula makes the list unparsed"
+eq "$(ruget walk_stop)" '["old files", "tmp old dirs", "caches"]' "R2: the first item stops at a negation however many words the next item has"
+eq "$(ruget bt_tail)" '["`a`", "`b`", "`c`"]' "R2: a backticked name ends the last item, the words after it are not part of it"
+eq "$(ruget bracket_tail)" '[{}, 1]' "R2: an item that would cut a bracket in half makes the list unparsed"
+eq "$(ruget label_weaken)" '[]' "R2: the words of a bold label are never weakened"
+eq "$(ruget ambiguous)" '[[], true, 1]' "R2: an anchor in two blocks gives no mutants and is ambiguous"
 printf 'R1\tdocs/rules.md\tNever push\tyes\t-\tconfirm\n' > "$T/rules.tsv"
 run rules "$T/rules.tsv"
 rc_is 0 "R3: rules with the exact pin succeeds"
@@ -903,6 +962,40 @@ run --state "$T/stateM" report --section rules
 has "| R1 | yes | 5 | 5 | - |" "R4: the report keeps the found rule" "$OUT"
 has "missing: R9" "R4: and lists the missing rule after it" "$OUT"
 lacks "| R9 |" "R4: a missing rule has no row" "$OUT"
+
+printf 'R7\tdocs/rules.md\tKeep notes\tno\t-\tin two blocks\nR8\tdocs/rules.md\tKeep one canonical spec\tno\t-\ta list that cannot be read\n' > "$T/rules4.tsv"
+run --state "$T/stateA" rules "$T/rules4.tsv"
+rc_is 1 "R4: an anchor in two blocks exits 1"
+has "ambiguous: R7" "R4: naming it" "$OUT"
+has "unparsed-list: R8" "R1: a list that cannot be read is named on stderr" "$ERR"
+run --state "$T/stateA" report --section rules
+has "ambiguous: R7" "R4: the report lists the ambiguous rule" "$OUT"
+lacks "| R7 |" "R4: and gives it no row" "$OUT"
+has "| R8 | no | 2 | 0 | " "R1: the unparsed rule still has its other mutants" "$OUT"
+lacks "drop-item" "R1: but no drop-item mutant" "$OUT"
+has "unparsed lists: 1 in 1 rules" "R1: the report counts the unparsed lists" "$OUT"
+has "unparsed-list: R8 (1)" "R1: and names the rule" "$OUT"
+printf 'G1\tdocs/gated.md\tNever x\tno\t-\tgated loader\n' > "$T/rules5.tsv"
+run --state "$T/stateG" rules "$T/rules5.tsv"
+rc_is 2 "R3: a rule whose only loader suite is gated exits 2"
+has "no runnable suite loads docs/gated.md" "R3: naming the file" "$ERR"
+
+cat > "$T/check3.sh" <<'EOS'
+#!/usr/bin/env bash
+grep -qF 'Never push, delete or merge' "$1/docs/rules.md" && echo "  PASS: rule R1"
+EOS
+chmod 755 "$T/check3.sh"
+printf 'R1\tdocs/rules.md\tNever push\tyes\t-\tconfirm\n' > "$T/rules.tsv"
+run --state "$T/stateI" rules --check-cmd "$T/check3.sh {copy}" "$T/rules.tsv"
+has "[rules] R1: 5/5 (killed 0, survived 0, inconclusive 5, baseline-red 0)" "R3: a checker that printed assertions and then prints none is inconclusive, not killed" "$OUT"
+OUT=$(cd "$T" && aud --state "$T/stateRel" rules --check-cmd "./check2.sh {copy}" "$T/rules.tsv" 2>"$T/err"); RC=$?; ERR=$(<"$T/err")
+rc_is 0 "R3: a relative checker path runs"
+has "[rules] R1: 5/5 (killed 0, survived 5, inconclusive 0, baseline-red 0)" "R3: as the file, not as a baseline failure" "$OUT"
+run --state "$T/stateRel" rules --check-cmd "$T/check2.sh {copy}" "$T/rules.tsv"
+rc_is 0 "R3: the same file by its absolute path binds to the same state"
+has "remaining: 0" "R3: with nothing left to run" "$OUT"
+run --state "$T/stateX" rules --check-cmd "no-such-checker {copy}" "$T/rules.tsv"
+rc_is 2 "R3: a checker that is neither a file nor on PATH exits 2"
 
 mk R5
 printf 'R1\tdocs/rules.md\tNever push\tyes\t-\tconfirm\n' > "$T/rules.tsv"
@@ -994,7 +1087,8 @@ sm = mu.code_mutants("bin/s.sh", text, "bash")
 p1, p2 = a.pick("bin/s.sh", sm, 6, 20261111), a.pick("bin/s.sh", sm, 6, 20261111)
 out["pick"] = [[m["id"] for m in p1] == [m["id"] for m in p2], len(p1), sorted({m["op"] for m in a.pick("bin/s.sh", sm, 5, 1)})]
 out["sizes"] = [a.sample_size("xreview", 700, 100), a.sample_size("x", 300, 100), a.sample_size("x", 1, 10),
-                a.sample_size("x", 100, 100), a.sample_size("x", 100, 5)]
+                a.sample_size("x", 100, 100), a.sample_size("x", 100, 5), a.sample_size("process-replay", 1, 100),
+                a.sample_size("process-replay", 1, 1)]
 tx = "a b\nb a\n"
 _, n_all = mu.targeted_mutant("f", tx, "a", "x")
 one, n_one = mu.targeted_mutant("f", tx, "a", "x", 1)
@@ -1025,7 +1119,7 @@ eq "$(uget multiline)" '[4]' "J: a line inside a multi-line string gets no mutan
 eq "$(uget occurrence)" '[":\necho a\n", "echo a\n:\n"]' "J: identical lines are told apart by occurrence"
 eq "$(uget stale)" '[false, true]' "J: apply returns None once the context line changed"
 eq "$(uget pick)" '[true, 6, ["andor", "compare", "delete", "exit", "negate"]]' "J: a sample is reproducible and covers every operator first"
-eq "$(uget sizes)" '[3, 4, 10, 9, 5]' "J: sample sizes follow the clamp, the heavy table and the valid cap"
+eq "$(uget sizes)" '[3, 4, 10, 9, 5, 2, 1]' "J: sample sizes follow the clamp, the heavy table (process-replay 2, R13) and the valid cap"
 eq "$(uget targeted)" '[2, 1, "x b\nb a\n", 0]' "J: a find is unique in the file or on the given line"
 
 echo; echo "RESULT: $pass passed, $fail failed"

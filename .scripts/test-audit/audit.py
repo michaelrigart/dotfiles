@@ -31,7 +31,7 @@ import rules  # noqa: E402
 DEFAULT_SEED = 20261111
 BASELINE_TIMEOUT = 1800
 LANGS = {"bash", "zsh", "sh", "py", "prose", "data", "deployed"}
-HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8}
+HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8, "process-replay": 2}
 KINDS = {"code": "sample", "targeted": "targeted", "rule": "rules"}
 CHECK_SUITE = "check"
 SAFETY_SUITES = {
@@ -244,13 +244,17 @@ def build_copy(repo, sha, root, command):
     return copy
 
 
-def header(script, key):
-    """The first `# <key>: value` line, as run.sh's sed reads it."""
+def header_of(text, key):
+    """The first `# <key>: value` line of a script's text, as run.sh's sed reads it."""
     prefix = f"# {key}:"
-    for line in script.read_text(errors="replace").split("\n"):
+    for line in text.split("\n"):
         if line.startswith(prefix):
             return line[len(prefix):].lstrip(" ").split("  #")[0]
     return ""
+
+
+def header(script, key):
+    return header_of(script.read_text(errors="replace"), key)
 
 
 def has_serial_tag(script):
@@ -293,9 +297,13 @@ def run_suite(copy, suite, timeout, lock):
 
 
 def run_check(copy, argv, timeout, lock):
-    """A rule checker as a pseudo-suite. A checker that prints no assertion lines is one assertion,
-    `check`: passed on exit 0, failed on any other exit."""
-    run = run_process(Path(copy), argv, Path(copy), timeout, lock)
+    """One run of a rule checker as a pseudo-suite, its output read like a suite's."""
+    return run_process(Path(copy), argv, Path(copy), timeout, lock)
+
+
+def synthesize_check(run):
+    """A checker that prints no assertion lines is one assertion, `check`: passed on exit 0, failed
+    on any other exit."""
     if not run.passed and not run.failed and not run.timed_out:
         if run.rc == 0:
             run.passed = [CHECK_SUITE]
@@ -669,6 +677,8 @@ def combine(results):
             out[key] += qualified(suite, r[key])
         out["suites"][suite] = r["verdict"]
         out["flaky"] = out["flaky"] or bool(r.get("flaky"))
+        if r.get("rerun") == "skipped":
+            out["rerun"] = "skipped"
         out["attempts"] = max(out["attempts"], r.get("attempts", 1))
         out["seconds"] += r["seconds"]
     out["seconds"] = round(out["seconds"], 3)
@@ -694,6 +704,7 @@ class Runner:
     def __init__(self, args, sha, command, check_argv=None):
         self.args, self.sha, self.command = args, sha, command
         self.check_argv = check_argv
+        self.check_silent = False
         self.copy = None
         self.baselines = {}
 
@@ -705,21 +716,31 @@ class Runner:
     def run(self, suite, timeout):
         """One run of a suite, or, with a rule check command, of the pseudo-suite `check`."""
         if self.check_argv is not None and suite == CHECK_SUITE:
-            return run_check(self.copy, [a.replace("{copy}", str(self.copy)) for a in self.check_argv],
-                             timeout, self.args.lock)
+            run = run_check(self.copy, [a.replace("{copy}", str(self.copy)) for a in self.check_argv],
+                            timeout, self.args.lock)
+            return synthesize_check(run) if self.check_silent and suite in self.baselines else run
         return run_suite(self.copy, suite, timeout, self.args.lock)
 
     def baseline(self, suite):
         if suite not in self.baselines:
             self.ensure_copy()
-            self.baselines[suite] = self.run(suite, BASELINE_TIMEOUT)
+            run = self.run(suite, BASELINE_TIMEOUT)
+            if self.check_argv is not None and suite == CHECK_SUITE:
+                # Only a checker whose baseline printed no assertions gets an invented one.
+                self.check_silent = not run.passed and not run.failed and not run.timed_out
+                if self.check_silent:
+                    synthesize_check(run)
+            self.baselines[suite] = run
         return self.baselines[suite]
 
     def attempt(self, suite, baseline):
         timeout = max(self.args.timeout_floor, 3 * baseline.seconds)
         first = run_result(baseline, self.run(suite, timeout))
         first.update(attempts=1, flaky=False)
-        if first["verdict"] != "survived" or not Path(self.copy).is_dir():
+        if first["verdict"] != "survived":
+            return first
+        if not Path(self.copy).is_dir():
+            first.update(rerun="skipped")
             return first
         second = run_result(baseline, self.run(suite, timeout))
         total = round(first["seconds"] + second["seconds"], 3)
@@ -894,8 +915,7 @@ def check_targeted_suites(args, sha, entries, built, subjects):
         text = git_show(args.repo, sha, f"tests/{suite}.test.sh")
         if text is None:
             die(f"candidate {name}: no such suite {suite} at {sha[:12]}")
-        required = next((line[len("# test-requires:"):].lstrip(" ").split("  #")[0]
-                         for line in text.split("\n") if line.startswith("# test-requires:")), "")
+        required = header_of(text, "test-requires")
         if required not in ("", "heavy"):
             die(f"candidate {name}: suite {suite} needs {required}, so it is never mutated")
         if suite in inventory and suite_status(inventory[suite]) == "red":
@@ -994,9 +1014,21 @@ def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def resolve_check_cmd(check_cmd):
+    """The check command's argv with every argument that names an existing file made absolute, so
+    that it is hashed and run as the same file from any directory. Exits 2 when argv[0] is neither."""
+    argv = shlex.split(check_cmd)
+    if not argv:
+        die("empty check command")
+    argv = [os.path.abspath(a) if os.path.isfile(a) else a for a in argv]
+    if not os.path.isfile(argv[0]) and shutil.which(argv[0]) is None:
+        die(f"check command not found: {check_cmd}")
+    return argv
+
+
 def bind_rules(args, check_argv):
     """The state keeps one rule set and one checker: resumed results belong to both."""
-    binding = {"tsv": sha256_file(args.rules_tsv), "check_cmd": args.check_cmd or "",
+    binding = {"tsv": sha256_file(args.rules_tsv), "check_cmd": shlex.join(check_argv) if check_argv else "",
                "files": {a: sha256_file(a) for a in check_argv if os.path.isfile(a)}}
     store = Store(args.state)
     meta = store.meta()
@@ -1015,8 +1047,7 @@ def rule_suites(args, sha, row, check_argv, inventory, subjects):
     keep = []
     for name in subjects[row["file"]]["loaded_by"]:
         text = git_show(args.repo, sha, f"tests/{name}.test.sh")
-        required = next((line[len("# test-requires:"):].lstrip(" ").split("  #")[0]
-                         for line in (text or "").split("\n") if line.startswith("# test-requires:")), "")
+        required = header_of(text or "", "test-requires")
         if text is None or required not in ("", "heavy"):
             continue
         if name in inventory and suite_status(inventory[name]) == "red":
@@ -1029,9 +1060,7 @@ def rule_suites(args, sha, row, check_argv, inventory, subjects):
 
 def cmd_rules(args):
     rows = load_rules(args.rules_tsv)
-    check_argv = shlex.split(args.check_cmd) if args.check_cmd else None
-    if check_argv is not None and (not check_argv or shutil.which(check_argv[0]) is None):
-        die(f"check command not found: {args.check_cmd}")
+    check_argv = resolve_check_cmd(args.check_cmd) if args.check_cmd else None
     sha = preflight(args, bind=True)
     subjects = {r["file"]: r for r in load_subjects(args.subjects, args.subjects_explicit)}
     inventory = load_inventory(args.state)
@@ -1040,11 +1069,13 @@ def cmd_rules(args):
         text = git_show(args.repo, sha, row["file"])
         if text is None:
             die(f"rule {row['id']}: no such file {row['file']} at {sha[:12]}")
-        found = rules.anchor_found(text, row["anchor"])
-        mutants = rules.rule_mutants(row["file"], text, row["id"], row["anchor"])
+        mutants, info = rules.rule_plan(row["file"], text, row["id"], row["anchor"])
+        if info["unparsed"]:
+            print(f"unparsed-list: {row['id']}", file=sys.stderr)
         if mutants:
             suites[row["id"]] = rule_suites(args, sha, row, check_argv, inventory, subjects)
-        plan.append({**row, "missing": not found,
+        plan.append({**row, "missing": not info["found"], "ambiguous": info["ambiguous"],
+                     "unparsed": info["unparsed"],
                      "mutants": [{**mutant_head(m), "rule": m["rule"], "item": m["item"]} for m in mutants],
                      "_full": mutants})
     hold_state(args.state, "rules")
@@ -1075,10 +1106,13 @@ def cmd_rules(args):
                   f"survived {count('survived')}, inconclusive {count('inconclusive')}, "
                   f"baseline-red {red})", flush=True)
     missing = [r["id"] for r in plan if r["missing"]]
+    ambiguous = [r["id"] for r in plan if r["ambiguous"]]
     for rid in missing:
         print(f"missing: {rid}")
+    for rid in ambiguous:
+        print(f"ambiguous: {rid}")
     print(f"remaining: {sum(1 for r in plan for m in r['_full'] if not is_final(done, (None, m['id'])))}")
-    if missing:
+    if missing or ambiguous:
         sys.exit(1)
 
 
@@ -1089,7 +1123,7 @@ def report_rules(args):
     print("| rule | safety | mutants | killed | survivors |")
     print("|---|---|---|---|---|")
     for row in rows:
-        if row["missing"]:
+        if row["missing"] or row.get("ambiguous"):
             continue
         mine = [recs.get((None, m["id"])) for m in row["mutants"]]
         killed = sum(1 for r in mine if r and r["verdict"] == "killed")
@@ -1097,10 +1131,18 @@ def report_rules(args):
                               for r in mine if r and r["verdict"] == "survived")
         print(f"| {row['id']} | {row['safety']} | {len(row['mutants'])} | {killed} | {survivors or '-'} |")
     missing = [row["id"] for row in rows if row["missing"]]
-    if missing:
+    ambiguous = [row["id"] for row in rows if row.get("ambiguous")]
+    unparsed = [(row["id"], row["unparsed"]) for row in rows if row.get("unparsed")]
+    if missing or ambiguous or unparsed:
         print()
-        for rid in missing:
-            print(f"missing: {rid}")
+    for rid in missing:
+        print(f"missing: {rid}")
+    for rid in ambiguous:
+        print(f"ambiguous: {rid}")
+    if unparsed:
+        print(f"unparsed lists: {sum(n for _, n in unparsed)} in {len(unparsed)} rules")
+        for rid, n in unparsed:
+            print(f"unparsed-list: {rid} ({n})")
 
 
 def candidate_verdict(suite, labels, records):

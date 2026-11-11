@@ -1,0 +1,3 @@
+# Gated
+
+- **Gate.** Never x.
