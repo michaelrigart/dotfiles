@@ -145,4 +145,11 @@ Commit (controller): `Name the private Bundler template and the Codex daemon pin
 
 ## Rulings
 
-(none yet)
+- **Item 4's measurement gates the pre-merge review** (Codex plan review, round 1). The spec asks for it before that review, so without it the branch is pushed `In progress` and the review waits.
+- **The Brewfile comment follows the rename** (Task 2 review). `dot_config/homebrew/Brewfile.tmpl` named the old template path; Task 5 updates that one comment, though the spec lists only `AGENTS.md:11`.
+- **Template comments carry no apostrophe** (Task 1). The jq program sits in a single-quoted bash string, so the deny comment reads "Forge tokens for Bundler" where the plan said "Bundler's forge tokens".
+- **The matcher pin derives from the guard's case arm** (final review; overturns a Task 1 ruling for the literal). Still one assertion and still red on `*`, as the spec asks; it also fails when a tool is added to the arm alone, which `xreview-skill` would otherwise pass. Cost: a `sed` extractor tied to the arm's line format.
+- **The stale "every tool call" comment in the guard script is fixed** (Task 1 review), though the spec's "nothing else" list missed it: it restates the changed fact.
+- **`op-edit`'s test pins the backup flags too** (Task 3 review). The spec names `noundofile`; the same assertion now also requires `nobackup` and `nowritebackup`, which the function's comment promises.
+- **`AGENTS.md`'s list of zsh suites is completed** (final review) in the edit that adds `op-edit`.
+- **Not done, for Michael:** `op-edit`'s Neovim still yanks to the macOS clipboard (LazyVim restores `clipboard=unnamedplus` after `-c`). Closing that changes item 1, so it needs a spec change.
