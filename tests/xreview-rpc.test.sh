@@ -1576,6 +1576,7 @@ is "AC1 the review-thread naming a is cleared" "$([ -e "$ACR/g/review-thread" ] 
 is "AC1 a pin naming it is never touched" "$(cat "$ACR/n/pin")" a
 is "AC1 each thread was archived and then confirmed" "$(ac_sent thread/archive)" "a,x"
 is "AC1 and said nothing on stderr" "$(cat "$T/err")" ""
+is "AC1 thread/read is asked without the turns" "$(params thread/read | jq -c .includeTurns)" false
 
 ac_clean
 ac_started g a "$G"
@@ -1699,6 +1700,58 @@ scenario "$(jq -nc --argjson a "$(th a "$G" idle)" '{by_thread:{"thread/read":{a
 rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
 is "AC15 a connection lost mid-run is exit 1, with the retry line last" "$rc/$(cat "$T/out")/$(last_line "$T/err")" "1//$RETRY"
 is "AC15 and the entry stays" "$(ac_ids g)" a
+
+# An id listed by two state directories: one archive, both entries dropped, and a review-thread
+# cleared only where it names the id.
+ac_clean
+ac_started g1 a "$G"; ac_review g1 a
+ac_started g2 a "$G/sub"; ac_review g2 z
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$LIST_AX"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC16 an id in two state directories is archived once" "$rc/$out/$(ac_sent thread/archive)" "0/archived a/a"
+is "AC16 its entry is dropped from both" "$([ -e "$ACR/g1/started" ] || [ -e "$ACR/g2/started" ] && echo left || echo gone)" gone
+is "AC16 each review-thread is cleared only where it names the id" "$([ -e "$ACR/g1/review-thread" ] && echo left || echo gone)/$(cat "$ACR/g2/review-thread")" "gone/z"
+
+# A cleanup that fails after a confirmed archive: the id is printed, the other record is still
+# cleaned, the failure is named, and the run fails with its retry line.
+ac_clean
+ac_started g a "$G"; ac_review g a
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$LIST_AX"
+rm -f "$T/ac-held" "$T/ac-go"
+/usr/bin/python3 -c '
+import fcntl, os, sys, time
+fd = open(sys.argv[1], "w"); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True)
+end = time.monotonic() + 15
+while not os.path.exists(sys.argv[2]) and time.monotonic() < end: time.sleep(0.02)' "$ACR/g/started.lock" "$T/ac-go" > "$T/ac-held" &
+HOLD=$!
+for _ in $(seq 100); do [ -s "$T/ac-held" ] && break; sleep 0.05; done
+[ -s "$T/ac-held" ] || _fail "AC17 the lock holder started" "never printed held"
+out="$(XREVIEW_STARTED_LOCK_WAIT=0.3 rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+: > "$T/ac-go"; wait "$HOLD"
+is "AC17 an entry that cannot be dropped still prints the archive and fails the run" "$rc/$out" "1/archived a"
+is "AC17 the review-thread is cleared all the same" "$([ -e "$ACR/g/review-thread" ] && echo left || echo gone)" gone
+is "AC17 the entry stays" "$(ac_ids g)" a
+is "AC17 stderr names the failure, then the retry line" "$(tail -n 2 "$T/err")" \
+   "xreview-rpc: a: archived, but its entry in $ACR/g/started could not be removed: $ACR/g/started.lock is held by another process"$'\n'"$RETRY"
+
+# The reverse: a review-thread that cannot be cleared (a directory) must not keep the entry.
+ac_clean
+ac_started g a "$G"; mkdir -p "$ACR/g/review-thread"
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$LIST_AX"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC18 a review-thread that cannot be cleared still prints the archive and fails the run" "$rc/$out" "1/archived a"
+is "AC18 the entry is dropped all the same" "$([ -e "$ACR/g/started" ] && echo left || echo gone)" gone
+is "AC18 stderr names the failure, then the retry line" \
+   "$(tail -n 2 "$T/err" | head -n 1 | grep -c "^xreview-rpc: a: archived, but $ACR/g/review-thread could not be cleared: ")/$(last_line "$T/err")" "1/$RETRY"
+
+# The run's budget grows with the work and, once spent, is reported as that, not as a lost connection.
+ac_clean
+ac_started g a "$G"
+scenario "$(jq -nc --argjson a "$(th a "$G" idle)" '{by_thread:{"thread/read":{a:$a}},silent:["thread/archive"]}')"
+XREVIEW_RPC_ARCHIVE_UNIT=0.1 rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC19 a spent budget is exit 1, with the retry line last" "$rc/$(cat "$T/out")/$(last_line "$T/err")" "1//$RETRY"
+is "AC19 and is reported as the time budget, not a lost connection" "$(grep -c 'the time budget for this run ran out' "$T/err")/$(grep -c 'a: not archived: the time budget ran out' "$T/err")/$(grep -c 'connection' "$T/err")" "1/1/0"
+is "AC19 the entry stays" "$(ac_ids g)" a
 
 ac_clean
 unset XDG_STATE_HOME

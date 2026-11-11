@@ -1264,12 +1264,19 @@ def archive_thread(c, d, tid, sds):
         return 1
     print(f"archived {tid}", flush=True)
     rc = 0
+    # Each record is cleaned on its own: one failing must not leave the other behind. A stale
+    # review-thread is the worse one, since a new checkout at this path would resume the
+    # archived thread, so it goes first.
     for sd in sds:
         try:
-            started_drop(os.path.join(sd, "started"), {tid})
             clear_review_thread(sd, tid)
+        except OSError as e:
+            err(f"{tid}: archived, but {sd}/review-thread could not be cleared: {e}")
+            rc = 1
+        try:
+            started_drop(os.path.join(sd, "started"), {tid})
         except (OSError, TimeoutError) as e:
-            err(f"{tid}: archived, but its record in {sd} could not be cleaned up: {e}")
+            err(f"{tid}: archived, but its entry in {sd}/started could not be removed: {e}")
             rc = 1
     return rc
 
@@ -1300,8 +1307,11 @@ def archive_checkout(a):
         sds.setdefault(tid, [])
         if sd not in sds[tid]:
             sds[tid].append(sd)
+    # About three calls per thread: the budget grows with the work, 60 s plus 10 s per thread.
+    # XREVIEW_RPC_ARCHIVE_UNIT (a test knob) is that 10 s.
+    unit = env_secs("XREVIEW_RPC_ARCHIVE_UNIT", 10)
     try:
-        c = Client()
+        c = Client(time.monotonic() + unit * (6 + len(sds)))
     except (Unreachable, Closed) as e:
         err(f"Codex daemon unreachable: {e}")
         for tid in sds:
@@ -1313,9 +1323,14 @@ def archive_checkout(a):
             rc |= archive_thread(c, d, tid, sds[tid])
             left.remove(tid)
     except (Unreachable, Closed) as e:
-        err(f"Codex daemon connection lost: {e}")
+        if time.monotonic() >= c.deadline:
+            err("the time budget for this run ran out")
+            why = "the time budget ran out"
+        else:
+            err(f"Codex daemon connection lost: {e}")
+            why = "the connection to the Codex daemon was lost"
         for tid in left:
-            err(f"{tid}: not archived: the connection to the Codex daemon was lost")
+            err(f"{tid}: not archived: {why}")
         return 1
     return rc
 
