@@ -90,9 +90,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `tests/zshenv.test.sh` pins the order. Interactive starts attach to the
   launchd-started daemon or refuse (`--no-daemon` is the escape). Anything needing the
   real binary uses `codex-daemon real-bin`, never `command -v codex`. The daemon would update
-  itself outside Homebrew, so it is pinned to the CLI's package with `codex app-server daemon
-  update --from-cli`; Michael re-runs that after every `brew upgrade codex`, when no review is
-  active, then runs the `live-codex-daemon` canary.
+  itself outside Homebrew, so it is pinned to the CLI's package with
+  `codex app-server daemon update --from-cli`; Michael re-runs that after every
+  `brew upgrade codex`, when no review is active, then runs the `live-codex-daemon` canary.
 
 ## Layout
 
@@ -133,7 +133,8 @@ every suite gated on a condition other than `heavy` (a live herdr, a pty, the re
 `RUN_SH_LOCKED=1` and does not lock again. Never wrap it in `lockf` yourself.
 
 **Execute suites, never prefix an interpreter.** Every suite carries a correct shebang
-(most bash; `wt-functions`, `dev`, `dev-topology` and `dev-integrations` are zsh). Running
+(most bash; `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `op-edit` and
+`wt-functions` are zsh). Running
 a zsh suite under `bash` reports bogus syntax errors that read exactly like a regression,
 because it stubs zsh builtins. `./tests/x.test.sh` is always right; `bash tests/x.test.sh`
 is the footgun. `run.sh` executes them for this reason.

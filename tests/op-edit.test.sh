@@ -53,15 +53,15 @@ unfunction chezmoi
 for ed in nvim vim; do
   rm -f $T/argv
   EDITOR=$ed op-edit "Some note"
-  argv=("${(@f)$(<$T/argv)}")
-  got="${argv[*]}"
-  [[ ${argv[1]} == nvim ]] && _pass "EDITOR=$ed starts nvim" || _fail "EDITOR=$ed starts nvim" "$got"
-  (( ${argv[(Ie)-n]} )) && _pass "EDITOR=$ed: -n (no swap file)" || _fail "EDITOR=$ed: -n (no swap file)" "$got"
-  i=${argv[(i)-i]}
-  [[ ${argv[i+1]:-} == NONE ]] && _pass "EDITOR=$ed: -i NONE (no ShaDa)" || _fail "EDITOR=$ed: -i NONE (no ShaDa)" "$got"
-  i=${argv[(i)-c]}
-  [[ ${argv[i+1]:-} == *noundofile* ]] && _pass "EDITOR=$ed: -c sets noundofile" || _fail "EDITOR=$ed: -c sets noundofile" "$got"
-  [[ ${argv[-2]} == -- && ${argv[-1]} == */op-edit.* ]] && _pass "EDITOR=$ed: temp file last, after --" || _fail "EDITOR=$ed: temp file last, after --" "$got"
+  args=("${(@f)$(<$T/argv)}")
+  got="${args[*]}"
+  [[ ${args[1]} == nvim ]] && _pass "EDITOR=$ed starts nvim" || _fail "EDITOR=$ed starts nvim" "$got"
+  (( ${args[(Ie)-n]} )) && _pass "EDITOR=$ed: -n (no swap file)" || _fail "EDITOR=$ed: -n (no swap file)" "$got"
+  i=${args[(i)-i]}
+  [[ ${args[i+1]:-} == NONE ]] && _pass "EDITOR=$ed: -i NONE (no ShaDa)" || _fail "EDITOR=$ed: -i NONE (no ShaDa)" "$got"
+  i=${args[(i)-c]}
+  [[ ${args[i+1]:-} == *noundofile*nobackup*nowritebackup* ]] && _pass "EDITOR=$ed: -c sets noundofile, nobackup and nowritebackup" || _fail "EDITOR=$ed: -c sets noundofile, nobackup and nowritebackup" "$got"
+  [[ ${args[-2]} == -- && ${args[-1]} == */op-edit.* ]] && _pass "EDITOR=$ed: temp file last, after --" || _fail "EDITOR=$ed: temp file last, after --" "$got"
 done
 
 print "\npassed: $pass  failed: $fail"

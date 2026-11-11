@@ -712,10 +712,10 @@ jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | 
 # Adding one is a two-line change here and in the modify script. Little Snitch stays the
 # second, independent gate.
 jq_is '.sandbox.network.strictAllowlist' true "strictAllowlist is on — non-allowlisted hosts are denied"
+jq_is '.sandbox.failIfUnavailable' true "the sandbox refuses to run commands unsandboxed when it cannot start"
 # On, a sandboxed command skips the allow rules and auto mode sends it to the classifier, so
 # every sandboxed command keeps the classifier. Off would let Bash rm and file writes in the
 # working directories skip it (spec 2026-10-28-reload-functions-merged-deletes, section 2).
-jq_is '.sandbox.failIfUnavailable' true "the sandbox refuses to run commands unsandboxed when it cannot start"
 jq_is '.sandbox.autoAllowBashIfSandboxed' true "sandbox auto-allow is on, so every sandboxed command keeps the classifier"
 
 echo "J. defaultMode is seeded, not enforced"
@@ -819,9 +819,10 @@ for g in git-forge-guard worktree-guard xreview-guard path-resolution-guard; do
   got=$(hook_matchers PreToolUse "/opt/homebrew/bin/bash \$HOME/.claude/$g.sh")
   if [ "$got" = "Bash" ]; then _pass "$g runs once, on the Bash tool"; else _fail "$g runs once, on the Bash tool" "$got"; fi
 done
-# The apply-window guard inspects only Edit, Write and NotebookEdit, so it matches those tools.
+# The apply-window guard's matcher must equal the tool set its own case arm inspects.
+arm=$(sed -nE 's/^case "\$tool" in ([A-Za-z|]+)\).*/\1/p' "$SRC/dot_claude/executable_xreview-apply-guard.sh")
 got=$(hook_matchers PreToolUse '/opt/homebrew/bin/bash $HOME/.claude/xreview-apply-guard.sh')
-if [ "$got" = "Edit|Write|NotebookEdit" ]; then _pass "xreview-apply-guard runs once, on the tools it inspects"; else _fail "xreview-apply-guard runs once, on the tools it inspects" "$got"; fi
+if [ -n "$arm" ] && [ "$got" = "$arm" ]; then _pass "xreview-apply-guard runs once, on the tools it inspects"; else _fail "xreview-apply-guard runs once, on the tools it inspects" "matcher '$got', arm '$arm'"; fi
 jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards"
 # The forge guard shells out to glab, git and gitleaks (the push helper alone has a 30 s
 # budget), so its hook limit is explicit rather than left to the runtime default.
