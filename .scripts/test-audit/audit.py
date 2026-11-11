@@ -591,13 +591,20 @@ def cmd_plan(args):
     sample_path, files_path = state / "sample.jsonl", state / "sample-files.jsonl"
     if not sample_path.exists():
         files, rows = [], []
-        for subject in load_subjects(args.subjects, args.subjects_explicit):
-            if subject["lang"] not in (*mutators.SHELLS, "py"):
-                continue
+        subjects = [r for r in load_subjects(args.subjects, args.subjects_explicit)
+                    if r["lang"] in (*mutators.SHELLS, "py")]
+        for subject in subjects:
+            if subject["own_suite"] not in ("", "-") and subject["own_suite"] not in inventory:
+                die(f"inventory incomplete: {subject['own_suite']}")
+        for subject in subjects:
             file, suite = subject["file"], subject["own_suite"]
             info = inventory.get(suite)
-            if suite in ("", "-") or not info or info["seconds"] is None:
+            if suite in ("", "-") or suite_status(info) == "gated":
                 files.append({"file": file, "suite": suite, "valid": None, "sampled": 0, "seconds": None})
+                continue
+            if suite_status(info) == "red":
+                files.append({"file": file, "suite": suite, "valid": None, "sampled": 0, "seconds": None,
+                              "copy_red": True})
                 continue
             text = git_show(args.repo, sha, file)
             if text is None:
@@ -621,6 +628,9 @@ def cmd_plan(args):
         valid = "-" if f["valid"] is None else f["valid"]
         print(f"| {f['file']} | {f['suite']} | {valid} | {f['sampled']} | {est / 60:.1f} |")
     seconds += sum(baselines.values())
+    red = [f["file"] for f in sorted(files, key=lambda f: f["file"]) if f.get("copy_red")]
+    if red:
+        print(f"copy-red: {', '.join(red)}")
     print(f"total: {total} mutants, ~{seconds / 3600:.1f} h")
 
 
@@ -649,6 +659,12 @@ def combine(results):
 def stale_outcome():
     return {"verdict": "stale", "killers": [], "unmatched": [], "ambiguous": [], "via_detail": [],
             "suites": {}, "flaky": False, "attempts": 0, "seconds": 0.0}
+
+
+def copy_state(copy):
+    out = subprocess.run(["git", "-C", str(copy), "status", "--porcelain", "--ignored"],
+                         capture_output=True, text=True)
+    return out.stdout
 
 
 class Runner:
@@ -697,13 +713,23 @@ class Runner:
         results = {s: red_result(b) for s, b in base.items() if not baseline_ok(b)}
         live = [s for s in suites if s not in results]
         if live:
+            before = copy_state(copy)
             SESSION.apply_text(target, mutated)
             try:
                 for suite in live:
                     results[suite] = self.attempt(suite, base[suite])
             finally:
                 SESSION.restore_files()
+            if copy_state(copy) != before:
+                self.rebuild(mutant["id"])
         return {s: results[s] for s in suites}
+
+    def rebuild(self, mutant_id):
+        """A mutant's run wrote or deleted something inside the copy: start the next one from a
+        fresh copy, which is identical to the original, so the session's baselines still hold."""
+        SESSION.copies.remove(self.copy)
+        self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
+        print(f"copy rebuilt after {mutant_id}", flush=True)
 
 
 def rec_key(rec):
@@ -715,8 +741,10 @@ def final_records(store, kind):
 
 
 def is_final(done, key):
-    """A baseline-red record is not final: the next session retries that mutant."""
-    return key in done and done[key]["verdict"] != "baseline-red"
+    """A record is not final while its mutant, or any suite it was asked to run in, was
+    baseline-red: the next session retries it (R10)."""
+    rec = done.get(key)
+    return rec is not None and "baseline-red" not in (rec["verdict"], *rec.get("suites", {}).values())
 
 
 def mutant_head(m):
@@ -770,10 +798,12 @@ def cmd_sample(args):
             done[(None, row["id"])] = rec
             attempted += 1
         if attempted:
-            have = [done[(None, r["id"])] for r in mine if (None, r["id"]) in done]
+            have = [done[(None, r["id"])] for r in mine if is_final(done, (None, r["id"]))]
             count = lambda v: sum(1 for r in have if r["verdict"] == v)
+            red = sum(1 for r in mine if (None, r["id"]) in done and not is_final(done, (None, r["id"])))
             print(f"[sample] {file}: {len(have)}/{len(mine)} (killed {count('killed')}, "
-                  f"survived {count('survived')}, inconclusive {count('inconclusive')})", flush=True)
+                  f"survived {count('survived')}, inconclusive {count('inconclusive')}, "
+                  f"baseline-red {red})", flush=True)
     print(f"remaining: {sum(1 for r in rows if r['file'] in files and not is_final(done, (None, r['id'])))}")
 
 
@@ -818,6 +848,29 @@ def build_targeted(args, sha, entries):
     return built
 
 
+def suite_status(row):
+    """ok, gated or red, from an inventory row."""
+    if row["seconds"] is None:
+        return "gated"
+    return "red" if row["rc"] != 0 or row["failed"] else "ok"
+
+
+def check_targeted_suites(args, sha, entries):
+    """Exit 2 before any run when a candidate's own suite is missing, gated or red."""
+    inventory = load_inventory(args.state)
+    for entry in entries:
+        name, suite = entry["candidate"], entry["suite"]
+        text = git_show(args.repo, sha, f"tests/{suite}.test.sh")
+        if text is None:
+            die(f"candidate {name}: no such suite {suite} at {sha[:12]}")
+        required = next((line[len("# test-requires:"):].lstrip(" ").split("  #")[0]
+                         for line in text.split("\n") if line.startswith("# test-requires:")), "")
+        if required not in ("", "heavy"):
+            die(f"candidate {name}: suite {suite} needs {required}, so it is never mutated")
+        if suite in inventory and suite_status(inventory[suite]) == "red":
+            die(f"candidate {name}: suite {suite} is red in the inventory (copy-red)")
+
+
 def runnable_suites(copy, names):
     keep = []
     for name in dict.fromkeys(names):
@@ -831,6 +884,7 @@ def cmd_targeted(args):
     sha = preflight(args, bind=True)
     entries = load_manifest(args.manifest)
     built = build_targeted(args, sha, entries)
+    check_targeted_suites(args, sha, entries)
     subjects = {r["file"]: r for r in load_subjects(args.subjects, args.subjects_explicit)}
     hold_state(args.state, "targeted")
     store = Store(args.state)
@@ -859,7 +913,7 @@ def cmd_targeted(args):
             done[(name, mutant["id"])] = rec
             attempted += 1
         if attempted:
-            have = sum(1 for m in mutants if (name, m["id"]) in done)
+            have = sum(1 for m in mutants if is_final(done, (name, m["id"])))
             print(f"[targeted] {name}: {have}/{len(mutants)}", flush=True)
         if budget.spent():
             break
@@ -867,18 +921,23 @@ def cmd_targeted(args):
 
 
 def candidate_verdict(suite, labels, records):
-    """evidenced, unique, mis-targeted or inconclusive, from a candidate's mutant records."""
+    """evidenced, unique, mis-targeted or inconclusive, from a candidate's mutant records. A
+    mutant only the candidate's own labels killed stays undecided while another requested suite
+    gave no verdict (baseline-red) or an inconclusive one."""
     labels, mis, unclear, unique = set(labels), False, False, False
     for rec in records:
-        own = rec["suites"].get(suite)
-        mine = labels & set(rec["killers"])
-        if not mine:
-            if own in ("survived", "killed"):
+        suites = rec["suites"]
+        killers = set(rec["killers"])
+        if not labels & killers:
+            if suites.get(suite) in ("survived", "killed"):
                 mis = True
             else:
                 unclear = True
-        elif not set(rec["killers"]) - labels:
-            unique = True
+        elif not killers - labels:
+            if any(v in ("baseline-red", "inconclusive") for k, v in suites.items() if k != suite):
+                unclear = True
+            else:
+                unique = True
     if mis:
         return "mis-targeted"
     if unclear or not records:
@@ -956,7 +1015,8 @@ def report_targeted(args):
 
 def report_compare(args):
     store_kind = KINDS[args.kind]
-    theirs, here = final_records(Store(args.compare), store_kind), final_records(Store(args.state), store_kind)
+    theirs = final_records(Store(args.compare), store_kind)
+    here = {k: r for k, r in final_records(Store(args.state), store_kind).items() if is_final({k: r}, k)}
     files = set(args.only) if args.only else {r["file"] for r in here.values()}
     lost, not_run = [], []
     for key, rec in theirs.items():
@@ -999,7 +1059,7 @@ def read_classification(path):
         if len(cols) > len(CLASSIFICATION_COLUMNS):
             die(f"{path}:{n}: {len(cols)} columns, want {len(CLASSIFICATION_COLUMNS)}")
         row = dict(zip(CLASSIFICATION_COLUMNS, cols + [""] * (len(CLASSIFICATION_COLUMNS) - len(cols))))
-        for key in ("labels", "duplicate_of"):
+        for key in ("labels", "duplicate_of", "merge_with"):
             row[key] = [x for x in row[key].split(" | ") if x and x != "-"]
         rows.append(row)
     return rows
@@ -1012,6 +1072,15 @@ def cmd_accept(args):
     built = build_targeted(args, sha, entries)
     records = final_records(Store(args.state), "targeted")
     inventory = load_inventory(args.state)
+    for row in rows:
+        where = f"row {row['suite']}:{row['test']}"
+        if row["evidence"] not in ("class", "targeted"):
+            die(f"{where}: evidence must be class or targeted, got {row['evidence']!r}")
+        refs = [(row["suite"], label) for label in row["labels"]]
+        refs += [tuple(ref.split("::", 1)) for ref in row["duplicate_of"] + row["merge_with"] if "::" in ref]
+        for suite, label in refs:
+            if label not in inventory.get(suite, {}).get("labels", []):
+                die(f"{where}: {label!r} is not a baseline label of {suite}")
 
     def saved(row):
         info = inventory.get(row["suite"])
@@ -1035,14 +1104,17 @@ def cmd_accept(args):
         mutants = []
         reason = None
         if row["evidence"] == "targeted":
-            recs = ([records.get((entry["candidate"], m["id"])) for m in built[entry["candidate"]]]
-                    if entry else [])
+            recs = ([records[(entry["candidate"], m["id"])]
+                     if is_final(records, (entry["candidate"], m["id"])) else None
+                     for m in built[entry["candidate"]]] if entry else [])
             if (not entry or not recs or None in recs
                     or candidate_verdict(entry["suite"], qualified(entry["suite"], entry["labels"]),
                                          recs) != "evidenced"):
                 reason = "not evidenced"
             else:
                 mutants = [(r["id"], set(r["killers"])) for r in recs]
+        elif row["kind"] == "duplicate":
+            reason = "duplicate needs targeted evidence"
         elif row["safety"] == "yes" or (row["suite"] in SAFETY_SUITES and row["suite"] != "agent-instructions"):
             reason = "class evidence in a safety suite"
         if reason is None:

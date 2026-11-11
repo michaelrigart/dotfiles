@@ -340,8 +340,8 @@ eq "$(wc -l <"$T/state2/sample.jsonl" | tr -d ' ')" 1 "M2: plan never rewrites a
 
 run sample
 rc_is 0 "M4: sample succeeds"
-has "[sample] bin/s.sh: 13/13 (killed 6, survived 7, inconclusive 0)" "M4: bin/s.sh progress line" "$OUT"
-has "[sample] bin/p.py: 9/9 (killed 6, survived 3, inconclusive 0)" "M4: bin/p.py progress line" "$OUT"
+has "[sample] bin/s.sh: 13/13 (killed 6, survived 7, inconclusive 0, baseline-red 0)" "M4: bin/s.sh progress line" "$OUT"
+has "[sample] bin/p.py: 9/9 (killed 6, survived 3, inconclusive 0, baseline-red 0)" "M4: bin/p.py progress line" "$OUT"
 has "remaining: 0" "M4: nothing remains" "$OUT"
 M4=$(python3 - "$T/state" <<'PY'
 import json, sys
@@ -460,7 +460,7 @@ eq "$(m3get new)" '[]' "M3: the line inserted at the top adds no mutant and rena
 eq "$(m3get kept)" 11 "M3: every mutant on an unchanged line keeps its id"
 run --state "$T/state3" --ref "$second" sample --sample-from "$T/state" --only bin/s.sh
 rc_is 0 "M3: sample from the first state on the second commit succeeds"
-has "[sample] bin/s.sh: 13/13 (killed 3, survived 8, inconclusive 0)" "M3: the progress line" "$OUT"
+has "[sample] bin/s.sh: 13/13 (killed 3, survived 8, inconclusive 0, baseline-red 0)" "M3: the progress line" "$OUT"
 eq "$(python3 -c 'import json,sys
 print(sorted(r["before"] for r in map(json.loads, open(sys.argv[1])) if r["verdict"]=="stale"))' "$T/state3/runs-sample.jsonl")" "['return 0', 'return 0']" "M3: the deleted line's mutants are stale, not survived"
 
@@ -490,8 +490,10 @@ rc_is 2 "M7: --compare without --kind exits 2"
 mkdir -p "$T/state8"; cp "$T/state/meta.json" "$T/state/runs-targeted.jsonl" "$T/state8/"
 python3 - "$T/state8/inventory.jsonl" <<'PY'
 import json, sys
-rows = [{"suite": "s", "seconds": 100, "assertions": 4, "labels": []},
-        {"suite": "s2", "seconds": 80, "assertions": 4, "labels": []}]
+rows = [{"suite": "s", "seconds": 100, "assertions": 4,
+         "labels": ["add returns the sum", "flag is set", "greet says hello", "scratch dir exists at <tmp>"]},
+        {"suite": "s2", "seconds": 80, "assertions": 4,
+         "labels": ["add handles a one", "p.py doubles", "p.py doubles #2", "add handles zero"]}]
 open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
 PY
 TAB=$(printf '\t')
@@ -504,6 +506,7 @@ TAB=$(printf '\t')
   echo "s2${TAB}11-11${TAB}add handles a one${TAB}duplicate${TAB}s:11-11${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}B"
   echo "s2${TAB}12-12${TAB}p.py doubles${TAB}wording${TAB}-${TAB}delete${TAB}-${TAB}class${TAB}no${TAB}W"
   echo "s2${TAB}13-13${TAB}p.py doubles #2${TAB}duplicate${TAB}s2:12-12${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}D"
+  echo "s2${TAB}14-14${TAB}add handles zero${TAB}duplicate${TAB}s:11-11${TAB}delete${TAB}-${TAB}class${TAB}no${TAB}a duplicate with class evidence"
 } > "$T/classification.tsv"
 mid(){ python3 -c 'import json,sys
 print(next(r["id"] for r in map(json.loads, open(sys.argv[1])) if r["candidate"]==sys.argv[2]))' "$T/state8/runs-targeted.jsonl" "$1"; }
@@ -517,6 +520,7 @@ want=$(cat <<EOF
 | s2:11-11 | rejected: would leave $(mid s:11-11) without a killer |
 | s2:12-12 | accepted |
 | s2:13-13 | rejected: would leave $(mid s2:13-13) without a killer |
+| s2:14-14 | rejected: duplicate needs targeted evidence |
 EOF
 )
 eq "$(cat "$T/accept.out")" "$want" "M8: A is accepted, B rejected over A's mutant, W accepted, D rejected over its own"
@@ -535,7 +539,7 @@ open(sys.argv[1], "w").write(json.dumps(row) + "\n")
 PY
 run sample --sample-from "$T/crafted"
 rc_is 0 "N: a hand-written sample runs"
-has "[sample] bin/s.sh: 1/1 (killed 1, survived 0, inconclusive 0)" "N: a mutant only its second run kills is a kill" "$OUT"
+has "[sample] bin/s.sh: 1/1 (killed 1, survived 0, inconclusive 0, baseline-red 0)" "N: a mutant only its second run kills is a kill" "$OUT"
 eq "$(python3 -c 'import json,sys
 r=json.loads(open(sys.argv[1]).read().strip()); print(r["verdict"], r["flaky"], r["attempts"])' "$T/state/runs-sample.jsonl")" "killed True 2" "N: it is recorded killed, flaky, after two attempts"
 run report --section kills
@@ -552,7 +556,7 @@ row = {"id": "redmut000001", "kind": "code", "file": "bin/s.sh", "op": "delete",
 open(sys.argv[1], "w").write(json.dumps(row) + "\n")
 PY
 run sample --sample-from "$T/crafted"
-has "[sample] bin/s.sh: 1/1 (killed 0, survived 0, inconclusive 0)" "O: a mutant of a red suite is neither killed nor survived" "$OUT"
+has "[sample] bin/s.sh: 0/1 (killed 0, survived 0, inconclusive 0, baseline-red 1)" "O: a mutant of a red suite is neither killed nor survived" "$OUT"
 eq "$(runs red)" 1 "O: only the red baseline ran"
 run report --section kills
 has "| bin/s.sh | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | - |" "O: it is counted as baseline-red, with no kill rate" "$OUT"
@@ -572,7 +576,7 @@ run sample --sample-from "$T/crafted"
 has "remaining: 1" "P: a mutant of a red suite stays remaining after the session" "$OUT"
 rm "$T/markers/red-now"
 run sample --sample-from "$T/crafted"
-has "[sample] bin/s.sh: 1/1 (killed 1, survived 0, inconclusive 0)" "P: the next session runs it once the suite is green" "$OUT"
+has "[sample] bin/s.sh: 1/1 (killed 1, survived 0, inconclusive 0, baseline-red 0)" "P: the next session runs it once the suite is green" "$OUT"
 has "remaining: 0" "P: and nothing remains" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['baseline-red', 'killed']" "P: the red record is kept and the later record wins"
@@ -604,6 +608,7 @@ open(st + "/runs-sample.jsonl", "w").write("".join(json.dumps(r) + "\n" for r in
 entries = [{"candidate": "s:1-1", "suite": "s", "labels": ["t1"], "claim": "other", "mutants": [{"file": "bin/s.sh", "find": "echo hello", "replace": "echo a"}]},
            {"candidate": "s:2-2", "suite": "s", "labels": ["t3"], "claim": "other", "mutants": [{"file": "bin/s.sh", "find": "echo hello", "replace": "echo b"}]}]
 open(manifest, "w").write("".join(json.dumps(e) + "\n" for e in entries))
+open(st + "/inventory.jsonl", "w").write(json.dumps({"suite": "s", "seconds": None, "assertions": None, "labels": ["t1", "t3"]}) + "\n")
 PY
 run --state "$T/stateR" report --section targeted
 has "| s::t3; s::t4* |" "N: a killer attributed through failure detail is starred" "$OUT"
@@ -619,6 +624,132 @@ has "| bin/s.sh | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 100.0% |" "N: the kills report
 run --state "$T/stateR" accept "$T/r-class.tsv" "$T/r-manifest.jsonl"
 has "| s:1-1 | 0.0 | rejected: not evidenced |" "N: an ambiguous label never counts as another killer" "$OUT"
 has "| s:2-2 | 0.0 | accepted |" "N: a killer attributed through failure detail counts" "$OUT"
+echo "Q. fix round 1: compare, loaders, accept inputs, plan inventory, targeted pre-flight, dirty copy"
+mk Q
+TAB=$(printf '\t')
+mkrec(){ python3 - "$@" <<'PY'
+import json, sys
+st, name, rid, file, verdict = sys.argv[1:6]
+r = {"id": rid, "kind": "code", "file": file, "op": "delete", "line": 3, "before": "b", "after": ":", "suite": "s",
+     "verdict": verdict, "killers": ["s::x"] if verdict == "killed" else [], "unmatched": [], "ambiguous": [],
+     "via_detail": [], "suites": {"s": verdict}, "flaky": False, "attempts": 1, "seconds": 0.1}
+import os
+os.makedirs(st, exist_ok=True)
+open(st + "/runs-sample.jsonl", "a").write(json.dumps(r) + "\n")
+PY
+}
+mkrec "$T/cmpA" a xxxxxxxxxxx1 f.sh killed
+mkrec "$T/cmpB" b xxxxxxxxxxx1 f.sh baseline-red
+mkrec "$T/cmpB" b yyyyyyyyyyy1 g.sh survived
+run --state "$T/cmpB" report --section kills --compare "$T/cmpA" --kind code --only f.sh
+has "lost: 0" "Q1: a baseline-red record is not a lost kill" "$OUT"
+has "not run: 1" "Q1: it counts as not run" "$OUT"
+run --state "$T/cmpB" report --section kills --compare "$T/cmpA" --kind code
+has "not run: 0" "Q1: a baseline-red record does not add its file to the selection" "$OUT"
+
+# Q2: a duplicate claim whose loader suite (s) is red in the first session
+python3 - "$T/dup.jsonl" <<'PY'
+import json, sys
+e = {"candidate": "s2:11-11", "suite": "s2", "labels": ["add handles a one"], "claim": "duplicate",
+     "duplicate_of": ["s::add returns the sum"], "safety": False,
+     "mutants": [{"file": "bin/s.sh", "find": "$(( $1 + $2 ))", "replace": "$(( $1 - $2 ))"}]}
+open(sys.argv[1], "w").write(json.dumps(e) + "\n")
+PY
+: > "$T/markers/red-now"
+run targeted "$T/dup.jsonl"
+has "remaining: 1" "Q2: a record with a red loader suite is not final" "$OUT"
+run report --section targeted
+has "| s2:11-11 | inconclusive |" "Q2: its own-label kill is not enough while a loader suite had no verdict" "$OUT"
+rm "$T/markers/red-now"
+run targeted "$T/dup.jsonl"
+has "remaining: 0" "Q2: the next run retries it" "$OUT"
+run report --section targeted
+has "| s2:11-11 | evidenced |" "Q2: and the loader suite's kill then makes it evidenced" "$OUT"
+eq "$(wc -l <"$T/state/runs-targeted.jsonl" | tr -d ' ')" 2 "Q2: both records are kept"
+
+# Q3 and Q6: accept refuses bad classification input
+mkdir -p "$T/stateA"; cp "$T/state8/inventory.jsonl" "$T/stateA/inventory.jsonl" 2>/dev/null
+python3 - "$T/stateA/inventory.jsonl" <<'PY'
+import json, sys
+rows = [{"suite": "s", "seconds": 100, "assertions": 4, "labels": ["add returns the sum", "t2"]},
+        {"suite": "s2", "seconds": 80, "assertions": 4, "labels": ["add handles a one"]}]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+: > "$T/empty.jsonl"
+HDR="suite${TAB}test${TAB}labels${TAB}kind${TAB}duplicate_of${TAB}verdict${TAB}merge_with${TAB}evidence${TAB}safety${TAB}note"
+{ echo "$HDR"; echo "s${TAB}1-1${TAB}t 2${TAB}wording${TAB}-${TAB}delete${TAB}-${TAB}class${TAB}no${TAB}x"; } > "$T/c1.tsv"
+run --state "$T/stateA" accept "$T/c1.tsv" "$T/empty.jsonl"
+rc_is 2 "Q3: a label the suite does not have exits 2"
+has "row s:1-1" "Q3: naming the row" "$ERR"
+has "'t 2'" "Q3: and the label" "$ERR"
+{ echo "$HDR"; echo "s${TAB}1-1${TAB}t2${TAB}duplicate${TAB}s2::no such${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}x"; } > "$T/c2.tsv"
+run --state "$T/stateA" accept "$T/c2.tsv" "$T/empty.jsonl"
+rc_is 2 "Q3: a duplicate_of label the suite does not have exits 2"
+has "'no such'" "Q3: naming it" "$ERR"
+{ echo "$HDR"; echo "s${TAB}1-1${TAB}t2${TAB}wording${TAB}-${TAB}delete${TAB}-${TAB}maybe${TAB}no${TAB}x"; } > "$T/c3.tsv"
+run --state "$T/stateA" accept "$T/c3.tsv" "$T/empty.jsonl"
+rc_is 2 "Q6: an evidence value other than class or targeted exits 2"
+has "row s:1-1" "Q6: naming the row" "$ERR"
+
+# Q4: plan and the inventory
+mk QP
+run inventory s
+run plan
+rc_is 2 "Q4: a partial inventory is refused"
+has "inventory incomplete: s2" "Q4: naming the missing suite" "$ERR"
+[ ! -e "$T/state/sample.jsonl" ] && _pass "Q4: and nothing is frozen" || _fail "Q4: and nothing is frozen"
+printf 'bin/s.sh\tbash\ts\ts,s2\nbin/loop.sh\tbash\tgated\tgated\nbin/p.py\tpy\tred\tred\n' > "$T/subj.tsv"
+run inventory gated red
+run --subjects "$T/subj.tsv" plan
+rc_is 0 "Q4: a complete inventory plans"
+has "| bin/loop.sh | gated | - | 0 |" "Q4: a gated suite keeps its dash row" "$OUT"
+has "copy-red: bin/p.py" "Q4: a red suite's file is listed as copy-red" "$OUT"
+has "total: 13 mutants" "Q4: only the green suite's file is sampled" "$OUT"
+eq "$(grep -c 'bin/p.py' "$T/state/sample.jsonl")" 0 "Q4: the copy-red file has no sample rows"
+
+# Q7: targeted checks every candidate before the first run
+mk QT
+python3 - "$T" <<'PY'
+import json, sys
+t = sys.argv[1]
+def c(name, suite):
+    return json.dumps({"candidate": name, "suite": suite, "labels": [], "claim": "other",
+                       "mutants": [{"file": "bin/s.sh", "find": "echo hello", "replace": "echo hallo"}]}) + "\n"
+open(t + "/t-gated.jsonl", "w").write(c("good", "s") + c("bad:gated", "gated"))
+open(t + "/t-none.jsonl", "w").write(c("good", "s") + c("bad:none", "nosuch"))
+open(t + "/t-red.jsonl", "w").write(c("good", "s") + c("bad:red", "red"))
+PY
+run targeted "$T/t-gated.jsonl"
+rc_is 2 "Q7: a gated own suite exits 2 before the first run"
+has "candidate bad:gated" "Q7: naming its candidate" "$ERR"
+eq "$(runs s)" 0 "Q7: the earlier good candidate did not run"
+run targeted "$T/t-none.jsonl"
+rc_is 2 "Q7: a missing own suite exits 2"
+has "candidate bad:none" "Q7: naming its candidate" "$ERR"
+run inventory red
+run targeted "$T/t-red.jsonl"
+rc_is 2 "Q7: a copy-red own suite exits 2"
+has "candidate bad:red" "Q7: naming its candidate" "$ERR"
+eq "$(runs s)" 0 "Q7: nothing ran"
+
+# Q8: a mutant whose run writes into the copy
+mk Q8
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+def row(i, after):
+    return {"id": i, "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7, "context": "  FLAG=on",
+            "occurrence": 0, "col": 2, "before": "FLAG=on", "after": after, "suite": "s", "valid": 2}
+rows = [row("dirty000001", 'FLAG=on; touch "$here/../stray"'),
+        row("dirty000002", 'FLAG=on; [ -e "$here/../stray" ] && FLAG=off')]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+run sample --sample-from "$T/crafted"
+has "copy rebuilt after dirty000001" "Q8: a copy a mutant wrote into is rebuilt" "$OUT"
+lacks "copy rebuilt after dirty000002" "Q8: a clean copy is kept" "$OUT"
+eq "$(python3 -c 'import json,sys
+print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived']" "Q8: the next mutant runs in a clean copy and its baseline still holds"
+clean Q8
 U=$(python3 - "$AUDIT" "$ROOT/unit" "$FIX" <<'PY'
 import contextlib, importlib.util, io, json, os, subprocess, sys
 from pathlib import Path
@@ -675,6 +806,16 @@ snip = "\n".join(['x=1', 'if [ "$a" = b ] && echo "a && b"; then # note && here'
 ms = mu.code_mutants("f.sh", snip, "bash")
 out["snip"] = sorted("%d:%s:%s>%s" % (m["line"], m["op"], m["before"], m["after"]) for m in ms if m["op"] in ("andor", "exit", "compare"))
 out["readloop"] = [m["line"] for m in mu.code_mutants("l.sh", "while read a; do :; done </dev/null\nuntil IFS= read -r b; do :; done </dev/null\nwhile [ -z \"$z\" ]; do :; done\n", "bash") if m["op"] == "negate"]
+def vrec(suites, killers):
+    return {"suites": suites, "killers": killers}
+out["verdicts"] = [
+    a.candidate_verdict("s", ["s::a"], [vrec({"s": "killed", "s2": "inconclusive"}, ["s::a"])]),
+    a.candidate_verdict("s", ["s::a"], [vrec({"s": "killed", "s2": "baseline-red"}, ["s::a"])]),
+    a.candidate_verdict("s", ["s::a"], [vrec({"s": "killed", "s2": "inconclusive"}, ["s::a", "s2::b"])]),
+    a.candidate_verdict("s", ["s::a"], [vrec({"s": "killed", "s2": "killed"}, ["s::a"])]),
+]
+out["final"] = [a.is_final({"k": {"verdict": "killed", "suites": {"s": "killed", "s2": "baseline-red"}}}, "k"),
+                a.is_final({"k": {"verdict": "killed", "suites": {"s": "killed"}}}, "k")]
 out["multiline"] = [m["line"] for m in mu.code_mutants("m.sh", "x='a\nexit 0\nb'\ny=1\n", "bash")]
 two = mu.code_mutants("d.sh", "echo a\necho a\n", "bash")
 out["occurrence"] = [mu.apply("echo a\necho a\n", m) for m in two]
@@ -710,6 +851,8 @@ eq "$(uget append_whole)" '[{"a": 1}, {"b": 2}]' "J: an append after a last line
 eq "$(uget longest_verdict)" inconclusive "J: an ambiguous-only failure gives an inconclusive verdict"
 eq "$(uget snip)" '["2:andor:&&>||", "2:compare:=>!=", "3:exit:exit 0>exit 1", "6:compare:<>>="]' "J: operators skip quotes, comments and arithmetic expansions"
 eq "$(uget readloop)" '[3]' "J: bare and env-prefixed read loops get no negate mutant"
+eq "$(uget verdicts)" '["inconclusive", "inconclusive", "evidenced", "unique"]' "J: an undecided loader suite leaves a candidate inconclusive unless another killer already decided it"
+eq "$(uget final)" '[false, true]' "J: a record with a baseline-red suite is not final"
 eq "$(uget multiline)" '[4]' "J: a line inside a multi-line string gets no mutant"
 eq "$(uget occurrence)" '[":\necho a\n", "echo a\n:\n"]' "J: identical lines are told apart by occurrence"
 eq "$(uget stale)" '[false, true]' "J: apply returns None once the context line changed"
