@@ -32,7 +32,7 @@ command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
 # like the hooks below.
 #
 # Not load-bearing on its own, for two reasons. It cannot see an MR opened or merged while you
-# sit in the same space — that state lives on GitLab and fires no Herdr event — and on herdr
+# sit in the same space — that state lives on GitLab or GitHub and fires no Herdr event — and on herdr
 # 0.9.0 it was observed not firing for UI-driven workspace switches at all (only for a CLI
 # `herdr workspace focus`). The be.netronix.herdr-phase-refresh LaunchAgent, which forces every
 # lookup each 50 s, is what actually keeps the badges true; this stays because when it does fire

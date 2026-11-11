@@ -80,6 +80,16 @@
 #     caller environment can name: HERDR_PHASE_CACHE_DIR (meant for the suite, but honoured
 #     everywhere, as PINNED_PATH is) or XDG_CACHE_HOME. The default ~/.cache/herdr-phase is not
 #     sandbox-writable.
+#   - A sandboxed command can hold a repository's lock, because flock needs only read access to the
+#     lock file: that repository's badges freeze and each run pays LOCK_WAIT (bounded by the run
+#     deadline). Denying the cache directory to reads in the sandbox is the follow-up.
+#   - `spaces()` (`herdr workspace list`) runs before the deadline clock and has no bound: a hung
+#     Herdr server holds the run, and launchd never overlaps runs.
+#   - glab runs in the caller's environment (GITLAB_TOKEN, GLAB_CONFIG_DIR, proxy and CA variables
+#     reach it), unlike gh, which runs under `env -i`. The GitLab lookup is unchanged by design.
+#   - A partial answer (exit 3: the merged half failed) publishes fresh open rows without caching them,
+#     so a `--fresh` within the gap or a TTL hook can republish the older cached table until the next
+#     timer run.
 #   - bash's own startup inputs are not scrubbed: it sources BASH_ENV and imports exported functions
 #     (BASH_FUNC_<name>%%) before the first line, and one named like a command called here (git,
 #     glab, herdr) runs in its place. Like PINNED_PATH and HERDR_PHASE_*, the caller's environment
@@ -190,6 +200,15 @@ usage() {
 }
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
+
+# whole_seconds <variable name> <value>: dies unless the value is a whole number of seconds, 0 included
+# and no leading zero. The numeric overrides reach `[ -lt ]`, lockf and shell arithmetic, which would
+# run a value such as PATH[$(cmd)] or fail on 1.5 or 08 with a misleading message. The digits are
+# listed, as in slug_chars_ok: under a UTF-8 locale bash 3.2 lets a character such as U+2185 through
+# the range [0-9].
+whole_seconds() {
+  case "$2" in ''|*[!0123456789]*|0?*) die "HERDR_PHASE_$1 is not a whole number of seconds" ;; esac
+}
 
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
@@ -774,10 +793,12 @@ wait_jobs() {
 cmd_refresh() {
   local run="ttl" only=""
   # wait_jobs does arithmetic with RUN_DEADLINE, which runs a value such as PATH[$(cmd)] and ends the
-  # shell, its jobs orphaned and its stderr on /dev/null, on one such as 1.5 or 08. So only a whole
-  # number of seconds is taken; 0 ends every job at once. The digits are listed, as in slug_chars_ok:
-  # under a UTF-8 locale bash 3.2 lets a character such as U+2185 through the range [0-9].
-  case "$RUN_DEADLINE" in ''|*[!0123456789]*|0?*) die "HERDR_PHASE_RUN_DEADLINE is not a whole number of seconds" ;; esac
+  # shell, its jobs orphaned and its stderr on /dev/null, on one such as 1.5 or 08. So each numeric
+  # override is checked before a job starts. 0 is allowed for all three: a deadline that ends every
+  # job at once, a TTL that always looks up, and a wait that skips a held repository at once.
+  whole_seconds RUN_DEADLINE "$RUN_DEADLINE"
+  whole_seconds LOCK_WAIT "$LOCK_WAIT"
+  whole_seconds TTL "$TTL"
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) run="force"; shift ;;

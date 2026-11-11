@@ -11,7 +11,7 @@
 #   2. A workspace accepts sequenced token reports from at most 32 DISTINCT sources for its
 #      lifetime, and clearing or expiry does not release a slot. Every report must therefore
 #      use the one stable --source; a per-run source id would exhaust a long-lived workspace.
-#   3. Exactly one of the three phase tokens may be set at a time, and the other two must be
+#   3. Exactly one of the four phase tokens may be set at a time, and the other three must be
 #      explicitly cleared; the same holds for the three pipeline tokens (ci_ok, ci_fail,
 #      ci_run). Herdr keeps a token until told otherwise, so a space that moves review ->
 #      merged would otherwise render both icons at once.
@@ -445,7 +445,7 @@ BADSRC=$(grep -c -E "^herdr workspace report-metadata [^ ]+ --source herdr-phase
 TOTAL=$(grep -c -E "^herdr workspace report-metadata " "$CALLS")
 check "$BADSRC" "$TOTAL" "all $TOTAL reports use --source herdr-phase"
 
-# Herdr keeps a token until told otherwise, so the two unused tokens must be cleared on
+# Herdr keeps a token until told otherwise, so the unused tokens must be cleared on
 # every report or a space that changes phase renders two icons at once.
 missing=0
 for w in w2 w3 w4 w5 w6 w7 w8 w10 w11 w12 w13 wA wB; do
@@ -939,6 +939,8 @@ gh_ci fail "StatusContext ERROR -> ci_fail" "[$(sc ERROR)]"
 gh_ci fail "FAILURE and IN_PROGRESS -> ci_fail" "[$(cr COMPLETED FAILURE),$(cr IN_PROGRESS '')]"
 gh_ci ok "CheckRun SUCCESS and StatusContext SUCCESS -> ci_ok" "[$(cr COMPLETED SUCCESS),$(sc SUCCESS)]"
 gh_ci none "SUCCESS and a COMPLETED/STALE give no badge, never ok" "[$(cr COMPLETED SUCCESS),$(cr COMPLETED STALE)]"
+gh_ci fail "FAILURE and a COMPLETED/STALE -> ci_fail, a failure beats an unknown state" "[$(cr COMPLETED FAILURE),$(cr COMPLETED STALE)]"
+gh_ci run "IN_PROGRESS and a COMPLETED/STALE -> ci_run, a run beats an unknown state" "[$(cr IN_PROGRESS ''),$(cr COMPLETED STALE)]"
 gh_ci none "a rollup that is not a list shows no CI" '{"state":"SUCCESS"}'
 gh_ci none "a null rollup shows no CI" 'null'
 
@@ -1412,6 +1414,28 @@ for _v in 1.5 08 "PATH[\$(touch $T/pwned)]" "1$(printf '\xe2\x86\x85')"; do
   [ ! -e "$T/pwned" ] && _pass "$_l: and nothing in it runs" || _fail "$_l: and nothing in it runs"
 done
 rm -f "$T/pwned"
+# The lock wait and the TTL are taken the same way, before any job starts: an invalid wait made
+# lockf exit 64 and every repository log "its lock is held", and an invalid TTL erred in `[ -lt ]`
+# and always looked up. 0 is allowed for both (the suite's TTL=0, and a wait that skips at once).
+for _n in LOCK_WAIT TTL; do
+  for _v in 1.5 08 -1 "PATH[\$(touch $T/pwned)]" "1$(printf '\xe2\x86\x85')"; do
+    job_reset; rm -f "$T/pwned"
+    case "$_v" in PATH*) _l="a $_n holding a command substitution" ;; 1.5|08|-1) _l="a $_n of $_v" ;;
+      *) _l="a $_n of 1 and U+2185, a digit to a UTF-8 range" ;; esac
+    if [ "$_n" = LOCK_WAIT ]; then LC_ALL=en_US.UTF-8 LOCK_WAIT="$_v" run refresh --force; else LC_ALL=en_US.UTF-8 TTL="$_v" run refresh --force; fi
+    check "$RC" "2" "$_l is refused (exit 2)"
+    check "$(printf '%s\n' "$OUT" | grep -c "^phase.sh: HERDR_PHASE_$_n is not a whole number of seconds\$")" "1" "$_l: and the refusal names it on stderr"
+    check "$(grep -c 'report-metadata' "$CALLS")" "0" "$_l: and nothing is reported"
+    [ ! -e "$T/pwned" ] && _pass "$_l: and nothing in it runs" || _fail "$_l: and nothing in it runs"
+  done
+done
+rm -f "$T/pwned"
+job_reset
+LOCK_WAIT=0 run refresh --force
+check "$RC" "0" "a lock wait of 0 is allowed"
+job_reset
+TTL=0 run refresh
+check "$RC" "0" "a TTL of 0 is allowed"
 
 # A file dated in the future (the clock stepped back) is expired, not fresh: a table from the
 # future is looked up again by a default refresh, and a pipeline status from the future does not
@@ -1533,9 +1557,6 @@ abort_case() { # abort_case <label> [<second signal>]
   if [ -z "$spid" ]; then _fail "$1: the hung forge call is dead once the main shell is gone (it never started)"
   elif kill -0 "$spid" 2>/dev/null; then _fail "$1: the hung forge call is dead once the main shell is gone"; kill -9 "$spid" 2>/dev/null
   else _pass "$1: the hung forge call is dead once the main shell is gone"; fi
-  # This clause cannot fail as the case runs: the TERM lands while wait_jobs has stderr on /dev/null,
-  # where bash's notice is dropped whatever abort_run does. It guards only a TERM outside that wait.
-  check "$(grep -c -E 'Terminated|Hangup|Killed' "$T/bg.err")" "0" "$1: and no shell notice about an ended job reaches stderr"
 }
 abort_case "TERM to the main shell"
 abort_case "TERM, then HUP during the grace" HUP
