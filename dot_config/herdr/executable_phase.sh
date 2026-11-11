@@ -61,16 +61,20 @@
 #   - A TERM, HUP or INT that lands between a job's fork and the recording of its PID (microseconds)
 #     orphans that one job, bounded only by its forge calls, as above.
 #   - The tick cap on the wait is RUN_DEADLINE x 10 + 10 ticks of 0.1 s plus a fork each: about 44 s
-#     at the default 40. It is reached only after the clock steps back by less than the time already
-#     waited (a larger step reads as expired at once, and a steady clock ends the wait at 40 s).
-#   - The cap counts iterations, not time: if `sleep` fails at once (the process table is full), the
-#     iterations pass in moments and healthy jobs are ended early, each named; the next run redoes
-#     them.
+#     at the default 40. On a working clock it is reached only after the clock steps back by less
+#     than the time already waited (a larger step reads as expired at once, and a steady clock ends
+#     the wait at 40 s).
+#   - A fork that fails in the main shell (a full process table, or the user's process limit) ends
+#     it at once with status 128, as bash 3.2 does in a non-interactive shell; during the wait that
+#     is silent, its stderr being on /dev/null. end_jobs never runs, so its jobs are orphaned and
+#     bounded only by their forge calls, as under a SIGKILL of the main shell (first entry).
 #   - The suite drives the deadline through a fake clock(), so nothing pins that the real one
 #     advances: one that stood still would be masked by the cap, about 4 s more per run with a hung
 #     job.
-#   - RUN_DEADLINE has no upper bound: a value past the 64-bit range ends every job at once (each
-#     named, exit 0).
+#   - RUN_DEADLINE has no upper bound, and the cap (RUN_DEADLINE x 10 + 10) wraps from about 9.2e17
+#     on. A value that wraps it to 0 or below (922337203685477580 gives a negative cap,
+#     9223372036854775807 gives 0) ends every job at once (each named, exit 0), as does any value
+#     past 9223372036854775807; one that wraps it to a large positive cap waits as usual.
 #   - The sweep's `rm -rf <cache dir>/.tmp/<key>` follows a symlinked .tmp and deletes <key>
 #     wherever it points. That needs a cache directory a sandboxed command can write, which only a
 #     caller environment can name: HERDR_PHASE_CACHE_DIR (meant for the suite, but honoured
