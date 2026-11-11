@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `fix/wt-rm-rebase-merged`; no MR, a dotfiles line)
+**Status:** Implemented (branch `fix/wt-rm-rebase-merged`; no MR, a dotfiles line)
+
+> **Completed 2026-11-11.** Executed on `fix/wt-rm-rebase-merged`; do not run it again. Its execution notes bind that run only.
 
 **Goal:** `wt-rm` deletes a branch whose work reached the base by a rebase-merge or a squash-merge, however the base has moved since, and keeps every branch it cannot prove merged.
 

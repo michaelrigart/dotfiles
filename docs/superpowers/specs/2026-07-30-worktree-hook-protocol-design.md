@@ -12,6 +12,11 @@
 > actually left, and a retry finishes one whose checkout is gone; see
 > [wt-rm: finish a partial removal](./2026-10-13-wt-rm-partial-removal-design.md).
 
+> **2026-11-11 — amended.** §8 step 13 and §9.3's "Attempt `git branch -d`, never `-D`": when
+> `-d` refuses, `wt-rm` now deletes a branch whose work reached the base by a squash- or
+> rebase-merge, with `-D` after a content test that keeps every unclear case; see
+> [wt-rm: delete rebase-merged branches](./2026-11-11-wt-rm-rebase-merged-design.md).
+
 ## 1. Problem
 
 The dotfiles repository provides a general development workflow:

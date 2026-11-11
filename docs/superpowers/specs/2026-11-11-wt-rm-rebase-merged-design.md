@@ -1,6 +1,6 @@
 # wt-rm: delete rebase-merged branches
 
-**Status:** In progress (branch `fix/wt-rm-rebase-merged`; no MR, a dotfiles line)
+**Status:** Implemented (branch `fix/wt-rm-rebase-merged`; no MR, a dotfiles line)
 **Date:** 2026-11-11
 **Sign-off:** Michael, 2026-11-11, given in advance and relayed by the tagteam session; Codex spec
 review approved in round 2 (`xr-1794428865-1662fe5b`)
