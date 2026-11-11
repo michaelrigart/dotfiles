@@ -230,6 +230,12 @@ Filled in by Task 2.
 | V11 | 2026-11-11 | 1 | FAIL: rb11 failing replay: wt-rm says the branch is kept<br>FAIL: rb11 failing replay: the branch still exists ('' != 'rb11') |
 | V13 | 2026-11-11 | 1 | FAIL: rb13 failing patch-id pipeline: wt-rm says the branch is kept<br>FAIL: rb13 failing patch-id pipeline: the branch still exists ('' != 'rb13') |
 
+## Execution notes (2026-11-11)
+
+- The variants ran on `git archive` copies of 04c7c96 under `$TMPDIR`, up to four at once, after an unmutated copy gave 1219/1219; the checkout's functions were never mutated. Each variant is a one-line edit, and each named case failed because its branch was deleted.
+- Other cases fail under some variants, as the code predicts: V3 also deletes `sq4`, `rb5`, `rb7`, `rb8` and `rb11` and renames the `rb2` and `rb12` deletions; V4 deletes case `i`; V5 and V7b delete `rb11`, and V7b `rb13`. `rb11` and `rb13` keep their branch partly through the squash test standing aside; V11 and V13 show that the exit-status check and `pipefail` matter on their own.
+- `X13b` ("every mise call wt makes has stdin from /dev/null") failed in two of the eleven parallel runs (under V4 and V7b). Neither variant is on the path of the calls it logged, and it passed in every single run in the checkout. It is an existing load-sensitive assertion, outside this change; it may turn a loaded run red.
+
 ## Rulings
 
 - Cases 3–8 drive `wt-rm`, like the `sq` cases, so that each asserts the real outcome (the kept message and the surviving branch).
