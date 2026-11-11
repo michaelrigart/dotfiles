@@ -1,6 +1,6 @@
 # `wt` checkouts for the dotfiles
 
-**Status:** Approved
+**Status:** In progress (branch `feat/wt-dotfiles`; the dotfiles have no MR)
 **Date:** 2026-11-11
 **Sign-off:** Michael, 2026-11-11 (Codex spec review approved, `xr-1794356582-1589df6b`)
 **Branch:** `feat/wt-dotfiles`, in the `wt` checkout `~/.local/share/chezmoi-feat-wt-dotfiles`: the
