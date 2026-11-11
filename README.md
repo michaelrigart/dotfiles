@@ -79,11 +79,12 @@ This will:
 ## 🔧 Daily Usage
 
 ```bash
-# Get a checkout of the source at ~/.local/share/chezmoi-<branch>, and edit the dotfile there
+# From ~/.local/share/chezmoi: get a checkout of the source and edit the dotfile there.
+# <checkout> is ~/.local/share/chezmoi-<branch>, with each "/" in the branch name as "-".
 wt <branch>
 
 # Preview changes
-command chezmoi --source ~/.local/share/chezmoi-<branch> diff
+command chezmoi --source <checkout> diff
 
 # After the branch is merged, apply it
 chezmoi apply
@@ -107,12 +108,12 @@ be read. `merge` and `merge-all` need it too. `chezmoi init` is refused in the s
 
 ```bash
 # Add a new file to dotfiles, into the wt checkout
-command chezmoi --source ~/.local/share/chezmoi-<branch> add ~/.config/newapp/config.toml
+command chezmoi --source <checkout> add ~/.config/newapp/config.toml
 
 # Commit and push the branch
-git -C ~/.local/share/chezmoi-<branch> add .
-git -C ~/.local/share/chezmoi-<branch> commit -m "Update configuration"
-git -C ~/.local/share/chezmoi-<branch> push origin <branch>
+git -C <checkout> add .
+git -C <checkout> commit -m "Update configuration"
+git -C <checkout> push origin <branch>
 
 # After the merge, deploy it
 chezmoi apply

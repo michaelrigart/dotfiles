@@ -61,11 +61,11 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `--replace` to overwrite a different policy) is Michael's; agents run it only in test mode,
   through its suite and `tests/provision.test.sh`.
   `measure-interventions.py` sits beside them: the transcript metrics for the
-  safe-autonomy evaluation, and `process-replay.py` (with its package `process_replay/`) and
-  `xreview-replay.py` are the replay-experiment harnesses. `skill-updates.sh` is
-  non-interactive too and runs weekly in the `skill-updates` workflow. The scripts are mode
-  `755` (not the 644 policy file) — git stores only the exec bit, so a clone yields 755,
-  never 700.
+  safe-autonomy evaluation, and `process-replay.py` (with its package `process_replay/`,
+  plain 644 modules) and `xreview-replay.py` are the replay-experiment harnesses.
+  `skill-updates.sh` is non-interactive too and runs weekly in the `skill-updates` workflow.
+  The scripts are mode `755` (not the 644 policy file) — git stores only the exec bit, so a
+  clone yields 755, never 700.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
 - Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
