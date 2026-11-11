@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for dot_claude/executable_xreview-apply-guard.sh — the apply-window guard.
 #
-# This guard has a wildcard matcher, so it runs on every tool call. Its most important
+# This guard runs on every Edit, Write and NotebookEdit call. Its most important
 # property is being INERT with no window open: a regression there blocks ordinary edits
 # everywhere. That case is asserted first and deliberately.
 set -uo pipefail

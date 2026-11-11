@@ -27,6 +27,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(~/.config/op/config)","Edit(~/.config/op/config)",
  "Read(~/.config/ha-mcp/**)","Edit(~/.config/ha-mcp/**)",
  "Read(~/.config/unifi-network/**)","Edit(~/.config/unifi-network/**)",
+ "Read(~/.config/bundler/**)","Edit(~/.config/bundler/**)",
  "Read(**/secrets.*.yml)","Edit(**/secrets.*.yml)",
  "Read(**/.env.production*)","Edit(**/.env.production*)",
  "Read(**/*.key)","Edit(**/*.key)",
@@ -353,7 +354,8 @@ EXP_CREDENTIALS='[
   "~/.config/op/config",
   "~/.config/ha-mcp/env",
   "~/.config/ha-mcp/env-remote",
-  "~/.config/unifi-network/env"
+  "~/.config/unifi-network/env",
+  "~/.config/bundler/config"
 ]'
 EXP_ALLOW_READ='[
   "~/.ssh/config",
@@ -713,6 +715,7 @@ jq_is '.sandbox.network.strictAllowlist' true "strictAllowlist is on — non-all
 # On, a sandboxed command skips the allow rules and auto mode sends it to the classifier, so
 # every sandboxed command keeps the classifier. Off would let Bash rm and file writes in the
 # working directories skip it (spec 2026-10-28-reload-functions-merged-deletes, section 2).
+jq_is '.sandbox.failIfUnavailable' true "the sandbox refuses to run commands unsandboxed when it cannot start"
 jq_is '.sandbox.autoAllowBashIfSandboxed' true "sandbox auto-allow is on, so every sandboxed command keeps the classifier"
 
 echo "J. defaultMode is seeded, not enforced"
@@ -816,9 +819,9 @@ for g in git-forge-guard worktree-guard xreview-guard path-resolution-guard; do
   got=$(hook_matchers PreToolUse "/opt/homebrew/bin/bash \$HOME/.claude/$g.sh")
   if [ "$got" = "Bash" ]; then _pass "$g runs once, on the Bash tool"; else _fail "$g runs once, on the Bash tool" "$got"; fi
 done
-# The apply-window guard inspects Edit/Write, so it must match every tool.
+# The apply-window guard inspects only Edit, Write and NotebookEdit, so it matches those tools.
 got=$(hook_matchers PreToolUse '/opt/homebrew/bin/bash $HOME/.claude/xreview-apply-guard.sh')
-if [ "$got" = "*" ]; then _pass "xreview-apply-guard runs once, on every tool"; else _fail "xreview-apply-guard runs once, on every tool" "$got"; fi
+if [ "$got" = "Edit|Write|NotebookEdit" ]; then _pass "xreview-apply-guard runs once, on the tools it inspects"; else _fail "xreview-apply-guard runs once, on the tools it inspects" "$got"; fi
 jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards"
 # The forge guard shells out to glab, git and gitleaks (the push helper alone has a 30 s
 # budget), so its hook limit is explicit rather than left to the runtime default.
