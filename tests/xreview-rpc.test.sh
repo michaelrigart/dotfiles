@@ -1753,6 +1753,171 @@ is "AC19 a spent budget is exit 1, with the retry line last" "$rc/$(cat "$T/out"
 is "AC19 and is reported as the time budget, not a lost connection" "$(grep -c 'the time budget for this run ran out' "$T/err")/$(grep -c 'a: not archived: the time budget ran out' "$T/err")/$(grep -c 'connection' "$T/err")" "1/1/0"
 is "AC19 the entry stays" "$(ac_ids g)" a
 
+echo "CL. cleanup [--archive]"
+CLD="$T/cl"
+E="$W/exists-cl"
+PK=$'<cross-review-request>\nplease review'
+HAVE_ZSTD=0; command -v zstd >/dev/null 2>&1 && HAVE_ZSTD=1
+cl_clean() { ac_clean; rm -rf "$CLD" "$E"; mkdir -p "$CLD/roll" "$CLD/hist"; : > "$CLD/ents.jsonl"; }
+cl_th() { # cl_th <id> <listed cwd> <rollout origin | - for no rollout | zst:<origin>>
+  local path="$CLD/roll/$1.jsonl"
+  case "$3" in
+    -) ;;
+    zst:*) jq -nc --arg c "${3#zst:}" '{type:"session_meta",payload:{cwd:$c}}' > "$path"
+           jq -nc '{type:"event_msg"}' >> "$path"; zstd -q -f -o "$path.zst" "$path" && rm -f "$path"; path="$path.zst" ;;
+    *) jq -nc --arg c "$3" '{type:"session_meta",payload:{cwd:$c}}' > "$path"; jq -nc '{type:"event_msg"}' >> "$path" ;;
+  esac
+  jq -nc --arg i "$1" --arg c "$2" --arg p "$path" '{id:$i,cwd:$c,updatedAt:1700000000,path:$p,preview:"x"}' >> "$CLD/ents.jsonl"
+}
+cl_turn() { jq -nc --arg t "$1" '{id:"t",status:"completed",items:[{type:"userMessage",content:[{type:"text",text:$t}]},{type:"agentMessage",text:"ok"}]}'; }
+cl_page() { # cl_page <next cursor or ""> <turn json>... : one page of the listing, newest first as given
+  local c="$1"; shift
+  printf '%s\n' "$@" | jq -sc --arg c "$c" '{result:{data:.,nextCursor:(if $c == "" then null else $c end)}}'
+}
+cl_hist() { # cl_hist <id> <message>... : the thread's whole history on one page, messages oldest first
+  local id="$1"; shift
+  local turns=() i
+  for ((i = $#; i > 0; i--)); do turns+=("$(cl_turn "${!i}")"); done
+  if [ "$#" -eq 0 ]; then cl_pages "$id" '{"result":{"data":[],"nextCursor":null}}'; else cl_pages "$id" "$(cl_page "" "${turns[@]}")"; fi
+}
+cl_pages() { # cl_pages <id> <page response>... : each page answers one successive call
+  local id="$1"; shift
+  printf '%s\n' "$@" | jq -sc --arg i "$id" '{id:$i,resp:(if length == 1 then .[0] else . end)}' > "$CLD/hist/$id.json"
+}
+cl_full() { jq -sc '{result:{data:.}}' "$CLD/ents.jsonl"; }
+cl_scn() { # cl_scn <thread/list answers, a JSON list> [extra by_thread JSON, e.g. {"thread/archive":{...}}]
+  scenario "$(jq -nc --argjson l "$1" --argjson x "${2:-null}" \
+    --argjson bt "$(jq -sc 'map({(.id): .resp}) | add // {}' "$CLD"/hist/*.json)" \
+    '{responses:{"thread/list":$l},by_thread:({"thread/turns/list":$bt} + ($x // {}))}')"
+}
+cl_sec() { awk -v h="== $2 (" 'index($0, h) == 1 {on=1; next} /^[^ ]/ {on=0} on' "$1"; }   # <out file> <heading>
+cl_ids() { cl_sec "$1" "$2" | awk '{print $1}' | paste -sd, -; }
+cl_ids_all() { grep '^  ' "$1" | awk '{print $1}' | paste -sd, -; }
+H_STARTED="Started by xreview (started record)"
+H_PACKET="First message is a review packet"
+H_OLD="Old pane sessions (a greeting, then only review packets)"
+H_PINNED="Not selected: pinned"
+H_DIFFERS="Not selected: recorded cwd differs from the origin"
+H_UNREAD="Not selected: could not read"
+cl_fixture() {
+  cl_clean; mkdir -p "$E"
+  ac_started g s "$G"; ac_review g p; mkdir -p "$ACR/n"; ac_pin n pn
+  cl_th s "$G" "$G"
+  cl_th p "$G" "$G"; cl_hist p "$PK"
+  cl_th o "$G" "$G"; cl_hist o hi "$PK" "$PK"
+  cl_th m "$G" "$G"; cl_hist m hi "$PK" thanks
+  cl_th e "$E" "$E"; cl_hist e "$PK"
+  cl_th pn "$G" "$G"; cl_hist pn "$PK"
+  cl_th z "$G" "$G"; cl_hist z
+  cl_th d "$G" "$W/other"; cl_hist d "$PK"
+  if [ "$HAVE_ZSTD" = 1 ]; then cl_th zs "$G" "zst:$G"; cl_hist zs "$PK"; fi
+  N=3; [ "$HAVE_ZSTD" = 1 ] && N=4
+}
+cl_zs() { [ "$HAVE_ZSTD" = 1 ] && echo "$1" || echo "$2"; }
+[ "$HAVE_ZSTD" = 1 ] || echo "  SKIP: zstd not installed (CL1 zs)"
+export TZ=UTC
+
+cl_fixture
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup >"$T/out" 2>"$T/err"; rc=$?
+is "CL1 a dry run exits 0 and archives nothing" "$rc/$(ac_sent thread/archive)" "0/"
+is "CL1 a started thread is listed under its heading" "$(cl_ids "$T/out" "$H_STARTED")" s
+is "CL1 a first-message packet is listed under its heading" "$(cl_ids "$T/out" "$H_PACKET")" "$(cl_zs p,zs p)"
+is "CL1 a greeting then only packets is an old pane session" "$(cl_ids "$T/out" "$H_OLD")" o
+is "CL1 a pinned thread is not selected" "$(cl_ids "$T/out" "$H_PINNED")" pn
+is "CL1 a thread whose origin differs is not selected, and says where it began" "$(cl_ids "$T/out" "$H_DIFFERS")/$(cl_sec "$T/out" "$H_DIFFERS" | grep -c "origin $W/other\$")" "d/1"
+is "CL1 nothing was unreadable" "$(cl_ids "$T/out" "$H_UNREAD")" ""
+is "CL1 a greeting then a packet then a message of Michael's, and a thread in an existing checkout, are listed nowhere" \
+   "$(grep -cE '^  (m|e)  ' "$T/out")" 0
+is "CL1 a thread in an existing checkout has no history read" "$(ac_sent thread/turns/list)" "p,o,m,z,d$(cl_zs ,zs '')"
+is "CL1 each line carries the cwd, the update time and how it was identified" "$(grep '^  s  ' "$T/out")" "  s  $G  2023-11-14 22:13  started"
+is "CL1 the headings come in order with their counts" "$(grep '^== ' "$T/out" | paste -sd'|' -)" \
+   "== $H_STARTED (1)|== $H_PACKET ($(cl_zs 2 1))|== $H_OLD (1)|== $H_PINNED (1)|== $H_DIFFERS (1)|== $H_UNREAD (0)"
+is "CL1 the unarchived listing asks for every source kind" "$(jq -c 'select(.method == "thread/list") | .params | [.archived, (.sourceKinds | length)]' "$FAKE_LOG" | head -1)" "[false,10]"
+is "CL1 the limit lines and the dry-run line close the output" "$(tail -n 4 "$T/out")" "Selected: $((N)). Only threads whose recorded cwd is gone are considered; a checkout that exists is never touched.
+Not selected: 1 threads in gone checkouts with no turns and no started record (the historical coverage limit).
+Selection uses the daemon's recorded cwd; a thread whose origin differs is listed above and never selected.
+Dry run: nothing archived. Run again with --archive to archive the selected threads."
+
+cl_fixture
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL2 --archive archives exactly the selected threads" "$rc/$(ac_sent thread/archive | tr , '\n' | sort | paste -sd, -)" "0/o,p,s$(cl_zs ,zs '')"
+is "CL2 each is printed as archived" "$(grep -c '^archived ' "$T/out")" "$N"
+is "CL2 the review-thread naming p is cleared and the started entry of s dropped" "$([ -e "$ACR/g/review-thread" ] && echo left || echo gone)/$([ -e "$ACR/g/started" ] && echo left || echo gone)" gone/gone
+is "CL2 the pin naming pn is untouched" "$(cat "$ACR/n/pin")" pn
+is "CL2 the output ends with the count" "$(tail -n 1 "$T/out")" "Archived $N of $N."
+is "CL2 and has no dry-run line" "$(grep -c '^Dry run' "$T/out")" 0
+
+cl_fixture
+cl_scn "[$(cl_full), $(jq -sc '{result:{data:map(select(.id != "p"))}}' "$CLD/ents.jsonl")]" "$(jq -nc --argjson e "$ERRNO" '{"thread/archive":{p:$e}}')"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL3 a refused, unconfirmed archive fails the run, and the others are archived" "$rc/$(grep -c '^archived ' "$T/out")/$(tail -n 1 "$T/out")" "1/$((N - 1))/Archived $((N - 1)) of $N."
+is "CL3 stderr names the thread and why" "$(grep -c '^xreview-rpc: p: archive failed: nope$' "$T/err")" 1
+is "CL3 its review-thread stays" "$(cat "$ACR/g/review-thread")" p
+
+cl_clean
+ac_started g s "$W/other"
+cl_th s "$G" "$G"
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL4 a started thread whose path differs from its cwd is listed under differs, with the path, and never archived" \
+   "$rc/$(cl_ids "$T/out" "$H_DIFFERS")/$(cl_sec "$T/out" "$H_DIFFERS" | grep -c "started  origin $W/other\$")/$(cl_ids "$T/out" "$H_STARTED")/$(ac_sent thread/archive)" "0/s/1//"
+is "CL4 and its started entry stays" "$(ac_ids g)" s
+
+cl_clean
+cl_th p "$G" -; cl_hist p "$PK"
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL5 a thread whose rollout is missing is listed under could not read, never archived" \
+   "$rc/$(cl_ids "$T/out" "$H_UNREAD")/$(cl_ids "$T/out" "$H_PACKET")/$(ac_sent thread/archive)" "0/p//"
+
+cl_clean
+if [ "$(id -u)" = 0 ]; then
+  echo "  skip: CL5b (root ignores a mode 000 directory)"
+else
+  mkdir -p "$W/locked"; cl_th l "$W/locked/gone" "$W/locked/gone"; cl_hist l "$PK"; chmod 000 "$W/locked"
+  cl_scn "[$(cl_full), $(cl_full)]"
+  rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+  chmod 755 "$W/locked"
+  is "CL5b a cwd whose existence cannot be read is listed under could not read, never archived" \
+     "$rc/$(cl_ids "$T/out" "$H_UNREAD")/$(ac_sent thread/archive)/$(ac_sent thread/turns/list)" "0/l//"
+fi
+
+cl_fixture
+XREVIEW_RPC_STDIO=false rpc cleanup >"$T/out" 2>"$T/err"; rc=$?
+is "CL6 a daemon that is unreachable is exit 5, with nothing on stdout" "$rc/$(cat "$T/out")" "5/"
+
+cl_clean
+cl_th p "$G" "$G"; cl_hist p "$PK"
+cl_th o "$G" "$G"; cl_hist o hi "$PK" "$PK"
+P1="$(jq -sc '{result:{data:[.[0]],nextCursor:"c1"}}' "$CLD/ents.jsonl")"
+P2="$(jq -sc '{result:{data:[.[1]]}}' "$CLD/ents.jsonl")"
+cl_scn "[$P1, $P2]"
+rpc cleanup >"$T/out" 2>"$T/err"; rc=$?
+is "CL7 a listing in two pages lists the threads of both" "$rc/$(cl_ids_all "$T/out")" "0/p,o"
+is "CL7 the second page is asked for by the cursor" "$(jq -c 'select(.method == "thread/list") | .params.cursor' "$FAKE_LOG" | paste -sd, -)" "null,\"c1\""
+
+cl_clean
+cl_th h1 "$G" "$G"; cl_th h2 "$G" "$G"; cl_th h3 "$G" "$G"
+# Pages come newest first, as the daemon sends them. h1: Michael's own message is the oldest
+# turn, on the second page; the first page alone is a greeting and packets.
+cl_pages h1 "$(cl_page c1 "$(cl_turn "$PK")" "$(cl_turn "$PK")" "$(cl_turn hi)")" "$(cl_page "" "$(cl_turn "please fix this bug")")"
+# h2: packets on the first page, an error on the second.
+cl_pages h2 "$(cl_page c2 "$(cl_turn "$PK")")" "$ERRNO"
+# h3: the greeting is on the second page, so only joining the pages in order makes it first.
+cl_pages h3 "$(cl_page c3 "$(cl_turn "$PK")" "$(cl_turn "$PK")")" "$(cl_page "" "$(cl_turn hi)")"
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL8 a personal message on a later page keeps the thread out of every list, unarchived" \
+   "$(grep -c '^  h1  ' "$T/out")/$(ac_sent thread/archive)" "0/h3"
+is "CL8 a page that errors files the thread under could not read" "$(cl_ids "$T/out" "$H_UNREAD")" h2
+is "CL8 the pages are joined in order: a greeting then packets is an old pane session" "$(cl_ids "$T/out" "$H_OLD")/$(cl_ids "$T/out" "$H_PACKET")" "h3/"
+is "CL8 every page of each history was read" "$(jq -c 'select(.method == "thread/turns/list") | [.params.threadId, .params.cursor]' "$FAKE_LOG" | paste -sd' ' -)" \
+   '["h1",null] ["h1","c1"] ["h2",null] ["h2","c2"] ["h3",null] ["h3","c3"]'
+
+cl_clean
+unset TZ
 ac_clean
 unset XDG_STATE_HOME
 

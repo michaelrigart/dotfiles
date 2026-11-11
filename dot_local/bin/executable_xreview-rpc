@@ -35,6 +35,9 @@ tests' fake daemon cannot listen on one.
   archive-checkout --dir DIR                                 archives for good every thread xreview started under
                   the removed checkout DIR (its "started" lists); prints "archived <id>" per thread.
                   Spec: docs/superpowers/specs/2026-11-11-archive-review-threads-design.md
+  cleanup [--archive]                                        lists the review threads whose recorded checkout is gone
+                  (started by xreview, a first message that is a review packet, or an old pane session) and the
+                  ones it will not select; with --archive, archives the selected ones for good.
 
 Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
 4 answer does not match the schema (raw text on stdout), 5 daemon unreachable,
@@ -42,6 +45,7 @@ Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
 release: 5 only when no restore is owed under DIR; a lost connection is 1.
 archive-checkout: 0 done or nothing to do, 1 any failure, 2 DIR still exists, 5 the daemon is
 unreachable and there are threads to archive; every exit but 0 and 2 ends stderr with a retry line.
+cleanup: 0 done, 1 any failure, 5 the daemon is unreachable.
 """
 import argparse
 import base64
@@ -1258,10 +1262,16 @@ def archive_thread(c, d, tid, sds):
     if isinstance(status, dict) and status.get("type") == "active":
         err(f"{tid}: running a turn")
         return 1
+    return archive_and_clean(c, tid, cwd, sds)[1]
+
+
+def archive_and_clean(c, tid, cwd, sds):
+    """Archive tid for good, then clean its records in the state directories sds: (archived,
+    status). Status is 0 when all went, 1 when the archive failed or a record stayed."""
     why = archive_for_good(c, tid, cwd)
     if why:
         err(f"{tid}: {why}")
-        return 1
+        return False, 1
     print(f"archived {tid}", flush=True)
     rc = 0
     # Each record is cleaned on its own: one failing must not leave the other behind. A stale
@@ -1273,12 +1283,15 @@ def archive_thread(c, d, tid, sds):
         except OSError as e:
             err(f"{tid}: archived, but {sd}/review-thread could not be cleared: {e}")
             rc = 1
+        started = os.path.join(sd, "started")
+        if not os.path.exists(started):
+            continue
         try:
-            started_drop(os.path.join(sd, "started"), {tid})
+            started_drop(started, {tid})
         except (OSError, TimeoutError) as e:
             err(f"{tid}: archived, but its entry in {sd}/started could not be removed: {e}")
             rc = 1
-    return rc
+    return True, rc
 
 
 def archive_checkout(a):
@@ -1354,6 +1367,271 @@ class PagingIncomplete(ListUnreadable):
     errored" (the base ListUnreadable's own cause): nothing here failed, there just wasn't
     time to finish. The caller reports it as "still running, try again" (exit 3), not the
     plain read-failure exit 1."""
+
+
+# --- cleanup (spec: docs/superpowers/specs/2026-11-11-archive-review-threads-design.md, section 3)
+
+PACKET_TAG = "<cross-review-request>"
+CLEANUP_HEADINGS = (
+    ("started", "Started by xreview (started record)"),
+    ("packet", "First message is a review packet"),
+    ("old pane", "Old pane sessions (a greeting, then only review packets)"),
+    ("pinned", "Not selected: pinned"),
+    ("differs", "Not selected: recorded cwd differs from the origin"),
+    ("unread", "Not selected: could not read"),
+)
+
+
+def is_packet(text):
+    return text.lstrip().startswith(PACKET_TAG)
+
+
+def classify(messages):
+    """"packet" when the first user message is a review packet; "old pane" when it is not but
+    there is more than one and every later one is; otherwise None."""
+    if messages and is_packet(messages[0]):
+        return "packet"
+    if len(messages) >= 2 and all(is_packet(m) for m in messages[1:]):
+        return "old pane"
+    return None
+
+
+def user_messages(c, tid):
+    """The text of every userMessage of tid, oldest first, over every page of thread/turns/list.
+    None when any page answers with an error or an unexpected shape, or a cursor repeats: a
+    history that cannot be read in full says nothing about a message of Michael's own."""
+    pages, cursor, seen = [], None, set()
+    while True:
+        params = {"threadId": tid, "limit": 50, "sortDirection": "desc", "itemsView": "summary"}
+        if cursor:
+            params["cursor"] = cursor
+        r = c.call("thread/turns/list", params)
+        res = None if "error" in r else r.get("result")
+        if not isinstance(res, dict) or not isinstance(res.get("data"), list):
+            return None
+        pages.append(res["data"])
+        cursor = res.get("nextCursor")
+        if not cursor:
+            break
+        if cursor in seen:
+            return None
+        seen.add(cursor)
+    out = []
+    for page in reversed(pages):
+        for turn in reversed(page):
+            items = turn.get("items") if isinstance(turn, dict) else None
+            for it in items if isinstance(items, list) else []:
+                if isinstance(it, dict) and it.get("type") == "userMessage":
+                    parts = it.get("content")
+                    out.append("\n".join(
+                        x["text"] for x in parts if isinstance(x, dict) and x.get("type") == "text"
+                        and isinstance(x.get("text"), str)) if isinstance(parts, list) else "")
+    return out
+
+
+def rollout_origin(path):
+    """payload.cwd of the first session_meta line of the rollout at path (a .zst one is read
+    through zstd), or None when it cannot be read. Only reads; nothing of the app's is written."""
+    if not isinstance(path, str) or not path:
+        return None
+    proc = None
+    try:
+        if path.endswith(".zst"):
+            proc = subprocess.Popen(["zstd", "-dc", "--", path], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            fh = proc.stdout
+        else:
+            fh = open(path, "rb")
+        try:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and d.get("type") == "session_meta":
+                    payload = d.get("payload")
+                    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+                    return cwd if isinstance(cwd, str) and cwd else None
+        finally:
+            fh.close()
+    except OSError:
+        return None
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+    return None
+
+
+def state_dirs(root):
+    return sorted(d for d in glob.glob(os.path.join(glob.escape(root), "*")) if os.path.isdir(d))
+
+
+def review_thread_names(sd, tid):
+    try:
+        with open(os.path.join(sd, "review-thread"), encoding="utf-8") as fh:
+            return fh.read().strip() == tid
+    except FileNotFoundError:
+        return False
+
+
+def record_dirs(root, tid):
+    """The state directories whose started list or review-thread names tid."""
+    return [sd for sd in state_dirs(root)
+            if any(t == tid for t, _ in read_started(os.path.join(sd, "started")))
+            or review_thread_names(sd, tid)]
+
+
+def read_pinned(root):
+    """Every thread id named by a pin in any state directory."""
+    out = set()
+    for sd in state_dirs(root):
+        try:
+            with open(os.path.join(sd, "pin"), encoding="utf-8") as fh:
+                out.add(fh.read().strip())
+        except FileNotFoundError:
+            pass
+    return out
+
+
+def stamp(t):
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "unknown"
+
+
+def unarchived_threads(c, fresh):
+    """Every unarchived thread of every source kind, over every page; None when a page answers
+    with an error or a cursor repeats. fresh() gives the run a new time window per page."""
+    out, cursor, seen = [], None, set()
+    while True:
+        fresh()
+        p = {"archived": False, "sourceKinds": list(SOURCE_KINDS)}
+        if cursor:
+            p["cursor"] = cursor
+        r = c.call("thread/list", p)
+        res = None if "error" in r else r.get("result")
+        if not isinstance(res, dict):
+            return None
+        out += [t for t in res.get("data") or [] if isinstance(t, dict)
+                and isinstance(t.get("id"), str) and THREAD_ID.fullmatch(t["id"])]
+        cursor = res.get("nextCursor")
+        if not cursor:
+            return out
+        if cursor in seen:
+            return None
+        seen.add(cursor)
+
+
+def cleanup_survey(c, fresh, started, pinned):
+    """(groups, selected, empty): the report lines by CLEANUP_HEADINGS key, the threads to
+    archive as [(id, cwd)], and how many threads of gone checkouts had no turns and no started
+    entry."""
+    threads = unarchived_threads(c, fresh)
+    if threads is None:
+        raise ListUnreadable("cannot list the unarchived threads")
+    groups = {k: [] for k, _ in CLEANUP_HEADINGS}
+    selected, empty = [], 0
+    for th in threads:
+        fresh()
+        tid, cwd = th["id"], th.get("cwd")
+
+        def add(key, *tail):
+            groups[key].append("  " + "  ".join((tid, str(cwd), stamp(th.get("updatedAt"))) + tail))
+        missing = gone(cwd) if isinstance(cwd, str) and cwd else None
+        if missing is False:
+            continue
+        if missing is None:
+            add("unread", "cannot tell whether its cwd exists")
+            continue
+        if tid in pinned:
+            add("pinned", "pinned")
+            continue
+        if tid in started:
+            how, origins = "started", started[tid]
+        else:
+            msgs = user_messages(c, tid)
+            if msgs is None:
+                add("unread", "cannot read its messages")
+                continue
+            if not msgs:
+                empty += 1
+                continue
+            how = classify(msgs)
+            if how is None:
+                continue
+            origin = rollout_origin(th.get("path"))
+            if origin is None:
+                add("unread", "cannot read its rollout")
+                continue
+            origins = [origin]
+        bad = next((o for o in origins if os.path.realpath(o) != os.path.realpath(cwd)), None)
+        if bad is not None:
+            add("differs", how, f"origin {bad}")
+            continue
+        add(how, how)
+        selected.append((tid, cwd))
+    return groups, selected, empty
+
+
+def cmd_cleanup(a):
+    root = xreview_state_root()
+    try:
+        started = {}
+        for f in sorted(glob.glob(os.path.join(glob.escape(root), "*", "started"))):
+            for tid, p in read_started(f):
+                started.setdefault(tid, []).append(p)
+        pinned = read_pinned(root)
+    except OSError as e:
+        err(f"cannot read the records under {root}: {e}")
+        return 1
+    # Every list page and every thread gets its own window: the work is not known in advance.
+    window = env_secs("XREVIEW_RPC_ARCHIVE_UNIT", 10) * 6
+    try:
+        c = Client(time.monotonic() + window)
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon unreachable: {e}")
+        return 5
+
+    def fresh():
+        c.deadline = time.monotonic() + window
+    try:
+        groups, selected, empty = cleanup_survey(c, fresh, started, pinned)
+    except ListUnreadable as e:
+        err(f"{e}; nothing archived")
+        return 1
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon connection lost: {e}")
+        return 1
+    for key, heading in CLEANUP_HEADINGS:
+        print(f"== {heading} ({len(groups[key])})")
+        for line in groups[key]:
+            print(line)
+    print(f"Selected: {len(selected)}. Only threads whose recorded cwd is gone are considered; "
+          "a checkout that exists is never touched.")
+    print(f"Not selected: {empty} threads in gone checkouts with no turns and no started record "
+          "(the historical coverage limit).")
+    print("Selection uses the daemon's recorded cwd; a thread whose origin differs is listed above "
+          "and never selected.")
+    if not a.archive:
+        print("Dry run: nothing archived. Run again with --archive to archive the selected threads.")
+        return 0
+    rc, done = 0, 0
+    try:
+        for tid, cwd in selected:
+            fresh()
+            ok, r = archive_and_clean(c, tid, cwd, record_dirs(root, tid))
+            done += ok
+            rc |= r
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon connection lost: {e}")
+        rc = 1
+    except OSError as e:
+        err(f"cannot read the records under {root}: {e}")
+        rc = 1
+    print(f"Archived {done} of {len(selected)}.")
+    return rc
 
 
 def turn_state(c, thread, turn, known=None, deadline=None, items_view="summary"):
@@ -1562,6 +1840,7 @@ def main(argv=None):
     p.add_argument("--report")
     sub.add_parser("release").add_argument("--dir", required=True)
     sub.add_parser("archive-checkout").add_argument("--dir", required=True)
+    sub.add_parser("cleanup").add_argument("--archive", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "release":
         if not os.path.isdir(a.dir):
@@ -1570,6 +1849,8 @@ def main(argv=None):
         return cmd_release(a)
     if a.cmd == "archive-checkout":
         return cmd_archive_checkout(a)
+    if a.cmd == "cleanup":
+        return cmd_cleanup(a)
     if a.cmd == "turn-wait":
         return cmd_turn_wait(a)
     if a.cmd == "thread-resolve":
