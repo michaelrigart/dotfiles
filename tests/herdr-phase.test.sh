@@ -251,8 +251,8 @@ glab_stub
 # absent), and refuses any other -R form, a missing `--limit 100` or a missing `--json`. The script
 # runs gh under `env -i`, so the stub gets no suite variable: the paths below are written into it,
 # and the failure mode comes from $GHDIR/mode (fail: exit 1 with a message on stderr; garbage and
-# object: exit 0 with an answer that is not a list; merged-fail and merged-garbage: only the
-# merged query misbehaves). Every call records its arguments, its working directory and its
+# object: exit 0 with an answer that is not a list; empty: exit 0 and no output at all;
+# open-empty: the open query alone answers with no output; merged-fail, merged-garbage and merged-empty: only the merged query misbehaves). Every call records its arguments, its working directory and its
 # environment.
 GHDIR="$T/gh"; GHENV="$T/gh-env"; mkdir -p "$GHDIR"; : > "$GHENV"
 cat > "$T/gh.stub" <<'G'
@@ -282,8 +282,11 @@ case "$mode" in
   fail) echo "gh: HTTP 502" >&2; exit 1 ;;
   garbage) echo garbage; exit 0 ;;
   object) echo '{"message":"x"}'; exit 0 ;;
+  empty) exit 0 ;;
+  open-empty) [ "$state" = "open" ] && exit 0 ;;
   merged-fail) [ "$state" = "merged" ] && { echo "gh: HTTP 502" >&2; exit 1; } ;;
   merged-garbage) [ "$state" = "merged" ] && { echo garbage; exit 0; } ;;
+  merged-empty) [ "$state" = "merged" ] && exit 0 ;;
 esac
 slug="${repo#github.com/}"
 f="$GHDIR/$state-${slug%%/*}__${slug#*/}.json"
@@ -726,6 +729,14 @@ for bad in 'a/../b' 'a/b?x=1' 'a/b%2Fc' 'a/b c'; do
   check "$(grep -c 'proj2' "$CALLS")" "2" "remote slug '$bad': only the untouched repo is queried"
   case "$(report_for w4)" in *"--token review"*) _fail "remote slug '$bad': no review badge";; *) _pass "remote slug '$bad': no review badge";; esac
 done
+# The same under a UTF-8 locale, for GitLab's slug check (see section M).
+for bad in 'é/b' 'a/ẞ' 'a/ｂ'; do
+  q git -C "$REPO" remote set-url origin "git@gitlab.com:$bad.git"
+  rm -rf "$T/cache"
+  LC_ALL=en_US.UTF-8 run refresh
+  check "$(grep -c '^glab ' "$CALLS")" "2" "remote slug '$bad' under a UTF-8 locale: no glab call for it"
+  check "$(grep -c 'proj2' "$CALLS")" "2" "remote slug '$bad' under a UTF-8 locale: only the untouched repo is queried"
+done
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 
 # Two slugs that a "/" -> "_" cache name would fold into one file (a/b_c and a_b/c): each repo
@@ -874,7 +885,7 @@ phase_check wG2 draft "$ICON_DRAFT #22" "review -> draft when the PR goes back t
 
 # Failures. A warm cache stands in for a failed lookup, whatever shape the failure has.
 rm -rf "$T/cache"; ghrun refresh
-for m in fail garbage object; do
+for m in fail garbage object empty open-empty; do
   echo "$m" > "$GHDIR/mode"
   TTL=0 ghrun refresh
   check "$RC" "0" "refresh survives gh answering '$m'"
@@ -885,7 +896,7 @@ rm -f "$GHDIR/mode"
 
 # The merged half alone failing (an error exit, or an answer that is not a list): the open rows
 # stand, merged state is not invented, and the table is not cached.
-for m in merged-fail merged-garbage; do
+for m in merged-fail merged-garbage merged-empty; do
   rm -rf "$T/cache"; echo "$m" > "$GHDIR/mode"
   ghrun refresh
   phase_check wG1 review "$ICON_MR #21" "$m: open PRs still badge"
@@ -926,6 +937,14 @@ for bad in git@github.com:a/b/c.git 'https://github.com/a/../b' 'https://github.
   rm -rf "$T/cache"; ghrun refresh
   check "$(grep -c '^gh ' "$CALLS")" "0" "remote '$bad': no gh call"
   phase_check wG1 active "$ICON_BRANCH" "remote '$bad': no PR state"
+done
+# bash 3.2 resolves a bracket range such as [A-Z] by collation, so under a UTF-8 locale (the one
+# Herdr's hooks and keybindings inherit) a range test lets non-ASCII letters through. The slug
+# check names its characters one by one instead.
+for bad in 'https://github.com/é/b' 'git@github.com:a/ẞ.git' 'https://github.com/a/ｂ'; do
+  q git -C "$REPO3" remote set-url origin "$bad"
+  rm -rf "$T/cache"; LC_ALL=en_US.UTF-8 ghrun refresh
+  check "$(grep -c '^gh ' "$CALLS")" "0" "remote '$bad' under a UTF-8 locale: no gh call"
 done
 q git -C "$REPO3" remote set-url origin git@github.com:test/proj3.git
 

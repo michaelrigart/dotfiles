@@ -122,6 +122,15 @@ die() { echo "phase.sh: $*" >&2; exit 2; }
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
 # Prints nothing and fails when the repo is on neither GitLab nor GitHub or the lookup did not work.
+
+# Whether a slug holds only [A-Za-z0-9._/-]. The characters are listed one by one: bash 3.2
+# resolves a bracket range such as [A-Z] by collation, so under a UTF-8 locale (the one Herdr's
+# hooks and keybindings inherit) a range lets "é", "ẞ" and fullwidth letters through.
+slug_chars_ok() { # slug_chars_ok <slug>
+  case "$1" in
+    *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-]*) return 1 ;;
+  esac
+}
 repo_slug() { # repo_slug <repo_root> -> "<forge> <slug>" on stdout (gitlab or github), or fails
   local url slug
   url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
@@ -138,7 +147,8 @@ repo_slug() { # repo_slug <repo_root> -> "<forge> <slug>" on stdout (gitlab or g
       # The remote URL is repository configuration, which a sandboxed command can rewrite, and the
       # slug lands in glab's repository argument and in an API path under Michael's token: accept
       # only a plain group/project path, so nothing can leave the project's own path.
-      case "$slug" in *[!A-Za-z0-9._/-]*|*..*) return 1 ;; esac
+      slug_chars_ok "$slug" || return 1
+      case "$slug" in *..*) return 1 ;; esac
       printf 'gitlab %s\n' "$slug"
       return 0
       ;;
@@ -146,8 +156,9 @@ repo_slug() { # repo_slug <repo_root> -> "<forge> <slug>" on stdout (gitlab or g
   slug="${slug%.git}"
   # The same applies to gh's -R argument: exactly owner/repo, each part from [A-Za-z0-9._-]+,
   # no "..", and no part that is a bare ".".
+  slug_chars_ok "$slug" || return 1
   case "$slug" in
-    */*/*|/*|*/|*[!A-Za-z0-9._/-]*|*..*|./*|*/.) return 1 ;;
+    */*/*|/*|*/|*..*|./*|*/.) return 1 ;;
     */*) ;;
     *) return 1 ;;
   esac
@@ -266,21 +277,20 @@ github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, el
   # branch name is not this checkout's branch) with a branch name that holds no tab or newline and
   # an integer number. OPEN is "opened", MERGED is "merged", CLOSED has no badge, and an open PR
   # beats a merged one on the same branch.
-  printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
+  # The two answers are separated by a line no JSON document can hold and each is parsed on its
+  # own, so an empty answer can never let the other one take its place.
+  printf '%s\n@@\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
 import json, sys
-dec, data = json.JSONDecoder(), sys.stdin.read()
-def take(i):
-    while i < len(data) and data[i].isspace():
-        i += 1
+def load(text):
     try:
-        obj, i = dec.raw_decode(data, i)
+        v = json.loads(text)
     except Exception:
-        return None, i
-    return (obj if isinstance(obj, list) else None), i
-opened, i = take(0)
+        return None
+    return v if isinstance(v, list) else None
+a, _, b = sys.stdin.read().partition("\n@@\n")
+opened, merged = load(a), load(b)
 if opened is None:
     sys.exit(1)
-merged, i = take(i)
 rows = {"OPEN": {}, "MERGED": {}}
 for pr in opened + (merged or []):
     if not isinstance(pr, dict) or pr.get("state") not in rows or pr.get("isCrossRepository") is not False:
