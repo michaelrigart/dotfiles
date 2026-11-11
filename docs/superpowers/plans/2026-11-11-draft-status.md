@@ -98,25 +98,34 @@ Trade-offs inside the spec, decided by the line:
    touches before it calls out. The stamp is read and touched only while the repository's lock is
    held (Ruling 11), so a failing forge, or two refreshes at once, are rate-limited too.
    `--force` ignores the stamp (the keybinding and the timer), and the TTL path does not read it.
-8. **Cache files are replaced atomically** (`mktemp` beside the file, then `mv -f`). This guards
-   against the one case the lock does not cover: a broken stale lock.
+8. **Cache files are replaced atomically** (`mktemp` beside the file, then `mv -f`). A refresh killed
+   mid-write then leaves the previous table, never half of a new one that would later read as a
+   valid, shorter table.
 9. **Jobs are not capped.** Each repository is refreshed as its own background job (`&` and
    `wait`), the §5 amendment Michael approved on 2026-11-11. There is no cap because the number of
    repositories with linked worktrees is small: 6 today.
 10. **StartInterval 50** (the §5 amendment). With per-repository jobs the run is about 8 s, so
     the cadence is about 58 s and a change shows in at most about 65 s. That is 72 runs/h.
-11. **One refresh of a repository at a time.** A lock directory, `$CACHE_DIR/<key>.lock`, is
-    taken with `mkdir`, which is atomic in bash 3.2. A refresh holds it across that repository's
-    stamp check, lookups, cache writes and reports, so two refreshes of the same repository run
-    one after the other. The second one's lookup starts after the first has published, so a
-    newer badge can never be overwritten by an older lookup.
-    - The lock holds the owner's `$$` (the phase.sh process; its per-repository jobs share it).
-      A waiter breaks the lock when that PID is gone, or when the lock is older than
-      `LOCK_STALE` = 120 s, well past any healthy run.
+11. **One refresh of a repository at a time, under a kernel lock.**
+    - Each repository's job opens `$CACHE_DIR/<key>.lock` on file descriptor 9
+      (`exec 9>>…`) and takes an exclusive `flock` with `/usr/bin/lockf -s -t "$LOCK_WAIT" 9`
+      (`lockf`'s file-descriptor mode, meant for locking inside a shell script).
+    - The job holds the lock across that repository's stamp check, lookups, cache writes and
+      reports. Two refreshes of the same repository therefore run one after the other, and the
+      second one's lookup starts after the first has published.
+    - The kernel releases the lock only when every process holding the descriptor has exited:
+      the job and every child it started, a report in flight included. Nothing reclaims,
+      expires or breaks a lock. An old holder therefore can never publish after its successor,
+      and a parent that dies while its job lives on does not release the job's lock (all
+      measured on this machine: a second `lockf -t 0` is refused with 75, a waiter gets the lock
+      when the holder ends, and a holder killed with `SIGKILL` keeps it until its last child
+      exits).
     - A refresh that cannot take the lock within `LOCK_WAIT` = 30 s skips that repository and
       reports none of its spaces; the holder reports them.
-    - The lock is released on every exit path, a signal included.
-    - Different repositories have different locks, so per-repository jobs still run side by side.
+    - A permanently stuck holder (a forge call that never returns) blocks only its own
+      repository, and only until that call ends.
+    - The lock files stay in place (empty files). Different repositories have different locks, so
+      per-repository jobs still run side by side.
 
 **Call budget at 72 runs/h:**
 - GitLab: 2 per repository plus 1 per open MR per run, so 18 per run today, ~1,300/h, against
@@ -367,8 +376,9 @@ Rulings 8 and 11.
     Task 5 replaces `<force>` with a run mode.
   - `cmd_refresh` starts one `refresh_repo` per repository in `spaces` order, each as a
     background subshell, and `wait`s for all of them.
-  - `repo_lock <key>` waits for and takes the lock (Ruling 11), or fails after `LOCK_WAIT`.
-    `repo_unlock <key>` releases it.
+  - Each job opens `$CACHE_DIR/<key>.lock` on fd 9 and takes it with
+    `/usr/bin/lockf -s -t "$LOCK_WAIT" 9` (Ruling 11). When that fails, the job exits 0 without
+    reporting.
   - `age_of <file>` prints seconds since the file's mtime, or a large number when it is missing.
   - Every cache write goes through `mktemp "$cache.XXXXXX"` and `mv -f`.
 
@@ -400,20 +410,29 @@ Rulings 8 and 11.
     - the last report for w5 is `review … !11`;
     - the cached `.tsv` has draft `0`;
     - B's lookup started after A's report (the order in the call log).
-  - **Locks.** A lock directory left by a dead PID is broken at once, and the refresh reports.
-    A lock held by a live process (the suite's own shell) makes a refresh with `LOCK_WAIT`
-    lowered skip that repository: there is no report for its spaces, the other repository is
-    still reported, and RC is 0. To lower `LOCK_WAIT`, the suite gets an override variable like
-    `HERDR_PHASE_TTL`. No lock is left after any run.
+  - **A held lock is waited for, then skipped.**
+    - The suite holds `test/proj`'s lock from its own subshell (`exec 9>>…`, `lockf -s 9`,
+      `/bin/sleep 3`).
+    - A `refresh --force` with `LOCK_WAIT` lowered to 1 reports no `test/proj` space, still
+      reports every `test/proj2` space, and exits with RC 0.
+    - To lower `LOCK_WAIT`, the suite gets an override variable, `HERDR_PHASE_LOCK_WAIT`, as it
+      has `HERDR_PHASE_TTL`.
+  - **A dead parent does not free its job's lock.** Start A as in the reversed-order case (its
+    lookup stalls 2 s), and kill A's top-level `bash` once the marker appears. B
+    (`LOCK_WAIT=10`) then waits for A's job; B's lookup starts after A's report, and the last
+    report for w5 is B's `review … !11`.
+  - **No lock outlives its run.** After every case above, `lockf -s -t 0` on each `.lock` file
+    succeeds.
+  - The section K listing gains the lock files:
+    `a%2Fb_c.lock a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lock a_b%2Fc.mr10.pipeline a_b%2Fc.tsv `.
   - **Atomic writes.** The `.tsv`'s inode changes across a forced lookup, and no temporary file is
     left in the cache dir.
 - [ ] **Step 2: Run them and see them fail.** Run `./tests/herdr-phase.test.sh`. Expected: FAIL
-  with `timeout` logged, on the timing bound, the reversed order, the locks and the inode.
+  with `timeout` logged, on the timing bound, the reversed order, the held lock, the dead
+  parent and the inode.
 - [ ] **Step 3: Implement.**
   - Group `spaces` lines by `root` into `refresh_repo` calls in background subshells, then `wait`.
-  - Each subshell sets its own `trap` to release its lock.
   - `LOCK_WAIT` honours `HERDR_PHASE_LOCK_WAIT`, for the suite only; its default is 30 s.
-  - Poll with `/bin/sleep 0.2`.
 - [ ] **Step 4: Run them and see them pass.** Run `./tests/herdr-phase.test.sh`. Expected: 0 failed.
 - [ ] **Step 5: Commit.** `git commit -m "Refresh each repository's Herdr badges as its own locked job"`.
 
@@ -430,7 +449,7 @@ Rulings 8 and 11.
 - Test: `tests/herdr-phase.test.sh`
 
 **Interfaces:**
-- Consumes: `refresh_repo`, `repo_lock`, `age_of`, `mr_table`, `pipeline_class`, `read_table`,
+- Consumes: `refresh_repo`, `age_of`, `mr_table`, `pipeline_class`, `read_table`,
   `cache_key`.
 - Produces:
   - `refresh [--force | --fresh] [--workspace ID]`.
@@ -457,7 +476,7 @@ Rulings 8 and 11.
   - A gated `--fresh` shows a pipeline cache 29 minutes old, and clears the CI tokens at 31.
   - A GitHub space under `--fresh`: 2 `gh` calls, then 0.
   - The section K listing becomes
-    `a%2Fb_c.lookup a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lookup a_b%2Fc.mr10.pipeline a_b%2Fc.tsv `.
+    `a%2Fb_c.lock a%2Fb_c.lookup a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lock a_b%2Fc.lookup a_b%2Fc.mr10.pipeline a_b%2Fc.tsv `.
   - Section I:
     - the plist's ProgramArguments carry `refresh` then `--force`;
     - its `StartInterval` is between 30 and 60 s, replacing the 1–10 minute case;
