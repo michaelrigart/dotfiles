@@ -193,10 +193,16 @@ chmod +x "$STUBS/wt-teardown"
 # Never the real daemon. Logs its argv one argument per line, so the --dir value is checked
 # as exactly one argument, then answers as MOCK_XRPC_* say: by default exit 0, nothing
 # released. MOCK_XRPC_TO_LLOG also marks the call in $LLOG, for ordering against teardown
-# and the check-4 scan.
+# and the check-4 scan. `archive-checkout` answers from MOCK_XARCH_* instead, and is logged
+# the same way.
 cat > "$STUBS/xreview-rpc" <<'STUB'
 #!/bin/sh
 { printf -- '---\n'; for a in "$@"; do printf '%s\n' "$a"; done; } >> "${XLOG:-/dev/null}"
+if [ "${1:-}" = archive-checkout ]; then
+  [ -n "${MOCK_XARCH_OUT:-}" ] && printf '%b' "$MOCK_XARCH_OUT"
+  [ -n "${MOCK_XARCH_ERR:-}" ] && printf '%b' "$MOCK_XARCH_ERR" >&2
+  exit "${MOCK_XARCH_RC:-0}"
+fi
 [ -n "${MOCK_XRPC_TO_LLOG:-}" ] && printf 'xreview-rpc\n' >> "$LLOG"
 [ -n "${MOCK_XRPC_OUT:-}" ] && printf '%b' "$MOCK_XRPC_OUT"
 [ -n "${MOCK_XRPC_ERR:-}" ] && printf '%b' "$MOCK_XRPC_ERR" >&2
@@ -453,6 +459,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES \
         MOCK_LSOF_BUSY_N MOCK_LSOF_BUSY_SPEC MOCK_LSOF_THEN_FAIL \
         MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG \
+        MOCK_XARCH_RC MOCK_XARCH_OUT MOCK_XARCH_ERR \
         MOCK_MISE_SHOW_RC MOCK_MISE_SHOW_RAW MOCK_MISE_SHOW_STDERR MOCK_MISE_SHOW_FAIL_AFTER_TRUST \
         MOCK_MISE_SHOW_FAIL_DIR MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
         MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE MOCK_MISE_FLIP_VOUCH MOCK_MISE_FLIP_VOUCH_BYTES
@@ -2947,7 +2954,8 @@ eq "$(sed -n 1p "$LLOG")" "teardown-hook" "W1 teardown runs first"
 eq "$(sed -n 2p "$LLOG")" "xreview-rpc" "W1 the release runs after teardown and check 3"
 [[ "$(sed -n 3p "$LLOG")" == *"-F"* ]] && _pass "W1 check 4 scans after the release" \
                                         || _fail "W1 check 4 scans after the release"
-eq "$(<$XLOG)" $'---\nrelease\n--dir\n'"$RO" "W1 the release gets the checkout as one --dir argument"
+eq "$(<$XLOG)" $'---\nrelease\n--dir\n'"$RO"$'\n---\narchive-checkout\n--dir\n'"$RO" \
+   "W1 the release gets the checkout as one --dir argument, then the archive is asked for it"
 
 # The release comes after check 3: teardown output Git can see refuses removal before the
 # release is ever asked (the order above cannot show it, because check 3 logs nothing).
@@ -3064,6 +3072,125 @@ print -r -- "wip" > "$HOME/Code/Org/repo-rel-dirty/dirty.txt"
 run "$REPO" wt-rm rel-dirty
 rc_is 1 "W7 a dirty checkout is refused at check 1"
 eq "$(<$XLOG)" "" "W7 a refusal before teardown never calls xreview-rpc"
+
+# The archive comes last, once the checkout is gone: a failed or unconfirmed archive never
+# changes wt-rm's order, refusals or exit status.
+setup
+run "$REPO" wt arch-ok
+AO="$HOME/Code/Org/repo-arch-ok"
+export MOCK_XARCH_OUT='archived th-1\n'
+RT=$(mkd)
+TMPDIR="$RT" run "$REPO" wt-rm arch-ok
+rc_is 0 "W9 an archived thread leaves wt-rm successful"
+has "✓ archived review thread th-1" "W9 the archived thread is reported"
+hasnt "could not archive" "W9 a clean archive reports no failure"
+[[ -d "$AO" ]] && _fail "W9 the checkout is removed" || _pass "W9 the checkout is removed"
+eq "$(grep -v '^---$' "$XLOG" | tr '\n' ' ')" "release --dir $AO archive-checkout --dir $AO " "W9 archive-checkout runs after release"
+eq "$(ls "$RT" | grep -c 'wt-rm-archive')" "0" "W9 the archive's scratch file is removed"
+# Ruling 9: the archive is the last step, after the branch step.
+W9_BR=$(oline "Deleted branch arch-ok"); W9_AR=$(oline "✓ archived review thread th-1")
+(( ${W9_BR:-0} > 0 && ${W9_AR:-0} > ${W9_BR:-0} )) \
+  && _pass "W9 the archive is reported after the branch step" || _fail "W9 the archive is reported after the branch step"
+
+setup
+run "$REPO" wt arch-fail
+AF="$HOME/Code/Org/repo-arch-fail"
+export MOCK_XARCH_RC=1 \
+       MOCK_XARCH_ERR='xreview-rpc: th-1 could not be archived\nxreview-rpc: retry: xreview-rpc archive-checkout --dir /elsewhere\n'
+run "$REPO" wt-rm arch-fail
+rc_is 0 "W10 a failed archive never changes wt-rm's status"
+has "wt-rm: could not archive every review thread of $AF (status 1); the removal stands." "W10 the failure is named with its status"
+has "    xreview-rpc: th-1 could not be archived" "W10 the command's error follows, indented"
+hasnt "retry: xreview-rpc archive-checkout --dir /elsewhere" "W10 the command's own retry line is left out"
+has "    Retry: xreview-rpc archive-checkout --dir $AF" "W10 wt-rm's retry command closes it"
+[[ -d "$AF" ]] && _fail "W10 the checkout is still removed" || _pass "W10 the checkout is still removed"
+run "$REPO" git branch --list --format='%(refname:short)' arch-fail
+eq "$OUT" "" "W10 the branch step still ran"
+
+setup
+run "$REPO" wt arch-down
+AD="$HOME/Code/Org/repo-arch-down"
+export MOCK_XARCH_RC=5 MOCK_XARCH_ERR='xreview-rpc: th-4: not archived: the Codex daemon is unreachable\nxreview-rpc: retry: xreview-rpc archive-checkout --dir /elsewhere\n'
+run "$REPO" wt-rm arch-down
+rc_is 0 "W11 an unreachable daemon never changes wt-rm's status"
+has "wt-rm: the Codex daemon is not reachable — review threads not archived; the removal stands." "W11 the daemon line is printed"
+has "    xreview-rpc: th-4: not archived: the Codex daemon is unreachable" "W11 the command's id line is shown, indented"
+hasnt "retry: xreview-rpc archive-checkout --dir /elsewhere" "W11 the command's own retry line is left out"
+has "    Retry: xreview-rpc archive-checkout --dir $AD" "W11 the retry is printed"
+hasnt "could not archive every review thread" "W11 status 5 is not the generic failure"
+
+# Status 0 with threads kept: the command's stderr is shown, and it is no failure.
+setup
+run "$REPO" wt arch-kept
+AK="$HOME/Code/Org/repo-arch-kept"
+export MOCK_XARCH_OUT='archived th-1\n' MOCK_XARCH_ERR='kept th-2: its daemon cwd lies outside the checkout\n'
+run "$REPO" wt-rm arch-kept
+rc_is 0 "W11b an archive that kept a thread leaves wt-rm successful"
+has "✓ archived review thread th-1" "W11b the archived thread is reported"
+has "    kept th-2: its daemon cwd lies outside the checkout" "W11b the kept line is shown, indented"
+hasnt "could not archive" "W11b a kept thread is not a failure"
+hasnt "Retry:" "W11b status 0 prints no retry"
+
+# A removal that stops before Git has deleted the checkout never asks for the archive.
+setup
+run "$REPO" wt arch-busy
+AB="$HOME/Code/Org/repo-arch-busy"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 redis-server "$AB")" MOCK_XARCH_OUT='archived th-9\n'
+run "$REPO" wt-rm arch-busy
+rc_is 1 "W12 check 4 finding a process still refuses removal"
+eq "$(grep -c archive-checkout "$XLOG")" "0" "W12 a refusal at check 4 never calls archive-checkout"
+hasnt "archived review thread" "W12 ... and reports no archive"
+
+setup
+run "$REPO" wt arch-gitfail
+AG="$HOME/Code/Org/repo-arch-gitfail"
+: > "$FLOG"
+export MOCK_XARCH_OUT='archived th-9\n'
+chmod +x "$AG/.git"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          wt-rm arch-gitfail 2>&1)"; RC=$?
+rc_is 1 "W12 Git refusing the removal still fails wt-rm"
+eq "$(grep -c . "$FLOG")" "1" "W12 fixture: exactly the one remove call was failed"
+eq "$(grep -c '^release$' "$XLOG")" "1" "W12 the release ran before Git refused"
+eq "$(grep -c '^archive-checkout$' "$XLOG")" "0" "W12 Git refusing the removal never calls archive-checkout"
+
+# The registration-only path archives too, once its registration is removed.
+setup
+run "$REPO" wt arch-reg
+AR="$HOME/Code/Org/repo-arch-reg"
+git -C "$REPO" worktree unlock "$AR"
+rm -rf "$AR"
+export MOCK_XARCH_OUT='archived th-r\n'
+run "$REPO" wt-rm arch-reg
+rc_is 0 "W13 a gone checkout's registration is removed"
+has "✓ removed Git's registration of $AR" "W13 the registration is removed"
+has "✓ archived review thread th-r" "W13 its review threads are archived after that"
+eq "$(<$XLOG)" $'---\narchive-checkout\n--dir\n'"$AR" "W13 archive-checkout is the only daemon call (no release on this path)"
+setup
+run "$REPO" wt arch-reg2
+AR2="$HOME/Code/Org/repo-arch-reg2"
+git -C "$REPO" worktree unlock "$AR2"
+rm -rf "$AR2"
+export MOCK_XARCH_RC=1 MOCK_XARCH_ERR='xreview-rpc: boom\n'
+run "$REPO" wt-rm arch-reg2
+rc_is 0 "W13 a failed archive (status 1) does not change the registration path's exit status"
+has "    Retry: xreview-rpc archive-checkout --dir $AR2" "W13 the retry is printed"
+
+# No xreview-rpc on PATH: only the registration path can reach the archive (a release would
+# have refused first), and it says so without changing its status.
+setup
+run "$REPO" wt arch-reg3
+AR3="$HOME/Code/Org/repo-arch-reg3"
+git -C "$REPO" worktree unlock "$AR3"
+rm -rf "$AR3"
+NOXA=$(mkd)
+for b in env git mkdir mktemp rm tee grep; do ln -s "$(command -v $b)" "$NOXA/$b"; done
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && export PATH="$NOXA" && wt-rm arch-reg3 2>&1)"; RC=$?
+rc_is 0 "W13 a missing xreview-rpc keeps the registration path's status"
+has "wt-rm: xreview-rpc is missing — review threads not archived; the removal stands." "W13 the missing command is named"
+has "    Retry: xreview-rpc archive-checkout --dir $AR3" "W13 the retry is printed"
 
 print -r -- "X. wt, wt-rm — mise trust is carried from any checkout of the repository into a new worktree; wt-rm checks it before closing anything"
 # --- mise trust carried into a new worktree ---------------------------------

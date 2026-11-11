@@ -298,6 +298,8 @@ case "$cmd" in
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
               if [ -n "${RPC_START_BAD_ID:-}" ]; then echo "turn id/with spaces"; exit 0; fi
               echo "turn-$th" ;;
+  # RPC_ARCHIVE_FAIL_FOR=<id>: archiving that one thread fails.
+  thread-archive) [ -n "${RPC_ARCHIVE_FAIL_FOR:-}" ] && [ "$th" = "$RPC_ARCHIVE_FAIL_FOR" ] && exit 1 ;;
   thread-turns) # RPC_TURNS_FAIL: the thread's turns cannot be listed.
                 [ -n "${RPC_TURNS_FAIL:-}" ] && exit 1
                 echo '{"turns":[],"thread_compactions":0}' ;;
@@ -368,7 +370,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
         SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE ENSURE_MARK \
-        ENSURE_WRITES_CONF HOOKS_STATUS HOOKS_STATUS_RC
+        ENSURE_WRITES_CONF HOOKS_STATUS HOOKS_STATUS_RC RPC_ARCHIVE_FAIL_FOR
   export NEW_UUID="$U1"
   packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
@@ -661,6 +663,8 @@ fresh
 nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "T1 thread-start is called with the repo root" "$(called "xreview-rpc thread-start --cwd $CWD")" 1
 is "T1 the new thread is recorded as the checkpoint thread" "$(cat "$STATE/review-thread")" "$U1"
+is "T1 thread-start is told to record its id in the state directory's started file" \
+   "$(called "xreview-rpc thread-start --cwd $CWD --started $STATE/started")" 1
 is "T1 the turn starts on it" "$(called "xreview-rpc turn-start --thread $U1")" 1
 
 echo "T2. no keystroke ever reaches the pane once the turn exists (C1)"
@@ -776,6 +780,12 @@ is "T5 no turn was started" "$(called 'xreview-rpc turn-start')" 0
 is "T5 and the pane was never touched" "$(untouched)" yes
 is "T5 no checkpoint thread was recorded" "$([ -e "$STATE/review-thread" ] && echo yes || echo no)" no
 
+echo "T5b. a dispatch whose turn-start fails still recorded its thread"
+fresh
+RPC_START_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "T5b thread-start was called with --started, so the abandoned thread is on record" \
+   "$(called "xreview-rpc thread-start --cwd $CWD --started $STATE/started")" 1
+
 echo "T6. the superseded thread is archived only once the pane step succeeds"
 fresh
 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1        # establishes checkpoint thread U1
@@ -819,6 +829,25 @@ is "M3 a later successful dispatch archives the first superseded thread" \
    "$(called "xreview-rpc thread-archive --thread $U1")" 1
 is "M3 and the second one too" "$(called "xreview-rpc thread-archive --thread $U2")" 1
 is "M3 and clears the superseded list" "$([ -e "$STATE/superseded" ] && echo yes || echo no)" no
+export NEW_UUID="$U1"
+
+echo "M3b. a superseded thread whose archive fails stays queued; the next success retries it"
+fresh
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1          # checkpoint thread U1
+bash "$XREVIEW" round --reset >/dev/null 2>&1           # superseded: [U1]
+export NEW_UUID="$U2"
+NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # checkpoint U2; pane step FAILS
+bash "$XREVIEW" round --reset >/dev/null 2>&1           # superseded: [U1, U2]
+printf codex > "$P/agent"
+export NEW_UUID="$U0"
+: > "$CALLS"
+RPC_ARCHIVE_FAIL_FOR="$U1" bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # succeeds; U1's archive fails
+is "M3b both were tried, and only the one whose archive failed is still queued" \
+   "$(called "xreview-rpc thread-archive --thread $U1")/$(called "xreview-rpc thread-archive --thread $U2")/$(cat "$STATE/superseded" 2>/dev/null)" "1/1/$U1"
+: > "$CALLS"
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # the next success, archive working again
+is "M3b the next successful dispatch archives it and removes the list" \
+   "$(called "xreview-rpc thread-archive --thread $U1")/$([ -e "$STATE/superseded" ] && echo yes || echo no)" "1/no"
 export NEW_UUID="$U1"
 
 echo "M4. the checkpoint thread itself already running a turn refuses, pane untouched"
@@ -2757,6 +2786,8 @@ framed approve $L3 > "$P/answer.turn-$U4"
 : > "$CALLS"
 LOCK_PROBE="$LOCKF" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL1 collect runs every slice and exits 0" "$rc" 0
+is "SL1 every slice's thread-start records its id in the started file" \
+   "$(called "xreview-rpc thread-start --cwd $CWD --started $STATE/started")" 2
 is "SL1 slices 2 and 3 run on fresh threads of their own" \
    "$(called 'xreview-rpc thread-start')/$(grep 'xreview-rpc turn-start' "$CALLS" | sed 's/.*--thread \([^ ]*\).*/\1/' | tr '\n' ' ')" "2/$U3 $U4 "
 is "SL1 each slice's turn starts under the pane lock" "$(called 'lock-probe held')/$(called 'lock-probe free')" "2/0"
