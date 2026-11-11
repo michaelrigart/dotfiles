@@ -135,6 +135,59 @@ is "a refused thread/start exits 1" "$?" 1
 XREVIEW_RPC_STDIO=false rpc thread-start --cwd /tmp/repo 2>/dev/null
 is "an unreachable daemon exits 5" "$?" 5
 
+echo "ST. thread-start --started records each new thread and its checkout's real path"
+export XDG_STATE_HOME="$T/st"
+F="$T/st/xreview/r/started"
+SR="$(mkdir -p "$T/st/repo" && cd "$T/st/repo" && pwd -P)"
+ln -s "$SR" "$T/st/link"
+NEW1='{"responses":{"thread/start":{"result":{"thread":{"id":"th-new-1"}}}}}'
+read_started() { /usr/bin/python3 - "$RPC" "$1" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+print(m.read_started(sys.argv[2]))
+PY
+}
+rm -f "$F"; scenario "$NEW1"
+out="$(rpc thread-start --cwd "$T/st/link" --started "$F")"; rc=$?
+is "ST1 it prints the id and exits 0" "$out/$rc" "th-new-1/0"
+is "ST1 the line holds the id and the checkout's real path" "$(jq -c . "$F")" "{\"id\":\"th-new-1\",\"path\":\"$SR\"}"
+scenario '{"responses":{"thread/start":{"result":{"thread":{"id":"th-new-2"}}}}}'
+rpc thread-start --cwd "$T/st/link" --started "$F" >/dev/null
+is "ST2 two starts leave two lines in order" "$(jq -r .id "$F" | paste -sd, -)" "th-new-1,th-new-2"
+printf '{"id":"a","path":"/x"}' > "$F"; scenario "$NEW1"
+rpc thread-start --cwd "$T/st/link" --started "$F" >/dev/null
+is "ST3 a file without a final newline keeps its last line" "$(read_started "$F")" "[('a', '/x'), ('th-new-1', '$SR')]"
+printf '{"id":"a","pa' > "$F"
+rpc thread-start --cwd "$T/st/link" --started "$F" >/dev/null
+is "ST3 a partial line is skipped, not joined to the next" "$(read_started "$F")" "[('th-new-1', '$SR')]"
+rm -rf "$F"; mkdir -p "$F"
+out="$(rpc thread-start --cwd "$T/st/link" --started "$F" 2>"$T/st/err")"; rc=$?
+is "ST4 an unwritable list still prints the id and exits 0" "$out/$rc" "th-new-1/0"
+is "ST4 and says what was not recorded" "$(grep -c 'could not record th-new-1' "$T/st/err")" 1
+rmdir "$F"
+rm -f "$F" "$F.lock"
+/usr/bin/python3 -c '
+import fcntl, sys, time
+fd = open(sys.argv[1], "w"); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True); time.sleep(3)' "$F.lock" > "$T/st/held" &
+HOLD=$!
+while [ ! -s "$T/st/held" ]; do sleep 0.05; done
+out="$(XREVIEW_STARTED_LOCK_WAIT=0.3 rpc thread-start --cwd "$T/st/link" --started "$F" 2>"$T/st/err")"; rc=$?
+wait "$HOLD"
+is "ST5 a lock held past the wait still prints the id and exits 0" "$out/$rc" "th-new-1/0"
+is "ST5 and says what was not recorded" "$(grep -c 'could not record th-new-1' "$T/st/err")" 1
+is "ST5 and appends nothing" "$([ -e "$F" ] && wc -l < "$F" | tr -d ' ' || echo none)" none
+rm -f "$F" "$F.lock"
+scenario '{"responses":{"thread/start":{"error":{"code":-1,"message":"nope"}}}}'
+rpc thread-start --cwd "$T/st/link" --started "$F" 2>/dev/null; rc=$?
+is "ST6 a refused thread/start exits 1 and writes no list" "$rc/$([ -e "$F" ] && echo exists || echo none)" "1/none"
+scenario '{"responses":{"thread/start":{"result":{"thread":{"id":"../x"}}}}}'
+out="$(rpc thread-start --cwd "$T/st/link" --started "$F" 2>"$T/st/err")"; rc=$?
+is "ST7 an id that is not a plain name is printed, not recorded" "$out/$rc/$([ -e "$F" ] && echo exists || echo none)" "../x/0/none"
+is "ST7 and says what was not recorded" "$(grep -c 'could not record ../x' "$T/st/err")" 1
+unset XDG_STATE_HOME
+
 echo "B3. hooks-status"
 PM_CMD="/usr/bin/python3 /Users/x/.codex/herdr-codex-pane-map.py"
 hook() { # hook <command> <trustStatus> [enabled]: one entry of hooks/list
