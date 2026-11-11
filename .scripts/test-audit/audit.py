@@ -17,11 +17,26 @@ import subprocess
 import sys
 import tempfile
 import time
+import random
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mutators  # noqa: E402
 
 DEFAULT_SEED = 20261111
 BASELINE_TIMEOUT = 1800
 LANGS = {"bash", "zsh", "sh", "py", "prose", "data", "deployed"}
+HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8}
+KINDS = {"code": "sample", "targeted": "targeted", "rule": "rule"}
+SAFETY_SUITES = {
+    "chezmoi-wrapper", "claude-settings", "codex-config", "deny-modes-probe", "git-forge-guard",
+    "git-signing-config", "ha-mcp", "hook-path", "install-claude-managed-settings",
+    "path-resolution-guard", "sdd-clean", "ssh-sandbox-proxy", "unifi-network-mcp",
+    "worktree-guard", "write-boundary-probe", "wt-functions", "wt-teardown", "xreview",
+    "xreview-apply-guard", "xreview-guard", "xreview-ledger", "xreview-skill",
+}
 GIT_IDENT = ["-c", "user.name=test-audit", "-c", "user.email=test-audit@localhost",
              "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
 
@@ -94,6 +109,17 @@ class Lock:
             print(f"waiting for the test-run lock {self.path}", file=sys.stderr, flush=True)
             fcntl.flock(self.fd, fcntl.LOCK_EX)
 
+    def try_acquire(self):
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        self.fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(self.fd)
+            self.fd = None
+            return False
+        return True
+
     def release(self):
         if self.fd is not None:
             os.close(self.fd)
@@ -113,18 +139,21 @@ class Session:
         self.restores.append((path, path.read_bytes()))
         path.write_text(text)
 
-    def cleanup(self):
-        for sig in STOP_SIGNALS:
-            signal.signal(sig, signal.SIG_IGN)
-        if self.proc is not None:
-            kill_group(self.proc)
-            self.proc = None
+    def restore_files(self):
         for path, data in reversed(self.restores):
             try:
                 path.write_bytes(data)
             except OSError:
                 pass
         self.restores.clear()
+
+    def cleanup(self):
+        for sig in STOP_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
+        if self.proc is not None:
+            kill_group(self.proc)
+            self.proc = None
+        self.restore_files()
         for copy in self.copies:
             remove_tree(copy)
         self.copies.clear()
@@ -154,9 +183,21 @@ class Store:
         return self.state / f"runs-{kind}.jsonl"
 
     def append(self, kind, record):
+        """Append one record. A last line a crash left without its newline is completed when it
+        parses and dropped when it does not, so the new record never fuses with it."""
         self.state.mkdir(parents=True, exist_ok=True)
-        with open(self._path(kind), "a") as f:
-            f.write(json.dumps(record) + "\n")
+        path = self._path(kind)
+        with open(path, "ab+") as f:
+            f.seek(0)
+            data = f.read()
+            if data and not data.endswith(b"\n"):
+                cut = data.rfind(b"\n") + 1
+                try:
+                    json.loads(data[cut:])
+                    f.write(b"\n")
+                except ValueError:
+                    f.truncate(cut)
+            f.write((json.dumps(record) + "\n").encode())
 
     def records(self, kind):
         path = self._path(kind)
@@ -283,28 +324,53 @@ def baseline_ok(run):
 
 
 def attribute(baseline, run):
-    """(verdict, killers, unmatched) of a mutant run against a green baseline."""
+    """(verdict, killers, unmatched, ambiguous, via_detail) of a mutant run against a green baseline."""
     wanted = len(baseline.passed) + len(baseline.failed)
     if (run.timed_out or run.rc is None or len(run.passed) + len(run.failed) < wanted
             or (run.rc != 0 and not run.failed)):
-        return "inconclusive", [], []
-    if run.failed:
-        killers, unmatched = [], []
-        for label in run.failed:
-            killer = killer_label(label, baseline.passed)
-            (unmatched if killer is None else killers).append(killer or label)
-        return "killed", killers, unmatched
-    return "survived", [], []
+        return "inconclusive", [], [], [], []
+    if not run.failed:
+        return "survived", [], [], [], []
+    killers, unmatched, ambiguous, exact, detail = [], [], [], set(), set()
+    for label in run.failed:
+        how, killer = classify_failed(label, baseline.passed)
+        if how == "unmatched":
+            unmatched.append(label)
+        elif how == "ambiguous":
+            ambiguous.append(label)
+        else:
+            if killer not in killers:
+                killers.append(killer)
+            (exact if how == "exact" else detail).add(killer)
+    if not killers and not unmatched:
+        return "inconclusive", [], [], ambiguous, []
+    return "killed", killers, unmatched, ambiguous, [k for k in killers if k in detail and k not in exact]
 
 
-def killer_label(failed, baseline_passed):
-    """The baseline-passed label a failed label stands for: itself, or the longest one it
-    extends with ` (detail)`, as git-forge-guard prints `FAIL x (want a, got b)` for `ok x`."""
+def classify_failed(failed, baseline_passed):
+    """How a failed label maps to the baseline: ('exact'|'detail', killer label), ('ambiguous', None)
+    when several baseline labels qualify as its prefix (R8), or ('unmatched', None). git-forge-guard
+    prints `FAIL x (want a, got b)` for the baseline's `ok x`."""
     known = set(baseline_passed)
     if failed in known:
-        return failed
+        return "exact", failed
     cands = [p for p in known if failed.startswith(p + " (")]
-    return max(cands, key=len) if cands else None
+    if len(cands) == 1:
+        return "detail", cands[0]
+    return ("ambiguous", None) if cands else ("unmatched", None)
+
+
+def run_result(baseline, run):
+    verdict, killers, unmatched, ambiguous, via = attribute(baseline, run)
+    return {"verdict": verdict, "killers": killers, "unmatched": unmatched, "ambiguous": ambiguous,
+            "via_detail": via, "rc": run.rc, "seconds": round(run.seconds, 3),
+            "timed_out": run.timed_out}
+
+
+def red_result(baseline):
+    return {"verdict": "baseline-red", "killers": [], "unmatched": [], "ambiguous": [],
+            "via_detail": [], "rc": baseline.rc, "seconds": round(baseline.seconds, 3),
+            "timed_out": baseline.timed_out}
 
 
 def suite_row(copy, suite):
@@ -363,8 +429,8 @@ def resolve_sha(repo, ref):
     return out.stdout.strip()
 
 
-def prepare(args, command, bind):
-    """Checks shared by every command that runs suites; returns the copy."""
+def preflight(args, bind):
+    """Checks shared by every command that runs suites; returns the commit to measure."""
     refuse_if_writable(args.probe_dir)
     refuse_inside_repo(args.copy_root, args.repo)
     store = Store(args.state)
@@ -375,7 +441,11 @@ def prepare(args, command, bind):
             die(f"state is bound to {bound}; use another --state")
         if not bound:
             store.bind(sha)
-    return build_copy(args.repo, sha, args.copy_root, command)
+    return sha
+
+
+def prepare(args, command, bind):
+    return build_copy(args.repo, preflight(args, bind), args.copy_root, command)
 
 
 def cmd_inventory(args):
@@ -421,21 +491,16 @@ def cmd_try(args):
         die(f"{args.find!r} occurs {found} times in {args.file}, want exactly 1")
     baseline = run_suite(copy, args.suite, BASELINE_TIMEOUT, args.lock)
     if not baseline_ok(baseline):
-        result = {"verdict": "baseline-red", "killers": [], "unmatched": [], "rc": baseline.rc,
-                  "seconds": round(baseline.seconds, 3), "timed_out": baseline.timed_out}
+        result = red_result(baseline)
     else:
         SESSION.apply_text(target, text.replace(args.find, args.replace))
         timeout = max(args.timeout_floor, 3 * baseline.seconds)
-        run = run_suite(copy, args.suite, timeout, args.lock)
-        verdict, killers, unmatched = attribute(baseline, run)
-        result = {"verdict": verdict, "killers": killers, "unmatched": unmatched, "rc": run.rc,
-                  "seconds": round(run.seconds, 3), "timed_out": run.timed_out}
+        result = run_result(baseline, run_suite(copy, args.suite, timeout, args.lock))
     print(json.dumps(result))
 
 
-def cmd_report(args):
-    path = Path(args.state) / "inventory.jsonl"
-    rows = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+def report_inventory(args):
+    rows = list(load_inventory(args.state).values())
     subjects = load_subjects(args.subjects, args.subjects_explicit)
     print("| suite | lines | assertions | seconds | requires | files loaded |")
     print("|---|---|---|---|---|---|")
@@ -445,6 +510,552 @@ def cmd_report(args):
         assertions = "-" if row["assertions"] is None else row["assertions"]
         print(f"| {row['suite']} | {row['lines']} | {assertions} | {seconds} | "
               f"{row['requires'] or '-'} | {loaded or '-'} |")
+
+
+def load_inventory(state):
+    path = Path(state) / "inventory.jsonl"
+    if not path.exists():
+        return {}
+    return {r["suite"]: r for r in (json.loads(line) for line in path.read_text().splitlines()
+                                    if line.strip())}
+
+
+def read_jsonl(path):
+    return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+
+
+def write_atomic(path, text):
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def git_show(repo, sha, file):
+    out = subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{file}"], capture_output=True)
+    return out.stdout.decode(errors="replace") if out.returncode == 0 else None
+
+
+def state_sha(args):
+    return resolve_sha(args.repo, args.ref or Store(args.state).meta().get("sha") or "main")
+
+
+def infer_lang(file, text):
+    if file.endswith(".py"):
+        return "py"
+    first = text.split("\n", 1)[0]
+    for lang in ("zsh", "bash", "sh"):
+        if re.match(rf"#!.*\b{lang}\b", first):
+            return lang
+    return None
+
+
+def cmd_mutants(args):
+    sha = state_sha(args)
+    text = git_show(args.repo, sha, args.file)
+    if text is None:
+        die(f"no such file at {sha[:12]}: {args.file}")
+    row = next((r for r in load_subjects(args.subjects, args.subjects_explicit)
+                if r["file"] == args.file), None)
+    lang = row["lang"] if row else infer_lang(args.file, text)
+    if lang not in (*mutators.SHELLS, "py"):
+        die(f"no code mutants for {args.file} (lang {lang})")
+    for mutant in mutators.code_mutants(args.file, text, lang):
+        print(json.dumps(mutant))
+
+
+def sample_size(suite, seconds, valid):
+    n = HEAVY_SAMPLE.get(suite) or max(4, min(20, int(900 // max(seconds, 1e-6))))
+    return min(n, valid)
+
+
+def pick(file, mutants, n, seed):
+    """Stratified: round-robin over the operators in order, random within an operator."""
+    rng = random.Random(seed ^ zlib.crc32(file.encode()))
+    pools = {op: [m for m in mutants if m["op"] == op] for op in mutators.OPS}
+    for op in mutators.OPS:
+        rng.shuffle(pools[op])
+    chosen = []
+    while len(chosen) < n and any(pools.values()):
+        for op in mutators.OPS:
+            if pools[op] and len(chosen) < n:
+                chosen.append(pools[op].pop())
+    return sorted(chosen, key=lambda m: (m["line"], m["col"], m["op"]))
+
+
+def cmd_plan(args):
+    inventory = load_inventory(args.state)
+    sha = Store(args.state).meta().get("sha")
+    if not inventory or not sha:
+        die("run inventory first")
+    state = Path(args.state)
+    sample_path, files_path = state / "sample.jsonl", state / "sample-files.jsonl"
+    if not sample_path.exists():
+        files, rows = [], []
+        for subject in load_subjects(args.subjects, args.subjects_explicit):
+            if subject["lang"] not in (*mutators.SHELLS, "py"):
+                continue
+            file, suite = subject["file"], subject["own_suite"]
+            info = inventory.get(suite)
+            if suite in ("", "-") or not info or info["seconds"] is None:
+                files.append({"file": file, "suite": suite, "valid": None, "sampled": 0, "seconds": None})
+                continue
+            text = git_show(args.repo, sha, file)
+            if text is None:
+                die(f"{file} is in the subject map but not in {sha[:12]}")
+            valid = mutators.code_mutants(file, text, subject["lang"])
+            chosen = pick(file, valid, sample_size(suite, info["seconds"], len(valid)), args.seed)
+            files.append({"file": file, "suite": suite, "valid": len(valid), "sampled": len(chosen),
+                          "seconds": info["seconds"]})
+            rows += [{**m, "suite": suite, "valid": len(valid)} for m in chosen]
+        write_atomic(files_path, "".join(json.dumps(f) + "\n" for f in files))
+        write_atomic(sample_path, "".join(json.dumps(r) + "\n" for r in rows))
+    files = read_jsonl(files_path) if files_path.exists() else []
+    print("| file | own suite | valid | sampled | est. minutes |")
+    print("|---|---|---|---|---|")
+    total, seconds, baselines = 0, 0.0, {}
+    for f in sorted(files, key=lambda f: f["file"]):
+        est = f["sampled"] * (f["seconds"] or 0) * 1.2
+        if f["sampled"]:
+            baselines[f["suite"]] = f["seconds"]
+        total, seconds = total + f["sampled"], seconds + est
+        valid = "-" if f["valid"] is None else f["valid"]
+        print(f"| {f['file']} | {f['suite']} | {valid} | {f['sampled']} | {est / 60:.1f} |")
+    seconds += sum(baselines.values())
+    print(f"total: {total} mutants, ~{seconds / 3600:.1f} h")
+
+
+def qualified(suite, labels):
+    return [f"{suite}::{label}" for label in labels]
+
+
+def combine(results):
+    """One mutant's outcome from its per-suite results: killed beats inconclusive beats
+    baseline-red beats survived. Labels are qualified as suite::label."""
+    verdicts = [r["verdict"] for r in results.values()]
+    verdict = next((v for v in ("killed", "inconclusive", "baseline-red") if v in verdicts), "survived")
+    out = {"verdict": verdict, "killers": [], "unmatched": [], "ambiguous": [], "via_detail": [],
+           "suites": {}, "flaky": False, "attempts": 1, "seconds": 0.0}
+    for suite, r in results.items():
+        for key in ("killers", "unmatched", "ambiguous", "via_detail"):
+            out[key] += qualified(suite, r[key])
+        out["suites"][suite] = r["verdict"]
+        out["flaky"] = out["flaky"] or bool(r.get("flaky"))
+        out["attempts"] = max(out["attempts"], r.get("attempts", 1))
+        out["seconds"] += r["seconds"]
+    out["seconds"] = round(out["seconds"], 3)
+    return out
+
+
+def stale_outcome():
+    return {"verdict": "stale", "killers": [], "unmatched": [], "ambiguous": [], "via_detail": [],
+            "suites": {}, "flaky": False, "attempts": 0, "seconds": 0.0}
+
+
+class Runner:
+    """Runs mutants in this process's copy, one baseline per suite and session, and gives a
+    survivor a second run."""
+
+    def __init__(self, args, sha, command):
+        self.args, self.sha, self.command = args, sha, command
+        self.copy = None
+        self.baselines = {}
+
+    def ensure_copy(self):
+        if self.copy is None:
+            self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
+        return self.copy
+
+    def baseline(self, suite):
+        if suite not in self.baselines:
+            self.baselines[suite] = run_suite(self.ensure_copy(), suite, BASELINE_TIMEOUT, self.args.lock)
+        return self.baselines[suite]
+
+    def attempt(self, suite, baseline):
+        timeout = max(self.args.timeout_floor, 3 * baseline.seconds)
+        first = run_result(baseline, run_suite(self.copy, suite, timeout, self.args.lock))
+        first.update(attempts=1, flaky=False)
+        if first["verdict"] != "survived":
+            return first
+        second = run_result(baseline, run_suite(self.copy, suite, timeout, self.args.lock))
+        total = round(first["seconds"] + second["seconds"], 3)
+        if second["verdict"] == "killed":
+            second.update(attempts=2, flaky=True, seconds=total)
+            return second
+        first.update(attempts=2, rerun=second["verdict"], seconds=total)
+        return first
+
+    def mutate(self, mutant, suites):
+        """Per-suite results of one mutant, or None when it no longer applies (stale)."""
+        copy = self.ensure_copy()
+        target = inside_copy(copy, mutant["file"])
+        if not target.is_file():
+            return None
+        mutated = mutators.apply(target.read_text(), mutant)
+        if mutated is None:
+            return None
+        base = {s: self.baseline(s) for s in suites}
+        results = {s: red_result(b) for s, b in base.items() if not baseline_ok(b)}
+        live = [s for s in suites if s not in results]
+        if live:
+            SESSION.apply_text(target, mutated)
+            try:
+                for suite in live:
+                    results[suite] = self.attempt(suite, base[suite])
+            finally:
+                SESSION.restore_files()
+        return {s: results[s] for s in suites}
+
+
+def rec_key(rec):
+    return (rec.get("candidate"), rec["id"])
+
+
+def final_records(store, kind):
+    return {rec_key(r): r for r in store.records(kind)}
+
+
+def is_final(done, key):
+    """A baseline-red record is not final: the next session retries that mutant."""
+    return key in done and done[key]["verdict"] != "baseline-red"
+
+
+def mutant_head(m):
+    return {k: m[k] for k in ("id", "kind", "file", "op", "line", "before", "after")}
+
+
+def hold_state(state, command):
+    """One run per state and command: the lock is released at exit with the process."""
+    lock = Lock(Path(state) / f"{command}.lock")
+    if not lock.try_acquire():
+        die(f"another {command} run holds {state}")
+    SESSION.locks.append(lock)
+
+
+class Budget:
+    def __init__(self, minutes):
+        self.deadline = None if minutes is None else time.monotonic() + minutes * 60
+
+    def spent(self):
+        return self.deadline is not None and time.monotonic() >= self.deadline
+
+
+def cmd_sample(args):
+    sha = preflight(args, bind=True)
+    source = Path(args.sample_from or args.state) / "sample.jsonl"
+    if not source.exists():
+        die(f"no frozen sample at {source}: run plan first")
+    rows = read_jsonl(source)
+    files = list(dict.fromkeys(r["file"] for r in rows))
+    if args.only:
+        for f in args.only:
+            if f not in files:
+                die(f"{f} is not in the sample")
+        files = [f for f in files if f in args.only]
+    hold_state(args.state, "sample")
+    store = Store(args.state)
+    done = final_records(store, "sample")
+    budget, runner = Budget(args.max_minutes), Runner(args, sha, "sample")
+    for file in files:
+        mine = [r for r in rows if r["file"] == file]
+        attempted = 0
+        for row in mine:
+            if is_final(done, (None, row["id"])):
+                continue
+            if budget.spent():
+                break
+            results = runner.mutate(row, [row["suite"]])
+            outcome = stale_outcome() if results is None else combine(results)
+            rec = {**mutant_head(row), "suite": row["suite"], **outcome}
+            store.append("sample", rec)
+            done[(None, row["id"])] = rec
+            attempted += 1
+        if attempted:
+            have = [done[(None, r["id"])] for r in mine if (None, r["id"]) in done]
+            count = lambda v: sum(1 for r in have if r["verdict"] == v)
+            print(f"[sample] {file}: {len(have)}/{len(mine)} (killed {count('killed')}, "
+                  f"survived {count('survived')}, inconclusive {count('inconclusive')})", flush=True)
+    print(f"remaining: {sum(1 for r in rows if r['file'] in files and not is_final(done, (None, r['id'])))}")
+
+
+def load_manifest(path):
+    entries, seen = [], set()
+    for n, line in enumerate(Path(path).read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            die(f"{path}:{n}: not JSON")
+        for key in ("candidate", "suite", "labels", "claim", "mutants"):
+            if key not in entry:
+                die(f"{path}:{n}: candidate lacks {key}")
+        if entry["candidate"] in seen:
+            die(f"{path}:{n}: candidate {entry['candidate']} appears twice")
+        seen.add(entry["candidate"])
+        entries.append(entry)
+    return entries
+
+
+def build_targeted(args, sha, entries):
+    """candidate name -> its mutants. Exits 2 naming a candidate whose find is not unique."""
+    texts, built = {}, {}
+    for entry in entries:
+        name, mutants = entry["candidate"], []
+        for spec in entry["mutants"]:
+            file = spec["file"]
+            if file not in texts:
+                texts[file] = git_show(args.repo, sha, file)
+            if texts[file] is None:
+                die(f"candidate {name}: no such file {file} at {sha[:12]}")
+            mutant, found = mutators.targeted_mutant(file, texts[file], spec["find"], spec["replace"],
+                                                     spec.get("line"))
+            if mutant is None:
+                where = f" on line {spec['line']}" if spec.get("line") else ""
+                die(f"candidate {name}: {spec['find']!r} occurs {found} times in {file}{where}, "
+                    f"want exactly 1")
+            mutants.append(mutant)
+        built[name] = mutants
+    return built
+
+
+def runnable_suites(copy, names):
+    keep = []
+    for name in dict.fromkeys(names):
+        script = Path(copy) / "tests" / f"{name}.test.sh"
+        if script.is_file() and header(script, "test-requires") in ("", "heavy"):
+            keep.append(name)
+    return keep
+
+
+def cmd_targeted(args):
+    sha = preflight(args, bind=True)
+    entries = load_manifest(args.manifest)
+    built = build_targeted(args, sha, entries)
+    subjects = {r["file"]: r for r in load_subjects(args.subjects, args.subjects_explicit)}
+    hold_state(args.state, "targeted")
+    store = Store(args.state)
+    done = final_records(store, "targeted")
+    budget, runner = Budget(args.max_minutes), Runner(args, sha, "targeted")
+    for entry in entries:
+        name, mutants = entry["candidate"], built[entry["candidate"]]
+        attempted = 0
+        for mutant in mutants:
+            if is_final(done, (name, mutant["id"])):
+                continue
+            if budget.spent():
+                break
+            wanted = [entry["suite"]]
+            if entry["claim"] == "duplicate":
+                wanted += subjects.get(mutant["file"], {"loaded_by": []})["loaded_by"]
+            suites = runnable_suites(runner.ensure_copy(), wanted)
+            if entry["suite"] not in suites:
+                die(f"candidate {name}: suite {entry['suite']} cannot be mutated here")
+            results = runner.mutate(mutant, suites)
+            outcome = stale_outcome() if results is None else combine(results)
+            rec = {**mutant_head(mutant), "candidate": name, "suite": entry["suite"],
+                   "claim": entry["claim"], "labels": qualified(entry["suite"], entry["labels"]),
+                   **outcome}
+            store.append("targeted", rec)
+            done[(name, mutant["id"])] = rec
+            attempted += 1
+        if attempted:
+            have = sum(1 for m in mutants if (name, m["id"]) in done)
+            print(f"[targeted] {name}: {have}/{len(mutants)}", flush=True)
+        if budget.spent():
+            break
+    print(f"remaining: {sum(1 for e in entries for m in built[e['candidate']] if not is_final(done, (e['candidate'], m['id'])))}")
+
+
+def candidate_verdict(suite, labels, records):
+    """evidenced, unique, mis-targeted or inconclusive, from a candidate's mutant records."""
+    labels, mis, unclear, unique = set(labels), False, False, False
+    for rec in records:
+        own = rec["suites"].get(suite)
+        mine = labels & set(rec["killers"])
+        if not mine:
+            if own in ("survived", "killed"):
+                mis = True
+            else:
+                unclear = True
+        elif not set(rec["killers"]) - labels:
+            unique = True
+    if mis:
+        return "mis-targeted"
+    if unclear or not records:
+        return "inconclusive"
+    return "unique" if unique else "evidenced"
+
+
+def mark(rec, killer):
+    return killer + ("*" if killer in rec.get("via_detail", []) else "")
+
+
+def report_kills(args):
+    store, state = Store(args.state), Path(args.state)
+    recs = final_records(store, "sample")
+    by_file = {}
+    for rec in recs.values():
+        by_file.setdefault(rec["file"], []).append(rec)
+    sampled = {}
+    if (state / "sample.jsonl").exists():
+        for row in read_jsonl(state / "sample.jsonl"):
+            sampled[row["file"]] = sampled.get(row["file"], 0) + 1
+    print("| file | sampled | killed | flaky | survived | inconclusive | baseline-red | stale | "
+          "via_detail | kill rate |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
+    for file in sorted(set(by_file) | set(sampled)):
+        have = by_file.get(file, [])
+        count = lambda v: sum(1 for r in have if r["verdict"] == v)
+        killed, survived = count("killed"), count("survived")
+        flaky = sum(1 for r in have if r["verdict"] == "killed" and r.get("flaky"))
+        via = sum(1 for r in have if r["verdict"] == "killed" and r.get("via_detail"))
+        rate = f"{100 * killed / (killed + survived):.1f}%" if killed + survived else "-"
+        print(f"| {file} | {sampled.get(file, len(have))} | {killed} | {flaky} | {survived} | "
+              f"{count('inconclusive')} | {count('baseline-red')} | {count('stale')} | {via} | {rate} |")
+    killed_by = {}
+    for rec in recs.values():
+        if rec["verdict"] == "killed":
+            for killer in rec["killers"]:
+                suite, label = killer.split("::", 1)
+                killed_by.setdefault((suite, label), []).append(rec["id"])
+    inventory = load_inventory(args.state)
+    for suite in {r["suite"] for r in recs.values()}:
+        for label in inventory.get(suite, {}).get("labels", []):
+            killed_by.setdefault((suite, label), [])
+    print()
+    print("| suite | assertion | kills | mutants |")
+    print("|---|---|---|---|")
+    for (suite, label), ids in sorted(killed_by.items()):
+        print(f"| {suite} | {label} | {len(ids)} | {' '.join(sorted(ids)) or '-'} |")
+
+
+def report_gaps(args):
+    recs = final_records(Store(args.state), "sample")
+    print("| file:line | operator | change | mutant |")
+    print("|---|---|---|---|")
+    for rec in sorted((r for r in recs.values() if r["verdict"] == "survived"),
+                      key=lambda r: (r["file"], r["line"], r["id"])):
+        print(f"| {rec['file']}:{rec['line']} | {rec['op']} | {rec['before']} → {rec['after']} | {rec['id']} |")
+
+
+def report_targeted(args):
+    by_candidate = {}
+    for rec in final_records(Store(args.state), "targeted").values():
+        by_candidate.setdefault(rec["candidate"], []).append(rec)
+    print("| candidate | verdict | mutant | outcome | killers |")
+    print("|---|---|---|---|---|")
+    for name in sorted(by_candidate):
+        recs = sorted(by_candidate[name], key=lambda r: (r["file"], r["line"], r["id"]))
+        verdict = candidate_verdict(recs[0]["suite"], recs[0]["labels"], recs)
+        for rec in recs:
+            killers = "; ".join(mark(rec, k) for k in rec["killers"]) or "-"
+            print(f"| {name} | {verdict} | {rec['id']} {rec['file']}:{rec['line']} | "
+                  f"{rec['verdict']} | {killers} |")
+    print("* attributed through failure detail (R8)")
+
+
+def report_compare(args):
+    store_kind = KINDS[args.kind]
+    theirs, here = final_records(Store(args.compare), store_kind), final_records(Store(args.state), store_kind)
+    files = set(args.only) if args.only else {r["file"] for r in here.values()}
+    lost, not_run = [], []
+    for key, rec in theirs.items():
+        if rec["verdict"] != "killed" or rec["file"] not in files:
+            continue
+        mine = here.get(key)
+        if mine is None:
+            not_run.append(rec)
+        elif mine["verdict"] != "killed":
+            lost.append(rec)
+    for title, recs in (("lost", lost), ("not run", not_run)):
+        print(f"{title}: {len(recs)}")
+        for rec in sorted(recs, key=lambda r: (r["file"], r["line"], r["id"])):
+            print(f"- {rec['id']} {rec['file']}:{rec['line']} {rec['op']} {rec['before']} → {rec['after']}")
+
+
+def cmd_report(args):
+    if args.compare and not args.kind:
+        die("--compare needs --kind code|targeted|rule")
+    {"inventory": report_inventory, "kills": report_kills, "gaps": report_gaps,
+     "targeted": report_targeted}[args.section](args)
+    if args.compare:
+        print()
+        report_compare(args)
+
+
+CLASSIFICATION_COLUMNS = ["suite", "test", "labels", "kind", "duplicate_of", "verdict", "merge_with",
+                          "evidence", "safety", "note"]
+
+
+def read_classification(path):
+    lines = Path(path).read_text().split("\n")
+    if lines[0].split("\t") != CLASSIFICATION_COLUMNS:
+        die(f"{path}: header must be {', '.join(CLASSIFICATION_COLUMNS)}")
+    rows = []
+    for n, line in enumerate(lines[1:], 2):
+        if not line.strip():
+            continue
+        cols = line.split("\t")
+        if len(cols) > len(CLASSIFICATION_COLUMNS):
+            die(f"{path}:{n}: {len(cols)} columns, want {len(CLASSIFICATION_COLUMNS)}")
+        row = dict(zip(CLASSIFICATION_COLUMNS, cols + [""] * (len(CLASSIFICATION_COLUMNS) - len(cols))))
+        for key in ("labels", "duplicate_of"):
+            row[key] = [x for x in row[key].split(" | ") if x and x != "-"]
+        rows.append(row)
+    return rows
+
+
+def cmd_accept(args):
+    rows = [r for r in read_classification(args.classification) if r["verdict"] in ("delete", "merge")]
+    entries = load_manifest(args.manifest)
+    sha = state_sha(args)
+    built = build_targeted(args, sha, entries)
+    records = final_records(Store(args.state), "targeted")
+    inventory = load_inventory(args.state)
+
+    def saved(row):
+        info = inventory.get(row["suite"])
+        if not info or not info.get("seconds") or not info.get("assertions"):
+            return 0.0
+        return info["seconds"] * len(row["labels"]) / info["assertions"]
+
+    def first_line(row):
+        return int(re.match(r"\d+", row["test"]).group(0)) if re.match(r"\d+", row["test"]) else 0
+
+    ranked = sorted(rows, key=lambda r: (-saved(r), r["suite"], first_line(r)))
+    by_name = {e["candidate"]: e for e in entries}
+    by_labels = {(e["suite"], tuple(e["labels"])): e for e in entries}
+    accepted, removed = [], set()
+    print("| candidate | est. seconds saved | result |")
+    print("|---|---|---|")
+    for row in ranked:
+        name = f"{row['suite']}:{row['test']}"
+        labels = set(qualified(row["suite"], row["labels"]))
+        entry = by_name.get(name) or by_labels.get((row["suite"], tuple(row["labels"])))
+        mutants = []
+        reason = None
+        if row["evidence"] == "targeted":
+            recs = ([records.get((entry["candidate"], m["id"])) for m in built[entry["candidate"]]]
+                    if entry else [])
+            if (not entry or not recs or None in recs
+                    or candidate_verdict(entry["suite"], qualified(entry["suite"], entry["labels"]),
+                                         recs) != "evidenced"):
+                reason = "not evidenced"
+            else:
+                mutants = [(r["id"], set(r["killers"])) for r in recs]
+        elif row["safety"] == "yes" or (row["suite"] in SAFETY_SUITES and row["suite"] != "agent-instructions"):
+            reason = "class evidence in a safety suite"
+        if reason is None:
+            gone = removed | labels
+            for _, group in accepted + [(name, mutants)]:
+                broken = next((mid for mid, killers in group if not killers - gone), None)
+                if broken:
+                    reason = f"would leave {broken} without a killer"
+                    break
+        if reason is None:
+            accepted.append((name, mutants))
+            removed |= labels
+        print(f"| {name} | {saved(row):.1f} | {'accepted' if reason is None else 'rejected: ' + reason} |")
 
 
 def parser():
@@ -468,9 +1079,30 @@ def parser():
     for name in ("file", "find", "replace", "suite"):
         tr.add_argument(name)
     tr.set_defaults(func=cmd_try)
+    mu = sub.add_parser("mutants")
+    mu.add_argument("file")
+    mu.set_defaults(func=cmd_mutants)
+    pl = sub.add_parser("plan")
+    pl.set_defaults(func=cmd_plan)
+    sa = sub.add_parser("sample")
+    sa.add_argument("--max-minutes", type=float)
+    sa.add_argument("--only", nargs="+", default=[])
+    sa.add_argument("--sample-from")
+    sa.set_defaults(func=cmd_sample)
+    ta = sub.add_parser("targeted")
+    ta.add_argument("--max-minutes", type=float)
+    ta.add_argument("manifest")
+    ta.set_defaults(func=cmd_targeted)
     rep = sub.add_parser("report")
-    rep.add_argument("--section", required=True, choices=["inventory"])
+    rep.add_argument("--section", required=True, choices=["inventory", "kills", "gaps", "targeted"])
+    rep.add_argument("--compare")
+    rep.add_argument("--kind", choices=sorted(KINDS))
+    rep.add_argument("--only", nargs="+", default=[])
     rep.set_defaults(func=cmd_report)
+    ac = sub.add_parser("accept")
+    ac.add_argument("classification")
+    ac.add_argument("manifest")
+    ac.set_defaults(func=cmd_accept)
     p.set_defaults(harness_dir=here)
     return p
 
@@ -481,6 +1113,7 @@ def on_signal(signum, _frame):
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    sys.stdout.reconfigure(encoding="utf-8")
     if args.repo is None:
         top = subprocess.run(["git", "-C", str(args.harness_dir), "rev-parse", "--show-toplevel"],
                              capture_output=True, text=True)

@@ -11,6 +11,7 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; fi; }
 check "add handles a one" "$(add 1 1)" 2
 check "p.py doubles" "$(python3 "$here/../bin/p.py" 4)" 8
 check "p.py doubles" "$(python3 "$here/../bin/p.py" 5)" 10
+check "add handles zero" "$(add 0 0)" 0
 
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

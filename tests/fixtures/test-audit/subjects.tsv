@@ -1,3 +1,4 @@
 # file	lang	own_suite	loaded_by
 bin/s.sh	bash	s	s,s2
 bin/p.py	py	s2	s2
+bin/loop.sh	bash	-	-

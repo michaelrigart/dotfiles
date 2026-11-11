@@ -12,8 +12,9 @@ FIX="$SRC/tests/fixtures/test-audit"
 pass=0; fail=0; OUT=""; ERR=""; RC=0
 _pass(){ echo "  PASS: $1"; pass=$((pass+1)); }
 _fail(){ echo "  FAIL: $1"; fail=$((fail+1)); }
-rc_is(){ [ "$RC" -eq "$1" ] && _pass "$2" || _fail "$2 (rc=$RC)"; }
+rc_is(){ [ "$RC" -eq "$1" ] && _pass "$2" || _fail "$2 (rc=$RC: ${ERR: -900})"; }
 has(){ case "$3" in *"$1"*) _pass "$2";; *) _fail "$2 (got: $3)";; esac; }
+lacks(){ case "$3" in *"$1"*) _fail "$2 (found: $1)";; *) _pass "$2";; esac; }
 eq(){ [ "$1" = "$2" ] && _pass "$3" || _fail "$3 (got: $1, want: $2)"; }
 
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/test-audit-suite.XXXXXX") || { echo "cannot create a temp dir"; exit 2; }
@@ -95,6 +96,7 @@ mk B
 run try bin/s.sh "$ADD" "$SUB" s
 eq "$(jget verdict)" killed "B1: breaking add is killed"
 eq "$(jget killers)" '["add returns the sum"]' "B1: exactly the add assertion is the killer"
+eq "$(jget via_detail)" '[]' "B1: an exact-label kill is not attributed through failure detail"
 run try bin/s.sh '&& echo "$d"' '&& rmdir "$d" && echo "$d"' s
 eq "$(jget verdict)" killed "B2: a kill whose label holds a temp path is still a kill"
 eq "$(jget killers)" '["scratch dir exists at <tmp>"]' "B2: the killer label carries <tmp>, not the path"
@@ -111,6 +113,7 @@ rc_is 2 "a FIND that occurs several times exits 2"
 run try tests/s.test.sh "$FLAGCHK" 'bad "flag is set (want 1, got 2)"' s
 eq "$(jget verdict)" killed "B4: a FAIL label with a (want, got) detail is a kill"
 eq "$(jget killers)" '["flag is set"]' "B4: the killer is the baseline label it extends"
+eq "$(jget via_detail)" '["flag is set"]' "B4: and it is listed in via_detail"
 eq "$(jget unmatched)" '[]' "B4: nothing is unmatched"
 run try tests/s.test.sh "$FLAGCHK" "bad \"y (z)\"; $FLAGCHK" s
 eq "$(jget killers)" '[]' "B4: a detail on a label the baseline lacks is no killer"
@@ -210,7 +213,7 @@ for l in open(sys.argv[1]):
 r=rows.get(sys.argv[2])
 v=r[sys.argv[3]] if r else "NO-ROW"
 print(v if isinstance(v,str) else json.dumps(v))' "$rows" "$1" "$2"; }
-eq "$(wc -l <"$rows" | tr -d ' ')" 5 "H: one row per fixture suite"
+eq "$(wc -l <"$rows" | tr -d ' ')" 6 "H: one row per fixture suite"
 want=$(RUN_SH_LOCK="$T/lock" AUDIT_MARKERS= "$T/repo/tests/run.sh" s 2>&1 | awk '$2=="s"{split($3,a,"/"); print a[2]}')
 eq "$(q s assertions)" "$want" "H: s has the assertion count run.sh reports"
 eq "$(q s passed)" 4 "H: s passed count"
@@ -248,7 +251,375 @@ case "$ERR" in *"copy left behind"*) _fail "J: no leftover warning when the retr
 run try tests/s.test.sh "$FLAGCHK" "trap 'bad \"term reaches the suite\"' TERM; kill -TERM \$\$; sleep 0.3; $FLAGCHK" s
 eq "$(jget unmatched)" '["term reaches the suite"]' "J: a suite starts with SIGTERM unblocked"
 clean J
-U=$(python3 - "$AUDIT" "$ROOT/unit" <<'PY'
+echo "K. ambiguous and failure-detail attributions (R8)"
+mk K
+AMBX='echo "  PASS: w"'
+run try tests/amb.test.sh "$AMBX" 'echo "  FAIL: x (a) (b)"; echo "  PASS: w"' amb
+eq "$(jget verdict)" inconclusive "K: a run whose only failure is ambiguous is inconclusive"
+eq "$(jget ambiguous)" '["x (a) (b)"]' "K: the label is listed as ambiguous"
+eq "$(jget killers)$(jget unmatched)" '[][]' "K: it is neither a killer nor unmatched"
+run try tests/amb.test.sh "$AMBX" 'echo "  FAIL: x (a) (b)"; echo "  FAIL: w"' amb
+eq "$(jget verdict)" killed "K: a real killer next to an ambiguous label keeps the kill"
+eq "$(jget killers)" '["w"]' "K: the exact label is the killer"
+eq "$(jget ambiguous)" '["x (a) (b)"]' "K: the ambiguous label is still listed"
+eq "$(jget via_detail)" '[]' "K: an exact kill is not via_detail"
+run try tests/amb.test.sh "$AMBX" 'echo "  FAIL: x (a) (b)"; echo "  FAIL: brand new"' amb
+eq "$(jget verdict)" killed "K: an unmatched label next to an ambiguous one keeps the kill"
+run try tests/amb.test.sh "$AMBX" 'echo "  FAIL: w (why)"' amb
+eq "$(jget killers)" '["w"]' "K: a single prefix match is the killer"
+eq "$(jget via_detail)" '["w"]' "K: and is listed in via_detail"
+run try tests/amb.test.sh "$AMBX" 'echo "  FAIL: w"; echo "  FAIL: w (why)"' amb
+eq "$(jget killers)" '["w"]' "K: two failed lines that map to one killer list it once"
+eq "$(jget via_detail)" '[]' "K: an exact match beats the prefix rule for via_detail"
+clean K
+
+echo "M. code mutants, sample, targeted, reports"
+mk M
+ops_of(){ python3 -c 'import json,sys
+print(",".join(sorted({json.loads(l)["op"] for l in sys.stdin if l.strip()})))'; }
+run mutants bin/s.sh; rc_is 0 "M1: mutants bin/s.sh succeeds"; printf '%s\n' "$OUT" > "$T/m-s.jsonl"
+run mutants bin/p.py; rc_is 0 "M1: mutants bin/p.py succeeds"; printf '%s\n' "$OUT" > "$T/m-p.jsonl"
+eq "$(ops_of <"$T/m-s.jsonl")" andor,compare,delete,exit,negate "M1: bin/s.sh has every operator"
+eq "$(ops_of <"$T/m-p.jsonl")" andor,compare,delete,exit,negate "M1: bin/p.py has every operator"
+M1=$(python3 - "$SRC/.scripts/test-audit" "$T" <<'PY'
+import json, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import mutators
+t, res = sys.argv[2], {}
+for name, lang, path in (("s", "bash", "bin/s.sh"), ("p", "py", "bin/p.py")):
+    text = open(f"{t}/repo/{path}").read()
+    ms = [json.loads(l) for l in open(f"{t}/m-{name}.jsonl") if l.strip()]
+    ok = len(ms) > 0
+    for m in ms:
+        new = mutators.apply(text, m)
+        if new is None:
+            ok = False
+        elif lang == "py":
+            try:
+                compile(new, path, "exec")
+            except SyntaxError:
+                ok = False
+        else:
+            ok = ok and subprocess.run(["bash", "-n"], input=new.encode(), capture_output=True).returncode == 0
+    res[name + "_valid"] = ok
+    res[name + "_inert"] = [m["context"] for m in ms if m["context"].lstrip().startswith("#") or m["context"] == "exit 0"]
+print(json.dumps(res))
+PY
+)
+mget(){ python3 -c 'import json,sys
+v=json.loads(sys.argv[1])[sys.argv[2]]
+print(v if isinstance(v,str) else json.dumps(v))' "$M1" "$1"; }
+eq "$(mget s_valid)" true "M1: every bin/s.sh mutant, applied, passes bash -n"
+eq "$(mget p_valid)" true "M1: every bin/p.py mutant, applied, compiles"
+eq "$(mget s_inert)" '[]' "M1: none sits on the comment line or inside the heredoc"
+run mutants bin/loop.sh
+eq "$(printf '%s\n' "$OUT" | python3 -c 'import json,sys
+print(json.dumps([json.loads(l)["context"] for l in sys.stdin if l.strip() and json.loads(l)["op"]=="negate"]))')" '["while [ \"$count\" -lt 3 ]; do"]' "M1: while and until over read get no negate mutant, another while still does"
+
+run plan
+rc_is 2 "M2: plan without an inventory exits 2"
+has "run inventory first" "M2: and says so" "$ERR"
+run inventory s s2
+rc_is 0 "M2: inventory s s2 succeeds"
+mkdir -p "$T/state2"; cp "$T/state/meta.json" "$T/state/inventory.jsonl" "$T/state2/"
+run plan
+rc_is 0 "M2: plan succeeds"
+has "| bin/s.sh | s | 13 | 13 |" "M2: bin/s.sh has 13 valid mutants, all sampled" "$OUT"
+has "| bin/p.py | s2 | 9 | 9 |" "M2: bin/p.py has 9 valid mutants, all sampled" "$OUT"
+has "total: 22 mutants, ~" "M2: the output has a total line" "$OUT"
+before=$(cksum <"$T/state/sample.jsonl")
+run plan
+eq "$(cksum <"$T/state/sample.jsonl")" "$before" "M2: a second plan keeps the frozen sample"
+run --state "$T/state2" plan
+cmp -s "$T/state/sample.jsonl" "$T/state2/sample.jsonl" && _pass "M2: the same seed in a fresh state writes an identical sample" || _fail "M2: the same seed in a fresh state writes an identical sample"
+eq "$(python3 -c 'import json,sys
+print(",".join(sorted({json.loads(l)["op"] for l in open(sys.argv[1]) if json.loads(l)["file"]=="bin/s.sh"})))' "$T/state/sample.jsonl")" andor,compare,delete,exit,negate "M2: every operator of bin/s.sh is in its sample"
+head -1 "$T/state2/sample.jsonl" > "$T/one.jsonl" && cp "$T/one.jsonl" "$T/state2/sample.jsonl"
+run --state "$T/state2" plan
+eq "$(wc -l <"$T/state2/sample.jsonl" | tr -d ' ')" 1 "M2: plan never rewrites a frozen sample"
+
+run sample
+rc_is 0 "M4: sample succeeds"
+has "[sample] bin/s.sh: 13/13 (killed 6, survived 7, inconclusive 0)" "M4: bin/s.sh progress line" "$OUT"
+has "[sample] bin/p.py: 9/9 (killed 6, survived 3, inconclusive 0)" "M4: bin/p.py progress line" "$OUT"
+has "remaining: 0" "M4: nothing remains" "$OUT"
+M4=$(python3 - "$T/state" <<'PY'
+import json, sys
+st = sys.argv[1]
+rows = [json.loads(l) for l in open(st + "/sample.jsonl")]
+recs = [json.loads(l) for l in open(st + "/runs-sample.jsonl")]
+print(json.dumps({"n": len(recs), "covered": sorted(r["id"] for r in recs) == sorted(r["id"] for r in rows),
+                  "survivor_attempts": sorted({r["attempts"] for r in recs if r["verdict"] == "survived"}),
+                  "killed_attempts": sorted({r["attempts"] for r in recs if r["verdict"] == "killed"})}))
+PY
+)
+m4get(){ python3 -c 'import json,sys
+v=json.loads(sys.argv[1])[sys.argv[2]]
+print(v if isinstance(v,str) else json.dumps(v))' "$M4" "$1"; }
+eq "$(m4get n)" 22 "M4: one record per sampled mutant"
+eq "$(m4get covered)" true "M4: every sampled mutant has a final record"
+eq "$(m4get survivor_attempts)" '[2]' "M4: every survivor ran a second time"
+eq "$(m4get killed_attempts)" '[1]' "M4: a first-run kill does not rerun"
+lines=$(wc -l <"$T/state/runs-sample.jsonl" | tr -d ' ')
+run sample
+has "remaining: 0" "M4: a second sample has nothing remaining" "$OUT"
+eq "$(wc -l <"$T/state/runs-sample.jsonl" | tr -d ' ')" "$lines" "M4: and adds no record"
+lockf -k "$T/state/sample.lock" sleep 4 &
+for i in $(seq 1 50); do lockf -k -t 0 "$T/state/sample.lock" true 2>/dev/null; [ $? -eq 75 ] && break; sleep 0.1; done
+run sample
+rc_is 2 "M4: a second sample on the same state is refused"
+has "another sample run holds $T/state" "M4: the refusal names the state" "$ERR"
+wait
+run --state "$T/state0" sample --sample-from "$T/state" --max-minutes 0
+has "remaining: 22" "M4: --max-minutes 0 reports everything as remaining" "$OUT"
+[ ! -e "$T/state0/runs-sample.jsonl" ] && _pass "M4: and runs nothing" || _fail "M4: and runs nothing"
+
+run report --section kills
+has "| bin/s.sh | 13 | 6 | 0 | 7 | 0 | 0 | 0 | 0 | 46.2% |" "M5: the bin/s.sh row has the exact counts and rate" "$OUT"
+has "| bin/p.py | 9 | 6 | 0 | 3 | 0 | 0 | 0 | 0 | 66.7% |" "M5: the bin/p.py row has the exact counts and rate" "$OUT"
+has "| s | greet says hello | 3 |" "M5: greet's assertion killed three mutants" "$OUT"
+has "| s | scratch dir exists at <tmp> | 0 | - |" "M5: an assertion that killed nothing is listed" "$OUT"
+has "| s2 | p.py doubles #2 | 6 |" "M5: the repeated label kills as its own row" "$OUT"
+run report --section gaps
+uncov=$(grep -n 'echo never-called' "$T/repo/bin/s.sh" | cut -d: -f1)
+has "| bin/s.sh:$uncov | delete | echo never-called → : |" "M5: the uncovered line's mutant is a gap" "$OUT"
+has "| compare | -n → -z |" "M5: the uncovered comparison is a gap" "$OUT"
+lacks "echo hello" "M5: a killed mutant is not a gap" "$OUT"
+
+python3 - "$T/targeted.jsonl" "$T/bad.jsonl" <<'PY'
+import json, sys
+ADD = '$(( $1 + $2 ))'
+def c(name, suite, labels, claim, dup, muts):
+    return {"candidate": name, "suite": suite, "labels": labels, "claim": claim, "duplicate_of": dup,
+            "safety": False, "mutants": muts}
+def m(file, find, replace):
+    return {"file": file, "find": find, "replace": replace}
+rows = [
+    c("s:11-11", "s", ["add returns the sum"], "duplicate", ["s2::add handles a one"], [m("bin/s.sh", ADD, '$(( $1 - $2 ))')]),
+    c("s2:11-11", "s2", ["add handles a one"], "duplicate", ["s::add returns the sum"], [m("bin/s.sh", ADD, '$(( $1 + $2 + ($1 < 2) ))')]),
+    c("s2:13-13", "s2", ["p.py doubles #2"], "duplicate", ["s2::p.py doubles"], [m("bin/p.py", "x * 2", "x * 3")]),
+    c("s:15-15", "s", ["greet says hello"], "other", [], [m("bin/s.sh", "echo hello", "echo goodbye")]),
+    c("s:14-14", "s", ["flag is set"], "other", [], [m("bin/s.sh", "echo hello", "echo hallo")]),
+    c("solo", "s", ["add returns the sum"], "other", [], [m("bin/s.sh", ADD, '$(( $1 - $2 ))')]),
+]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+open(sys.argv[2], "w").write(json.dumps(c("bad:ambig", "s", [], "other", [], [m("bin/s.sh", "echo", "echo x")])) + "\n")
+PY
+run targeted "$T/bad.jsonl"
+rc_is 2 "M6: a find that occurs several times exits 2"
+has "candidate bad:ambig" "M6: naming its candidate" "$ERR"
+run targeted "$T/targeted.jsonl"
+rc_is 0 "M6: targeted succeeds"
+has "remaining: 0" "M6: nothing remains" "$OUT"
+tl=$(wc -l <"$T/state/runs-targeted.jsonl" | tr -d ' ')
+run targeted "$T/targeted.jsonl"
+eq "$(wc -l <"$T/state/runs-targeted.jsonl" | tr -d ' ')" "$tl" "M6: a second targeted run repeats nothing"
+run report --section targeted
+row(){ printf '%s\n' "$OUT" | grep -F "$1"; }
+has "| evidenced |" "M6: a candidate with another killer in its suite is evidenced" "$(row '| s2:13-13 |')"
+has "| unique |" "M6: a candidate that alone kills its mutant is unique" "$(row '| s:15-15 |')"
+has "| mis-targeted |" "M6: a candidate that does not kill its mutant is mis-targeted" "$(row '| s:14-14 |')"
+has "| evidenced |" "M6: a cross-suite duplicate is evidenced by the other suite" "$(row '| s:11-11 |')"
+has "s2::add handles a one" "M6: and the second killer is s2's" "$(row '| s:11-11 |')"
+has "| unique |" "M6: the same mutant without the duplicate claim is unique" "$(row '| solo |')"
+lacks "s2::" "M6: s2 runs only because of the duplicate claim" "$(row '| solo |')"
+has "* attributed through failure detail (R8)" "M6: the report carries the R8 footnote" "$OUT"
+
+first=$("${GIT[@]}" -C "$T/repo" rev-parse HEAD)
+# The second commit does three things: inserts a line under the shebang of s.sh, deletes the
+# covered `return 0` line of flag(), and drops the greet check from s.test.sh (so the mutants
+# only that check killed are lost).
+python3 - "$T/repo" <<'PY'
+import sys
+r = sys.argv[1]
+p = r + "/bin/s.sh"
+lines = open(p).read().split("\n")
+lines.insert(1, "# touched")
+open(p, "w").write("\n".join(l for l in lines if l != "  return 0"))
+p = r + "/tests/s.test.sh"
+kept = [l for l in open(p).read().split("\n") if not l.startswith('check "greet says hello"')]
+open(p, "w").write("\n".join(kept))
+PY
+"${GIT[@]}" -C "$T/repo" commit -q -am "second"
+second=$("${GIT[@]}" -C "$T/repo" rev-parse HEAD)
+run --ref "$second" mutants bin/s.sh
+printf '%s\n' "$OUT" > "$T/m2-s.jsonl"
+M3=$(python3 - "$T/m-s.jsonl" "$T/m2-s.jsonl" <<'PY'
+import json, sys
+a = {m["id"]: m for m in map(json.loads, filter(str.strip, open(sys.argv[1])))}
+b = {m["id"]: m for m in map(json.loads, filter(str.strip, open(sys.argv[2])))}
+print(json.dumps({"gone": sorted(a[i]["op"] + ":" + a[i]["before"] for i in set(a) - set(b)),
+                  "new": sorted(set(b) - set(a)), "kept": len(set(a) & set(b))}))
+PY
+)
+m3get(){ python3 -c 'import json,sys
+v=json.loads(sys.argv[1])[sys.argv[2]]
+print(v if isinstance(v,str) else json.dumps(v))' "$M3" "$1"; }
+eq "$(m3get gone)" '["delete:return 0", "exit:return 0"]' "M3: only the mutants on the deleted line are gone"
+eq "$(m3get new)" '[]' "M3: the line inserted at the top adds no mutant and renames none"
+eq "$(m3get kept)" 11 "M3: every mutant on an unchanged line keeps its id"
+run --state "$T/state3" --ref "$second" sample --sample-from "$T/state" --only bin/s.sh
+rc_is 0 "M3: sample from the first state on the second commit succeeds"
+has "[sample] bin/s.sh: 13/13 (killed 3, survived 8, inconclusive 0)" "M3: the progress line" "$OUT"
+eq "$(python3 -c 'import json,sys
+print(sorted(r["before"] for r in map(json.loads, open(sys.argv[1])) if r["verdict"]=="stale"))' "$T/state3/runs-sample.jsonl")" "['return 0', 'return 0']" "M3: the deleted line's mutants are stale, not survived"
+
+run --state "$T/state3" report --section kills --compare "$T/state" --kind code
+lostids=$(python3 - "$T/state" <<'PY'
+import json, sys
+recs = [json.loads(l) for l in open(sys.argv[1] + "/runs-sample.jsonl")]
+print(" ".join(r["id"] for r in recs if r["verdict"] == "killed" and r["file"] == "bin/s.sh" and r["killers"] == ["s::greet says hello"]))
+PY
+)
+has "lost: 3" "M7: the three mutants only the removed check killed are lost" "$OUT"
+for id in $lostids; do has "- $id bin/s.sh" "M7: $id is listed as lost" "$OUT"; done
+has "not run: 0" "M7: nothing the first state killed is unrun on the selected files" "$OUT"
+lacks "bin/p.py" "M7: bin/p.py, never rerun here, is not listed" "$OUT"
+tids=$(python3 -c 'import json,sys
+print(" ".join(json.loads(l)["id"] for l in open(sys.argv[1])))' "$T/state/runs-targeted.jsonl")
+for id in $tids; do lacks "$id" "M7: targeted mutant $id is not in a code comparison" "$OUT"; done
+run --state "$T/state3" report --section kills --compare "$T/state" --kind code --only bin/s.sh bin/p.py
+has "not run: 6" "M7: --only adds bin/p.py, whose six kills were not run" "$OUT"
+eq "$(printf '%s\n' "$OUT" | grep -c 'bin/p.py')" 6 "M7: all six are listed"
+run --state "$T/state3" report --section kills --compare "$T/state" --kind targeted
+has "lost: 0" "M7: a targeted comparison selects no files here" "$OUT"
+run --state "$T/state3" report --section kills --compare "$T/state"
+rc_is 2 "M7: --compare without --kind exits 2"
+
+# M8: the targeted records of the M6 run, with a hand-written inventory that fixes the ranking.
+mkdir -p "$T/state8"; cp "$T/state/meta.json" "$T/state/runs-targeted.jsonl" "$T/state8/"
+python3 - "$T/state8/inventory.jsonl" <<'PY'
+import json, sys
+rows = [{"suite": "s", "seconds": 100, "assertions": 4, "labels": []},
+        {"suite": "s2", "seconds": 80, "assertions": 4, "labels": []}]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+TAB=$(printf '\t')
+{
+  echo "suite${TAB}test${TAB}labels${TAB}kind${TAB}duplicate_of${TAB}verdict${TAB}merge_with${TAB}evidence${TAB}safety${TAB}note"
+  echo "s${TAB}11-11${TAB}add returns the sum${TAB}duplicate${TAB}s2:11-11${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}A"
+  echo "s${TAB}14-14${TAB}flag is set${TAB}wording${TAB}-${TAB}delete${TAB}-${TAB}class${TAB}yes${TAB}class evidence on a safety rule"
+  echo "s${TAB}15-15${TAB}greet says hello${TAB}duplicate${TAB}-${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}unique, not evidenced"
+  echo "s${TAB}16-17${TAB}scratch dir exists at <tmp>${TAB}behaviour${TAB}-${TAB}keep${TAB}-${TAB}class${TAB}no${TAB}kept"
+  echo "s2${TAB}11-11${TAB}add handles a one${TAB}duplicate${TAB}s:11-11${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}B"
+  echo "s2${TAB}12-12${TAB}p.py doubles${TAB}wording${TAB}-${TAB}delete${TAB}-${TAB}class${TAB}no${TAB}W"
+  echo "s2${TAB}13-13${TAB}p.py doubles #2${TAB}duplicate${TAB}s2:12-12${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}D"
+} > "$T/classification.tsv"
+mid(){ python3 -c 'import json,sys
+print(next(r["id"] for r in map(json.loads, open(sys.argv[1])) if r["candidate"]==sys.argv[2]))' "$T/state8/runs-targeted.jsonl" "$1"; }
+run --state "$T/state8" accept "$T/classification.tsv" "$T/targeted.jsonl"
+rc_is 0 "M8: accept succeeds"
+printf '%s\n' "$OUT" | grep '^| s' | sed 's/ | [0-9.]* | / | /' > "$T/accept.out"
+want=$(cat <<EOF
+| s:11-11 | accepted |
+| s:14-14 | rejected: class evidence in a safety suite |
+| s:15-15 | rejected: not evidenced |
+| s2:11-11 | rejected: would leave $(mid s:11-11) without a killer |
+| s2:12-12 | accepted |
+| s2:13-13 | rejected: would leave $(mid s2:13-13) without a killer |
+EOF
+)
+eq "$(cat "$T/accept.out")" "$want" "M8: A is accepted, B rejected over A's mutant, W accepted, D rejected over its own"
+clean M
+
+echo "N. survivor rerun, R8 in the reports and in acceptance"
+mk N
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+row = {"id": "flaky0000001", "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7,
+       "context": "  FLAG=on", "occurrence": 0, "col": 2, "before": "FLAG=on",
+       "after": 'FLAG=on; [ "$(wc -l < "$AUDIT_MARKERS/s.ran")" -ge 3 ] && FLAG=off',
+       "suite": "s", "valid": 1}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+run sample --sample-from "$T/crafted"
+rc_is 0 "N: a hand-written sample runs"
+has "[sample] bin/s.sh: 1/1 (killed 1, survived 0, inconclusive 0)" "N: a mutant only its second run kills is a kill" "$OUT"
+eq "$(python3 -c 'import json,sys
+r=json.loads(open(sys.argv[1]).read().strip()); print(r["verdict"], r["flaky"], r["attempts"])' "$T/state/runs-sample.jsonl")" "killed True 2" "N: it is recorded killed, flaky, after two attempts"
+run report --section kills
+has "| bin/s.sh | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 100.0% |" "N: the kills report counts it under flaky as well" "$OUT"
+clean N
+
+mk O
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+row = {"id": "redmut000001", "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7,
+       "context": "  FLAG=on", "occurrence": 0, "col": 2, "before": "FLAG=on", "after": ":",
+       "suite": "red", "valid": 1}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+run sample --sample-from "$T/crafted"
+has "[sample] bin/s.sh: 1/1 (killed 0, survived 0, inconclusive 0)" "O: a mutant of a red suite is neither killed nor survived" "$OUT"
+eq "$(runs red)" 1 "O: only the red baseline ran"
+run report --section kills
+has "| bin/s.sh | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | - |" "O: it is counted as baseline-red, with no kill rate" "$OUT"
+clean O
+
+mk P
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+row = {"id": "retry0000001", "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7,
+       "context": "  FLAG=on", "occurrence": 0, "col": 2, "before": "FLAG=on", "after": ":",
+       "suite": "s", "valid": 1}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+: > "$T/markers/red-now"
+run sample --sample-from "$T/crafted"
+has "remaining: 1" "P: a mutant of a red suite stays remaining after the session" "$OUT"
+rm "$T/markers/red-now"
+run sample --sample-from "$T/crafted"
+has "[sample] bin/s.sh: 1/1 (killed 1, survived 0, inconclusive 0)" "P: the next session runs it once the suite is green" "$OUT"
+has "remaining: 0" "P: and nothing remains" "$OUT"
+eq "$(python3 -c 'import json,sys
+print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['baseline-red', 'killed']" "P: the red record is kept and the later record wins"
+run report --section kills
+has "| bin/s.sh | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 100.0% |" "P: baseline-red counts only while no other record exists" "$OUT"
+clean P
+
+mkdir -p "$T/stateR"
+python3 - "$T/stateR" "$T/repo" "$SRC/.scripts/test-audit" "$T/r-manifest.jsonl" <<'PY'
+import json, sys
+st, repo, mod, manifest = sys.argv[1:5]
+sys.path.insert(0, mod)
+import mutators
+text = open(repo + "/bin/s.sh").read()
+def rec(kind, cand, labels, killers, via, amb, find, replace):
+    m = mutators.targeted_mutant("bin/s.sh", text, find, replace)[0]
+    r = {"id": m["id"], "kind": kind, "file": "bin/s.sh", "op": m["op"], "line": m["line"], "before": m["before"],
+         "after": m["after"], "suite": "s", "verdict": "killed", "killers": killers, "unmatched": [],
+         "ambiguous": amb, "via_detail": via, "suites": {"s": "killed"}, "flaky": False, "attempts": 1, "seconds": 0.1}
+    if cand:
+        r.update(candidate=cand, claim="other", labels=labels)
+    return r
+t = [rec("targeted", "s:1-1", ["s::t1"], ["s::t1"], [], ["s::t2"], "echo hello", "echo a"),
+     rec("targeted", "s:2-2", ["s::t3"], ["s::t3", "s::t4"], ["s::t4"], [], "echo hello", "echo b")]
+open(st + "/runs-targeted.jsonl", "w").write("".join(json.dumps(r) + "\n" for r in t))
+c = [rec("code", None, [], ["s::t1"], ["s::t1"], [], "echo hello", "echo c"),
+     rec("code", None, [], ["s::t1"], [], [], "echo hello", "echo d")]
+open(st + "/runs-sample.jsonl", "w").write("".join(json.dumps(r) + "\n" for r in c))
+entries = [{"candidate": "s:1-1", "suite": "s", "labels": ["t1"], "claim": "other", "mutants": [{"file": "bin/s.sh", "find": "echo hello", "replace": "echo a"}]},
+           {"candidate": "s:2-2", "suite": "s", "labels": ["t3"], "claim": "other", "mutants": [{"file": "bin/s.sh", "find": "echo hello", "replace": "echo b"}]}]
+open(manifest, "w").write("".join(json.dumps(e) + "\n" for e in entries))
+PY
+run --state "$T/stateR" report --section targeted
+has "| s::t3; s::t4* |" "N: a killer attributed through failure detail is starred" "$OUT"
+lacks "s::t1*" "N: an exact killer is not starred" "$OUT"
+has "* attributed through failure detail (R8)" "N: the footnote is printed" "$OUT"
+run --state "$T/stateR" report --section kills
+has "| bin/s.sh | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 100.0% |" "N: the kills report counts kills that have a via_detail killer" "$OUT"
+{
+  echo "suite${TAB}test${TAB}labels${TAB}kind${TAB}duplicate_of${TAB}verdict${TAB}merge_with${TAB}evidence${TAB}safety${TAB}note"
+  echo "s${TAB}1-1${TAB}t1${TAB}duplicate${TAB}-${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}other killer is ambiguous"
+  echo "s${TAB}2-2${TAB}t3${TAB}duplicate${TAB}-${TAB}delete${TAB}-${TAB}targeted${TAB}no${TAB}other killer is via detail"
+} > "$T/r-class.tsv"
+run --state "$T/stateR" accept "$T/r-class.tsv" "$T/r-manifest.jsonl"
+has "| s:1-1 | 0.0 | rejected: not evidenced |" "N: an ambiguous label never counts as another killer" "$OUT"
+has "| s:2-2 | 0.0 | accepted |" "N: a killer attributed through failure detail counts" "$OUT"
+U=$(python3 - "$AUDIT" "$ROOT/unit" "$FIX" <<'PY'
 import contextlib, importlib.util, io, json, os, subprocess, sys
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("audit", sys.argv[1])
@@ -257,6 +628,7 @@ root = Path(sys.argv[2]); root.mkdir()
 out = {}
 R = lambda passed, failed, rc=1: a.Run(rc, 0.1, False, passed, failed, "")
 out["longest"] = list(a.attribute(R(["x", "x (a)", "w"], [], 0), R(["w", "q"], ["x (a) (b)"]))[1:])
+out["unique_prefix"] = list(a.attribute(R(["x", "w"], [], 0), R(["w"], ["x (a) (b)"]))[1:])
 st = a.Store(root / "state"); st.state.mkdir()
 (st.state / "runs-k.jsonl").write_text('{"a": 1}\n{"a": 2')
 out["torn"] = st.records("k")
@@ -292,19 +664,58 @@ err = io.StringIO()
 with contextlib.redirect_stderr(err):
     a.SESSION.cleanup()
 out["left"] = err.getvalue().strip()
+(st.state / "runs-t.jsonl").write_text('{"a": 1}\n{"a":')
+st.append("t", {"b": 2}); out["append_torn"] = st.records("t")
+(st.state / "runs-v.jsonl").write_text('{"a": 1}')
+st.append("v", {"b": 2}); out["append_whole"] = st.records("v")
+out["longest_verdict"] = a.attribute(R(["x", "x (a)", "w"], [], 0), R(["w", "q"], ["x (a) (b)"]))[0]
+mu = a.mutators
+snip = "\n".join(['x=1', 'if [ "$a" = b ] && echo "a && b"; then # note && here', '  exit 0', 'fi',
+                  'echo "exit 0"', 'while (( n < 3 )); do n=$((n + 1)); done'])
+ms = mu.code_mutants("f.sh", snip, "bash")
+out["snip"] = sorted("%d:%s:%s>%s" % (m["line"], m["op"], m["before"], m["after"]) for m in ms if m["op"] in ("andor", "exit", "compare"))
+out["readloop"] = [m["line"] for m in mu.code_mutants("l.sh", "while read a; do :; done </dev/null\nuntil IFS= read -r b; do :; done </dev/null\nwhile [ -z \"$z\" ]; do :; done\n", "bash") if m["op"] == "negate"]
+out["multiline"] = [m["line"] for m in mu.code_mutants("m.sh", "x='a\nexit 0\nb'\ny=1\n", "bash")]
+two = mu.code_mutants("d.sh", "echo a\necho a\n", "bash")
+out["occurrence"] = [mu.apply("echo a\necho a\n", m) for m in two]
+first = ms[0]
+out["stale"] = [mu.apply(snip, first) is None, mu.apply(snip.replace(first["context"], first["context"] + " # edit"), first) is None]
+text = open(sys.argv[3] + "/bin/s.sh").read()
+sm = mu.code_mutants("bin/s.sh", text, "bash")
+p1, p2 = a.pick("bin/s.sh", sm, 6, 20261111), a.pick("bin/s.sh", sm, 6, 20261111)
+out["pick"] = [[m["id"] for m in p1] == [m["id"] for m in p2], len(p1), sorted({m["op"] for m in a.pick("bin/s.sh", sm, 5, 1)})]
+out["sizes"] = [a.sample_size("xreview", 700, 100), a.sample_size("x", 300, 100), a.sample_size("x", 1, 10),
+                a.sample_size("x", 100, 100), a.sample_size("x", 100, 5)]
+tx = "a b\nb a\n"
+_, n_all = mu.targeted_mutant("f", tx, "a", "x")
+one, n_one = mu.targeted_mutant("f", tx, "a", "x", 1)
+_, n_none = mu.targeted_mutant("f", tx, "a", "x", 3)
+out["targeted"] = [n_all, n_one, mu.apply(tx, one), n_none]
 print(json.dumps(out))
 PY
 )
 uget(){ python3 -c 'import json,sys
 v=json.loads(sys.argv[1])[sys.argv[2]]
 print(v if isinstance(v,str) else json.dumps(v))' "$U" "$1"; }
-eq "$(uget longest)" '[["x (a)"], []]' "J: the longest qualifying baseline label is the killer"
+eq "$(uget longest)" '[[], [], ["x (a) (b)"], []]' "J: a failed label two baseline labels extend is ambiguous, with no killer"
+eq "$(uget unique_prefix)" '[["x"], [], [], ["x"]]' "J: a failed label one baseline label extends is that label's kill, via detail"
 eq "$(uget torn)" '[{"a": 1}]' "J: a torn last line of a run file is skipped"
 eq "$(uget middle)" raised "J: a bad line that is not the last still raises"
 eq "$(uget copy)" built "J: the copy builds despite a global hook and template"
 eq "$(uget template)" clean "J: the user's init template never reaches the copy"
 eq "$(uget branch)" refs/heads/main "J: the copy's branch is main, not the user's default"
 eq "$(uget left)" "copy left behind: $ROOT/unit/stuck" "J: an unremovable copy is reported"
+eq "$(uget append_torn)" '[{"a": 1}, {"b": 2}]' "J: an append after a torn last line does not fuse with it"
+eq "$(uget append_whole)" '[{"a": 1}, {"b": 2}]' "J: an append after a last line missing only its newline keeps both"
+eq "$(uget longest_verdict)" inconclusive "J: an ambiguous-only failure gives an inconclusive verdict"
+eq "$(uget snip)" '["2:andor:&&>||", "2:compare:=>!=", "3:exit:exit 0>exit 1", "6:compare:<>>="]' "J: operators skip quotes, comments and arithmetic expansions"
+eq "$(uget readloop)" '[3]' "J: bare and env-prefixed read loops get no negate mutant"
+eq "$(uget multiline)" '[4]' "J: a line inside a multi-line string gets no mutant"
+eq "$(uget occurrence)" '[":\necho a\n", "echo a\n:\n"]' "J: identical lines are told apart by occurrence"
+eq "$(uget stale)" '[false, true]' "J: apply returns None once the context line changed"
+eq "$(uget pick)" '[true, 6, ["andor", "compare", "delete", "exit", "negate"]]' "J: a sample is reproducible and covers every operator first"
+eq "$(uget sizes)" '[3, 4, 10, 9, 5]' "J: sample sizes follow the clamp, the heavy table and the valid cap"
+eq "$(uget targeted)" '[2, 1, "x b\nb a\n", 0]' "J: a find is unique in the file or on the given line"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -7,6 +7,7 @@ pass=0; fail=0
 ok(){ echo "  PASS: $1"; pass=$((pass+1)); }
 bad(){ echo "  FAIL: $1"; fail=$((fail+1)); }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; fi; }
+[ -n "${AUDIT_MARKERS:-}" ] && [ -e "$AUDIT_MARKERS/red-now" ] && bad "forced red"
 
 check "add returns the sum" "$(add 2 3)" 5
 FLAG=off
