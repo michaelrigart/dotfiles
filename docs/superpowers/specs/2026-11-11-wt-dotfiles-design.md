@@ -107,6 +107,22 @@ sessions start" comment name the new root.
     session keeps its working-directory grant and every denial; only another session's sandboxed
     shell writes into a sibling fail. Record the measured result in this spec.
   - The settings fail to load with it: stop and bring Michael options.
+  - Measured 2026-11-11 (Claude Code 2.1.322):
+    - Run A (working directory a scratch directory under `~/Code`): the settings loaded (exit 0,
+      `subtype: success`, empty stderr) and the ordinary file written into the scratch sibling
+      does not exist. Claude Code ignores the glob in `allowWrite` (or takes it literally).
+      Decision taken: `~/.local/share/chezmoi-*` is dropped from `allowWrite` and kept in `$roots`.
+    - Run B (working directory the scratch sibling, with the glob still in the overlay): the
+      ordinary file `b-ordinary` was written, and `.mcp.json`, `.codex/config.toml`,
+      `.lazygit.yml` and `.git` all failed with "Operation not permitted" and do not exist. The
+      verdict that the root-keyed denials bite rests on `.codex/config.toml` and `.lazygit.yml`:
+      before any overlay a sibling session already reads `.mcp.json`, `.git/config*` and the
+      checkout's `.git` file as denied, because Claude Code denies those under its working
+      directory itself, so those two results do not prove the overlay by themselves.
+    - How: the overlay is the modify script's output with `allowUnsandboxedCommands: false`,
+      `claude -p --settings` with `--disallowedTools Write,Edit,NotebookEdit` and a budget cap,
+      and every verdict read from the filesystem after a transcript check that the exact command
+      ran and the working-directory marker exists.
 
 ### 2. Instructions
 

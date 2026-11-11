@@ -436,17 +436,17 @@ printf '%s' "$input" | jq \
             "~/.ssh/michael_rsa.pub",
             "~/.ssh/viumore_rsa.pub"
           ],
-          # Ordinary work only: source trees, the chezmoi source and its wt siblings, documents
-          # and the vault. A dotfiles wt checkout is a sibling, ~/.local/share/chezmoi-<branch>;
-          # the glob is no wider than that name because ~/.local/share also holds mise runtimes
-          # and other executables.
+          # Ordinary work only: source trees, the chezmoi source, documents and the vault. A
+          # dotfiles wt checkout is a sibling, ~/.local/share/chezmoi-<branch>, and is written
+          # only through the working-directory grant of its own session: allowWrite ignores a glob
+          # (measured 2026-11-11), and a parent entry would reach mise runtimes and other
+          # executables in ~/.local/share. The siblings stay in $roots below.
           # ~/.config and ~/.local/bin are out on purpose (spec 2026-10-16, sandbox write
           # boundary): what is written there runs later outside the sandbox, as shell
           # startup, git, mise, herdr, the hooks and the excluded commands.
           "allowWrite": [
             "~/Code",
             "~/.local/share/chezmoi",
-            "~/.local/share/chezmoi-*",
             "~/Documents",
             "~/Library/Mobile Documents/iCloud~md~obsidian"
           ],
