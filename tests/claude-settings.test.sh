@@ -405,15 +405,15 @@ jq_is ".sandbox.filesystem.allowRead | sort == ($EXP_ALLOW_READ | sort)" true \
 jq_is '[.sandbox.filesystem.allowRead[]
         | select((endswith(".pub") or . == "~/.ssh/config" or . == "~/.ssh/known_hosts") | not)]
        | length' 0 "no private key path is readable through allowRead"
-# allowWrite keeps ordinary work sandboxed: source trees, the chezmoi source, documents and
-# the vault. ~/.config and ~/.local/bin are out (spec 2026-10-16, sandbox write boundary):
+# allowWrite keeps ordinary work sandboxed: source trees, the chezmoi source and its wt
+# siblings, documents and the vault. ~/.config and ~/.local/bin are out (spec 2026-10-16, sandbox write boundary):
 # what is written there runs later outside the sandbox — shells, git, mise, herdr, the
 # hooks, the excluded commands. Credential denials still outrank allowWrite.
 EXP_ALLOW_WRITE='["~/Code","~/.local/share/chezmoi","~/.local/share/chezmoi-*","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
 jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
       "allowWrite is exactly the five work roots"
 # denyWrite: in each work root, at any depth, git hooks and git configuration (also inside
-# submodules and linked worktrees); the chezmoi checkout's own top-level .git; the vault's
+# submodules and linked worktrees); the chezmoi checkout's own top-level .git and each wt sibling's; the vault's
 # .obsidian; and the agent configuration (.claude/settings*.json, .mcp.json, .codex) at
 # depth 0, 1 and 2 under each root only: never at any depth, because node_modules packages
 # ship such files (resolve@1.22.12 has a .claude/settings.local.json) and a deny there
@@ -563,7 +563,8 @@ done
 # Only the sibling's own top-level .git is denied: a repository nested deeper keeps its
 # .git, objects and index writable.
 for p in "$S/README.md" "$S/tests/fixtures/r/.git" "$S/tests/fixtures/r/.git/objects/ab/cd" \
-         "$S/tests/fixtures/r/.git/index"; do
+         "$S/tests/fixtures/r/.git/index" \
+         "$H/.local/share/chezmoi/.git/objects/ab/cd" "$H/.local/share/chezmoi/.git/index"; do
   glob_case allowed "$p"
 done
 # Documented consequence of ** crossing into refs inside a submodule's git directory.
