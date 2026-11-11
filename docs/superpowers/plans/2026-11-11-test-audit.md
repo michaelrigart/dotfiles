@@ -177,7 +177,7 @@
   - `plan` needs the inventory (otherwise it exits 2 with `run inventory first`). It freezes the random sample into `<state>/sample.jsonl` (once), then prints a row per file (`file, own suite, valid, sampled, est. minutes`) and `total: <n> mutants, ~<h> h`. ETA: Σ sampled × own-suite baseline × 1.2, plus one baseline per suite.
   - `sample [--max-minutes N] [--only FILE...] [--sample-from STATE]`
     - It runs the frozen sample (or another state's) against each file's own suite and skips mutants that already have a final record.
-    - It prints `[sample] <file>: <done>/<n> (killed a, survived b, inconclusive c)` as each file completes, and `remaining: <n>` at exit.
+    - It prints `[sample] <file>: <done>/<n> (killed a, survived b, inconclusive c, baseline-red d)` as each file completes, and `remaining: <n>` at exit.
     - A second process on the same state and command exits 2 with `another sample run holds <state>`.
   - `targeted [--max-minutes N] MANIFEST`: the same resume and lock rules, over `runs-targeted.jsonl`.
   - `report --section kills|gaps|targeted [--compare STATE --kind KIND [--only FILE...]]`:
