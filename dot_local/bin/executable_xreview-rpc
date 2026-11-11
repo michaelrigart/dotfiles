@@ -781,9 +781,12 @@ class RecordError(Exception):
     pass
 
 
+def _state_base():
+    return os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+
+
 def state_dir():
-    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    return os.path.join(base, "xreview-rpc")
+    return os.path.join(_state_base(), "xreview-rpc")
 
 
 def under(path, d):
@@ -791,6 +794,24 @@ def under(path, d):
     repo and repo-x are neighbours by construction."""
     p, r = os.path.realpath(path), os.path.realpath(d)
     return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+
+
+def flock_until(fd, deadline, on_busy=None):
+    """True once fd holds flock(LOCK_EX); False, fd closed, if another process still holds it
+    at deadline. on_busy runs once, the first time the lock is found held."""
+    noticed = False
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if not noticed and on_busy:
+                on_busy()
+            noticed = True
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return False
+            time.sleep(0.2)
 
 
 def take_lock(sd, deadline):
@@ -802,22 +823,13 @@ def take_lock(sd, deadline):
     # For the test suites only: a file touched the first time the lock is found busy, so a
     # test can see the wait begin instead of guessing it from elapsed time.
     mark = os.environ.get("XREVIEW_RPC_LOCK_BUSY_MARK")
-    noticed = False
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fd
-        except BlockingIOError:
-            if not noticed:
-                err("waiting for another release to finish")
-                noticed = True
-            if mark:
-                open(mark, "w").close()
-                mark = None
-            if time.monotonic() >= deadline:
-                os.close(fd)
-                return None
-            time.sleep(0.2)
+
+    def busy():
+        err("waiting for another release to finish")
+        if mark:
+            open(mark, "w").close()
+
+    return fd if flock_until(fd, deadline, busy) else None
 
 
 def _record_path(sd, tid):
@@ -876,8 +888,7 @@ def read_records(sd):
 
 
 def xreview_state_root():
-    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    return os.path.join(base, "xreview")
+    return os.path.join(_state_base(), "xreview")
 
 
 def started_lock(path, deadline):
@@ -885,15 +896,7 @@ def started_lock(path, deadline):
     it at deadline. Raises OSError when the lock file cannot be made."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fd = os.open(path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fd
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                os.close(fd)
-                return None
-            time.sleep(0.05)
+    return fd if flock_until(fd, deadline) else None
 
 
 def started_append(path, tid, checkout):

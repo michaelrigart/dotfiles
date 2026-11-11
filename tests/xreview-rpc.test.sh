@@ -168,11 +168,13 @@ is "ST4 an unwritable list still prints the id and exits 0" "$out/$rc" "th-new-1
 is "ST4 and says what was not recorded" "$(grep -c 'could not record th-new-1' "$T/st/err")" 1
 rmdir "$F"
 rm -f "$F" "$F.lock"
+mkdir -p "$(dirname "$F")"
 /usr/bin/python3 -c '
 import fcntl, sys, time
 fd = open(sys.argv[1], "w"); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True); time.sleep(3)' "$F.lock" > "$T/st/held" &
 HOLD=$!
-while [ ! -s "$T/st/held" ]; do sleep 0.05; done
+for _ in $(seq 100); do [ -s "$T/st/held" ] && break; sleep 0.05; done
+[ -s "$T/st/held" ] || _fail "ST5 the lock holder started" "never printed held"
 out="$(XREVIEW_STARTED_LOCK_WAIT=0.3 rpc thread-start --cwd "$T/st/link" --started "$F" 2>"$T/st/err")"; rc=$?
 wait "$HOLD"
 is "ST5 a lock held past the wait still prints the id and exits 0" "$out/$rc" "th-new-1/0"
@@ -186,6 +188,18 @@ scenario '{"responses":{"thread/start":{"result":{"thread":{"id":"../x"}}}}}'
 out="$(rpc thread-start --cwd "$T/st/link" --started "$F" 2>"$T/st/err")"; rc=$?
 is "ST7 an id that is not a plain name is printed, not recorded" "$out/$rc/$([ -e "$F" ] && echo exists || echo none)" "../x/0/none"
 is "ST7 and says what was not recorded" "$(grep -c 'could not record ../x' "$T/st/err")" 1
+rm -f "$F" "$F.lock"; scenario "$NEW1"; : > "$T/st/out8"
+/usr/bin/python3 -c '
+import fcntl, sys, time
+fd = open(sys.argv[1], "w"); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True); time.sleep(1.5)' "$F.lock" > "$T/st/held" &
+HOLD=$!
+for _ in $(seq 100); do [ -s "$T/st/held" ] && break; sleep 0.05; done
+XREVIEW_STARTED_LOCK_WAIT=8 rpc thread-start --cwd "$T/st/link" --started "$F" > "$T/st/out8" 2>/dev/null &
+START=$!
+sleep 0.8
+is "ST8 the id is not printed while the list is still being written" "$(cat "$T/st/out8")" ""
+wait "$HOLD"; wait "$START"
+is "ST8 the id is printed and recorded once the lock is free" "$(cat "$T/st/out8")/$(jq -r .id "$F")" "th-new-1/th-new-1"
 unset XDG_STATE_HOME
 
 echo "B3. hooks-status"
