@@ -1,8 +1,11 @@
 # Archive finished review threads
 
-**Status:** Approved
+**Status:** In progress (branch `feat/archive-review-threads`; no MR, a dotfiles line)
 **Date:** 2026-11-11
 **Sign-off:** Michael, 2026-11-11 (Codex spec review approved in round 3, `xr-1794359940-6c5ebaf4`)
+**Amended:** 2026-11-11, after §0's check failed. Michael's ruling: keep this design and report
+the app's catalog bug upstream. See "Amendment (2026-11-11)" below; the sections it changes say
+so where they stand.
 **Branch:** `feat/archive-review-threads`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-archive-review-threads` (a dotfiles `wt` line run before the rules
 that allow it are merged; see `docs/superpowers/specs/2026-11-11-wt-dotfiles-design.md` §5 on
@@ -38,6 +41,10 @@ daemon, its own login and Herdr-restore routing, and would have moved his own pa
 
 ## Goals
 
+Restated by the amendment: what this line delivers is correct archiving on the Codex side. The
+daemon's lists stay clean and the app's Archived view is right. The app's main list clears only
+when the app fixes its incremental sync or reconciles in full (see the amendment).
+
 - When `wt-rm` tears a checkout down, every review thread `xreview` started for that checkout is
   archived for good.
 - The review threads already left over from removed checkouts are archived once.
@@ -53,6 +60,7 @@ daemon, its own login and Herdr-restore routing, and would have moved his own pa
   queued instead, so the main checkout, which is never torn down, stops accumulating threads.
 - Removing `xreview`'s per-checkout state directories.
 - An automatic trigger for the cleanup (§3).
+- Writing into the app's files, `~/.codex/sqlite/codex.db` included (amendment).
 
 ## Anti-goals
 
@@ -72,6 +80,8 @@ Before any code: archive one leftover review thread of a removed checkout with
 `xreview-rpc thread-archive`, and ask Michael to confirm that it left the ChatGPT app's Codex
 list. If the app still lists archived threads, this design cannot work: unarchive the thread and
 stop, and the line reports to the driver.
+
+Outcome (2026-11-11): the app still listed it; see the amendment.
 
 ### 1. Which threads are review threads
 
@@ -146,6 +156,11 @@ A command in `xreview-rpc`, named by the builder:
   in the dotfiles sees a harness worktree removed (28 of the 96 leftovers measured on 2026-11-11).
   That is a known limit. It becomes rare once `feat/wt-dotfiles` moves dotfiles lines to `wt`,
   and the re-runnable cleanup catches it.
+- **Recorded cwd and origin (amendment).** A thread's recorded `cwd` can differ from where it
+  began. The cleanup keeps selecting by the daemon's recorded `cwd`. A thread whose origin differs
+  from that `cwd` is listed under its own heading and never selected, and the dry run states the
+  limit. The origin is the thread's `started` path, else its rollout's first `session_meta` cwd.
+  A thread whose origin cannot be read is listed the same way.
 
 ### 4. Tests
 
@@ -175,6 +190,41 @@ A command in `xreview-rpc`, named by the builder:
 
 Michael: `chezmoi apply`, then the cleanup's real run once he has seen its dry run, and
 `wt-rm feat/archive-review-threads`, which then exercises §2 on its own review threads.
+
+## Amendment (2026-11-11)
+
+**§0's outcome.**
+- A thread archived through the daemon (`xreview-rpc thread-archive`) stayed in the app's Codex
+  list, even after the app was relaunched.
+- A thread Michael archived from the app's own UI left the list and showed in its Archived view.
+  A before/after diff shows how the two archives compare:
+  - **On the Codex side they are the same.** The app's archive makes the same change as the
+    daemon's `thread/archive`: in `~/.codex/state_5.sqlite` it sets `archived` and
+    `archived_at`, and it moves the rollout to `archived_sessions/`. Neither archive changes
+    `updated_at`. Afterwards the daemon's `thread/list` lists the thread as archived.
+  - **The app also edits its own catalog.** It deletes the thread's row from
+    `local_thread_catalog` in its private `~/.codex/sqlite/codex.db`. That catalog is what the
+    main list reads.
+- **The catalog drops a row only two ways:** an archive from the app's own UI, or a full
+  reconcile.
+  - The catalog was built on 2026-11-01 and has not been reconciled in full since, despite
+    several relaunches and an app update.
+  - Its incremental sync, on an `updated_at` watermark, ignores archived threads. This held even
+    when a rename moved the thread's `updated_at` past the watermark.
+  - 23 rows in the catalog were threads already archived on the Codex side.
+- **No supported interface reaches the catalog.** The daemon protocol covers the whole Codex-side
+  archive. The app's own app-server is a stdio child of the app.
+
+**Michael's ruling (2026-11-11).**
+- Keep this design. The goal is restated above: correct Codex-side archiving. The app's main list
+  clearing is a known limit, not a failure of this line.
+- Report the catalog bug to the Codex repository. Michael approves the text and posts it.
+- Nothing here writes into the app's files, `codex.db` included (Non-goals).
+
+**Found during the check: a recorded cwd can differ from its origin.** In one review thread the
+first `session_meta` named a removed harness worktree, while the daemon records an existing
+directory that a later turn ran in. §3's selection by the daemon's `cwd` would therefore never
+select it, which is the safe direction. §3 now lists such threads and never selects them.
 
 ## Left to the builder
 
