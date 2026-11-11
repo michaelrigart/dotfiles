@@ -154,7 +154,7 @@ wall time):
 
 `live-write-boundary` also probes a dotfiles `wt` sibling. That probe measures only from a
 session started in one (`~/.local/share/chezmoi-<branch>`); from anywhere else it reads
-INCONCLUSIVE.
+FAIL (exit 2) with an `INCONCLUSIVE: sibling:` line and no `failed_keys`.
 
 **Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or `live-write-boundary`
 with the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:

@@ -6,8 +6,9 @@
 # failed_keys=<key>,<key> line naming the keys that counted, which tests/run.sh shows.
 # The sibling probe covers ~/.local/share/chezmoi-*, the root of the dotfiles' wt checkouts. A session
 # started in a sibling probes that checkout (existing mode: its own .git file is only opened for
-# append); any other session creates ~/.local/share/chezmoi-<stamp> (scratch mode) and removes it. If
-# the ordinary write into the sibling fails, sibling_write=DENIED and an INCONCLUSIVE: sibling: line
+# append); any other session tries to create ~/.local/share/chezmoi-<stamp> (scratch mode) and
+# removes it. If the ordinary write into the sibling fails, sibling_write=DENIED and an
+# INCONCLUSIVE: sibling: line
 # replace the sibling battery, that key is not a failure, and the run exits 2 unless something else
 # failed. sibling_symlink_escape runs in both modes: a sibling-shaped symlink to ~/.config must not
 # give a write into ~/.config.
