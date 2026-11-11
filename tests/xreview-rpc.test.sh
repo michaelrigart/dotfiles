@@ -188,15 +188,18 @@ scenario '{"responses":{"thread/start":{"result":{"thread":{"id":"../x"}}}}}'
 out="$(rpc thread-start --cwd "$T/st/link" --started "$F" 2>"$T/st/err")"; rc=$?
 is "ST7 an id that is not a plain name is printed, not recorded" "$out/$rc/$([ -e "$F" ] && echo exists || echo none)" "../x/0/none"
 is "ST7 and says what was not recorded" "$(grep -c 'could not record ../x' "$T/st/err")" 1
-rm -f "$F" "$F.lock"; scenario "$NEW1"; : > "$T/st/out8"
+rm -f "$F" "$F.lock" "$T/st/held" "$T/st/busy"; scenario "$NEW1"; : > "$T/st/out8"
 /usr/bin/python3 -c '
 import fcntl, sys, time
 fd = open(sys.argv[1], "w"); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True); time.sleep(1.5)' "$F.lock" > "$T/st/held" &
 HOLD=$!
 for _ in $(seq 100); do [ -s "$T/st/held" ] && break; sleep 0.05; done
-XREVIEW_STARTED_LOCK_WAIT=8 rpc thread-start --cwd "$T/st/link" --started "$F" > "$T/st/out8" 2>/dev/null &
+[ -s "$T/st/held" ] || _fail "ST8 the lock holder started" "never printed held"
+PYTHONUNBUFFERED=1 XREVIEW_RPC_LOCK_BUSY_MARK="$T/st/busy" XREVIEW_STARTED_LOCK_WAIT=8 \
+  rpc thread-start --cwd "$T/st/link" --started "$F" > "$T/st/out8" 2>/dev/null &
 START=$!
-sleep 0.8
+for _ in $(seq 100); do [ -e "$T/st/busy" ] && break; sleep 0.05; done
+[ -e "$T/st/busy" ] || _fail "ST8 thread-start reached the lock wait" "no busy mark"
 is "ST8 the id is not printed while the list is still being written" "$(cat "$T/st/out8")" ""
 wait "$HOLD"; wait "$START"
 is "ST8 the id is printed and recorded once the lock is free" "$(cat "$T/st/out8")/$(jq -r .id "$F")" "th-new-1/th-new-1"

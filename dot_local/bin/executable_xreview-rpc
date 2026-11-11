@@ -798,15 +798,21 @@ def under(path, d):
 
 def flock_until(fd, deadline, on_busy=None):
     """True once fd holds flock(LOCK_EX); False, fd closed, if another process still holds it
-    at deadline. on_busy runs once, the first time the lock is found held."""
+    at deadline. on_busy runs once, the first time the lock is found held. For the test suites
+    only: a file touched then, named by XREVIEW_RPC_LOCK_BUSY_MARK, so a test can see the wait
+    begin instead of guessing it from elapsed time."""
+    mark = os.environ.get("XREVIEW_RPC_LOCK_BUSY_MARK")
     noticed = False
     while True:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
         except BlockingIOError:
-            if not noticed and on_busy:
-                on_busy()
+            if not noticed:
+                if on_busy:
+                    on_busy()
+                if mark:
+                    open(mark, "w").close()
             noticed = True
             if time.monotonic() >= deadline:
                 os.close(fd)
@@ -820,15 +826,7 @@ def take_lock(sd, deadline):
     stale. Raises OSError when the state directory or the lock file cannot be made."""
     os.makedirs(sd, exist_ok=True)
     fd = os.open(os.path.join(sd, "release.lock"), os.O_RDWR | os.O_CREAT, 0o600)
-    # For the test suites only: a file touched the first time the lock is found busy, so a
-    # test can see the wait begin instead of guessing it from elapsed time.
-    mark = os.environ.get("XREVIEW_RPC_LOCK_BUSY_MARK")
-
-    def busy():
-        err("waiting for another release to finish")
-        if mark:
-            open(mark, "w").close()
-
+    busy = lambda: err("waiting for another release to finish")
     return fd if flock_until(fd, deadline, busy) else None
 
 
