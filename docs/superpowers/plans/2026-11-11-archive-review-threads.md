@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `feat/archive-review-threads`; no MR, a dotfiles line)
+**Status:** Implemented (branch `feat/archive-review-threads`; no MR, a dotfiles line)
+
+> **Completed 2026-11-11.** Executed on `feat/archive-review-threads`; do not run it again. Its banners and execution notes bind that run only.
 
 **Goal:** Record which threads `xreview` starts, so that `wt-rm` can archive them for good once a checkout is removed. Add a re-runnable cleanup for the leftovers, and stop `archive_superseded` dropping ids it failed to archive.
 
@@ -314,3 +316,15 @@ Made by the line inside the approved spec (2026-11-11):
 8. **A thread's origin** is its `started` path, else its rollout's first `session_meta` cwd. A differing or unreadable origin is listed and never selected.
 9. **`wt-rm` archives last,** after the branch step and the recreated-files warning. Its status never changes `wt-rm`'s.
 10. **A `started` thread whose daemon cwd lies outside the removed checkout** is reported as kept, not as a failure.
+
+Made during execution (2026-11-11):
+
+11. **The ids reach the screen.**
+    - On exit 5, `archive-checkout` prints one `<id>: not archived: the Codex daemon is unreachable` line per candidate, before its retry line.
+    - `kept <id>: …` notes go to stderr with exit 0.
+    - `wt-rm` echoes the command's stderr on every status, minus the command's own `xreview-rpc: retry:` line, and prints its own single `Retry:` line.
+12. **`archive-checkout`'s budget** is 60 s plus 10 s per candidate (`XREVIEW_RPC_ARCHIVE_UNIT`, a test knob). A spent budget is worded as one, not as a lost connection.
+13. **The cleanup decides by the cwd `thread/read` gives,** which is the recorded cwd (C7), never by the listing's: `thread/list` reports a thread's original cwd.
+14. **The cleanup lists, under "differs" and never selects, a review thread whose recorded cwd exists but whose origin is gone.** This is the case the amendment was written for, and it was otherwise invisible.
+15. **An archive is confirmed through every cwd the thread may be listed under,** because `thread/list`'s `cwd` filter matches the original cwd: the recorded cwd, plus the `started` paths, the listed cwd or the rollout's origin. `xreview-rpc release` keeps its single-cwd calls (spec non-goal).
+16. **Before each archive, the cleanup re-checks** that the recorded cwd is still gone, and keeps a thread that is running a turn.

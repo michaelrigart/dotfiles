@@ -1,6 +1,6 @@
 # Archive finished review threads
 
-**Status:** In progress (branch `feat/archive-review-threads`; no MR, a dotfiles line)
+**Status:** Implemented (branch `feat/archive-review-threads`; no MR, a dotfiles line)
 **Date:** 2026-11-11
 **Sign-off:** Michael, 2026-11-11 (Codex spec review approved in round 3, `xr-1794359940-6c5ebaf4`)
 **Amended:** 2026-11-11, after §0's check failed. Michael's ruling: keep this design and report
@@ -225,6 +225,18 @@ Michael: `chezmoi apply`, then the cleanup's real run once he has seen its dry r
 first `session_meta` named a removed harness worktree, while the daemon records an existing
 directory that a later turn ran in. §3's selection by the daemon's `cwd` would therefore never
 select it, which is the safe direction. §3 now lists such threads and never selects them.
+
+**Measured while building (2026-11-11).**
+- **Two cwds per thread.** `thread/list` reports a thread's original cwd, and `thread/read` its recorded, latest one. `thread/list`'s `cwd` filter matches the original.
+  - This corrects C9 of spec 2026-10-15 for a thread whose cwd changed.
+  - This line confirms archives through every cwd a thread may be listed under (plan, ruling 15).
+  - `release` is unchanged here and still confirms with the recorded cwd. That gap predates this line and was reported to the driver.
+- **Compressed rollouts.** The daemon lists a compressed rollout as `…jsonl`, while the file on disk is `…jsonl.zst`.
+- **The first real dry run.**
+  - Selected: 82 by a first packet and 33 old pane sessions, 115 in all.
+  - Not selected: 1 pinned thread, and 13 threads whose origin differs from their recorded cwd.
+  - The 13 are harness-worktree reviews whose later turns ran in the main checkout. §3's re-runnable cleanup therefore never archives them, which narrows its claim to catch a harness worktree's last thread.
+  - 34 more old pane sessions mix in hand-relayed `<from-claude-code>` messages. They are not `xreview` packets, so the cleanup does not select them.
 
 ## Left to the builder
 
