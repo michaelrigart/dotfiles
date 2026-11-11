@@ -22,6 +22,13 @@
 # LaunchAgent must not be throttled (no ProcessType=Background or LowPriorityIO): a run
 # that outlasts its 180 s interval makes launchd skip cycles while reporting exit code 0.
 #
+# A refresh runs one background job per repository, side by side, and each job holds a kernel lock
+# on that repository's lock file (<key>.lock in the cache directory, fd 9, /usr/bin/lockf) from its
+# lookups to its last report. Two refreshes of one repository (the timer and a focus hook, say) therefore run
+# one after the other, and an older lookup can never publish after a newer one. A job that cannot
+# take the lock within LOCK_WAIT seconds skips its repository: the holder reports it. Cache files
+# are replaced atomically, so a refresh killed mid-write leaves the previous table.
+#
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
 # glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
 # where freshness matters, is cached with a TTL: the table per repo (GitLab through glab, GitHub
@@ -48,6 +55,7 @@ HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
 STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
+LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"   # seconds a refresh waits for a repository's lock; the suite lowers it
 
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
@@ -180,28 +188,44 @@ cache_key() { # cache_key <forge> <slug>
   if [ "$1" = "github" ]; then printf 'github@%s' "$key"; else printf '%s' "$key"; fi
 }
 
+# One rule for how old a cache file is: seconds since its mtime, a large number when it is missing.
+age_of() { # age_of <file>
+  local mtime
+  mtime="$(stat -f %m "$1" 2>/dev/null)"
+  if [ -n "$mtime" ]; then echo $(( $(date +%s) - mtime )); else echo 999999999; fi
+}
+
+# Replaces a cache file atomically: a temporary file beside it, then a rename. A refresh killed
+# mid-write leaves the previous file, never half of a new one that would later read as a valid,
+# shorter table.
+write_cache() { # write_cache <file> <content>
+  local tmp
+  mkdir -p "$CACHE_DIR"
+  tmp="$(mktemp "$1.XXXXXX")" || return 1
+  if printf '%s\n' "$2" > "$tmp" && mv -f "$tmp" "$1"; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
+
 # Prints a cached table. GitHub's CI (column 5) is blanked once the file is older than
 # STALE_PIPELINE, the age limit GitLab's pipeline cache has: a stale answer to a failed lookup must
 # not keep showing a check result nobody has confirmed.
 read_table() { # read_table <cache_file>
-  local cache="$1" age now
-  now="$(date +%s)"
-  age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-  if [ "$age" -lt "$STALE_PIPELINE" ]; then cat "$cache"
+  local cache="$1"
+  if [ "$(age_of "$cache")" -lt "$STALE_PIPELINE" ]; then cat "$cache"
   else awk -F'\t' -v OFS='\t' 'NF >= 5 { $5 = "" } { print }' "$cache"; fi
 }
 
 # The table: one row per branch, `branch<TAB>opened|merged<TAB><number><TAB>0|1[<TAB><ci>]`.
 # <ci> (ok, fail, run or empty) is a GitHub column only, empty on a merged row.
-# <force> is 0 or 1. A lookup that cannot answer falls back to the cached table, however old.
+# <force> is 0 or 1. A lookup that cannot answer falls back to the cached table: the phases stand
+# however old it is, but read_table drops GitHub's CI column once it is older than STALE_PIPELINE.
 mr_table() { # mr_table <forge> <slug> <force>
-  local forge="$1" slug="$2" force="$3" cache age now rows rc
+  local forge="$1" slug="$2" force="$3" cache rows rc
 
   cache="$CACHE_DIR/$(cache_key "$forge" "$slug").tsv"
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
-    now="$(date +%s)"
-    age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-    if [ "$age" -lt "$TTL" ]; then read_table "$cache"; return 0; fi
+    if [ "$(age_of "$cache")" -lt "$TTL" ]; then read_table "$cache"; return 0; fi
   fi
 
   # <forge>_rows exits 0 for a full answer, 3 for the open rows alone (the merged half failed:
@@ -210,10 +234,7 @@ mr_table() { # mr_table <forge> <slug> <force>
   # a stale table beats a table asserted to be empty.
   rows="$("${forge}_rows" "$slug")"; rc=$?
   case "$rc" in
-    0)
-      mkdir -p "$CACHE_DIR"
-      printf '%s\n' "$rows" > "$cache"
-      ;;
+    0) write_cache "$cache" "$rows" ;;
     3) ;;
     *)
       if [ -f "$cache" ]; then read_table "$cache"; return 0; fi
@@ -355,15 +376,13 @@ sys.exit(0 if merged is not None else 3)
 # the old MR's pipeline. Prints ok, fail or run, or nothing (no pipeline, a status that is not
 # a badge, or no answer at all).
 pipeline_class() { # pipeline_class <slug> <iid> <force>
-  local slug="$1" iid="$2" force="$3" cache age now status json
+  local slug="$1" iid="$2" force="$3" cache status json
   case "$iid" in ''|*[!0-9]*) return 0 ;; esac
 
   cache="$CACHE_DIR/$(cache_key gitlab "$slug").mr$iid.pipeline"
   status=""
   if [ "$force" != "1" ] && [ -f "$cache" ]; then
-    now="$(date +%s)"
-    age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-    if [ "$age" -lt "$TTL" ]; then status="$(cat "$cache")"; fi
+    if [ "$(age_of "$cache")" -lt "$TTL" ]; then status="$(cat "$cache")"; fi
   fi
   if [ -z "$status" ]; then
     # glab prints an API error's JSON body on stdout and exits non-zero (a 401, 404, 429 or
@@ -387,15 +406,12 @@ print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
 ' "$iid" 2>/dev/null)" || status=""
     fi
     if [ -n "$status" ]; then
-      mkdir -p "$CACHE_DIR"
-      printf '%s\n' "$status" > "$cache"
+      write_cache "$cache" "$status"
     elif [ -f "$cache" ]; then
       # A failed call is not evidence that the pipeline went away, so a stale status beats none,
       # but only for a while: a cached "run" glyph would otherwise stay on for as long as glab
       # keeps failing. Past STALE_PIPELINE the tokens are cleared.
-      now="$(date +%s)"
-      age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-      if [ "$age" -lt "$STALE_PIPELINE" ]; then status="$(cat "$cache")"; fi
+      if [ "$(age_of "$cache")" -lt "$STALE_PIPELINE" ]; then status="$(cat "$cache")"; fi
     fi
   fi
 
@@ -492,8 +508,8 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
 # Only linked worktrees are badged: a main checkout is nearly always dirty, and would read
 # permanently active.
 #
-# Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh holds
-# one MR table at a time. The sort is stable, so Herdr order holds within a repo.
+# Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh starts one
+# job per run of equal roots. The sort is stable, so Herdr order holds within a repo.
 spaces() {
   herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -I -c '
 import json, sys
@@ -512,34 +528,25 @@ for w in d.get("result", {}).get("workspaces", []):
 }
 
 # ------------------------------------------------------------------ commands
-cmd_refresh() {
-  local force=0 only=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --force) force=1; shift ;;
-      --workspace) only="${2:-}"; [ -n "$only" ] || die "--workspace needs an id"; shift 2 ;;
-      *) die "unknown option for refresh: $1" ;;
-    esac
-  done
+# One repository's refresh: its table, then derive, CI and a report for each of its spaces. Runs in
+# a background subshell (the lock lives on that subshell's fd 9 and dies with it, and with every
+# child that inherited it), never in the main shell.
+refresh_repo() { # refresh_repo <root> <force:0|1> <spaces: ws<TAB>path<TAB>root lines>
+  local root="$1" force="$2" spaces="$3" ws path r phase value table="" forge="" slug="" key out first second ci iid
+  slug="$(repo_slug "$root" || true)"
+  if [ -n "$slug" ]; then
+    forge="${slug%% *}"; slug="${slug#* }"
+    key="$(cache_key "$forge" "$slug")"
+    # The kernel releases the lock only when every process holding fd 9 has exited, so a parent
+    # that dies while this job lives on does not free it, and nothing reclaims or breaks it.
+    mkdir -p "$CACHE_DIR"
+    exec 9>>"$CACHE_DIR/$key.lock" || return 0
+    /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || return 0
+    table="$(mr_table "$forge" "$slug" "$force" || true)"
+  fi
 
-  local list ws path root phase value last_root="" table="" forge="" slug="" out first second ci iid
-  list="$(spaces)"
-  [ -n "$list" ] || return 0
-
-  while IFS=$'\t' read -r ws path root; do
+  while IFS=$'\t' read -r ws path r; do
     [ -n "$ws" ] || continue
-    [ -z "$only" ] || [ "$ws" = "$only" ] || continue
-    [ -d "$path" ] || continue
-    # `spaces` sorts by repo, so one lookup per repo falls out of iterating it.
-    if [ "$root" != "$last_root" ]; then
-      slug="$(repo_slug "$root" || true)"
-      forge=""; table=""
-      if [ -n "$slug" ]; then
-        forge="${slug%% *}"; slug="${slug#* }"
-        table="$(mr_table "$forge" "$slug" "$force" || true)"
-      fi
-      last_root="$root"
-    fi
     out="$(derive "$path" "$root" "$table" "$forge")"
     first="${out%%$'\n'*}"
     second=""
@@ -559,7 +566,38 @@ cmd_refresh() {
         ;;
     esac
     report "$ws" "$phase" "$value" "$ci"
+  done < <(printf '%s\n' "$spaces")
+}
+
+cmd_refresh() {
+  local force=0 only=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      --workspace) only="${2:-}"; [ -n "$only" ] || die "--workspace needs an id"; shift 2 ;;
+      *) die "unknown option for refresh: $1" ;;
+    esac
+  done
+
+  local list ws path root group="" last_root="" nl=$'\n' tab=$'\t'
+  list="$(spaces)"
+  [ -n "$list" ] || return 0
+
+  # `spaces` sorts by repo, so each repository's spaces are one run of lines; every run is a job.
+  while IFS=$'\t' read -r ws path root; do
+    [ -n "$ws" ] || continue
+    [ -z "$only" ] || [ "$ws" = "$only" ] || continue
+    [ -d "$path" ] || continue
+    if [ "$root" != "$last_root" ] && [ -n "$group" ]; then
+      ( refresh_repo "$last_root" "$force" "$group" ) &
+      group=""
+    fi
+    last_root="$root"
+    group="${group:+$group$nl}$ws$tab$path$tab$root"
   done < <(printf '%s\n' "$list")
+  if [ -n "$group" ]; then ( refresh_repo "$last_root" "$force" "$group" ) & fi
+  wait
+  return 0
 }
 
 case "${1:---help}" in

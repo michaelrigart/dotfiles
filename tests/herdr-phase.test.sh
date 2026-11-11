@@ -336,10 +336,12 @@ PWDS="$T/pwds"; : > "$PWDS"
 export WSJSON MROPEN MRMERGED CALLS PIPES PIPEFAIL PWDS
 
 run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call log. RUNDIR starts it elsewhere.
-  : > "$CALLS"; : > "$PWDS"
+  # KEEPLOG=1 keeps the log, for a run that follows another one in the same case.
+  if [ -z "${KEEPLOG:-}" ]; then : > "$CALLS"; : > "$PWDS"; fi
   OUT=$(cd "${RUNDIR:-$PWD}" && PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" \
         HERDR_PHASE_CACHE_DIR="$T/cache" \
         HERDR_PHASE_TTL="${TTL:-120}" \
+        HERDR_PHASE_LOCK_WAIT="${LOCK_WAIT:-30}" \
         /bin/bash "$PHASE" "$@" 2>&1); RC=$?
 }
 
@@ -785,7 +787,7 @@ ci_check w4 ok "slug a/b_c shows its own pipeline (success)"
 ci_check wA fail "slug a_b/c shows its own pipeline (failed), not a/b_c's"
 case "$(report_for wA)" in *"--token review=$ICON_MR !10 "*) _pass "slug a_b/c finds its own MR table, not a/b_c's";;
   *) _fail "slug a_b/c finds its own MR table, not a/b_c's (got: $(report_for wA))";; esac
-check "$(ls "$T/cache" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.mr10.pipeline a_b%2Fc.tsv " "cache names encode the slug's / as %2F"
+check "$(ls "$T/cache" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.lock a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lock a_b%2Fc.mr10.pipeline a_b%2Fc.tsv " "cache names encode the slug's / as %2F"
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
 glab_stub
@@ -1043,6 +1045,227 @@ glab_stub
 rm -rf "$T/cache"
 
 echo
+echo "N. each repository is its own job"
+# A refresh runs one job per repository, side by side, and a repository's job holds its lock
+# (Ruling 11) from the lookup to the last report. The glab stub below answers per repository from
+# files in $GLD (open-<repo>.json, merged-<repo>.json, <repo> being the slug with / as __), and:
+#   sleep-<repo>       seconds every mr list call sleeps
+#   fail-<repo>        every call exits 1
+#   wait-<repo>        the open list blocks until a report line matching the file's text is in
+#                      the call log, and logs `overlap`; after 5 s it gives up and logs `timeout`
+#   first-open-<repo>.json
+#                      the first open list answers this, creates started-<repo> and sleeps 2 s
+# Every wait is bounded, so a regression fails the case and never hangs the suite.
+GLD="$T/gld"; export GLD
+glab_job_stub() {
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+if [ "${1:-}" = "api" ]; then echo "{\"iid\":${4##*/},\"head_pipeline\":null}"; exit 0; fi
+repo=""
+for a in "$@"; do
+  case "$a" in https://gitlab.com/*) repo="${a#https://gitlab.com/}"; repo="${repo//\//__}" ;; esac
+done
+[ ! -e "$GLD/fail-$repo" ] || { echo "glab: HTTP 502" >&2; exit 1; }
+state=open; case " $* " in *" --merged "*) state=merged ;; esac
+if [ "$state" = open ]; then
+  if [ -r "$GLD/wait-$repo" ]; then
+    pat="$(cat "$GLD/wait-$repo")"; got=timeout
+    for ((i = 0; i < 50; i++)); do
+      if grep -q "$pat" "$CALLS"; then got=overlap; break; fi
+      sleep 0.1
+    done
+    echo "$got" >> "$CALLS"
+  fi
+  if [ -r "$GLD/first-open-$repo.json" ] && mkdir "$GLD/first-taken-$repo" 2>/dev/null; then
+    : > "$GLD/started-$repo"; sleep 2; cat "$GLD/first-open-$repo.json"; exit 0
+  fi
+fi
+[ ! -r "$GLD/sleep-$repo" ] || sleep "$(cat "$GLD/sleep-$repo")"
+f="$GLD/$state-$repo.json"; if [ -r "$f" ]; then cat "$f"; else echo '[]'; fi
+G
+chmod 755 "$BIN/glab"
+}
+job_reset() { # job_reset -> a cold cache and test/proj answering with section B's fixtures
+  rm -rf "$GLD" "$T/cache" "$T/held"; mkdir -p "$GLD"
+  cp "$MROPEN" "$GLD/open-test__proj.json"; cp "$MRMERGED" "$GLD/merged-test__proj.json"
+}
+now_s() { /usr/bin/python3 -I -c 'import time; print(time.time())'; }
+waitfor() { # waitfor <file> -> 0 once the file exists, 1 after 5 s
+  local i=0
+  while [ ! -e "$1" ]; do i=$((i + 1)); [ "$i" -le 50 ] || return 1; sleep 0.1; done
+}
+bg_phase() { # bg_phase <args...> -> BGPID: phase.sh in the background, as run() starts it
+  PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" HERDR_PHASE_CACHE_DIR="$T/cache" HERDR_PHASE_TTL=120 \
+    HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" "$@" >/dev/null 2>&1 &
+  BGPID=$!
+}
+lock_busy() { # lock_busy -> how many lock files in the cache dir are still held
+  local f n=0
+  for f in "$T/cache"/*.lock; do
+    [ -e "$f" ] || continue
+    ( exec 9>>"$f"; /usr/bin/lockf -s -t 0 9 ) || n=$((n + 1))
+  done
+  echo "$n"
+}
+nreports() { grep -c -E "^herdr workspace report-metadata $1 " "$CALLS"; }
+last_report() { grep -E "^herdr workspace report-metadata $1 " "$CALLS" | tail -1; }
+# The order of lookups (L) and w5 reports (R) in the call log.
+order_w5() { grep -E '^(glab mr list|herdr workspace report-metadata w5 )' "$CALLS" | cut -c1 | tr '\n' ' ' | sed 's/g/L/g; s/h/R/g'; }
+LINKED="w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 wA wB"
+glab_job_stub
+
+# No repository waits for another: test/proj's open list blocks until a test/proj2 space has been
+# reported. `spaces` sorts test/proj first, so a sequential run gives up after 5 s.
+job_reset
+printf '%s' '^herdr workspace report-metadata w[AB] ' > "$GLD/wait-test__proj"
+run refresh --force
+check "$RC" "0" "a refresh with per-repository jobs exits 0"
+check "$(grep -c '^overlap$' "$CALLS")" "1" "test/proj's lookup saw test/proj2's report while it was still running"
+check "$(grep -c '^timeout$' "$CALLS")" "0" "no repository waited for another"
+counts=""; for w in $LINKED; do counts="$counts$(nreports $w) "; done
+check "$counts" "1 1 1 1 1 1 1 1 1 1 1 1 1 1 " "every linked space is reported exactly once"
+check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "14" "and nothing else is reported"
+shape=0
+while IFS= read -r line; do
+  case "$line" in *" --source herdr-phase "*) ;; *) shape=$((shape + 1)); continue ;; esac
+  keys=$(printf '%s\n' "$line" | grep -o -E -- '--(clear-)?token ' | wc -l | tr -d ' ')
+  phases=$(printf '%s\n' "$line" | grep -o -E -- '--token (active|draft|review|merged)=' | wc -l | tr -d ' ')
+  [ "$keys" = 7 ] && [ "$phases" = 1 ] || shape=$((shape + 1))
+done < <(grep -E '^herdr workspace report-metadata ' "$CALLS")
+check "$shape" "0" "each report keeps --source herdr-phase, 7 keys and exactly one phase token"
+phase_check w2 active "$ICON_BRANCH" "per-repository jobs: a dirty worktree is active"
+phase_check w3 active "$ICON_BRANCH" "per-repository jobs: unpushed commits are active"
+phase_check w4 review "$ICON_MR !10" "per-repository jobs: an open ready MR is review"
+phase_check w5 draft "$ICON_DRAFT !11" "per-repository jobs: an open draft MR is draft"
+phase_check w6 merged "$ICON_MERGE !12" "per-repository jobs: a merged MR is merged"
+phase_check w10 review "$ICON_MR !13" "per-repository jobs: a dirty worktree with an open MR is review"
+phase_check w12 active "$ICON_BRANCH" "per-repository jobs: a merged MR does not outrank local work"
+phase_check wA active "$ICON_BRANCH" "per-repository jobs: the other repository's space is active"
+check "$(lock_busy)" "0" "no lock outlives the run"
+
+# A failing lookup stays in its own repository: test/proj has nothing cached to fall back on.
+job_reset
+printf '[{"iid":20,"source_branch":"feature/one","state":"opened","draft":false},\n {"iid":21,"source_branch":"feature/two","state":"opened","draft":false}]\n' > "$GLD/open-test__proj2.json"
+: > "$GLD/fail-test__proj"
+run refresh --force
+check "$RC" "0" "a refresh exits 0 while one repository's lookups fail"
+case "$(report_for wA)" in *"--token review=$ICON_MR !20 "*) _pass "test/proj2's wA still gets !20 from its own table";;
+  *) _fail "test/proj2's wA still gets !20 from its own table (got: $(report_for wA))";; esac
+case "$(report_for wB)" in *"--token review=$ICON_MR !21 "*) _pass "test/proj2's wB still gets !21 from its own table";;
+  *) _fail "test/proj2's wB still gets !21 from its own table (got: $(report_for wB))";; esac
+phase_check w4 active "$ICON_BRANCH" "test/proj's w4 falls back to its git-only phase"
+phase_check w5 active "$ICON_BRANCH" "test/proj's w5 falls back to its git-only phase"
+phase_check w6 active "$ICON_BRANCH" "test/proj's w6 falls back to its git-only phase"
+check "$(nreports w4)" "1" "the failing repository's space is reported once"
+check "$(lock_busy)" "0" "no lock outlives a run with a failing lookup"
+
+# The tables never mix: both repositories carry MRs on the same branch names, with other numbers.
+job_reset
+printf '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false},\n {"iid":90,"source_branch":"feature/one","state":"opened","draft":false},\n {"iid":92,"source_branch":"feature/two","state":"opened","draft":false}]\n' > "$GLD/open-test__proj.json"
+printf '[{"iid":91,"source_branch":"feature/review","state":"opened","draft":false},\n {"iid":20,"source_branch":"feature/one","state":"opened","draft":false},\n {"iid":22,"source_branch":"feature/two","state":"opened","draft":false}]\n' > "$GLD/open-test__proj2.json"
+run refresh --force
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "test/proj's w4 reports !10, not test/proj2's !91";;
+  *) _fail "test/proj's w4 reports !10, not test/proj2's !91 (got: $(report_for w4))";; esac
+case "$(report_for wA)" in *"--token review=$ICON_MR !20 "*) _pass "test/proj2's wA reports !20, not test/proj's !90";;
+  *) _fail "test/proj2's wA reports !20, not test/proj's !90 (got: $(report_for wA))";; esac
+case "$(report_for wB)" in *"--token review=$ICON_MR !22 "*) _pass "test/proj2's wB reports !22, not test/proj's !92";;
+  *) _fail "test/proj2's wB reports !22, not test/proj's !92 (got: $(report_for wB))";; esac
+check "$(lock_busy)" "0" "no lock outlives the run with two tables"
+
+# The run takes as long as its slowest repository: three repositories, 1 s per list call and two
+# calls each. Sequentially that is 6 s or more.
+cat > "$T/ws-three.json" <<J
+{"id":"x","result":{"type":"workspace_list","workspaces":[
+ {"workspace_id":"w4","label":"review","worktree":{"checkout_path":"$T/repo-review","is_linked_worktree":true,"repo_root":"$REPO"}},
+ {"workspace_id":"wA","label":"two-one","worktree":{"checkout_path":"$T/repo2-one","is_linked_worktree":true,"repo_root":"$REPO2"}},
+ {"workspace_id":"wL1","label":"gl3","worktree":{"checkout_path":"$REPO4-gl3","is_linked_worktree":true,"repo_root":"$REPO4"}}
+]}}
+J
+job_reset
+for _r in test__proj test__proj2 test__proj3; do echo 1 > "$GLD/sleep-$_r"; done
+t0="$(now_s)"
+WSJSON="$T/ws-three.json" run refresh --force
+t1="$(now_s)"
+elapsed="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
+check "$(grep -c '^glab mr list' "$CALLS")" "6" "each of the three repositories made its two list calls"
+check "$(awk -v e="$elapsed" 'BEGIN { print (e < 4.5) ? "fast" : "slow" }')" "fast" \
+  "three repositories at 2 s each finish in under 4.5 s (took ${elapsed} s; sequential is at least 6 s)"
+check "$(nreports w4)$(nreports wA)$(nreports wL1)" "111" "each of the three repositories reported its space"
+check "$(lock_busy)" "0" "no lock outlives the three-repository run"
+
+# A single space is still one report.
+job_reset
+run refresh --workspace w4
+check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "1" "refresh --workspace makes exactly one report with per-repository jobs"
+check "$(nreports w4)" "1" "and it is the asked space's"
+check "$(lock_busy)" "0" "no lock outlives a single-space run"
+
+# An older lookup never lands last. A's first open list answers the draft and stalls for 2 s;
+# B's lookup answers ready. B must wait for A's job to publish, so the last badge is B's.
+job_ready() { # job_ready -> test/proj answers ready from the first call on, but A's first answer is a draft
+  sed 's/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":true/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":false/' \
+    "$MROPEN" > "$GLD/open-test__proj.json"
+  cp "$MROPEN" "$GLD/first-open-test__proj.json"
+}
+job_reset; job_ready
+: > "$CALLS"
+bg_phase refresh --force --workspace w5; apid=$BGPID
+waitfor "$GLD/started-test__proj" && _pass "A's lookup started and is stalled" || _fail "A's lookup started and is stalled"
+KEEPLOG=1 run refresh --force --workspace w5
+wait "$apid" 2>/dev/null   # A ends on its own: its stall is 2 s
+check "$(nreports w5)" "2" "A and B each reported w5"
+case "$(last_report w5)" in *"--token review=$ICON_MR !11 "*) _pass "the last report for w5 is B's review !11";;
+  *) _fail "the last report for w5 is B's review !11 (got: $(last_report w5))";; esac
+check "$(awk -F'\t' '$1=="feature/draft" {print $4}' "$T/cache/test%2Fproj.tsv")" "0" "the cached table holds B's answer: draft 0"
+check "$(order_w5)" "L L R L L R " "B's lookups started after A's report"
+check "$(lock_busy)" "0" "no lock outlives the reversed-order run"
+
+# A held lock is waited for, then skipped: the suite holds test/proj's lock for 3 s and the
+# refresh waits 1 s. The holder reports the repository's spaces; this run reports none of them.
+job_reset; mkdir -p "$T/cache"
+( exec 9>>"$T/cache/test%2Fproj.lock"; /usr/bin/lockf -s -t 5 9 && { : > "$T/held"; /bin/sleep 3; } ) &
+hpid=$!
+waitfor "$T/held" && _pass "the suite holds test/proj's lock" || _fail "the suite holds test/proj's lock"
+LOCK_WAIT=1 run refresh --force
+check "$RC" "0" "a refresh that cannot take a lock exits 0"
+check "$(for w in w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13; do nreports $w; done | tr -d '\n')" "000000000000" "no test/proj space is reported while its lock is held"
+check "$(grep -c 'gitlab.com/test/proj ' "$CALLS")" "0" "and test/proj is not looked up"
+check "$(nreports wA)$(nreports wB)" "11" "test/proj2's spaces are still reported"
+wait "$hpid" 2>/dev/null
+check "$(lock_busy)" "0" "no lock is left once the holder ends"
+
+# A dead parent does not free its job's lock: A's top-level bash is killed while its job is in the
+# stalled lookup. The job lives on, so B waits for it and its lookup starts after A's report.
+job_reset; job_ready
+: > "$CALLS"
+bg_phase refresh --force --workspace w5; apid=$BGPID
+waitfor "$GLD/started-test__proj" && _pass "A's lookup started before its parent is killed" || _fail "A's lookup started before its parent is killed"
+kill -9 "$apid" 2>/dev/null; wait "$apid" 2>/dev/null
+LOCK_WAIT=10 KEEPLOG=1 run refresh --force --workspace w5
+check "$(nreports w5)" "2" "A's orphaned job and B each reported w5"
+check "$(order_w5)" "L L R L L R " "B's lookups started after the orphaned job's report"
+case "$(last_report w5)" in *"--token review=$ICON_MR !11 "*) _pass "the last report for w5 is B's review !11 after the parent died";;
+  *) _fail "the last report for w5 is B's review !11 after the parent died (got: $(last_report w5))";; esac
+check "$(lock_busy)" "0" "no lock outlives the dead-parent case"
+
+# Cache writes are atomic: a replaced file is a new file, and no temporary one is left behind.
+job_reset
+run refresh --force
+ino1="$(stat -f %i "$T/cache/test%2Fproj.tsv")"; pino1="$(stat -f %i "$T/cache/test%2Fproj.mr10.pipeline")"
+run refresh --force
+ino2="$(stat -f %i "$T/cache/test%2Fproj.tsv")"; pino2="$(stat -f %i "$T/cache/test%2Fproj.mr10.pipeline")"
+[ "$ino1" != "$ino2" ] && _pass "a forced lookup replaces the table file (inode $ino1 -> $ino2)" \
+  || _fail "a forced lookup replaces the table file (inode $ino1 -> $ino2)"
+[ "$pino1" != "$pino2" ] && _pass "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)" \
+  || _fail "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)"
+check "$(ls "$T/cache" | grep -Ec '\.(tsv|pipeline)\.')" "0" "no temporary file is left in the cache directory"
+check "$(grep -c . "$T/cache/test%2Fproj.tsv")" "7" "the replaced table is whole"
+
+glab_stub
+rm -rf "$T/cache" "$GLD" "$T/held"
+
+echo
 echo "I. the wiring that makes the badges appear and persist"
 # These are static assertions about config, not behaviour of the script — but nothing else
 # catches them, and each one silently produces no badges rather than an error.
@@ -1247,7 +1470,7 @@ echo "C. the pinned PATH"
 HOSTILE="$T/hostile"; HM="$T/hostile-marks"; mkdir -p "$HOSTILE" "$HM"
 printf '#!/bin/sh\necho "${0##*/}" >> "%s/marker"\nexit 0\n' "$HM" > "$HOSTILE/.marker"
 chmod 755 "$HOSTILE/.marker"
-for _t in git herdr bash zsh python3 jq glab gh awk cut tr sort stat date; do ln -s .marker "$HOSTILE/$_t"; done
+for _t in git herdr bash zsh python3 jq glab gh awk cut tr sort stat date mktemp mv lockf; do ln -s .marker "$HOSTILE/$_t"; done
 marked() { if [ -e "$HM/marker" ]; then tr '\n' ' ' < "$HM/marker"; else printf clean; fi; }
 cp "$PHASE" "$T/phase-pinned.sh"; chmod 755 "$T/phase-pinned.sh"
 
