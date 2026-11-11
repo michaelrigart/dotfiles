@@ -3202,6 +3202,7 @@ rb_kept rb13 "rb13 failing patch-id pipeline"
 # --ignore-submodules=none, which skip the hidden commit and delete the branch.
 rb_seed_sub() {
   print -rl -- '[submodule "sub"]' $'\tpath = sub' $'\turl = ./sub' $'\tignore = all' > "$REPO/.gitmodules"
+  rb_do mkdir "$REPO/sub"
   rb_do git -C "$REPO" update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,sub
   rb_do git -C "$REPO" add .gitmodules
   rb_do git -C "$REPO" commit -q -m "submodule"
@@ -3214,10 +3215,10 @@ rbc "$REPO" other.txt "base moves" o1
 rb_do git -C "$REPO" cherry-pick rb14~1
 rbc "$REPO" log.txt later l1 l2 l3 "rb14-a CHANGED"
 rb_built rb14
-[[ -n "$(git -C "$REPO" rev-parse main:sub 2>/dev/null)" \
-   && "$(git -C "$REPO" rev-parse main:sub 2>/dev/null)" != "$(git -C "$REPO" rev-parse rb14:sub 2>/dev/null)" ]] \
-  && _pass "rb14 fixture: the base lacks the branch's gitlink bump" \
-  || _fail "rb14 fixture: the base lacks the branch's gitlink bump"
+[[ "$(git -C "$REPO" rev-parse --verify -q main:sub)" == 1111111111111111111111111111111111111111 \
+   && "$(git -C "$REPO" rev-parse --verify -q rb14:sub)" == 2222222222222222222222222222222222222222 ]] \
+  && _pass "rb14 fixture: the base keeps the old gitlink and the branch bumps it" \
+  || _fail "rb14 fixture: the base keeps the old gitlink and the branch bumps it"
 run "$REPO" wt-rm rb14
 rb_kept rb14 "rb14 commit hidden by submodule ignore"
 
