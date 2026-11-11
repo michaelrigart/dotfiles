@@ -201,6 +201,17 @@ Constraints, each pinned in `tests/herdr-phase.test.sh`:
 - one repository's slow or failing lookup never stops or corrupts another repository's reports;
 - a run's total time stays well inside the interval.
 
+Rulings on this amendment, from the driver (chezmoi-c2), 2026-11-12, for Michael's review:
+- **Run deadline.** A run waits for its jobs for at most 40 s, then ends every unfinished
+  job's whole process group itself, the forge call included, and exits. Every cache write is
+  atomic, so a job killed at the deadline leaves its cache as it was. This is how the
+  constraints above hold when a forge call hangs.
+- **Accepted limit.** A sandboxed command can take a repository's lock, because `flock` needs only
+  read access. That freezes that repository's badges, and every run waits for the lock up to
+  `LOCK_WAIT`, bounded by the deadline. It writes and runs nothing. The fix is a read-deny for
+  `~/.cache/herdr-phase` in the sandbox settings, which `feat/wt-dotfiles` owns. It is a
+  follow-up for Michael, outside this line.
+
 ## Left to the builder
 
 - Where the CI result comes from (list rollup or per-PR call).

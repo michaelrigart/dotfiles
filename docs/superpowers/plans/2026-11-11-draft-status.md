@@ -122,10 +122,34 @@ Trade-offs inside the spec, decided by the line:
       exits).
     - A refresh that cannot take the lock within `LOCK_WAIT` = 30 s skips that repository and
       reports none of its spaces; the holder reports them.
-    - A permanently stuck holder (a forge call that never returns) blocks only its own
-      repository, and only until that call ends.
+    - A stuck holder (a forge call that never returns) is ended by the run deadline (Ruling 12).
     - The lock files stay in place (empty files). Different repositories have different locks, so
       per-repository jobs still run side by side.
+
+12. **A run deadline (driver ruling, 2026-11-12).** The main script waits for its jobs for at
+    most `RUN_DEADLINE` = 40 s, under the 50 s interval. Then it ends every unfinished job and
+    exits. A hung forge call therefore never holds up the timer for the other repositories.
+    - Each job runs in its own process group: `set -m` just for the fork, then `set +m`. At the
+      deadline the script sends TERM to that group, and KILL after a short grace. That reaches
+      the job's `glab` or `gh` call too, so no process of the job outlives the run. The script
+      does this itself rather than relying on launchd, so a hook-started run behaves the same
+      as a timer run.
+    - The shell's own notice that a job was killed is suppressed: the main shell's stderr goes
+      to `/dev/null` during the wait. The jobs keep their own stderr.
+    - Measured under the pinned `env -i` environment with bash 3.2: the job's process group is
+      its PID, and a group TERM kills a grandchild forge call.
+    - Every cache write is atomic, through a temporary file in the same directory and `mv`. That
+      covers the MR/PR table, the pipeline status and the focus stamp. A job killed at the
+      deadline therefore leaves its cache as it was.
+    - The plist pin that `AbandonProcessGroup` stays absent is a second line of defence:
+      launchd's own kill of the job's process group. Whether launchd does that is a post-merge
+      check.
+13. **Accepted limit (driver ruling, 2026-11-12).** A sandboxed command can take a repository's
+    lock, because `flock` needs only read access and the lock files are readable from the
+    sandbox. That freezes the repository's badges, and every run pays `LOCK_WAIT` for it, bounded
+    by the deadline. It writes nothing and runs nothing. The fix is a read-deny for
+    `~/.cache/herdr-phase` in the sandbox settings, which `feat/wt-dotfiles` owns. It is a
+    follow-up for Michael to decide, not part of this line.
 
 **Call budget at 72 runs/h:**
 - GitLab: 2 per repository plus 1 per open MR per run, so 18 per run today, ~1,300/h, against
@@ -458,7 +482,7 @@ Rulings 8 and 11.
     - `mr_table <forge> <slug> <mode>` and `pipeline_class <slug> <iid> <mode>` take it in place
       of the `force` flag;
     - `cached` never calls out; it answers as a failed lookup would.
-  - The stamp `$CACHE_DIR/<key>.lookup` is touched right before every forge lookup, always under
+  - The stamp `$CACHE_DIR/<key>.lookup` is written (atomically, Ruling 12) right before every forge lookup, always under
     the repository's lock.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -524,6 +548,9 @@ Rulings 8 and 11.
    - `launchctl bootout gui/$(id -u)/be.netronix.herdr-phase-refresh` and then
      `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist`;
    - a Herdr config reload, or a server restart, for `$draft`;
+   - check that launchd kills a finished run's leftover process group (Ruling 12's second line of
+     defence): `launchctl print gui/$(id -u)/be.netronix.herdr-phase-refresh` shows no
+     `abandon process group`;
    - check that a UI-driven space switch fires `workspace.focused` on 0.9.5 (badge current within
      a few seconds of focus);
    - `wt-rm feat/draft-status`.
