@@ -141,9 +141,21 @@ Trade-offs inside the spec, decided by the line:
     - Every cache write is atomic, through a temporary file in the same directory and `mv`. That
       covers the MR/PR table, the pipeline status and the focus stamp. A job killed at the
       deadline therefore leaves its cache as it was.
-    - The plist pin that `AbandonProcessGroup` stays absent is a second line of defence:
-      launchd's own kill of the job's process group. Whether launchd does that is a post-merge
-      check.
+    - **Correction (driver ruling, 2026-11-12).** The first version of this ruling relied on
+      launchd's group kill as a second line of defence. That kill cannot reach the jobs, because
+      `set -m` puts each one in its own process group. In its place:
+      - the main shell traps TERM, HUP and INT;
+      - on any of them it sends TERM to every live job group, then KILL after `KILL_GRACE` = 2 s to
+        any group that still has a member, then reaps the jobs and exits;
+      - the grace is pinned at ≤ 5 s so it fits inside launchd's 20 s `ExitTimeOut` on
+        `bootout`/`kickstart -k`;
+      - the plist pin that `AbandonProcessGroup` stays absent still covers the main shell's own
+        group.
+    - **Accepted limit.** A SIGKILL of the main shell cannot be trapped. A job it orphans is
+      bounded by nothing: forge calls have no timeout, and a job has no deadline of its own. If a
+      forge call hangs, that repository's badges stay frozen until the call ends. `pkill -f
+      phase.sh` recovers. Only a manual `kill -9`, or a grace longer than `ExitTimeOut`, reaches
+      this.
 13. **Accepted limit (driver ruling, 2026-11-12).** A sandboxed command can take a repository's
     lock, because `flock` needs only read access and the lock files are readable from the
     sandbox. That freezes the repository's badges, and every run pays `LOCK_WAIT` for it, bounded
@@ -548,9 +560,8 @@ Rulings 8 and 11.
    - `launchctl bootout gui/$(id -u)/be.netronix.herdr-phase-refresh` and then
      `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist`;
    - a Herdr config reload, or a server restart, for `$draft`;
-   - check that launchd kills a finished run's leftover process group (Ruling 12's second line of
-     defence): `launchctl print gui/$(id -u)/be.netronix.herdr-phase-refresh` shows no
-     `abandon process group`;
+   - check that `launchctl kickstart -k gui/$(id -u)/be.netronix.herdr-phase-refresh` during a run
+     leaves no `phase.sh` job behind (Ruling 12's trap);
    - check that a UI-driven space switch fires `workspace.focused` on 0.9.5 (badge current within
      a few seconds of focus);
    - `wt-rm feat/draft-status`.
