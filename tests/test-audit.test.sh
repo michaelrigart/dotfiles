@@ -213,7 +213,7 @@ for l in open(sys.argv[1]):
 r=rows.get(sys.argv[2])
 v=r[sys.argv[3]] if r else "NO-ROW"
 print(v if isinstance(v,str) else json.dumps(v))' "$rows" "$1" "$2"; }
-eq "$(wc -l <"$rows" | tr -d ' ')" 6 "H: one row per fixture suite"
+eq "$(wc -l <"$rows" | tr -d ' ')" 7 "H: one row per fixture suite"
 want=$(RUN_SH_LOCK="$T/lock" AUDIT_MARKERS= "$T/repo/tests/run.sh" s 2>&1 | awk '$2=="s"{split($3,a,"/"); print a[2]}')
 eq "$(q s assertions)" "$want" "H: s has the assertion count run.sh reports"
 eq "$(q s passed)" 4 "H: s passed count"
@@ -750,6 +750,174 @@ lacks "copy rebuilt after dirty000002" "Q8: a clean copy is kept" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived']" "Q8: the next mutant runs in a clean copy and its baseline still holds"
 clean Q8
+
+# Q9: a duplicate candidate whose loader suite is red in the inventory is refused before it runs
+mk Q9
+: > "$T/markers/red-now"
+run inventory s s2
+rm "$T/markers/red-now"
+before=$(runs s)
+run targeted "$ROOT/Q/dup.jsonl"
+rc_is 2 "Q9: a duplicate candidate with a red loader suite exits 2"
+has "candidate s2:11-11" "Q9: naming its candidate" "$ERR"
+has "loader suite s" "Q9: and the red loader suite" "$ERR"
+eq "$(runs s)" "$before" "Q9: nothing ran after the inventory"
+
+# Q10: a mutant whose run deletes the copy's .git, then the copy itself
+mk Q10
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+def row(i, after):
+    return {"id": i, "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7, "context": "  FLAG=on",
+            "occurrence": 0, "col": 2, "before": "FLAG=on", "after": after, "suite": "s", "valid": 3}
+rows = [row("nogit0000001", 'FLAG=on; mv "$here/../.git" "$here/../.gitaway"'),
+        row("nocopy000001", 'FLAG=on; mv "$(dirname "$here")" "$(dirname "$here")-gone"'),
+        row("after0000001", 'FLAG=on; :')]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+run sample --sample-from "$T/crafted"
+rc_is 0 "Q10: a mutant that deletes the copy does not stop the run"
+has "copy rebuilt after nogit0000001" "Q10: a copy without its .git is rebuilt" "$OUT"
+has "copy rebuilt after nocopy000001" "Q10: a vanished copy is rebuilt" "$OUT"
+eq "$(python3 -c 'import json,sys
+print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived', 'survived']" "Q10: the mutants after the damage run in a clean copy, none is stale"
+
+echo "R. rule mutants"
+mk R
+TAB=$(printf '\t')
+cat > "$T/pinsuite.sh" <<'EOS'
+#!/usr/bin/env bash
+X=docs/other.md
+need claude-code.md 'don'"'"'t stop' "label one"
+need_flat global.md 'wrapped text' \
+  "continued label"
+need_in "$X" 'in another file' "label \`three\`"
+EOS
+run pins "$T/pinsuite.sh"
+rc_is 0 "R1: pins succeeds"
+want=$(printf 'p3\t.chezmoitemplates/agents/claude-code.md\tdon'"'"'t stop\t?\t-\tlabel one\np4\t.chezmoitemplates/agents/global.md\twrapped text\t?\t-\tcontinued label\np6\tdocs/other.md\tin another file\t?\t-\tlabel `three`')
+eq "$OUT" "$want" "R1: one row per call, with the files, anchors and labels resolved"
+printf '#!/bin/sh\n\nneed_in "$UNSET" %s %s\n' "'x'" '"y"' > "$T/unset.sh"
+run pins "$T/unset.sh"
+rc_is 1 "R1: an argument that cannot be resolved exits 1"
+has "line 3" "R1: naming the line" "$ERR"
+run pins "$T/repo/tests/pins.test.sh"
+eq "$OUT" "p$(grep -n '^need_in "\$R"' "$T/repo/tests/pins.test.sh" | cut -d: -f1)${TAB}docs/rules.md${TAB}Never push, delete or merge without asking.${TAB}?${TAB}-${TAB}the confirm rule asks first" "R1: the helper definitions are not calls"
+run pins "$SRC/tests/agent-instructions.test.sh"
+rc_is 0 "R1: the real suite's pins all resolve"
+eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "$(grep -cE '^(need|need_flat|need_in) ' "$SRC/tests/agent-instructions.test.sh")" "R1: and none is dropped"
+
+RU=$(python3 - "$SRC/.scripts/test-audit" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import mutators, rules
+flat = lambda t: " ".join(t.split())
+text = "# Rules\n\n- **Confirm.** Never push, delete or merge\n  without asking. Keep notes.\n"
+ms = rules.rule_mutants("docs/rules.md", text, "R1", "Never push")
+out = {"ops": sorted(m["op"] for m in ms)}
+by = lambda op, item=None: [m for m in ms if m["op"] == op and (item is None or m["item"] == item)][0]
+res = lambda m: flat(mutators.apply(text, m))
+out["delete"] = res(by("delete-sentence"))
+out["weaken"] = res(by("weaken"))
+out["drop"] = {m["item"]: res(m) for m in ms if m["op"] == "drop-item"}
+out["wrapped"] = mutators.apply(text, by("drop-item", "merge")).split("\n")[2:4]
+shifted = rules.rule_mutants("docs/rules.md", "intro\n\n" + text, "R1", "Never push")
+out["ids"] = [m["id"] for m in ms] == [m["id"] for m in shifted] and [m["line"] for m in shifted] == [m["line"] + 2 for m in ms]
+out["rules_differ"] = {m["id"] for m in ms}.isdisjoint(m["id"] for m in rules.rule_mutants("docs/rules.md", text, "R2", "Never push"))
+out["missing"] = [rules.rule_mutants("f", text, "R1", "absent"), rules.anchor_found(text, "absent"), rules.anchor_found(text, "Never   push,\ndelete")]
+label = rules.rule_mutants("f", "- **Sizing.** Size it. Never skip.\n", "R3", "**Sizing.**")
+out["label"] = [(m["op"], m["item"], flat(mutators.apply("- **Sizing.** Size it. Never skip.\n", m))) for m in label]
+only = "- **Sizing.** Size it.\n"
+out["prefix"] = [flat(mutators.apply(only, m)) for m in rules.rule_mutants("f", only, "R4", "Size it") if m["op"] == "delete-sentence"]
+many = "- Use a, b, c, d, e and f without fuss.\n"
+out["cap"] = [m["item"] for m in rules.rule_mutants("f", many, "R5", "Use a") if m["op"] == "drop-item"]
+three = "- Keep `x. y`, `z`, or `w`; must stay.\n"
+out["three"] = [(m["op"], m["item"]) for m in rules.rule_mutants("f", three, "R6", "Keep")]
+words = "Every case must hold, only once, and never twice, not `must`. Always check.\n"
+out["words"] = [(m["item"], flat(mutators.apply(words, m))) for m in rules.rule_mutants("f", words, "R7", "Every case") if m["op"] == "weaken"]
+print(json.dumps(out))
+PY
+)
+ruget(){ python3 -c 'import json,sys
+v=json.loads(sys.argv[1])[sys.argv[2]]
+print(v if isinstance(v,str) else json.dumps(v))' "$RU" "$1"; }
+eq "$(ruget ops)" '["delete-sentence", "drop-item", "drop-item", "drop-item", "weaken"]' "R2: the anchor yields one deletion, one weakening and three item drops"
+eq "$(ruget delete)" '# Rules - **Confirm.** Keep notes.' "R2: the deleted sentence leaves the label and the next sentence"
+eq "$(ruget weaken)" '# Rules - **Confirm.** Prefer not to push, delete or merge without asking. Keep notes.' "R2: Never becomes Prefer not to"
+eq "$(ruget drop)" '{"push": "# Rules - **Confirm.** Never delete or merge without asking. Keep notes.", "delete": "# Rules - **Confirm.** Never push or merge without asking. Keep notes.", "merge": "# Rules - **Confirm.** Never push, delete without asking. Keep notes."}' "R2: each item drop reads as the list without it, across the wrapped line"
+eq "$(ruget wrapped)" '["- **Confirm.** Never push, delete", "  without asking. Keep notes."]' "R2: a drop keeps the block's wrapped layout"
+eq "$(ruget ids)" true "R2: ids and lines survive text added above the block"
+eq "$(ruget rules_differ)" true "R2: the same change under another rule id has another id"
+eq "$(ruget missing)" '[[], false, true]' "R2: a missing anchor yields no mutants, a re-wrapped one is found"
+eq "$(ruget label)" '[["delete-sentence", "Size it.", "- **Sizing.** Never skip."], ["delete-sentence", "Never skip.", "- **Sizing.** Size it."], ["weaken", "Never", "- **Sizing.** Size it. Prefer not to skip."]]' "R2: an anchor on the label covers every sentence of the block"
+eq "$(ruget prefix)" '["- **Sizing.**"]' "R2: deleting the only sentence keeps the bullet marker and label"
+eq "$(ruget cap)" '["a", "c", "d", "f"]' "R2: a six-item list gives four drops, spread over it"
+eq "$(ruget three)" '[["delete-sentence", "Keep `x. y`, `z`, or `w`; must stay."], ["weaken", "must"], ["drop-item", "`x. y`"], ["drop-item", "`z`"], ["drop-item", "`w`"]]' "R2: a Keep ... list of backtick items drops each item; clauses split at semicolons"
+eq "$(ruget words)" '[["Every", "Most case must hold, only once, and never twice, not `must`. Always check."], ["must", "Every case should hold, only once, and never twice, not `must`. Always check."], ["only", "Every case must hold, mostly once, and never twice, not `must`. Always check."], ["never", "Every case must hold, only once, and preferably not twice, not `must`. Always check."]]' "R2: weakening takes the table's words one occurrence each, skipping code"
+printf 'R1\tdocs/rules.md\tNever push\tyes\t-\tconfirm\n' > "$T/rules.tsv"
+run rules "$T/rules.tsv"
+rc_is 0 "R3: rules with the exact pin succeeds"
+run report --section rules
+has "| R1 | yes | 5 | 5 | - |" "R3: the exact pin kills all five mutants" "$OUT"
+cp -R "$T/state" "$T/stateP"
+cat > "$T/check.sh" <<'EOS'
+#!/usr/bin/env bash
+grep -qF '**Confirm.**' "$1/docs/rules.md"
+EOS
+chmod 755 "$T/check.sh"
+run --state "$T/stateC" rules --check-cmd "$T/check.sh {copy}" "$T/rules.tsv"
+rc_is 0 "R3: rules with a check command succeeds"
+run --state "$T/stateC" report --section rules
+has "| R1 | yes | 5 | 0 |" "R3: a checker that only greps the label kills none" "$OUT"
+eq "$(printf '%s\n' "$OUT" | grep -o 'drop-item:' | wc -l | tr -d ' ')" 3 "R3: and the report lists the three item drops" 
+has "weaken:Never" "R3: and the weakening" "$OUT"
+has "delete-sentence:Never push, delete or merge without asking." "R3: and the deletion" "$OUT"
+run --state "$T/stateC" report --section rules --compare "$T/stateP" --kind rule
+has "lost: 5" "R3: the checks state lost the five kills the pins made" "$OUT"
+run --state "$T/stateC" report --section rules --compare "$T/stateP" --kind rule --only docs/rules.md
+has "lost: 5" "R3: --only on the rule's file selects the same five" "$OUT"
+has "not run: 0" "R3: and none is unrun" "$OUT"
+
+cp "$T/check.sh" "$T/check2.sh"
+run --state "$T/stateS" rules --check-cmd "$T/check2.sh {copy}" "$T/rules.tsv"
+run --state "$T/stateS" rules --check-cmd "$T/check2.sh {copy} extra" "$T/rules.tsv"
+rc_is 2 "R4: another check command string on the same state exits 2, the script unchanged"
+echo '# changed' >> "$T/check.sh"
+run --state "$T/stateC" rules --check-cmd "$T/check.sh {copy}" "$T/rules.tsv"
+rc_is 2 "R4: an edited check script on the same state exits 2"
+has "state is bound to another rule set or check; use another --state" "R4: naming the binding" "$ERR"
+cp "$T/rules.tsv" "$T/rules2.tsv"; printf 'R2\tdocs/rules.md\tKeep notes\tno\t-\tnotes\n' >> "$T/rules2.tsv"
+run rules "$T/rules2.tsv"
+rc_is 2 "R4: another rule set on the same state exits 2"
+has "state is bound to another rule set or check" "R4: naming the binding" "$ERR"
+run --state "$T/stateN" rules "$T/rules.tsv"
+run --state "$T/stateN" rules --check-cmd "$T/check.sh {copy}" "$T/rules.tsv"
+rc_is 2 "R4: a state first used without a checker is bound to that"
+printf 'R1\tdocs/rules.md\tNever push\tyes\t-\tconfirm\nR9\tdocs/rules.md\tabsent anchor\t?\t-\tnot there\n' > "$T/rules3.tsv"
+run --state "$T/stateM" rules "$T/rules3.tsv"
+rc_is 1 "R4: a rule whose anchor is absent exits 1"
+has "missing: R9" "R4: naming it" "$OUT"
+has "remaining: 0" "R4: after running the other rule" "$OUT"
+run --state "$T/stateM" report --section rules
+has "| R1 | yes | 5 | 5 | - |" "R4: the report keeps the found rule" "$OUT"
+has "missing: R9" "R4: and lists the missing rule after it" "$OUT"
+lacks "| R9 |" "R4: a missing rule has no row" "$OUT"
+
+mk R5
+printf 'R1\tdocs/rules.md\tNever push\tyes\t-\tconfirm\n' > "$T/rules.tsv"
+: > "$T/markers/red-now"
+run rules "$T/rules.tsv"
+has "remaining: 5" "R5: mutants of a red suite stay remaining" "$OUT"
+rm "$T/markers/red-now"
+run rules "$T/rules.tsv"
+has "remaining: 0" "R5: the next session runs them" "$OUT"
+eq "$(python3 -c 'import json,sys
+print(sorted({r["verdict"] for r in map(json.loads, open(sys.argv[1]))}), sum(1 for _ in open(sys.argv[1])))' "$T/state/runs-rules.jsonl")" "['baseline-red', 'killed'] 10" "R5: the red records are kept and the later records win"
+run report --section rules
+has "| R1 | yes | 5 | 5 | - |" "R5: the report counts the later kills" "$OUT"
+clean R
+
 U=$(python3 - "$AUDIT" "$ROOT/unit" "$FIX" <<'PY'
 import contextlib, importlib.util, io, json, os, subprocess, sys
 from pathlib import Path

@@ -18,18 +18,22 @@ import sys
 import tempfile
 import time
 import random
+import hashlib
+import shlex
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mutators  # noqa: E402
+import rules  # noqa: E402
 
 DEFAULT_SEED = 20261111
 BASELINE_TIMEOUT = 1800
 LANGS = {"bash", "zsh", "sh", "py", "prose", "data", "deployed"}
 HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8}
-KINDS = {"code": "sample", "targeted": "targeted", "rule": "rule"}
+KINDS = {"code": "sample", "targeted": "targeted", "rule": "rules"}
+CHECK_SUITE = "check"
 SAFETY_SUITES = {
     "chezmoi-wrapper", "claude-settings", "codex-config", "deny-modes-probe", "git-forge-guard",
     "git-signing-config", "ha-mcp", "hook-path", "install-claude-managed-settings",
@@ -217,9 +221,9 @@ class Store:
         path = self.state / "meta.json"
         return json.loads(path.read_text()) if path.exists() else {}
 
-    def bind(self, sha):
+    def bind(self, sha, **extra):
         self.state.mkdir(parents=True, exist_ok=True)
-        (self.state / "meta.json").write_text(json.dumps({"sha": sha}) + "\n")
+        (self.state / "meta.json").write_text(json.dumps({**self.meta(), "sha": sha, **extra}) + "\n")
 
 
 def build_copy(repo, sha, root, command):
@@ -285,6 +289,22 @@ def run_suite(copy, suite, timeout, lock):
     copy = Path(copy)
     script = copy / "tests" / f"{suite}.test.sh"
     args = header(script, "test-args").replace("{repo}", str(copy)).split()
+    return run_process(copy, [f"./{suite}.test.sh", *args], copy / "tests", timeout, lock)
+
+
+def run_check(copy, argv, timeout, lock):
+    """A rule checker as a pseudo-suite. A checker that prints no assertion lines is one assertion,
+    `check`: passed on exit 0, failed on any other exit."""
+    run = run_process(Path(copy), argv, Path(copy), timeout, lock)
+    if not run.passed and not run.failed and not run.timed_out:
+        if run.rc == 0:
+            run.passed = [CHECK_SUITE]
+        else:
+            run.failed = [CHECK_SUITE]
+    return run
+
+
+def run_process(copy, argv, cwd, timeout, lock):
     env = {**os.environ, "RUN_SH_LOCKED": "1", "RUN_SH_START_DIR": str(copy),
            "RUN_SH_LOCK": str(lock)}
     guard = Lock(lock)
@@ -297,8 +317,7 @@ def run_suite(copy, suite, timeout, lock):
         # running, so it waits; the child gets an empty mask back before it execs.
         signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
         try:
-            proc = subprocess.Popen([f"./{suite}.test.sh", *args], cwd=copy / "tests",
-                                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                     env=env, start_new_session=True,
                                     preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, ()))
             SESSION.proc = proc
@@ -662,17 +681,19 @@ def stale_outcome():
 
 
 def copy_state(copy):
+    """The copy's `git status`, or None when git fails (no copy, no .git): that is dirty."""
     out = subprocess.run(["git", "-C", str(copy), "status", "--porcelain", "--ignored"],
                          capture_output=True, text=True)
-    return out.stdout
+    return out.stdout if out.returncode == 0 else None
 
 
 class Runner:
     """Runs mutants in this process's copy, one baseline per suite and session, and gives a
     survivor a second run."""
 
-    def __init__(self, args, sha, command):
+    def __init__(self, args, sha, command, check_argv=None):
         self.args, self.sha, self.command = args, sha, command
+        self.check_argv = check_argv
         self.copy = None
         self.baselines = {}
 
@@ -681,18 +702,26 @@ class Runner:
             self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
         return self.copy
 
+    def run(self, suite, timeout):
+        """One run of a suite, or, with a rule check command, of the pseudo-suite `check`."""
+        if self.check_argv is not None and suite == CHECK_SUITE:
+            return run_check(self.copy, [a.replace("{copy}", str(self.copy)) for a in self.check_argv],
+                             timeout, self.args.lock)
+        return run_suite(self.copy, suite, timeout, self.args.lock)
+
     def baseline(self, suite):
         if suite not in self.baselines:
-            self.baselines[suite] = run_suite(self.ensure_copy(), suite, BASELINE_TIMEOUT, self.args.lock)
+            self.ensure_copy()
+            self.baselines[suite] = self.run(suite, BASELINE_TIMEOUT)
         return self.baselines[suite]
 
     def attempt(self, suite, baseline):
         timeout = max(self.args.timeout_floor, 3 * baseline.seconds)
-        first = run_result(baseline, run_suite(self.copy, suite, timeout, self.args.lock))
+        first = run_result(baseline, self.run(suite, timeout))
         first.update(attempts=1, flaky=False)
-        if first["verdict"] != "survived":
+        if first["verdict"] != "survived" or not Path(self.copy).is_dir():
             return first
-        second = run_result(baseline, run_suite(self.copy, suite, timeout, self.args.lock))
+        second = run_result(baseline, self.run(suite, timeout))
         total = round(first["seconds"] + second["seconds"], 3)
         if second["verdict"] == "killed":
             second.update(attempts=2, flaky=True, seconds=total)
@@ -720,7 +749,8 @@ class Runner:
                     results[suite] = self.attempt(suite, base[suite])
             finally:
                 SESSION.restore_files()
-            if copy_state(copy) != before:
+            after = copy_state(copy)
+            if after is None or after != before:
                 self.rebuild(mutant["id"])
         return {s: results[s] for s in suites}
 
@@ -855,8 +885,9 @@ def suite_status(row):
     return "red" if row["rc"] != 0 or row["failed"] else "ok"
 
 
-def check_targeted_suites(args, sha, entries):
-    """Exit 2 before any run when a candidate's own suite is missing, gated or red."""
+def check_targeted_suites(args, sha, entries, built, subjects):
+    """Exit 2 before any run when a candidate's own suite is missing, gated or red, or when a
+    duplicate candidate's loader suite is red: its records would stay open for ever."""
     inventory = load_inventory(args.state)
     for entry in entries:
         name, suite = entry["candidate"], entry["suite"]
@@ -869,6 +900,11 @@ def check_targeted_suites(args, sha, entries):
             die(f"candidate {name}: suite {suite} needs {required}, so it is never mutated")
         if suite in inventory and suite_status(inventory[suite]) == "red":
             die(f"candidate {name}: suite {suite} is red in the inventory (copy-red)")
+        if entry["claim"] == "duplicate":
+            for mutant in built[name]:
+                for loader in subjects.get(mutant["file"], {"loaded_by": []})["loaded_by"]:
+                    if loader in inventory and suite_status(inventory[loader]) == "red":
+                        die(f"candidate {name}: loader suite {loader} is red in the inventory (copy-red)")
 
 
 def runnable_suites(copy, names):
@@ -884,8 +920,8 @@ def cmd_targeted(args):
     sha = preflight(args, bind=True)
     entries = load_manifest(args.manifest)
     built = build_targeted(args, sha, entries)
-    check_targeted_suites(args, sha, entries)
     subjects = {r["file"]: r for r in load_subjects(args.subjects, args.subjects_explicit)}
+    check_targeted_suites(args, sha, entries, built, subjects)
     hold_state(args.state, "targeted")
     store = Store(args.state)
     done = final_records(store, "targeted")
@@ -918,6 +954,153 @@ def cmd_targeted(args):
         if budget.spent():
             break
     print(f"remaining: {sum(1 for e in entries for m in built[e['candidate']] if not is_final(done, (e['candidate'], m['id'])))}")
+
+
+def cmd_pins(args):
+    path = Path(args.suite_file)
+    if not path.is_file():
+        die(f"no such suite file: {path}")
+    try:
+        found = rules.pins(path.read_text())
+    except rules.PinError as err:
+        print(f"{path}: {err}", file=sys.stderr)
+        sys.exit(1)
+    for row in found:
+        print("\t".join(row))
+
+
+def load_rules(path):
+    """Rows of a rules TSV: id, file, anchor, safety, terms, note (the note may be left off)."""
+    out, seen = [], set()
+    for n, line in enumerate(Path(path).read_text().split("\n"), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) not in (5, 6):
+            die(f"{path}:{n}: want id, file, anchor, safety, terms, note; got {len(cols)} columns")
+        rid, file, anchor, safety, terms = cols[:5]
+        if not rid or not file or not anchor.strip() or rid in seen:
+            die(f"{path}:{n}: needs a unique id, a file and an anchor")
+        if safety not in ("yes", "no", "?"):
+            die(f"{path}:{n}: safety must be yes, no or ?, got {safety!r}")
+        seen.add(rid)
+        out.append({"id": rid, "file": file, "anchor": anchor, "safety": safety,
+                    "terms": [t for t in terms.split(";") if t and t != "-"],
+                    "note": cols[5] if len(cols) == 6 else ""})
+    return out
+
+
+def sha256_file(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def bind_rules(args, check_argv):
+    """The state keeps one rule set and one checker: resumed results belong to both."""
+    binding = {"tsv": sha256_file(args.rules_tsv), "check_cmd": args.check_cmd or "",
+               "files": {a: sha256_file(a) for a in check_argv if os.path.isfile(a)}}
+    store = Store(args.state)
+    meta = store.meta()
+    if "rules" not in meta:
+        store.bind(meta["sha"], rules=binding)
+    elif meta["rules"] != binding:
+        die("state is bound to another rule set or check; use another --state")
+
+
+def rule_suites(args, sha, row, check_argv, inventory, subjects):
+    """The suites a rule's mutants run in: the checker, or the runnable suites that load the file."""
+    if check_argv is not None:
+        return [CHECK_SUITE]
+    if row["file"] not in subjects:
+        die(f"rule {row['id']}: {row['file']} has no row in the subject map")
+    keep = []
+    for name in subjects[row["file"]]["loaded_by"]:
+        text = git_show(args.repo, sha, f"tests/{name}.test.sh")
+        required = next((line[len("# test-requires:"):].lstrip(" ").split("  #")[0]
+                         for line in (text or "").split("\n") if line.startswith("# test-requires:")), "")
+        if text is None or required not in ("", "heavy"):
+            continue
+        if name in inventory and suite_status(inventory[name]) == "red":
+            die(f"rule {row['id']}: loader suite {name} is red in the inventory (copy-red)")
+        keep.append(name)
+    if not keep:
+        die(f"rule {row['id']}: no runnable suite loads {row['file']}")
+    return keep
+
+
+def cmd_rules(args):
+    rows = load_rules(args.rules_tsv)
+    check_argv = shlex.split(args.check_cmd) if args.check_cmd else None
+    if check_argv is not None and (not check_argv or shutil.which(check_argv[0]) is None):
+        die(f"check command not found: {args.check_cmd}")
+    sha = preflight(args, bind=True)
+    subjects = {r["file"]: r for r in load_subjects(args.subjects, args.subjects_explicit)}
+    inventory = load_inventory(args.state)
+    plan, suites = [], {}
+    for row in rows:
+        text = git_show(args.repo, sha, row["file"])
+        if text is None:
+            die(f"rule {row['id']}: no such file {row['file']} at {sha[:12]}")
+        found = rules.anchor_found(text, row["anchor"])
+        mutants = rules.rule_mutants(row["file"], text, row["id"], row["anchor"])
+        if mutants:
+            suites[row["id"]] = rule_suites(args, sha, row, check_argv, inventory, subjects)
+        plan.append({**row, "missing": not found,
+                     "mutants": [{**mutant_head(m), "rule": m["rule"], "item": m["item"]} for m in mutants],
+                     "_full": mutants})
+    hold_state(args.state, "rules")
+    bind_rules(args, check_argv or [])
+    write_atomic(Path(args.state) / "rules.jsonl",
+                 "".join(json.dumps({k: v for k, v in r.items() if k != "_full"}) + "\n" for r in plan))
+    store = Store(args.state)
+    done = final_records(store, "rules")
+    budget, runner = Budget(args.max_minutes), Runner(args, sha, "rules", check_argv)
+    for row in plan:
+        attempted = 0
+        for mutant in row["_full"]:
+            if is_final(done, (None, mutant["id"])):
+                continue
+            if budget.spent():
+                break
+            results = runner.mutate(mutant, suites[row["id"]])
+            outcome = stale_outcome() if results is None else combine(results)
+            rec = {**mutant_head(mutant), "rule": row["id"], "item": mutant["item"], **outcome}
+            store.append("rules", rec)
+            done[(None, mutant["id"])] = rec
+            attempted += 1
+        if attempted:
+            mine = [done[(None, m["id"])] for m in row["_full"] if is_final(done, (None, m["id"]))]
+            count = lambda v: sum(1 for r in mine if r["verdict"] == v)
+            red = sum(1 for m in row["_full"] if (None, m["id"]) in done and not is_final(done, (None, m["id"])))
+            print(f"[rules] {row['id']}: {len(mine)}/{len(row['_full'])} (killed {count('killed')}, "
+                  f"survived {count('survived')}, inconclusive {count('inconclusive')}, "
+                  f"baseline-red {red})", flush=True)
+    missing = [r["id"] for r in plan if r["missing"]]
+    for rid in missing:
+        print(f"missing: {rid}")
+    print(f"remaining: {sum(1 for r in plan for m in r['_full'] if not is_final(done, (None, m['id'])))}")
+    if missing:
+        sys.exit(1)
+
+
+def report_rules(args):
+    path = Path(args.state) / "rules.jsonl"
+    rows = read_jsonl(path) if path.exists() else []
+    recs = final_records(Store(args.state), "rules")
+    print("| rule | safety | mutants | killed | survivors |")
+    print("|---|---|---|---|---|")
+    for row in rows:
+        if row["missing"]:
+            continue
+        mine = [recs.get((None, m["id"])) for m in row["mutants"]]
+        killed = sum(1 for r in mine if r and r["verdict"] == "killed")
+        survivors = "; ".join(f"{r['op']}:{r['item']}".replace("|", "\\|")
+                              for r in mine if r and r["verdict"] == "survived")
+        print(f"| {row['id']} | {row['safety']} | {len(row['mutants'])} | {killed} | {survivors or '-'} |")
+    missing = [row["id"] for row in rows if row["missing"]]
+    if missing:
+        print()
+        for rid in missing:
+            print(f"missing: {rid}")
 
 
 def candidate_verdict(suite, labels, records):
@@ -1037,7 +1220,7 @@ def cmd_report(args):
     if args.compare and not args.kind:
         die("--compare needs --kind code|targeted|rule")
     {"inventory": report_inventory, "kills": report_kills, "gaps": report_gaps,
-     "targeted": report_targeted}[args.section](args)
+     "targeted": report_targeted, "rules": report_rules}[args.section](args)
     if args.compare:
         print()
         report_compare(args)
@@ -1165,8 +1348,16 @@ def parser():
     ta.add_argument("--max-minutes", type=float)
     ta.add_argument("manifest")
     ta.set_defaults(func=cmd_targeted)
+    pn = sub.add_parser("pins")
+    pn.add_argument("suite_file")
+    pn.set_defaults(func=cmd_pins)
+    ru = sub.add_parser("rules")
+    ru.add_argument("--max-minutes", type=float)
+    ru.add_argument("--check-cmd")
+    ru.add_argument("rules_tsv")
+    ru.set_defaults(func=cmd_rules)
     rep = sub.add_parser("report")
-    rep.add_argument("--section", required=True, choices=["inventory", "kills", "gaps", "targeted"])
+    rep.add_argument("--section", required=True, choices=["inventory", "kills", "gaps", "targeted", "rules"])
     rep.add_argument("--compare")
     rep.add_argument("--kind", choices=sorted(KINDS))
     rep.add_argument("--only", nargs="+", default=[])
