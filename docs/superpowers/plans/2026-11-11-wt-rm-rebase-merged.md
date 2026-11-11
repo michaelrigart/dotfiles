@@ -218,15 +218,15 @@ Filled in by Task 2.
 
 | Variant | Date | Suite exit | FAIL lines of the named case |
 |---|---|---|---|
-| V3 | | | |
-| V4 | | | |
-| V5 | | | |
-| V6 | | | |
-| V7a | | | |
-| V7b | | | |
-| V8 | | | |
-| V11 | | | |
-| V13 | | | |
+| V3 | 2026-11-11 | 1 | FAIL: rb3 one commit not copied: wt-rm says the branch is kept<br>FAIL: rb3 one commit not copied: the branch still exists ('' != 'rb3') |
+| V4 | 2026-11-11 | 1 | FAIL: rb4 no net change: wt-rm says the branch is kept<br>FAIL: rb4 no net change: the branch still exists ('' != 'rb4') |
+| V5 | 2026-11-11 | 1 | FAIL: rb5 repeated block, one commit: wt-rm says the branch is kept<br>FAIL: rb5 repeated block, one commit: the branch still exists ('' != 'rb5') |
+| V6 | 2026-11-11 | 1 | FAIL: rb6 merge commit with its own content: wt-rm says the branch is kept<br>FAIL: rb6 merge commit with its own content: the branch still exists ('' != 'rb6') |
+| V7a | 2026-11-11 | 1 | FAIL: rb7 repeated patch: wt-rm says the branch is kept<br>FAIL: rb7 repeated patch: the branch still exists ('' != 'rb7') |
+| V7b | 2026-11-11 | 1 | FAIL: rb7 repeated patch: wt-rm says the branch is kept<br>FAIL: rb7 repeated patch: the branch still exists ('' != 'rb7') |
+| V8 | 2026-11-11 | 1 | FAIL: rb8 repeated block, whole change: wt-rm says the branch is kept<br>FAIL: rb8 repeated block, whole change: the branch still exists ('' != 'rb8') |
+| V11 | 2026-11-11 | 1 | FAIL: rb11 failing replay: wt-rm says the branch is kept<br>FAIL: rb11 failing replay: the branch still exists ('' != 'rb11') |
+| V13 | 2026-11-11 | 1 | FAIL: rb13 failing patch-id pipeline: wt-rm says the branch is kept<br>FAIL: rb13 failing patch-id pipeline: the branch still exists ('' != 'rb13') |
 
 ## Rulings
 
