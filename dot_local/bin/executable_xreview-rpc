@@ -1430,7 +1430,8 @@ def user_messages(c, tid):
 
 def rollout_origin(path):
     """payload.cwd of the first session_meta line of the rollout at path (a .zst one is read
-    through zstd; a path that is missing falls back to its .zst or plain twin), or None when it cannot be read. Only reads; nothing of the app's is written."""
+    through zstd; a path that is missing falls back to its .zst or plain twin), or None when it
+    cannot be read. Only reads; nothing of the app's is written."""
     if not isinstance(path, str) or not path:
         return None
     # The daemon lists a compressed rollout under its plain name, so the file on disk may be the
@@ -1528,6 +1529,15 @@ def unarchived_threads(c, fresh):
         seen.add(cursor)
 
 
+def vanished_origin(th, cwd, paths):
+    """An origin of th that is gone and is not cwd, or None. paths: its started paths, if any;
+    otherwise its rollout's origin is read. An origin that cannot be read or tested is None."""
+    for o in paths or [rollout_origin(th.get("path"))]:
+        if isinstance(o, str) and o and os.path.realpath(o) != os.path.realpath(cwd) and gone(o) is True:
+            return o
+    return None
+
+
 def cleanup_survey(c, fresh, started, pinned):
     """(groups, selected, empty): the report lines by CLEANUP_HEADINGS key, the threads to
     archive as [(id, cwd)], and how many threads of gone checkouts had no turns and no started
@@ -1545,6 +1555,23 @@ def cleanup_survey(c, fresh, started, pinned):
             groups[key].append("  " + "  ".join((tid, str(cwd), stamp(th.get("updatedAt"))) + tail))
         missing = gone(cwd) if isinstance(cwd, str) and cwd else None
         if missing is False:
+            # A checkout that exists is never touched. A thread that began in one that is gone
+            # (a later turn ran here) is only listed, as the amended spec asks; reading its
+            # origin and history is listing. The common case, an origin that is cwd or still
+            # exists, ends at the origin, before any history is read.
+            if tid in pinned:
+                continue
+            origin = vanished_origin(th, cwd, started.get(tid))
+            if origin is None:
+                continue
+            if tid in started:
+                how = "started"
+            else:
+                msgs = user_messages(c, tid)
+                how = classify(msgs) if msgs else None
+                if how is None:
+                    continue
+            add("differs", how, f"origin {origin}")
             continue
         if missing is None:
             add("unread", "cannot tell whether its cwd exists")
@@ -1620,8 +1647,8 @@ def cmd_cleanup(a):
         print(f"== {heading} ({len(groups[key])})")
         for line in groups[key]:
             print(line)
-    print(f"Selected: {len(selected)}. Only threads whose recorded cwd is gone are considered; "
-          "a checkout that exists is never touched.")
+    print(f"Selected: {len(selected)}. Only threads whose recorded cwd is gone are selected; "
+          "a thread in a checkout that exists is never touched.")
     print(f"Not selected: {empty} threads in gone checkouts with no turns and no started record "
           "(the historical coverage limit).")
     print("Selection uses the daemon's recorded cwd; a thread whose origin differs is listed above "

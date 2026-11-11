@@ -53,7 +53,10 @@ for line in sys.stdin:
     m = json.loads(line); log.write(json.dumps(m) + "\n"); log.flush()
     meth = m.get("method")
     if meth in run.get("mkdir_on", {}):       # a directory appears when this method arrives
-        os.makedirs(run["mkdir_on"][meth], exist_ok=True)
+        d = run["mkdir_on"][meth]             # [path] or [path, mode]
+        os.makedirs(d[0], exist_ok=True)
+        if len(d) > 1:
+            os.chmod(d[0], d[1])
     if meth in run.get("drop_on", []):        # accept the request, then vanish unanswered
         sys.exit(0)
     if meth in run.get("garbage_on", []):     # a corrupt frame instead of a real response
@@ -1840,7 +1843,7 @@ is "CL1 each line carries the cwd, the update time and how it was identified" "$
 is "CL1 the headings come in order with their counts" "$(grep '^== ' "$T/out" | paste -sd'|' -)" \
    "== $H_STARTED (1)|== $H_PACKET ($(cl_zs 2 1))|== $H_OLD (1)|== $H_PINNED (1)|== $H_DIFFERS (1)|== $H_UNREAD (0)"
 is "CL1 the unarchived listing asks for every source kind" "$(jq -c 'select(.method == "thread/list") | .params | [.archived, (.sourceKinds | length)]' "$FAKE_LOG" | head -1)" "[false,10]"
-is "CL1 the limit lines and the dry-run line close the output" "$(tail -n 4 "$T/out")" "Selected: $((N)). Only threads whose recorded cwd is gone are considered; a checkout that exists is never touched.
+is "CL1 the limit lines and the dry-run line close the output" "$(tail -n 4 "$T/out")" "Selected: $((N)). Only threads whose recorded cwd is gone are selected; a thread in a checkout that exists is never touched.
 Not selected: 1 threads in gone checkouts with no turns and no started record (the historical coverage limit).
 Selection uses the daemon's recorded cwd; a thread whose origin differs is listed above and never selected.
 Dry run: nothing archived. Run again with --archive to archive the selected threads."
@@ -1977,12 +1980,50 @@ cl_clean; rm -rf "$G2"
 ac_started g a "$G"; ac_started g b "$G2"
 cl_th a "$G" "$G"; cl_th b "$G2" "$G2"
 cl_scn "[$(cl_full), $(cl_full)]"
-scenario "$(jq -c --arg d "$G2" '. + {mkdir_on:{"thread/archive":$d}}' "$FAKE_SCENARIO")"
+scenario "$(jq -c --arg d "$G2" '. + {mkdir_on:{"thread/archive":[$d]}}' "$FAKE_SCENARIO")"
 rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
 is "CL13 a thread whose checkout exists again is not archived, and that is not a failure" "$rc/$(ac_sent thread/archive)/$(tail -n 1 "$T/out")" "0/a/Archived 1 of 2."
 is "CL13 stderr says it was kept" "$(cat "$T/err")" "xreview-rpc: kept b: $G2 exists again"
 is "CL13 its started entry stays" "$(ac_ids g)" b
 rm -rf "$G2"
+
+# The same, when whether the path exists cannot be told: the fake makes b's parent unreadable.
+if [ "$(id -u)" = 0 ]; then
+  echo "  skip: CL13b (root ignores a mode 000 directory)"
+else
+  L2="$W/lk2"
+  chmod -R u+rwx "$L2" 2>/dev/null; cl_clean; rm -rf "$L2"
+  ac_started g a "$G"; ac_started g b "$L2/gone"
+  cl_th a "$G" "$G"; cl_th b "$L2/gone" "$L2/gone"
+  cl_scn "[$(cl_full), $(cl_full)]"
+  scenario "$(jq -c --arg d "$L2" '. + {mkdir_on:{"thread/archive":[$d, 0]}}' "$FAKE_SCENARIO")"
+  rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+  chmod 755 "$L2"; rm -rf "$L2"
+  is "CL13b a path that cannot be tested is not archived either, and that is not a failure" "$rc/$(ac_sent thread/archive)/$(tail -n 1 "$T/out")" "0/a/Archived 1 of 2."
+  is "CL13b stderr says why it was kept" "$(cat "$T/err")" "xreview-rpc: kept b: cannot tell whether $L2/gone exists now"
+fi
+
+# A thread whose recorded cwd exists but whose origin is gone is listed under differs and never
+# touched; one whose origin is its cwd, or still exists, costs no history read and is not listed.
+cl_clean; mkdir -p "$E" "$W/exists-cl2"
+ac_started g x4 "$W/vanished2"; ac_review g x4
+cl_th x1 "$E" "$W/vanished"; cl_hist x1 "$PK"
+cl_th x2 "$E" "$E"; cl_hist x2 "$PK"
+cl_th x3 "$E" "$W/exists-cl2"; cl_hist x3 "$PK"
+cl_th x4 "$E" "$E"
+cl_th x5 "$E" "$W/vanished"; cl_hist x5 hi "$PK" thanks
+cl_th x6 "$E" "$W/vanished"; cl_hist x6
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL14 a thread in an existing checkout that began in a gone one is listed under differs, with its origin" \
+   "$rc/$(cl_ids "$T/out" "$H_DIFFERS")/$(cl_sec "$T/out" "$H_DIFFERS" | grep -c "origin $W/vanished")" "0/x1,x4/2"
+is "CL14 a started one keeps its started label" "$(cl_sec "$T/out" "$H_DIFFERS" | grep -c '^  x4  .*  started  origin ')/$(cl_sec "$T/out" "$H_DIFFERS" | grep -c '^  x1  .*  packet  origin ')" "1/1"
+is "CL14 only the history of a thread with a gone origin is read" "$(ac_sent thread/turns/list)" "x1,x5,x6"
+is "CL14 a thread whose origin is its cwd or still exists, and a personal or empty history, are listed nowhere" \
+   "$(grep -cE '^  (x2|x3|x5|x6)  ' "$T/out")" 0
+is "CL14 nothing is selected, archived or touched" "$(ac_sent thread/archive)/$(tail -n 1 "$T/out")/$(ac_ids g)/$(cat "$ACR/g/review-thread")" "/Archived 0 of 0./x4/x4"
+is "CL14 and the empty threads are not counted in the coverage line" "$(grep -c 'Not selected: 0 threads in gone' "$T/out")" 1
+rm -rf "$W/exists-cl2"
 
 cl_clean
 unset TZ
