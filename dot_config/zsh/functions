@@ -15,7 +15,9 @@
 #   op-edit "SSH config"     # or by 1Password item name
 #
 # The note is written to a private temp file (mode 600) while editing and passed
-# to `op item edit` as an argument (briefly visible via `ps`).
+# to `op item edit` as an argument (briefly visible via `ps`). The editor is always
+# Neovim, started without swap, ShaDa, undo or backup files, so the note's text stays out of
+# Neovim's state.
 op-edit() {
   emulate -L zsh
   local src; src="$(chezmoi source-path)" || return 1
@@ -64,7 +66,7 @@ op-edit() {
 
   # Edit; bail out if nothing changed.
   local before; before="$(shasum "$tmp" | awk '{print $1}')"
-  "${EDITOR:-nvim}" "$tmp"
+  nvim -n -i NONE -c 'set noundofile nobackup nowritebackup' -- "$tmp"
   if [[ "$before" == "$(shasum "$tmp" | awk '{print $1}')" ]]; then
     print -r -- "op-edit: no changes to '$item'."
     rm -f "$tmp"; return 0
