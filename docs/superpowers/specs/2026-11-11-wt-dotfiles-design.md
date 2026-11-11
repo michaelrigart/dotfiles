@@ -109,8 +109,9 @@ sessions start" comment name the new root.
   - The settings fail to load with it: stop and bring Michael options.
   - Measured 2026-11-11 (Claude Code 2.1.322):
     - Run A (working directory a scratch directory under `~/Code`): the settings loaded (exit 0,
-      `subtype: success`, empty stderr) and the ordinary file written into the scratch sibling
-      does not exist. Claude Code ignores the glob in `allowWrite` (or takes it literally).
+      `subtype: success`, empty stderr). The ordinary write into the scratch sibling failed
+      ("Operation not permitted") and the file does not exist: `allowWrite` does not honour the
+      `chezmoi-*` glob (ignored or taken literally).
       Decision taken: `~/.local/share/chezmoi-*` is dropped from `allowWrite` and kept in `$roots`.
     - Run B (working directory the scratch sibling, with the glob still in the overlay): the
       ordinary file `b-ordinary` was written, and `.mcp.json`, `.codex/config.toml`,

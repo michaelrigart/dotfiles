@@ -406,14 +406,16 @@ jq_is '[.sandbox.filesystem.allowRead[]
         | select((endswith(".pub") or . == "~/.ssh/config" or . == "~/.ssh/known_hosts") | not)]
        | length' 0 "no private key path is readable through allowRead"
 # allowWrite keeps ordinary work sandboxed: source trees, the chezmoi source, documents and
-# the vault; a wt sibling is written only by its own session's working-directory grant. ~/.config and ~/.local/bin are out (spec 2026-10-16, sandbox write boundary):
-# what is written there runs later outside the sandbox — shells, git, mise, herdr, the
+# the vault; a wt sibling is written only by its own session's working-directory grant.
+# ~/.config and ~/.local/bin are out (spec 2026-10-16, sandbox write boundary): what is
+# written there runs later outside the sandbox — shells, git, mise, herdr, the
 # hooks, the excluded commands. Credential denials still outrank allowWrite.
 EXP_ALLOW_WRITE='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
 jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
       "allowWrite is exactly the four work roots"
 # denyWrite: in each work root, at any depth, git hooks and git configuration (also inside
-# submodules and linked worktrees); the chezmoi checkout's own top-level .git and each wt sibling's; the vault's
+# submodules and linked worktrees); the chezmoi checkout's own top-level .git/hooks; each wt
+# sibling's top-level .git; the vault's
 # .obsidian; and the agent configuration (.claude/settings*.json, .mcp.json, .codex) at
 # depth 0, 1 and 2 under each root only: never at any depth, because node_modules packages
 # ship such files (resolve@1.22.12 has a .claude/settings.local.json) and a deny there
@@ -552,7 +554,7 @@ for root in "$H/Code" "$H/.local/share/chezmoi" "$H/.local/share/chezmoi-feat-x"
 done
 # A dotfiles wt sibling (~/.local/share/chezmoi-<branch>) ends with every denial a ~/Code
 # repository has, plus its own top-level .git. The glob matches any chezmoi-* name, so a
-# sibling pre-created by a sandboxed command cannot be seeded with agent configuration.
+# sibling created before its session starts cannot be seeded with agent configuration.
 S="$H/.local/share/chezmoi-feat-x"
 for p in "$S/.mcp.json" "$S/.codex/config.toml" "$S/.claude/settings.local.json" \
          "$S/.claude/worktrees/agent-1/.git" "$S/.claude/worktrees/agent-1/.mcp.json" \
@@ -597,8 +599,9 @@ for p in "$H/Code/Org/repo/.git/objects/ab/cdef" "$H/Code/Org/repo/.git/index" \
 done
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/settings|/\\.mcp\\.json|/\\.codex")) | sub("/\\.(claude/settings|mcp\\.json|codex).*$"; "") | select(contains("**"))] | length' 0 \
       "no agent configuration entry has an any-depth ** before the file, so node_modules packages stay writable (only the .codex/** tail has one)"
-# allowWrite grants no sibling (Claude Code ignores a glob there, measured 2026-11-11), and
-# nothing that merely resembles one or the rest of ~/.local/share.
+# allowWrite grants no sibling (it does not honour the chezmoi-* glob, measured 2026-11-11),
+# and nothing that merely resembles one or the rest of ~/.local/share. The first two cases
+# are positive controls: the same filter must grant the roots that are listed.
 ALLOW_SET=$(printf '%s' "$OUT" | jq -c '.sandbox.filesystem.allowWrite')
 glob_granted() { printf '%s' "$ALLOW_SET" | jq --arg home "$HOME" --arg p "$1" --arg fl "" "$GLOB_RX" 2>&1; }
 grant_case() { # grant_case <granted|not> <path>
@@ -607,6 +610,8 @@ grant_case() { # grant_case <granted|not> <path>
   got=$(glob_granted "$2")
   if [ "$got" = "$want" ]; then _pass "allowWrite: $2 is $label"; else _fail "allowWrite: $2 is $label" "$got"; fi
 }
+grant_case granted "$H/Code/x/f"
+grant_case granted "$H/.local/share/chezmoi/f"
 grant_case not "$H/.local/share/chezmoi-feat-x/f"
 for p in "$H/.local/share/chezmoifoo/x" "$H/.local/share/x-chezmoi-y/f" \
          "$H/.local/share/mise/installs/x" "$H/.local/bin/x"; do

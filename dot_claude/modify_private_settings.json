@@ -438,9 +438,9 @@ printf '%s' "$input" | jq \
           ],
           # Ordinary work only: source trees, the chezmoi source, documents and the vault. A
           # dotfiles wt checkout is a sibling, ~/.local/share/chezmoi-<branch>, and is written
-          # only through the working-directory grant of its own session: allowWrite ignores a glob
-          # (measured 2026-11-11), and a parent entry would reach mise runtimes and other
-          # executables in ~/.local/share. The siblings stay in $roots below.
+          # only through the working-directory grant of its own session: allowWrite does not
+          # honour the chezmoi-* glob (measured 2026-11-11), and a parent entry would reach mise
+          # runtimes and other executables in ~/.local/share. The siblings stay in $roots below.
           # ~/.config and ~/.local/bin are out on purpose (spec 2026-10-16, sandbox write
           # boundary): what is written there runs later outside the sandbox, as shell
           # startup, git, mise, herdr, the hooks and the excluded commands.
