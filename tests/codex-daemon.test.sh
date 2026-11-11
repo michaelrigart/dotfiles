@@ -191,11 +191,11 @@ kill "$A_PID" "$B_PID" 2>/dev/null; sleep 0.5
 
 echo "E. the LaunchAgent"
 rendered="$T/agent.plist"
-chezmoi execute-template --file "$PLIST" > "$rendered" 2>"$T/tpl.err" \
+chezmoi execute-template --source "$ROOT" --file "$PLIST" > "$rendered" 2>"$T/tpl.err" \
   || { _fail "the plist template renders" "$(head -c 200 "$T/tpl.err")"; }
 if plutil -lint "$rendered" >/dev/null 2>&1; then _pass "the rendered plist is valid"; else _fail "the rendered plist is valid" "$(plutil -lint "$rendered" 2>&1)"; fi
 rendered_intel="$T/agent-intel.plist"
-if chezmoi execute-template --override-data '{"is_arm":false}' --file "$PLIST" \
+if chezmoi execute-template --source "$ROOT" --override-data '{"is_arm":false}' --file "$PLIST" \
      > "$rendered_intel" 2>"$T/tpl-intel.err"; then
   _pass "the plist template also renders for is_arm=false"
 else
@@ -203,6 +203,12 @@ else
 fi
 if plutil -lint "$rendered_intel" >/dev/null 2>&1; then _pass "the intel-rendered plist is valid"; else _fail "the intel-rendered plist is valid" "$(plutil -lint "$rendered_intel" 2>&1)"; fi
 x() { plutil -extract "$1" raw -o - "$rendered" 2>/dev/null; }
+# A decoy default source with broken data: a render that omits --source reads it and fails.
+mkdir -p "$T/decoy/chezmoi/.chezmoidata"; echo '= not toml' > "$T/decoy/chezmoi/.chezmoidata/broken.toml"
+decoy_out="$T/decoy.plist"
+XDG_DATA_HOME="$T/decoy" chezmoi execute-template --source "$ROOT" --file "$PLIST" > "$decoy_out" 2>/dev/null
+is "renders from the checkout it runs from, not the default source" \
+   "$(plutil -lint "$decoy_out" >/dev/null 2>&1 && echo valid || echo broken)" valid
 is "the label is the one codex-daemon kickstarts" "$(x Label)" "be.netronix.codex-app-server"
 is "it runs through /bin/sh -c" "$(x ProgramArguments.0) $(x ProgramArguments.1)" "/bin/sh -c"
 cmd="$(x ProgramArguments.2)"
