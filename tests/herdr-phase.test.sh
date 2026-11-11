@@ -1393,12 +1393,19 @@ check "$(grep -c '^LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"' "$PHASE")" "1" "the
 check "$(grep -c '^RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE:-40}"' "$PHASE")" "1" "the run deadline defaults to 40 s"
 
 # A run deadline of 0 ends every job at once, and the refresh still exits 0 and names each
-# repository it ended (06a0b8b died here under set -u, silently, its stderr on /dev/null).
+# repository it ended (06a0b8b died here under set -u, silently, its stderr on /dev/null). Both
+# repositories hang in glab, so neither job can finish on its own before the deadline sample.
 job_reset
+: > "$GLD/hang-test__proj"; : > "$GLD/hang-test__proj2"
 DEADLINE=0 run refresh --force
 check "$RC" "0" "a run deadline of 0: the refresh exits 0"
 check "$(printf '%s\n' "$OUT" | grep -c -E '^phase.sh: test%2Fproj2?: killed at the run deadline$')" "2" \
   "a run deadline of 0: each repository is named once as killed at the run deadline"
+for _r in test__proj test__proj2; do
+  _p="$(cat "$GLD/pid-$_r" 2>/dev/null)"
+  if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then _fail "a run deadline of 0: $_r's hung forge call is gone"; kill -9 "$_p" 2>/dev/null
+  else _pass "a run deadline of 0: $_r's hung forge call is gone"; fi
+done
 check "$(lock_busy)" "0" "a run deadline of 0: no lock outlives the run"
 # Any other value that is not a whole number of seconds is refused before a job starts: wait_jobs
 # does arithmetic with it, which would run PATH[$(cmd)] and end the shell silently on 1.5 or 08. The
