@@ -20,6 +20,8 @@ export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 
 # Then the user's own bins, in FRONT of Homebrew. tests/zshenv.test.sh pins this order.
+# PATH is kept unique so a nested shell re-sourcing this file adds no duplicates.
+typeset -U path PATH
 export PATH=$XDG_BIN_HOME:$PATH
 
 # NOTE: TERM is intentionally NOT forced here — Ghostty sets xterm-ghostty
