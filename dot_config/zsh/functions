@@ -1429,10 +1429,12 @@ _wt_squash_merged() {
 # while the base's tip IS the squash commit, and stops working after the next
 # unrelated merge.
 #
-# Both the local base and the remote's default branch count. Fails closed, per test and
-# per base: no base, a failed command, an empty or malformed patch-id list or a conflict
-# makes that test say no, and the next test still runs. A git without --merge-base
-# makes only the two patch-id tests say no; the merge-tree test still runs.
+# Both the local base and the remote's default branch count. Fails closed. With no base
+# at all it returns 1 before any test; a base with no merge-base, or equal to the branch,
+# is skipped. A failed command, or an empty or malformed patch-id list, inside the rebase
+# or squash test makes that test say no, and the next test still runs; a merge-tree
+# failure or conflict moves on to the next base. A git without --merge-base makes only
+# the two patch-id tests say no; the merge-tree test still runs.
 _wt_branch_content_merged() {
   emulate -L zsh
   local main="$1" branch="$2" base merged want mb how
