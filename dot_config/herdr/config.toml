@@ -97,12 +97,13 @@ delivery = "herdr"
 # by phase.sh) sits between the phase marker and the branch.
 [ui.sidebar.spaces]
 row_gap = 1
-# The phase marker leads row 2 so it survives truncation. Three tokens with exactly one
+# The phase marker leads row 2 so it survives truncation. Four tokens with exactly one
 # set buys a colour per phase: an inline style is fixed per token.
 # Reported by ~/.config/herdr/phase.sh; see the dev.phase plugin for when it runs.
 rows = [
   ["state_icon", { token = "workspace", bold = true }, { token = "git_status", dim = true }],
   [{ token = "$active", fg = "#9ece6a", bold = true },
+   { token = "$draft",  fg = "#ff9e64", bold = true },
    { token = "$review", fg = "#e0af68", bold = true },
    { token = "$merged", fg = "#565f89" },
    { token = "$ci_ok",   fg = "#9ece6a", bold = true },

@@ -269,9 +269,20 @@ run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call 
 # The report line for one workspace, so assertions read as "what did w4 get told".
 report_for() { grep -E "^herdr workspace report-metadata $1 " "$CALLS" | head -1; }
 
+# A report sets exactly the one phase token and clears the other three.
+phase_check() { # phase_check <ws> <phase> <value> <label>
+  local line t ok=1; line="$(report_for "$1")"
+  case "$line" in *" --token $2=$3 "*) ;; *) ok=0 ;; esac
+  for t in active draft review merged; do
+    [ "$t" = "$2" ] || case "$line" in *" --clear-token $t "*) ;; *) ok=0 ;; esac
+  done
+  if [ "$ok" = 1 ]; then _pass "$4"; else _fail "$4 (got: $line)"; fi
+}
+
 echo "A. usage"
 run --help
 check "$RC" "0" "--help exits 0"
+case "$OUT" in *"Phases: active, draft, review, merged."*) _pass "--help lists the four phases";; *) _fail "--help lists the four phases (got: $OUT)";; esac
 case "$OUT" in *refresh*) _pass "--help documents refresh";; *) _fail "--help documents refresh";; esac
 case "$OUT" in *pin*) _fail "--help no longer offers pin";; *) _pass "--help no longer offers pin";; esac
 run bogus-subcommand
@@ -289,8 +300,7 @@ case "$(report_for w3)" in *"--token active=$ICON_BRANCH"*) _pass "unpushed comm
   *) _fail "unpushed commits -> active (got: $(report_for w3))";; esac
 case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "open ready MR -> review, carries !10";;
   *) _fail "open ready MR -> review, carries !10 (got: $(report_for w4))";; esac
-case "$(report_for w5)" in *"--token active=$ICON_DRAFT"*) _pass "open draft MR -> active, draft icon";;
-  *) _fail "open draft MR -> active, draft icon (got: $(report_for w5))";; esac
+phase_check w5 draft "$ICON_DRAFT !11" "open draft MR -> draft, carries !11"
 # The branch is matched on the whole field, not as a substring. feature/rev must not pick up
 # the MR belonging to feature/review — a wrong badge is worse than none, because it says a
 # branch is waiting on a review that does not exist. Nothing in the script's output shows
@@ -352,9 +362,10 @@ for w in w2 w3 w4 w5 w6 w7 w8 w10 w11 w12 w13 wA wB; do
   line="$(report_for $w)"
   set_count=$(printf '%s\n' "$line" | grep -o -- "--token " | wc -l | tr -d ' ')
   clear_count=$(printf '%s\n' "$line" | grep -o -- "--clear-token " | wc -l | tr -d ' ')
-  [ $((set_count + clear_count)) -eq 6 ] || missing=$((missing + 1))
+  phase_sets=$(printf '%s\n' "$line" | grep -o -E -- "--token (active|draft|review|merged)=" | wc -l | tr -d ' ')
+  [ $((set_count + clear_count)) -eq 7 ] && [ "$phase_sets" -eq 1 ] || missing=$((missing + 1))
 done
-check "$missing" "0" "each report accounts for the three phase and the three pipeline tokens"
+check "$missing" "0" "each report accounts for the four phase and the three pipeline tokens, one phase set"
 
 echo
 echo "D. MR lookups are cached per repo"
@@ -522,7 +533,7 @@ set_pipe 10 success 11 failed 12 success 15 success
 run refresh --force
 ci_check w4 ok "a ready MR shows its pipeline"
 ci_check w5 fail "a draft MR shows its pipeline too"
-case "$(report_for w5)" in *"--token active=$ICON_DRAFT"*) _pass "the draft keeps its phase token beside the pipeline";;
+case "$(report_for w5)" in *"--token draft=$ICON_DRAFT !11 "*) _pass "the draft keeps its phase token beside the pipeline";;
   *) _fail "the draft keeps its phase token beside the pipeline (got: $(report_for w5))";; esac
 ci_check w6 none "a merged MR shows no pipeline badge"
 ci_check w7 none "a branch without an MR shows no pipeline badge"
@@ -619,7 +630,7 @@ RUNDIR="$T/repo-review" run refresh --force
 [ "$(wc -l < "$PWDS" | tr -d ' ')" -gt 0 ] && _pass "the cwd case reached glab" || _fail "the cwd case reached glab"
 check "$(grep -vxc / "$PWDS")" "0" "every glab call runs from / even when phase.sh starts inside a repository"
 
-# Socket limit: at most 16 token keys per report; this one makes six.
+# Socket limit: at most 16 token keys per report; this one makes seven.
 set_pipe 10 success 11 failed
 run refresh --force
 over=0
@@ -684,6 +695,24 @@ q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
 glab_stub
 
 echo
+echo "L. a space moves between draft and the other phases"
+set_pipe
+cp "$MROPEN" "$MROPEN.orig"; cp "$MRMERGED" "$MRMERGED.orig"
+move() { run refresh --force --workspace w5; }
+sed 's/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":true/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":false/' "$MROPEN.orig" > "$MROPEN"
+move; phase_check w5 review "$ICON_MR !11" "draft -> review when the MR is marked ready"
+cp "$MROPEN.orig" "$MROPEN"
+move; phase_check w5 draft "$ICON_DRAFT !11" "review -> draft when the MR goes back to draft"
+printf '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]\n' > "$MROPEN"
+move; phase_check w5 active "$ICON_BRANCH" "draft -> active when the MR is gone from both lists"
+cp "$MROPEN.orig" "$MROPEN"
+move; phase_check w5 draft "$ICON_DRAFT !11" "active -> draft when an open draft MR appears"
+printf '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]\n' > "$MROPEN"
+printf '[{"iid":11,"source_branch":"feature/draft","state":"merged","draft":false}]\n' > "$MRMERGED"
+move; phase_check w5 merged "$ICON_MERGE !11" "draft -> merged when the MR lands"
+cp "$MROPEN.orig" "$MROPEN"; cp "$MRMERGED.orig" "$MRMERGED"; rm -f "$MROPEN.orig" "$MRMERGED.orig"
+
+echo
 echo "I. the wiring that makes the badges appear and persist"
 # These are static assertions about config, not behaviour of the script — but nothing else
 # catches them, and each one silently produces no badges rather than an error.
@@ -709,7 +738,7 @@ else
     || _fail "the focus hook refreshes only the focused space"
 
   # A token the sidebar never references is reported into a void.
-  for tok in active review merged; do
+  for tok in active draft review merged; do
     grep -q "token = \"[\$]$tok\"" "$CONF" \
       && _pass "sidebar renders \$$tok" || _fail "sidebar renders \$$tok"
   done

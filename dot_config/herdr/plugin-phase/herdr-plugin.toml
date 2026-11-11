@@ -13,7 +13,7 @@ id = "dev.phase"
 name = "Space phases"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
-description = "Badge worktree spaces with active / in review / merged"
+description = "Badge worktree spaces with active / draft / in review / merged"
 platforms = ["macos"]
 
 [[startup]]

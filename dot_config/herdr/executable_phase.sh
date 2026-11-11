@@ -8,8 +8,8 @@
 # is the only thing keeping the badges alive. It must be cheap and safely re-runnable, and
 # it must never read back state it previously reported.
 #
-# Each report carries six tokens in one `herdr workspace report-metadata` call: the phase
-# (active, review or merged) and, for a space with an open MR (draft or not), the head
+# Each report carries seven keys in one `herdr workspace report-metadata` call: the phase
+# (active, draft, review or merged) and, for a space with an open MR (draft or not), the head
 # pipeline's status (ci_ok, ci_fail or ci_run). One of each group is set and the rest cleared.
 #
 # Three things drive it, and the periodic one is not redundant:
@@ -114,7 +114,7 @@ usage() {
     '  phase.sh refresh [--force] [--workspace ID]   report phases (all spaces, or one)' \
     '  phase.sh --help' \
     '' \
-    'Phases: active, review, merged.'
+    'Phases: active, draft, review, merged.'
 }
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
@@ -266,7 +266,7 @@ print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
 
 # ------------------------------------------------------------------ derivation
 # Prints "<phase> <value>" for one checkout, and "open <iid>" on a second line when the
-# branch's MR is open (draft or not). Order matters: an open MR outranks every local signal;
+# branch's MR is open (draft or not); a draft MR's phase is draft, and it carries its !<iid>. Order matters: an open MR outranks every local signal;
 # local work outranks a merged MR.
 derive() { # derive <checkout_path> <repo_root> <mr_table>
   local path="$1" root="$2" table="$3" branch base row state iid draft
@@ -287,7 +287,7 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   # An open MR outranks everything git can see locally: it says somebody else is waiting on
   # this branch, and an untracked file or an unpushed review fix does not change that.
   if [ "$state" = "opened" ]; then
-    if [ "$draft" = "1" ]; then printf 'active %s\n' "$ICON_DRAFT"
+    if [ "$draft" = "1" ]; then printf 'draft %s !%s\n' "$ICON_DRAFT" "$iid"
     else printf 'review %s !%s\n' "$ICON_MR" "$iid"; fi
     printf 'open %s\n' "$iid"
     return 0
@@ -322,15 +322,15 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
 }
 
 # Herdr keeps a token until told otherwise, so the unused ones are cleared on every report;
-# otherwise a space moving review -> merged renders both icons at once. Six keys per call:
-# the phase group (active, review, merged) with one set, and the pipeline group (ci_ok,
+# otherwise a space moving review -> merged renders both icons at once. Seven keys per call:
+# the phase group (active, draft, review, merged) with one set, and the pipeline group (ci_ok,
 # ci_fail, ci_run) with at most one set, none when <ci> is empty.
 report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
   local ws="$1" phase="$2" value="$3" ci="${4:-}" g=""
   local -a args
   args=(workspace report-metadata "$ws" --source "$SOURCE_ID")
   local t
-  for t in active review merged; do
+  for t in active draft review merged; do
     if [ "$t" = "$phase" ]; then args+=(--token "$t=$value")
     else args+=(--clear-token "$t"); fi
   done
