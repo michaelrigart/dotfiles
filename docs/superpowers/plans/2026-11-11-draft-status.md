@@ -138,9 +138,10 @@ Trade-offs inside the spec, decided by the line:
       to `/dev/null` during the wait. The jobs keep their own stderr.
     - Measured under the pinned `env -i` environment with bash 3.2: the job's process group is
       its PID, and a group TERM kills a grandchild forge call.
-    - Every cache write is atomic, through a temporary file in the same directory and `mv`. That
-      covers the MR/PR table, the pipeline status and the focus stamp. A job killed at the
-      deadline therefore leaves its cache as it was.
+    - Every cache write is atomic: the temporary file is staged in the repository's own
+      `$CACHE_DIR/.tmp/<key>/` and renamed into place with `mv`. That covers the MR/PR table, the
+      pipeline status and the focus stamp. A job killed at the deadline therefore leaves its cache
+      as it was. Under the lock, a job empties only its own staging directory.
     - **Correction (driver ruling, 2026-11-12).** The first version of this ruling relied on
       launchd's group kill as a second line of defence. That kill cannot reach the jobs, because
       `set -m` puts each one in its own process group. In its place:
@@ -154,14 +155,22 @@ Trade-offs inside the spec, decided by the line:
     - **Accepted limit.** A SIGKILL of the main shell cannot be trapped. A job it orphans is
       bounded by nothing: forge calls have no timeout, and a job has no deadline of its own. If a
       forge call hangs, that repository's badges stay frozen until the call ends. `pkill -f
-      phase.sh` recovers. Only a manual `kill -9`, or a grace longer than `ExitTimeOut`, reaches
-      this.
+      phase.sh` does not recover it, because the forge call inherits the lock (measured). Find
+      every process holding the lock with `lsof -t <cache>/<key>.lock`. Only a manual `kill -9`,
+      or a grace longer than `ExitTimeOut`, reaches this.
 13. **Accepted limit (driver ruling, 2026-11-12).** A sandboxed command can take a repository's
     lock, because `flock` needs only read access and the lock files are readable from the
     sandbox. That freezes the repository's badges, and every run pays `LOCK_WAIT` for it, bounded
     by the deadline. It writes nothing and runs nothing. The fix is a read-deny for
     `~/.cache/herdr-phase` in the sandbox settings, which `feat/wt-dotfiles` owns. It is a
     follow-up for Michael to decide, not part of this line.
+14. **Task 4 supervision hunt stopped after round 4** (driver ruling, 2026-11-12), per the
+    2026-10-31 push-guard precedent. Remaining corners are documented in the phase.sh header.
+    Option B, job supervision in a `/usr/bin/python3 -I` helper, is deferred to Michael.
+15. **Numeric overrides are validated.** `HERDR_PHASE_RUN_DEADLINE` must be a whole number of
+    seconds; any other value exits 2 with a message. Shell arithmetic on an unvalidated value
+    runs `a[$(cmd)]`, which was measured. The whole-branch review checks every other numeric
+    override for the same class.
 
 **Call budget at 72 runs/h:**
 - GitLab: 2 per repository plus 1 per open MR per run, so 18 per run today, ~1,300/h, against
