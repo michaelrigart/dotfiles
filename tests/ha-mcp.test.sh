@@ -79,7 +79,7 @@ printf "HOMEASSISTANT_URL='http://h:8123'\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINE
 run
 check "exits 0" "0" "$RC"
 check "stderr empty" "" "$ERR"
-check "execs uvx on mise's Python, passing the env file path only" "$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|$T/home/.config/ha-mcp/env|unset|unset|1" "$(cat "$LOG")"
+check "execs uvx on mise's Python, passing the env file path only" "$T/home|exec uv -- uvx --python /stub/python ha-mcp==9.1.2|$T/home/.config/ha-mcp/env|unset|unset|1" "$(cat "$LOG")"
 check "runs from HOME, not the caller's directory" "$T/home" "$(cut -d'|' -f1 "$LOG")"
 check "curl never ran" "" "$(cat "$T/curl.log")"
 case "$OUT$ERR" in *"$SENTINEL"*) _fail "token never printed" "launcher output contains the token" ;; *) _pass "token never printed" ;; esac
@@ -138,7 +138,7 @@ for rc in 6 28; do
   write_env 'http://h:8123' 'https://r.example'
   MOCK_CURL_RC=$rc run
   check "curl exit $rc: exits 0" "0" "$RC"
-  check "curl exit $rc: execs uvx on env-remote" "$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|$ENVR|unset|unset|1" "$(cat "$LOG")"
+  check "curl exit $rc: execs uvx on env-remote" "$T/home|exec uv -- uvx --python /stub/python ha-mcp==9.1.2|$ENVR|unset|unset|1" "$(cat "$LOG")"
   check "curl exit $rc: stderr says env-remote" "ha-mcp: home address unreachable; using env-remote" "$ERR"
   no_secret "H $rc"
 done
