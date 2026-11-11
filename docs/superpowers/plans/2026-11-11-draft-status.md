@@ -13,7 +13,7 @@ token (`draft`) joins the phase group. `repo_slug` learns a forge, so GitHub rep
 `gh pr list` table in the same format, cache and stale fallback as GitLab's, with CI taken from
 the list's `statusCheckRollup`. For freshness, the timer forces every lookup, and a focus refresh
 skips the TTL behind a per-repository lookup stamp. Each repository is refreshed as its own
-background job.
+background job, under a lock that allows one refresh of a repository at a time.
 
 **Tech Stack:** bash 3.2 (`/bin/bash`), `/usr/bin/python3 -I` (3.9, stdlib only), `glab` 1.130,
 `gh` 2.103, herdr 0.9.5, launchd.
@@ -95,17 +95,28 @@ Trade-offs inside the spec, decided by the line:
    (table, and that space's pipeline) whatever the TTL, unless a lookup of that repository
    started less than `FRESH_GAP` = 10 s ago. In that case it answers from the cache, as a failed
    lookup would. The gap is measured from a stamp, `<key>.lookup`, that every forge lookup
-   touches before it calls out. So a failing forge, or two refreshes at once, are rate-limited
-   too. `--force` ignores the stamp (the keybinding and the timer), and the TTL path does not
-   read it.
-8. **Cache files are replaced atomically** (`mktemp` beside the file, then `mv -f`). The timer at
-   50 s and forced focus refreshes overlap more often, and today's in-place `printf >` lets a
-   reader see a truncated table.
+   touches before it calls out. The stamp is read and touched only while the repository's lock is
+   held (Ruling 11), so a failing forge, or two refreshes at once, are rate-limited too.
+   `--force` ignores the stamp (the keybinding and the timer), and the TTL path does not read it.
+8. **Cache files are replaced atomically** (`mktemp` beside the file, then `mv -f`). This guards
+   against the one case the lock does not cover: a broken stale lock.
 9. **Jobs are not capped.** Each repository is refreshed as its own background job (`&` and
    `wait`), the §5 amendment Michael approved on 2026-11-11. There is no cap because the number of
    repositories with linked worktrees is small: 6 today.
 10. **StartInterval 50** (the §5 amendment). With per-repository jobs the run is about 8 s, so
     the cadence is about 58 s and a change shows in at most about 65 s. That is 72 runs/h.
+11. **One refresh of a repository at a time.** A lock directory, `$CACHE_DIR/<key>.lock`, is
+    taken with `mkdir`, which is atomic in bash 3.2. A refresh holds it across that repository's
+    stamp check, lookups, cache writes and reports, so two refreshes of the same repository run
+    one after the other. The second one's lookup starts after the first has published, so a
+    newer badge can never be overwritten by an older lookup.
+    - The lock holds the owner's `$$` (the phase.sh process; its per-repository jobs share it).
+      A waiter breaks the lock when that PID is gone, or when the lock is older than
+      `LOCK_STALE` = 120 s, well past any healthy run.
+    - A refresh that cannot take the lock within `LOCK_WAIT` = 30 s skips that repository and
+      reports none of its spaces; the holder reports them.
+    - The lock is released on every exit path, a signal included.
+    - Different repositories have different locks, so per-repository jobs still run side by side.
 
 **Call budget at 72 runs/h:**
 - GitLab: 2 per repository plus 1 per open MR per run, so 18 per run today, ~1,300/h, against
@@ -116,8 +127,9 @@ Trade-offs inside the spec, decided by the line:
 
 ## Review Focus
 
-- **The 50 s timer and a forced focus lookup write the same cache at once.** A reader must never
-  see a truncated table, so cache files are replaced, not rewritten (Task 4, inode test).
+- **The 50 s timer and a focus refresh hit the same repository at once.** Neither may read a
+  truncated table, and an older lookup that finishes last may not overwrite a newer badge
+  (Task 4: lock, reversed-completion test, inode test).
 - **A valid empty list (`[]`) is an answer, not a failure.** When a PR is closed, its badge must
   go. Only a failed or non-JSON answer falls back to the cache (Task 2).
 - **A rollup can mix CheckRuns (`status`/`conclusion`) and StatusContexts (`state`), with an
@@ -125,7 +137,7 @@ Trade-offs inside the spec, decided by the line:
 - **A Herdr server started under direnv or mise carries `GH_CONFIG_DIR`, `GH_HOST`, `GH_TOKEN`,
   `HTTPS_PROXY` or `SSL_CERT_FILE` into its hooks.** None of them may reach `gh` (Task 2).
 - **A focus right after a failed lookup, with no cache at all.** No PR state is invented and no
-  second call is made within the gap; after the gap, one call (Task 4).
+  second call is made within the gap; after the gap, one call (Task 5).
 
 ---
 
@@ -201,7 +213,7 @@ Trade-offs inside the spec, decided by the line:
   - `cache_key <forge> <slug>` prints `<slug with / as %2F>` for gitlab and
     `github@<slug with / as %2F>` for github.
   - `mr_table <forge> <slug> <force:0|1>` prints the table or fails. It keeps its cache, TTL and
-    stale fallback; Task 4 replaces `<force>` with a mode.
+    stale fallback; Task 5 replaces `<force>` with a mode.
   - `gitlab_rows <slug>` and `github_rows <slug>` print table rows. Exit 0 is a full answer
     (cache it). Exit 3 means the open rows only, because the merged half failed (use it, don't
     cache it). Anything else is a failed lookup.
@@ -336,79 +348,29 @@ Trade-offs inside the spec, decided by the line:
 - [ ] **Step 4: Run them and see them pass.** Same command. Expected: 0 failed.
 - [ ] **Step 5: Commit.** `git commit -m "Badge GitHub PR checks from the PR list's rollup"`.
 
-### Task 4: A focus refresh and timer that keep the badge fresh
+### Task 4: Refresh each repository as its own locked job
 
-**Depends on:** Task 3.
+**Depends on:** Task 3. Implements the §5 amendment and pins each of its constraints, plus
+Rulings 8 and 11.
 
 **Files:**
-- Modify: `dot_config/herdr/executable_phase.sh` (`FRESH_GAP`, `--fresh`, lookup modes, the
-  stamp, atomic cache writes, `usage`, the header comment)
-- Modify: `dot_config/herdr/plugin-phase/herdr-plugin.toml` (the focus hook and its comment)
-- Modify: `Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl` (`--force`,
-  `StartInterval` 50, comments)
+- Modify: `dot_config/herdr/executable_phase.sh` (`cmd_refresh`, a new `refresh_repo`, the lock,
+  atomic cache writes, header comment)
 - Test: `tests/herdr-phase.test.sh`
 
 **Interfaces:**
-- Consumes: `mr_table`, `pipeline_class`, `read_table`, `cache_key`.
+- Consumes: `repo_slug`, `cache_key`, `mr_table`, `pipeline_class`, `derive`, `report`.
 - Produces:
-  - `refresh [--force | --fresh] [--workspace ID]`.
-  - The lookup mode is `ttl`, `force` or `cached`:
-    - `mr_table <forge> <slug> <mode>` and `pipeline_class <slug> <iid> <mode>` take it in place
-      of the `force` flag;
-    - `cached` never calls out; it answers as a failed lookup would.
-  - The stamp `$CACHE_DIR/<key>.lookup` is touched right before every forge lookup.
+  - `refresh_repo <root> <force:0|1> <spaces>` handles one repository's spaces
+    (`ws<TAB>path<TAB>root` lines). It works out the slug, takes the repository's lock, fetches
+    the table, then derives, looks up CI for and reports each space, and releases the lock.
+    Task 5 replaces `<force>` with a run mode.
+  - `cmd_refresh` starts one `refresh_repo` per repository in `spaces` order, each as a
+    background subshell, and `wait`s for all of them.
+  - `repo_lock <key>` waits for and takes the lock (Ruling 11), or fails after `LOCK_WAIT`.
+    `repo_unlock <key>` releases it.
   - `age_of <file>` prints seconds since the file's mtime, or a large number when it is missing.
-
-- [ ] **Step 1: Write the failing tests.**
-  - `--fresh --workspace w4` on a warm TTL cache makes 2 `mr list` calls and 1 `api` call.
-  - Again at once: 0 calls, and the report is still `review … !10` with its CI.
-  - With the stamp aged 11 s (`touch -t`): 2 and 1 again.
-  - `glab` failing: `--fresh` after an aged stamp makes its calls and keeps the cached badge;
-    `--fresh` again at once makes 0 calls.
-  - A cold cache with a fresh stamp: no PR state and 0 calls.
-  - `--force` right after `--fresh` makes its calls. `--fresh` right after `--force` makes 0.
-  - Default `refresh` keeps the TTL rules: the section D counts are unchanged.
-  - A gated `--fresh` shows a pipeline cache 29 minutes old, and clears the CI tokens at 31.
-  - A GitHub space under `--fresh`: 2 `gh` calls, then 0.
-  - Atomic writes: the `.tsv`'s inode changes across a forced lookup, and no temporary file is
-    left in the cache dir.
-  - The section K listing becomes
-    `a%2Fb_c.lookup a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lookup a_b%2Fc.mr10.pipeline a_b%2Fc.tsv `.
-  - Section I:
-    - the plist's ProgramArguments carry `refresh` then `--force`;
-    - its interval is between 30 and 60 s, replacing the 1–10 minute case;
-    - the focus hook passes `--fresh --workspace`;
-    - its fallback with no workspace id is a plain `refresh`.
-- [ ] **Step 2: Run them and see them fail.** Run `./tests/herdr-phase.test.sh`. Expected: FAIL on
-  the `--fresh`, stamp, inode and wiring cases.
-- [ ] **Step 3: Implement.**
-  - `FRESH_GAP=10`.
-  - `cmd_refresh` picks each repository's mode:
-    - `--force` gives `force`;
-    - `--fresh` gives `cached` when `age_of` the stamp is under `FRESH_GAP`, and `force` otherwise;
-    - with neither, the mode is `ttl`.
-  - Cache writes go through `mktemp "$cache.XXXXXX"` and `mv -f`.
-  - `usage` documents `--fresh`.
-  - The header, plugin and plist comments describe the new cadence: timer forced every 50 s,
-    focus fresh within 10 s, TTL for startup and worktree events.
-- [ ] **Step 4: Run them and see them pass.** Same command. Expected: 0 failed.
-- [ ] **Step 5: Commit.** `git commit -m "Keep Herdr phase badges within a minute of the forge"`.
-
-### Task 5: Refresh each repository as its own job
-
-**Depends on:** Task 4. Implements the §5 amendment and pins each of its constraints.
-
-**Files:**
-- Modify: `dot_config/herdr/executable_phase.sh` (`cmd_refresh`, a new `refresh_repo`, header
-  comment)
-- Test: `tests/herdr-phase.test.sh`
-
-**Interfaces:**
-- Consumes: everything above.
-- Produces: `refresh_repo <root> <run: ttl|force|fresh> <spaces>` handles one repository's spaces
-  (`ws<TAB>path<TAB>root` lines). It works out the slug, picks the repository's lookup mode from
-  `<run>` (Task 4's rule), fetches the table, then derives, looks up CI for and reports each space.
-  `cmd_refresh` starts one job per repository in `spaces` order (`&`) and `wait`s for all of them.
+  - Every cache write goes through `mktemp "$cache.XXXXXX"` and `mv -f`.
 
 - [ ] **Step 1: Write the failing tests.** Add a section, "each repository is its own job":
   - **No repository waits for another.** `test/proj`'s `glab mr list` stub blocks until a report
@@ -427,12 +389,96 @@ Trade-offs inside the spec, decided by the line:
     1 s per `mr list` call (2 s per repository): the run finishes in under 4.5 s, where a
     sequential run takes at least 6 s.
   - **A single space is one report.** `refresh --workspace w4` still makes exactly one report.
+  - **An older lookup never lands last.** The test steps:
+    1. A stub's first open-list call for `test/proj` answers `feature/draft` as a draft. It
+       creates a "started" marker and sleeps 2 s.
+    2. Every later call answers it ready.
+    3. Run A, `refresh --force --workspace w5`, in the background, and wait for the marker.
+    4. Run B, the same command, and wait for both.
+
+    Assertions:
+    - the last report for w5 is `review … !11`;
+    - the cached `.tsv` has draft `0`;
+    - B's lookup started after A's report (the order in the call log).
+  - **Locks.** A lock directory left by a dead PID is broken at once, and the refresh reports.
+    A lock held by a live process (the suite's own shell) makes a refresh with `LOCK_WAIT`
+    lowered skip that repository: there is no report for its spaces, the other repository is
+    still reported, and RC is 0. To lower `LOCK_WAIT`, the suite gets an override variable like
+    `HERDR_PHASE_TTL`. No lock is left after any run.
+  - **Atomic writes.** The `.tsv`'s inode changes across a forced lookup, and no temporary file is
+    left in the cache dir.
 - [ ] **Step 2: Run them and see them fail.** Run `./tests/herdr-phase.test.sh`. Expected: FAIL
-  with `timeout` logged, and on the timing bound.
-- [ ] **Step 3: Implement.** Group `spaces` lines by `root` into `refresh_repo` calls in
-  background subshells, and `wait`.
+  with `timeout` logged, on the timing bound, the reversed order, the locks and the inode.
+- [ ] **Step 3: Implement.**
+  - Group `spaces` lines by `root` into `refresh_repo` calls in background subshells, then `wait`.
+  - Each subshell sets its own `trap` to release its lock.
+  - `LOCK_WAIT` honours `HERDR_PHASE_LOCK_WAIT`, for the suite only; its default is 30 s.
+  - Poll with `/bin/sleep 0.2`.
 - [ ] **Step 4: Run them and see them pass.** Run `./tests/herdr-phase.test.sh`. Expected: 0 failed.
-- [ ] **Step 5: Commit.** `git commit -m "Refresh each repository's Herdr badges concurrently"`.
+- [ ] **Step 5: Commit.** `git commit -m "Refresh each repository's Herdr badges as its own locked job"`.
+
+### Task 5: A focus refresh and timer that keep the badge fresh
+
+**Depends on:** Task 4.
+
+**Files:**
+- Modify: `dot_config/herdr/executable_phase.sh` (`FRESH_GAP`, `--fresh`, lookup modes, the
+  stamp, `usage`, the header comment)
+- Modify: `dot_config/herdr/plugin-phase/herdr-plugin.toml` (the focus hook and its comment)
+- Modify: `Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl` (`--force`,
+  `StartInterval` 50, comments)
+- Test: `tests/herdr-phase.test.sh`
+
+**Interfaces:**
+- Consumes: `refresh_repo`, `repo_lock`, `age_of`, `mr_table`, `pipeline_class`, `read_table`,
+  `cache_key`.
+- Produces:
+  - `refresh [--force | --fresh] [--workspace ID]`.
+  - `refresh_repo <root> <run: ttl|force|fresh> <spaces>`.
+  - The lookup mode is `ttl`, `force` or `cached`:
+    - `mr_table <forge> <slug> <mode>` and `pipeline_class <slug> <iid> <mode>` take it in place
+      of the `force` flag;
+    - `cached` never calls out; it answers as a failed lookup would.
+  - The stamp `$CACHE_DIR/<key>.lookup` is touched right before every forge lookup, always under
+    the repository's lock.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `--fresh --workspace w4` on a warm TTL cache makes 2 `mr list` calls and 1 `api` call.
+  - Again at once: 0 calls, and the report is still `review … !10` with its CI.
+  - With the stamp aged 11 s (`touch -t`): 2 and 1 again.
+  - `glab` failing: `--fresh` after an aged stamp makes its calls and keeps the cached badge;
+    `--fresh` again at once makes 0 calls.
+  - A cold cache with a fresh stamp: no PR state and 0 calls.
+  - **Concurrent `--fresh`.** Two `--fresh --workspace w4` processes start together with an aged
+    stamp. The `mr list` stub sleeps 1 s. Exactly 2 `mr list` calls are made (one lookup), both
+    processes report `review … !10`, and RC is 0 for each.
+  - `--force` right after `--fresh` makes its calls. `--fresh` right after `--force` makes 0.
+  - Default `refresh` keeps the TTL rules: the section D counts are unchanged.
+  - A gated `--fresh` shows a pipeline cache 29 minutes old, and clears the CI tokens at 31.
+  - A GitHub space under `--fresh`: 2 `gh` calls, then 0.
+  - The section K listing becomes
+    `a%2Fb_c.lookup a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lookup a_b%2Fc.mr10.pipeline a_b%2Fc.tsv `.
+  - Section I:
+    - the plist's ProgramArguments carry `refresh` then `--force`;
+    - its `StartInterval` is between 30 and 60 s, replacing the 1–10 minute case;
+    - the focus hook passes `--fresh --workspace`;
+    - its fallback with no workspace id is a plain `refresh`.
+- [ ] **Step 2: Run them and see them fail.** Run `./tests/herdr-phase.test.sh`. Expected: FAIL on
+  the `--fresh`, stamp, concurrency and wiring cases.
+- [ ] **Step 3: Implement.**
+  - `FRESH_GAP=10`.
+  - Inside `refresh_repo`, with the lock held, the repository's mode is:
+    - `force` under `--force`;
+    - under `--fresh`, `cached` when `age_of` the stamp is under `FRESH_GAP`, and `force`
+      otherwise;
+    - `ttl` with neither.
+  - `usage` documents `--fresh`.
+  - The header, plugin and plist comments describe the new cadence: timer forced every 50 s,
+    focus fresh within 10 s, TTL for startup and worktree events, one refresh per repository at a
+    time.
+  - `StartInterval` is 50.
+- [ ] **Step 4: Run them and see them pass.** Same command. Expected: 0 failed.
+- [ ] **Step 5: Commit.** `git commit -m "Keep Herdr phase badges within a minute of the forge"`.
 
 ---
 
