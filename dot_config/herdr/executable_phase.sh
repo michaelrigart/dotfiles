@@ -58,6 +58,28 @@
 #     repository's badges stay frozen until the call ends (every later run skips the repository,
 #     whose lock the call holds). `pkill -f phase.sh` ends the job's shells but not the forge call,
 #     which keeps the lock: `lsof -t <cache dir>/<key>.lock` names every process to end.
+#   - A TERM, HUP or INT that lands between a job's fork and the recording of its PID (microseconds)
+#     orphans that one job, bounded only by its forge calls, as above.
+#   - The tick cap on the wait is RUN_DEADLINE x 10 + 10 ticks of 0.1 s plus a fork each: about 44 s
+#     at the default 40. It is reached only after the clock steps back by less than the time already
+#     waited (a larger step reads as expired at once, and a steady clock ends the wait at 40 s).
+#   - The cap counts iterations, not time: if `sleep` fails at once (the process table is full), the
+#     iterations pass in moments and healthy jobs are ended early, each named; the next run redoes
+#     them.
+#   - The suite drives the deadline through a fake clock(), so nothing pins that the real one
+#     advances: one that stood still would be masked by the cap, about 4 s more per run with a hung
+#     job.
+#   - RUN_DEADLINE has no upper bound: a value past the 64-bit range ends every job at once (each
+#     named, exit 0).
+#   - The sweep's `rm -rf <cache dir>/.tmp/<key>` follows a symlinked .tmp and deletes <key>
+#     wherever it points. That needs a cache directory a sandboxed command can write, which only a
+#     caller environment can name: HERDR_PHASE_CACHE_DIR (meant for the suite, but honoured
+#     everywhere, as PINNED_PATH is) or XDG_CACHE_HOME. The default ~/.cache/herdr-phase is not
+#     sandbox-writable.
+#   - bash's own startup inputs are not scrubbed: it sources BASH_ENV and imports exported functions
+#     (BASH_FUNC_<name>%%) before the first line, and one named like a command called here (git,
+#     glab, herdr) runs in its place. Like PINNED_PATH and HERDR_PHASE_*, the caller's environment
+#     reaches the script.
 #
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
 # glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
@@ -427,7 +449,8 @@ sys.exit(0 if merged is not None else 3)
 # a badge, or no answer at all).
 pipeline_class() { # pipeline_class <slug> <iid> <mode: ttl|force|cached>
   local slug="$1" iid="$2" mode="$3" key cache status json
-  case "$iid" in ''|*[!0-9]*) return 0 ;; esac
+  # The digits are listed: a range such as [0-9] is resolved by collation (see slug_chars_ok).
+  case "$iid" in ''|*[!0123456789]*) return 0 ;; esac
 
   key="$(cache_key gitlab "$slug")"
   cache="$CACHE_DIR/$key.mr$iid.pipeline"
@@ -711,9 +734,9 @@ clock() { NOW=$SECONDS; }
 # forge call too, so no process of a job outlives the run, and the kernel frees the job's lock. A
 # stuck forge call therefore holds up no other repository and not the next timer run.
 # A clock stepped back would stretch the wait, so an elapsed time below zero counts as expired (as
-# age_of treats a future mtime), and the 0.1 s ticks, which no clock step moves, cap the wait at
-# RUN_DEADLINE and a second more whichever way the clock goes (on a steady clock the elapsed time
-# ends it first).
+# age_of treats a future mtime), and the ticks, which no clock step moves, cap the wait at
+# RUN_DEADLINE x 10 + 10 of them whichever way the clock goes: about 44 s at 40, each being 0.1 s and
+# a fork (on a steady clock the elapsed time ends it first).
 # Each job is then reaped on its own. One whose first process was still running at the deadline
 # sample and that died of a signal (status 128 or more) is named as killed at the run deadline; any
 # other that ended abnormally is named as such. A failed lookup is not a failed refresh: the status
@@ -748,8 +771,9 @@ cmd_refresh() {
   local run="ttl" only=""
   # wait_jobs does arithmetic with RUN_DEADLINE, which runs a value such as PATH[$(cmd)] and ends the
   # shell, its jobs orphaned and its stderr on /dev/null, on one such as 1.5 or 08. So only a whole
-  # number of seconds is taken; 0 ends every job at once.
-  case "$RUN_DEADLINE" in ''|*[!0-9]*|0?*) die "HERDR_PHASE_RUN_DEADLINE is not a whole number of seconds" ;; esac
+  # number of seconds is taken; 0 ends every job at once. The digits are listed, as in slug_chars_ok:
+  # under a UTF-8 locale bash 3.2 lets a character such as U+2185 through the range [0-9].
+  case "$RUN_DEADLINE" in ''|*[!0123456789]*|0?*) die "HERDR_PHASE_RUN_DEADLINE is not a whole number of seconds" ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) run="force"; shift ;;

@@ -639,6 +639,12 @@ run refresh --force --workspace w6
 check "$(glab_api_calls)" "0" "a merged space makes no api call"
 run refresh --force --workspace w7
 check "$(glab_api_calls)" "0" "a space without an MR makes no api call"
+# An MR number that is not all ASCII digits is never looked up: under a UTF-8 locale bash 3.2's
+# range [0-9] lets U+2185 through, so "1ↅ" would reach the API path and a cache file name.
+printf '[{"iid":"1\xe2\x86\x85","source_branch":"feature/review","state":"opened","draft":false}]\n' > "$T/mr-open-odd.json"
+LC_ALL=en_US.UTF-8 MROPEN="$T/mr-open-odd.json" run refresh --force --workspace w4
+check "$(glab_api_calls)" "0" "an MR number holding U+2185 makes no api call under a UTF-8 locale"
+ci_check w4 none "and gives no pipeline badge"
 
 # Per-MR cache with the MR-table TTL.
 rm -rf "$T/cache"
@@ -1393,11 +1399,13 @@ check "$(printf '%s\n' "$OUT" | grep -c -E '^phase.sh: test%2Fproj2?: killed at 
   "a run deadline of 0: each repository is named once as killed at the run deadline"
 check "$(lock_busy)" "0" "a run deadline of 0: no lock outlives the run"
 # Any other value that is not a whole number of seconds is refused before a job starts: wait_jobs
-# does arithmetic with it, which would run PATH[$(cmd)] and end the shell silently on 1.5 or 08.
-for _v in 1.5 08 "PATH[\$(touch $T/pwned)]"; do
+# does arithmetic with it, which would run PATH[$(cmd)] and end the shell silently on 1.5 or 08. The
+# runs use a UTF-8 locale, under which bash 3.2's range [0-9] lets U+2185 through (1ↅ).
+for _v in 1.5 08 "PATH[\$(touch $T/pwned)]" "1$(printf '\xe2\x86\x85')"; do
   job_reset; rm -f "$T/pwned"
-  DEADLINE="$_v" run refresh --force
-  case "$_v" in PATH*) _l="a run deadline holding a command substitution" ;; *) _l="a run deadline of $_v" ;; esac
+  LC_ALL=en_US.UTF-8 DEADLINE="$_v" run refresh --force
+  case "$_v" in PATH*) _l="a run deadline holding a command substitution" ;; 1.5|08) _l="a run deadline of $_v" ;;
+    *) _l="a run deadline of 1 and U+2185, a digit to a UTF-8 range" ;; esac
   check "$RC" "2" "$_l is refused (exit 2)"
   check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: HERDR_PHASE_RUN_DEADLINE is not a whole number of seconds$')" "1" "$_l: and the refusal is on stderr"
   check "$(grep -c 'report-metadata' "$CALLS")" "0" "$_l: and nothing is reported"
@@ -1459,6 +1467,9 @@ hung_check "a TERM-ignoring forge call" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { pr
 # stepped back must not stretch the wait, and the 0.1 s ticks cap it whichever way the clock moves.
 # The suite cannot step the real clock: it sources phase.sh in a subshell, replaces `clock` with a
 # fake and runs wait_jobs on a stand-in job (an 8 s sleep in a process group of its own).
+# The source runs without run()'s isolation: the suite's own environment, no PINNED_PATH, cache
+# directory or HERDR_PHASE_* override. That holds only while nothing called here reads them:
+# wait_jobs, end_jobs and job_key on a root that is no repository.
 fake_wait() { # fake_wait <deadline> <stepback|frozen> -> FW_SECS (wall time), FW_ERR (stderr), FW_PID (stand-in)
   local t0 t1 dl="$1" how="$2"
   t0="$(now_s)"
@@ -1522,6 +1533,8 @@ abort_case() { # abort_case <label> [<second signal>]
   if [ -z "$spid" ]; then _fail "$1: the hung forge call is dead once the main shell is gone (it never started)"
   elif kill -0 "$spid" 2>/dev/null; then _fail "$1: the hung forge call is dead once the main shell is gone"; kill -9 "$spid" 2>/dev/null
   else _pass "$1: the hung forge call is dead once the main shell is gone"; fi
+  # This clause cannot fail as the case runs: the TERM lands while wait_jobs has stderr on /dev/null,
+  # where bash's notice is dropped whatever abort_run does. It guards only a TERM outside that wait.
   check "$(grep -c -E 'Terminated|Hangup|Killed' "$T/bg.err")" "0" "$1: and no shell notice about an ended job reaches stderr"
 }
 abort_case "TERM to the main shell"
