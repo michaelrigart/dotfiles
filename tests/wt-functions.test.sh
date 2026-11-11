@@ -2989,13 +2989,13 @@ rb_gone() {   # rb_gone <slug> <how> <base> <label> — after `run "$REPO" wt-rm
   has "deleted branch $1 ($2" "$4: the deletion line names the $2 test"
   has " in $3" "$4: the deletion line names the base $3"
   hasnt "not fully merged" "$4: no kept warning"
-  run "$REPO" git branch --list --format='%(refname:short)' "$1"
+  run "$REPO" git branch --list --format='%(refname:lstrip=2)' "$1"
   eq "$OUT" "" "$4: the branch is deleted"
 }
 rb_kept() {   # rb_kept <slug> <label> — after `run "$REPO" wt-rm <slug>`
   rc_is 0 "$2: the worktree is removed"
   has "branch $1 kept (not fully merged)" "$2: wt-rm says the branch is kept"
-  run "$REPO" git branch --list --format='%(refname:short)' "$1"
+  run "$REPO" git branch --list --format='%(refname:lstrip=2)' "$1"
   eq "$OUT" "$1" "$2: the branch still exists"
 }
 
@@ -3193,6 +3193,55 @@ PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='rev-list --no-merges' WT_FAIL_NTH=1 WT_FA
   && _pass "rb13 fixture: the first rev-list --no-merges call is in the patch-id pipeline" \
   || _fail "rb13 fixture: the first rev-list --no-merges call is in the patch-id pipeline"
 rb_kept rb13 "rb13 failing patch-id pipeline"
+
+# rb14 (a commit hidden by submodule ignore configuration): .gitmodules sets ignore = all
+# for sub, so plumbing diff shows no change for the branch's gitlink-only commit unless it
+# is told otherwise. The branch's visible commit is copied, a later base commit edits the
+# same line, and the bump never reached the base. Pins that a commit hidden by submodule
+# ignore configuration still counts. Catches: patch ids computed without
+# --ignore-submodules=none, which skip the hidden commit and delete the branch.
+rb_seed_sub() {
+  print -rl -- '[submodule "sub"]' $'\tpath = sub' $'\turl = ./sub' $'\tignore = all' > "$REPO/.gitmodules"
+  rb_do git -C "$REPO" update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,sub
+  rb_do git -C "$REPO" add .gitmodules
+  rb_do git -C "$REPO" commit -q -m "submodule"
+}
+rb_start rb14 rb_seed_sub
+rbc "$WT" log.txt a l1 l2 l3 rb14-a
+rb_do git -C "$WT" update-index --cacheinfo 160000,2222222222222222222222222222222222222222,sub
+rb_do git -C "$WT" commit -q -m "bump sub"
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb14~1
+rbc "$REPO" log.txt later l1 l2 l3 "rb14-a CHANGED"
+rb_built rb14
+[[ -n "$(git -C "$REPO" rev-parse main:sub 2>/dev/null)" \
+   && "$(git -C "$REPO" rev-parse main:sub 2>/dev/null)" != "$(git -C "$REPO" rev-parse rb14:sub 2>/dev/null)" ]] \
+  && _pass "rb14 fixture: the base lacks the branch's gitlink bump" \
+  || _fail "rb14 fixture: the base lacks the branch's gitlink bump"
+run "$REPO" wt-rm rb14
+rb_kept rb14 "rb14 commit hidden by submodule ignore"
+
+# rb15 (a tag with the branch's name): the tag marks the branch's first commit, which the
+# base has a copy of, while the branch carries a second commit the base lacks. Pins that
+# the branch itself is judged, not a tag of the same name. Catches: revision arguments that
+# use the short name, which git resolves to the tag first, so the unmerged commit goes
+# unseen and `git branch -D` deletes the branch. The checkout is deleted by hand first and
+# wt-rm finishes the removal: with the tag in place a live checkout's `symbolic-ref --short
+# HEAD` reads `heads/rb15` and wt-rm refuses it before it reaches the branch.
+rb_start rb15
+rbc "$WT" a.txt a a1
+rbc "$WT" b.txt b b1
+rb_do git -C "$REPO" tag rb15 refs/heads/rb15~1
+rb_do command rm -rf "$WT"
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick refs/heads/rb15~1
+rbc "$REPO" a.txt later "a1 CHANGED"
+rb_built rb15
+[[ "$(git -C "$REPO" rev-parse refs/tags/rb15)" == "$(git -C "$REPO" rev-parse refs/heads/rb15~1)" ]] \
+  && _pass "rb15 fixture: the tag marks the branch's first commit" \
+  || _fail "rb15 fixture: the tag marks the branch's first commit"
+run "$REPO" wt-rm rb15
+rb_kept rb15 "rb15 tag with the branch's name"
 
 print -r -- ""
 print -r -- "W. wt-rm — the checkout's Codex sessions are released before check 4"
