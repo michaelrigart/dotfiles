@@ -155,7 +155,8 @@ A command in `xreview-rpc`, named by the builder:
 - A harness worktree's last review thread still stays behind after this change, because nothing
   in the dotfiles sees a harness worktree removed (28 of the 96 leftovers measured on 2026-11-11).
   That is a known limit. It becomes rare once `feat/wt-dotfiles` moves dotfiles lines to `wt`,
-  and the re-runnable cleanup catches it.
+  and the re-runnable cleanup catches it. The Amendment's measured facts narrow this: a leftover
+  whose recorded cwd moved to a checkout that exists is listed, never archived.
 - **Recorded cwd and origin (amendment).** A thread's recorded `cwd` can differ from where it
   began. The cleanup keeps selecting by the daemon's recorded `cwd`. A thread whose origin differs
   from that `cwd` is listed under its own heading and never selected, and the dry run states the

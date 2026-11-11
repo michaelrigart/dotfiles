@@ -326,5 +326,5 @@ Made during execution (2026-11-11):
 12. **`archive-checkout`'s budget** is 60 s plus 10 s per candidate (`XREVIEW_RPC_ARCHIVE_UNIT`, a test knob). A spent budget is worded as one, not as a lost connection.
 13. **The cleanup decides by the cwd `thread/read` gives,** which is the recorded cwd (C7), never by the listing's: `thread/list` reports a thread's original cwd.
 14. **The cleanup lists, under "differs" and never selects, a review thread whose recorded cwd exists but whose origin is gone.** This is the case the amendment was written for, and it was otherwise invisible.
-15. **An archive is confirmed through every cwd the thread may be listed under,** because `thread/list`'s `cwd` filter matches the original cwd: the recorded cwd, plus the `started` paths, the listed cwd or the rollout's origin. `xreview-rpc release` keeps its single-cwd calls (spec non-goal).
+15. **An archive is confirmed through every cwd the thread may be listed under,** because `thread/list`'s `cwd` filter matches the original cwd: the recorded cwd, plus the `started` paths, the listed cwd or the rollout's origin. `xreview-rpc release` keeps its single-cwd calls (spec §2: release keeps today's behaviour).
 16. **Before each archive, the cleanup re-checks** that the recorded cwd is still gone, and keeps a thread that is running a turn.
