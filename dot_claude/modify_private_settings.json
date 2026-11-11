@@ -436,7 +436,11 @@ printf '%s' "$input" | jq \
             "~/.ssh/michael_rsa.pub",
             "~/.ssh/viumore_rsa.pub"
           ],
-          # Ordinary work only: source trees, the chezmoi source, documents and the vault.
+          # Ordinary work only: source trees, the chezmoi source, documents and the vault. A
+          # dotfiles wt checkout is a sibling, ~/.local/share/chezmoi-<branch>, and is written
+          # only through the working-directory grant of its own session: allowWrite does not
+          # honour the chezmoi-* glob (measured 2026-11-11), and a parent entry would reach mise
+          # runtimes and other executables in ~/.local/share. The siblings stay in $roots below.
           # ~/.config and ~/.local/bin are out on purpose (spec 2026-10-16, sandbox write
           # boundary): what is written there runs later outside the sandbox, as shell
           # startup, git, mise, herdr, the hooks and the excluded commands.
@@ -461,7 +465,11 @@ printf '%s' "$input" | jq \
           # the main repository (inside a submodule a name starting with config is denied).
           # .git is denied where no repository may be: ~/Code and ~/Documents themselves,
           # anywhere in the vault, and a harness worktree .git file (three fixed depths, as
-          # for the agent paths). A deeper .git would deny real repositories, so none is listed.
+          # for the agent paths). It is also denied at the top level of each chezmoi wt sibling,
+          # although a sibling is a repository: every match there is a linked-worktree .git file,
+          # denied so that one session cannot repoint the checkout of another. Its cost is that
+          # a sandboxed git worktree repair or move in a sibling fails. A deeper .git would
+          # deny real repositories, so none is listed.
           # A submodule of a linked worktree keeps its git directory at
           # .git/worktrees/<id>/modules/<name>, which the module forms do not reach, so
           # config, commondir and hooks have their own forms there (amended 2026-10-30; the
@@ -482,12 +490,14 @@ printf '%s' "$input" | jq \
           # .git/glab-cli/config.yml (its editor and browser run when he uses glab). Only that
           # one glab file is denied, as glab keeps other state (recover files) in the same
           # directory. The linked worktree form is defensive: newer glab resolves a worktree
-          # config per rev-parse --git-dir, while glab 1.126.0 does not read it. Consequence: .git/**/lazygit.yml also denies a ref or file of that name
+          # config per rev-parse --git-dir, while glab 1.126.0 does not read it.
+          # Consequence: .git/**/lazygit.yml also denies a ref or file of that name
           # inside a git directory.
           # .claude/skills, commands and agents stay writable (projects commit their own).
           # Hooks per spec 83f6b2b. Each agent path is listed at depth 0, 1 and 2
-          # under a root (work root, org dir or top-level repo, repo or wt sibling: where
-          # sessions start), never at any depth: npm packages in node_modules ship such files
+          # under a root (work root or dotfiles wt sibling, org dir or top-level repo, repo or wt
+          # sibling: where sessions start), never at any depth: npm packages in node_modules
+          # ship such files
           # (resolve ships .claude/settings.local.json), so any depth would break sandboxed
           # npm ci and rm -rf node_modules. Claude Code harness worktrees live at
           # <repo>/.claude/worktrees/<name> and load their own agent configuration from there,
@@ -497,7 +507,7 @@ printf '%s' "$input" | jq \
           # <root>/*/*/.claude/worktrees/*/<path>; all name .claude/worktrees literally, so none
           # reaches node_modules. A session started anywhere else deeper has no protection.
           "denyWrite": (
-            ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
+            ["~/Code", "~/.local/share/chezmoi", "~/.local/share/chezmoi-*", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
             | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
             | [".git/config*", ".git/commondir", ".git/worktrees/*/config*", ".git/worktrees/*/commondir", ".git/modules/**/config*", ".git/modules/**/commondir"] as $gitconf
             | [".git/worktrees/*/modules/**/config*", ".git/worktrees/*/modules/**/commondir", ".git/worktrees/*/modules/**/hooks"] as $wtmod
@@ -512,7 +522,7 @@ printf '%s' "$input" | jq \
                                            "\($root)/*/*/.claude/worktrees/*/\(.)"]
               + [$roots[] as $root | "\($root)/.claude/worktrees/*/.git", "\($root)/*/.claude/worktrees/*/.git",
                                      "\($root)/*/*/.claude/worktrees/*/.git"]
-              + ["~/Code/.git", "~/Documents/.git", "~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]
+              + ["~/Code/.git", "~/Documents/.git", "~/Library/Mobile Documents/iCloud~md~obsidian/**/.git", "~/.local/share/chezmoi-*/.git"]
               + ["~/Code/HEAD", "~/Documents/HEAD", "~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD", "~/Code/*/HEAD"]
               + [$roots[] as $root | $toolconf[] | "\($root)/**/\(.)"]
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",

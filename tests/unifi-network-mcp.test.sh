@@ -111,7 +111,7 @@ check "every emitted value is escaped before squote" "4" "$(grep -c "^UNIFI_NETW
 # the address parsing and squote are exactly the production expressions and no 1Password is
 # touched. Values come in as TV_website, TV_username and TV_password.
 render() { # render <outfile>
-  command chezmoi execute-template < <(sed -E 's#onepasswordRead "op://Private/UniFi Controller/(website|username|password)"#env "TV_\1"#' "$TPL") > "$1" 2> "$T/render.err"
+  command chezmoi execute-template --source "$SRC" < <(sed -E 's#onepasswordRead "op://Private/UniFi Controller/(website|username|password)"#env "TV_\1"#' "$TPL") > "$1" 2> "$T/render.err"
 }
 # source <file> <var>...: source the way the launcher does, in a clean shell, print the variables
 source_vars() {
@@ -153,6 +153,13 @@ UNIFI_NETWORK_USERNAME=u$v
 UNIFI_NETWORK_PASSWORD=p$v" "$got"
     if [ -e "$MARK" ]; then _fail "value $n executes nothing" "marker file was created"; else _pass "value $n executes nothing"; fi
   done
+
+  # A decoy default source with broken data: a render that omits --source reads it and fails.
+  mkdir -p "$T/decoy/chezmoi/.chezmoidata"; echo '= not toml' > "$T/decoy/chezmoi/.chezmoidata/broken.toml"
+  XDG_DATA_HOME="$T/decoy" TV_website=hdecoy TV_username=udecoy TV_password=pdecoy render "$T/rendered"
+  check "renders from the checkout it runs from, not the default source" "UNIFI_NETWORK_HOST=hdecoy
+UNIFI_NETWORK_USERNAME=udecoy
+UNIFI_NETWORK_PASSWORD=pdecoy" "$(source_vars "$T/rendered" UNIFI_NETWORK_HOST UNIFI_NETWORK_USERNAME UNIFI_NETWORK_PASSWORD)"
 
   echo "H. the website field gives the host, and a port only when it carries one"
   while IFS='|' read -r site host port; do

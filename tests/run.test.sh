@@ -79,6 +79,15 @@ echo "  indented-private-detail"
 echo "failed_keys=first"
 exit 1
 SUITE
+cat > "$T/kvinconc.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "second=WRITABLE"
+echo "INCONCLUSIVE: sibling: could not write /x/y; run from a sibling"
+echo "  indented continuation"
+echo "third=ABSENT"
+exit 2
+SUITE
 cat > "$T/kvfailok.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 echo "first=DENIED"
@@ -185,6 +194,11 @@ ran "and shows no failed_keys line"                          no  'failed_keys' "
 out="$("$T/run.sh" kvfaildiag 2>&1)"
 ran "a failing kv suite shows its failed_keys line"          yes '^ +failed_keys=first$' "$out"
 ran "other output of a failing kv suite is not echoed"       no  'synthetic-private-diagnostic|indented-private-detail' "$out"
+out="$("$T/run.sh" kvinconc 2>&1)"; rc=$?
+ran "a failing kv suite shows its INCONCLUSIVE line"         yes '^ +INCONCLUSIVE: sibling: could not write /x/y' "$out"
+ran "and its indented continuation line"                     yes '^ +indented continuation$' "$out"
+ran "and still fails with its exit"                          yes 'FAIL +kvinconc +3/3 \(exit=2\)' "$out"
+ran "the kv statuses are still not echoed"                   no  'first=DENIED|second=WRITABLE|third=ABSENT' "$out"
 out="$("$T/run.sh" kvfailok 2>&1)"
 ran "a passing kv suite does not count a failed_keys line"   yes 'ok +kvfailok +1/1' "$out"
 

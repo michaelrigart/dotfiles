@@ -28,12 +28,12 @@
 
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
   Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
-- **Parallel tasks.** A plan runs entirely in its line's checkout (dotfiles: a harness worktree);
-  never create a worktree for one of its tasks. Plans give each task a `Depends on:` line. A batch
-  is tasks with no pending dependency, disjoint files (neither one's tests load the other's), and no
-  shared test resource such as a database, server or port. Dispatch a batch's implementers together
-  there. They do not commit, and run only their focused tests. The controller then commits the tasks
-  one at a time, reviews each on exactly its commit, and runs the full suite once per batch.
+- **Parallel tasks.** A plan runs entirely in its line's checkout; never create a worktree for one
+  of its tasks. Plans give each task a `Depends on:` line. A batch is tasks with no pending
+  dependency, disjoint files (neither one's tests load the other's), and no shared test resource
+  such as a database, server or port. Dispatch a batch's implementers together there. They do not
+  commit, and run only their focused tests. The controller then commits the tasks one at a time,
+  reviews each on exactly its commit, and runs the full suite once per batch.
 - **Dispatching a `wt` line.** Find the checkout's session in `ListAgents` (named after it) and
   `SendMessage` it the brief: spec, plan or task, branch, artifact paths, what to report back. That
   session runs the line itself, with its own subagents and `xreview` reviews from its checkout. If

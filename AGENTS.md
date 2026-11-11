@@ -18,16 +18,19 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   trees needs its own `!` entry, or `chezmoi add` silently drops it.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `tests/`, `.scripts/` are ignored so
   they never land in `$HOME`.
-- Edit here and `chezmoi apply`; never hand-edit a deployed file. `chezmoi apply` is
-  Michael's. Agents preview with `command chezmoi cat <target>` and
-  `command chezmoi apply --dry-run --verbose`: sandboxed, so running the working tree's
-  scripts is safe. The zsh wrapper reaches agent shells too (Claude Code's shell snapshot
-  omits every function whose name starts with a single `_`, so each public function in
-  `~/.config/zsh/functions` that uses a helper reloads the file when it is missing): off
-  main it refuses previews, and on main its clone into `~/.cache` hits a sandbox denial.
-  Data variables (`.name`, `.email`, `.is_arm`) come from `.chezmoi.toml.tmpl`, which
-  `chezmoi apply --init` re-renders — not plain `apply`; `.known_hostnames` comes from
-  `.chezmoidata/machines.toml`.
+- Edit the source in a `wt` checkout (never in the main one); it deploys once merged, when
+  Michael runs `chezmoi apply`. Never hand-edit a deployed file. Agents preview with
+  `command chezmoi cat <target>` and `command chezmoi apply --dry-run --verbose`:
+  sandboxed, so running the working tree's scripts is safe. In a `wt` sibling a bare
+  `command chezmoi` renders the main checkout, so preview with
+  `command chezmoi --source <checkout> cat <target>` and
+  `command chezmoi --source <checkout> apply --dry-run --verbose`. The zsh wrapper reaches
+  agent shells too (Claude Code's shell snapshot omits every function whose name starts
+  with a single `_`, so each public function in `~/.config/zsh/functions` that uses a
+  helper reloads the file when it is missing): off main it refuses previews, and on main
+  its clone into `~/.cache` hits a sandbox denial. Data variables (`.name`, `.email`,
+  `.is_arm`) come from `.chezmoi.toml.tmpl`, which `chezmoi apply --init` re-renders — not
+  plain `apply`; `.known_hostnames` comes from `.chezmoidata/machines.toml`.
 - The `chezmoi` wrapper (`dot_config/zsh/functions`): Michael's `apply`, `update` and
   previews (`diff`, `status`, `cat`, …) deploy or render a fresh clone of origin's main, and
   only from a clean main equal to it. `--dirty-ok` is for a deliberate local change. Every
@@ -37,13 +40,18 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   (`~/.config/agents/GLOBAL.md`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`);
   `claude-code.md` (Claude Code only, opening with `## Claude Code only`) is appended to
   `~/.claude/CLAUDE.md` alone; `codex.md` (Codex only, opening with `## Codex only`) is
-  appended to `~/.codex/AGENTS.md` alone. Edit a fragment, then `chezmoi apply`. This repo is
-  public: nothing private goes in them. `global.md` stays within 150 lines,
-  `claude-code.md` within 50 and `codex.md` within 30; `tests/agent-instructions.test.sh`
-  pins all three, and the renders.
-- This checkout is shared: other sessions switch branches in it, and uncommitted work
-  follows the switch. Re-check `git branch --show-current` right before each commit.
-  Work here on a branch; a harness worktree reviews in this checkout's Codex pane.
+  appended to `~/.codex/AGENTS.md` alone. Edit a fragment; it deploys once merged, when
+  Michael runs `chezmoi apply`. This repo is public: nothing private goes in them.
+  `global.md` stays within 150 lines, `claude-code.md` within 50 and `codex.md` within 30;
+  `tests/agent-instructions.test.sh` pins all three, and the renders.
+- The main checkout `~/.local/share/chezmoi` stays on a clean `main`: never switched,
+  never edited in place, because Michael applies from it and the wrapper needs a clean
+  `main`. Every branch is a `wt` checkout at `~/.local/share/chezmoi-<branch>`, run by its
+  own session with its own Codex pane. The sandbox grants a sibling's writes only to its
+  own session's shell, so another session (the driver in the main checkout) writes there
+  only with its Edit/Write tools and git commands that touch only the repository (`add`,
+  `commit`). Check `git branch --show-current` before each commit, since a session can sit
+  in the wrong checkout.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction.
@@ -144,6 +152,10 @@ wall time):
 | `live-deny-modes` | unsandboxed + model | spends model calls (four modes and a control, each capped by `--max-budget-usd`), and `claude` writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary`, `live-write-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
 
+`live-write-boundary` also probes a dotfiles `wt` sibling. That probe measures only from a
+session started in one (`~/.local/share/chezmoi-<branch>`); from anywhere else it reads
+FAIL (exit 2) with an `INCONCLUSIVE: sibling:` line and no `failed_keys`.
+
 **Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or `live-write-boundary`
 with the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:
 `live-credential-boundary.test.sh` then reports every private key readable and exits
@@ -187,11 +199,13 @@ Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: 
 `live-write-boundary` suites share (the first three also so they never print key material). A kv suite
 encodes failures in its values and exits with the count, so it is judged on exit status
 alone — the prose cross-check does not apply to it. A kv suite that fails a probe closes with one
-`failed_keys=<key>,<key>` line (not when it dies early, before any key); `run.sh` shows that line (and only it, so no value is echoed)
-under the FAIL row and does not count it as an assertion. A new kv suite should print it.
+`failed_keys=<key>,<key>` line (not when it dies early, before any key); `run.sh` shows that line
+and any `INCONCLUSIVE:` lines under the FAIL row, never a `KEY=VALUE` line, so no value is echoed,
+and does not count it as an assertion. A new kv suite should print it.
 `tests/write-boundary-probe.test.sh` drives `live-write-boundary` against a throwaway `HOME`
-and a stubbed `mkdir`, so its `.git/modules` probe and `failed_keys` line are tested without
-measuring a sandbox.
+and a stubbed `mkdir`, so its `.git/modules` probe, its sibling probe (including the INCONCLUSIVE-only
+exit 2, through the `WRITE_BOUNDARY_SIBLING_ONLY` seam, refused against the real home) and `failed_keys` line are
+tested without measuring a sandbox.
 
 **Inside a Herdr pane, `HERDR_SESSION` does not pick the session.** herdr 0.9.3 reads
 `HERDR_SESSION`, but `HERDR_SOCKET_PATH`, which herdr exports into every pane, outranks it;

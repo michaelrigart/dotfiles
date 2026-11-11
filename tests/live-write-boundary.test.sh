@@ -4,6 +4,18 @@
 # configuration and .git where no repository may be) and in each work place it must still write;
 # reports KEY=VALUE only and removes what it created. A failing run ends with one
 # failed_keys=<key>,<key> line naming the keys that counted, which tests/run.sh shows.
+# The sibling probe covers ~/.local/share/chezmoi-*, the root of the dotfiles' wt checkouts. A session
+# started in a sibling probes that checkout (existing mode: its own .git file is only opened for
+# append); any other session tries to create ~/.local/share/chezmoi-<stamp> (scratch mode) and
+# removes it. If the ordinary write into the sibling fails, sibling_write=DENIED and an
+# INCONCLUSIVE: sibling: line
+# replace the sibling battery, that key is not a failure, and the run exits 2 unless something else
+# failed. sibling_symlink_escape runs in both modes: a sibling-shaped symlink to ~/.config must not
+# give a write into ~/.config.
+# Test seam: WRITE_BOUNDARY_SIBLING_ONLY=1 runs only the sibling selection, its ordinary write and the
+# sibling probes, so tests/write-boundary-probe.test.sh can reach the INCONCLUSIVE-only exit status in
+# a throwaway HOME. It is refused (exit 2, no probe run) when HOME is the invoking account's real home
+# directory, read from the user database, so it can never shorten a real measurement.
 # test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed every denial reads WRITABLE
 set -u
 fail=0
@@ -15,6 +27,8 @@ stamp="zz-write-boundary-$$"
 probes=("$HOME/.cache/$stamp")
 # The behaviour probe's scratch directory in TMPDIR; empty until it exists.
 TB=
+# The INCONCLUSIVE: sibling: line, empty unless the sibling's ordinary write failed.
+sib_inconclusive=
 cleanup() {
   local rc=$? p
   trap - EXIT INT TERM
@@ -24,13 +38,23 @@ cleanup() {
   for p in "${probes[@]}"; do
     if [ -e "$p" ] || [ -L "$p" ]; then echo "cleanup=LEFT"; bad cleanup; break; fi
   done
+  if [ -n "$sib_inconclusive" ]; then echo "$sib_inconclusive"; fi
   if [ "$fail" = 0 ] && [ "$rc" != 0 ]; then exit "$rc"; fi
   if [ "${#failed[@]}" -gt 0 ]; then ( IFS=,; echo "failed_keys=${failed[*]}" ); fi
+  if [ "$fail" = 0 ] && [ -n "$sib_inconclusive" ]; then exit 2; fi
   exit "$fail"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+only=${WRITE_BOUNDARY_SIBLING_ONLY:-}
+if [ "$only" = 1 ]; then
+  real_home=$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null)
+  if [ -z "$real_home" ] || [ "$HOME" = "$real_home" ] || [ "$(cd "$HOME" 2>/dev/null && pwd -P)" = "$(cd "$real_home" 2>/dev/null && pwd -P)" ]; then
+    echo "REFUSED: WRITE_BOUNDARY_SIBLING_ONLY is a test seam and may not run against the account's real home; no probe was run"
+    exit 2
+  fi
+fi
 # try <d|f> <path>: create it (never over an existing file) and remove it again on success.
 try() {
   if [ "$1" = d ]; then
@@ -90,15 +114,45 @@ allowed_off_base() {
   allowed "$1" "$2"
 }
 V="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/MSB"
-denied local_bin "$HOME/.local/bin/$stamp"
-denied config "$HOME/.config/$stamp"
-denied config_zsh "$HOME/.config/zsh/$stamp"
-denied config_git "$HOME/.config/git/$stamp"
-denied config_mise "$HOME/.config/mise/$stamp"
-denied config_herdr "$HOME/.config/herdr/$stamp"
-denied vault_obsidian "$V/.obsidian/$stamp"
+if [ "$only" != 1 ]; then
+  denied local_bin "$HOME/.local/bin/$stamp"
+  denied config "$HOME/.config/$stamp"
+  denied config_zsh "$HOME/.config/zsh/$stamp"
+  denied config_git "$HOME/.config/git/$stamp"
+  denied config_mise "$HOME/.config/mise/$stamp"
+  denied config_herdr "$HOME/.config/herdr/$stamp"
+  denied vault_obsidian "$V/.obsidian/$stamp"
+fi
+# The sibling: the session's own checkout when it started in ~/.local/share/chezmoi-<x> (existing mode),
+# otherwise a scratch ~/.local/share/chezmoi-<stamp> (scratch mode, removed by cleanup). Its battery is
+# the loop below with root=$sib and k=sibling, and runs only once an ordinary write has succeeded.
+roots=("$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
+       "$HOME/Library/Mobile Documents/iCloud~md~obsidian")
+if [ "$only" = 1 ]; then roots=(); fi
+sib_mode=scratch
+case $base in
+  "$HOME/.local/share/chezmoi-"*)
+    sib_mode=existing
+    sib_rest=${base#"$HOME/.local/share/"}
+    sib="$HOME/.local/share/${sib_rest%%/*}" ;;
+  *) sib="$HOME/.local/share/chezmoi-$stamp"; probes+=("$sib") ;;
+esac
+sib_ok=0
+sib_path=$sib
+if [ "$sib_mode" = existing ] || mkdir "$sib" 2>/dev/null; then
+  sib_path="$sib/$stamp-w"
+  probes+=("$sib_path")
+  if try f "$sib_path"; then sib_ok=1; fi
+fi
+if [ "$sib_ok" = 1 ]; then
+  echo "sibling_write=WRITABLE"
+  roots+=("$sib")
+else
+  echo "sibling_write=DENIED"
+  sib_inconclusive="INCONCLUSIVE: sibling: could not write $sib_path; run from a session started in a sibling checkout (~/.local/share/chezmoi-<name>)"
+fi
 # Fake repositories at depth 2 in the three roots that may hold one (~/Code, the chezmoi checkout,
-# ~/Documents): the deny globs are path rules, so a mkdir'd .git stands in for a real one. Hooks and git
+# ~/Documents) and in the sibling: the deny globs are path rules, so a mkdir'd .git stands in for a real one. Hooks and git
 # configuration (config*, commondir, in the main directory, linked worktrees and submodules) are denied;
 # objects, refs, the index and a worktree's gitdir stay writable. The vault holds no repository: it gets
 # no .git fixture, and a .git at any depth there is denied (probed two levels below the vault root, as a
@@ -118,9 +172,9 @@ denied vault_obsidian "$V/.obsidian/$stamp"
 # probed at <root>/<stamp>/arepo/.claude/worktrees/wt1/.claude/settings.json, and they deny its .git
 # file, probed at <root>/<stamp>/arepo/.claude/worktrees/wt1/.git. .codex cannot be created, so its
 # directory is the probe and .codex/** is not measurable from inside the sandbox.
-for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
-            "$HOME/Library/Mobile Documents/iCloud~md~obsidian"; do
+for root in "${roots[@]}"; do
   k=$(basename "$root" | tr -c 'a-zA-Z0-9\n' '_')
+  if [ "$root" = "$sib" ]; then k=sibling; fi
   b="$root/$stamp"
   r="$b/org/repo"
   g="$r/.git"
@@ -224,6 +278,19 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
   fi
   rm -rf "${root:?}/${stamp:?}" 2>/dev/null
 done
+# The sibling's own top-level .git: a file in an existing checkout (opened for append, never created),
+# denied like the other top-level .git entries. Not measured when the sibling was not writable.
+if [ "$sib_ok" != 1 ]; then echo "sibling_git_file=SKIPPED"
+elif [ "$sib_mode" = existing ]; then denied_existing sibling_git_file "$sib/.git"
+else denied sibling_git_file "$sib/.git"; fi
+# A sibling-shaped symlink to ~/.config: writing through it must not reach ~/.config. A link that
+# cannot be created reads DENIED too.
+sib_link="$HOME/.local/share/chezmoi-$stamp-link"
+probes+=("$sib_link" "$HOME/.config/$stamp")
+if ! ln -s "$HOME/.config" "$sib_link" 2>/dev/null; then echo "sibling_symlink_escape=DENIED"
+elif try f "$sib_link/$stamp"; then echo "sibling_symlink_escape=WRITABLE"; bad sibling_symlink_escape
+else echo "sibling_symlink_escape=DENIED"; fi
+if [ "$only" = 1 ]; then exit "$fail"; fi
 # The agent configuration directly under a work root (~/Code/.claude and ~/Documents/.claude exist).
 denied code_root_claude_settings "$HOME/Code/.claude/settings.json"
 denied documents_root_claude_settings "$HOME/Documents/.claude/settings.json"

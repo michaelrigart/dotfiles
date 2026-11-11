@@ -243,8 +243,8 @@ need_flat global.md '- **Merge requests.** Load the `merge-request` skill before
 # branch makes mandatory, 2026-11-08). "May open" let sessions keep making plain branches in a
 # ~/Code main checkout, small fixes and spec commits most of all, and using-git-worktrees offered
 # EnterWorktree or working in place (transcripts 2026-11-03..08).
-need_flat global.md 'Every new branch in `~/Code` is one, small changes included: never a plain branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt` as declared, without asking.' \
-  "global.md makes wt the only way to start a branch in a ~/Code repository"
+need_flat global.md 'Every new branch in `~/Code` or the dotfiles is one, small changes included: never a plain branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt` as declared, without asking.' \
+  "global.md makes wt the only way to start a branch in a ~/Code repository or the dotfiles"
 need_flat global.md 'The driver runs `wt --no-focus <branch> <local-branch>` (a remote start point sets an upstream) before the line'"'"'s first file and names the checkout in its report; if `wt` fails, it stops and tells Michael.' \
   "global.md opens the checkout before the line's first file, names it, and stops rather than fall back when wt fails"
 if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'The driver may open'; then
@@ -252,12 +252,17 @@ if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'The driver may ope
 else _pass "global.md no longer makes a wt checkout optional"; fi
 need_flat global.md 'Never run `wt-rm` or `git worktree remove`: the line'"'"'s final report (the driver'"'"'s, if dropped before hand-off) gives Michael the `wt-rm <branch>` command to run once it is merged or abandoned.' \
   "global.md keeps teardown Michael's and has a final report hand him the wt-rm command, a dropped line's too"
+need_flat global.md '`wt <branch>` makes a sibling checkout `<repo>-<branch>` beside the main one' \
+  "global.md names the wt checkout's location generically, so the dotfiles' is not read as under ~/Code"
 need_flat global.md 'its own Herdr workspace and a Claude Code session in it' \
   "global.md says the wt workspace starts a Claude Code session"
 # A spec written from the main checkout landed on main, not on the line's branch.
 need_flat global.md 'It writes and commits the spec in that checkout, then hands the line to its session (a small change at once), which rules on trade-offs inside the spec and escalates spec changes to the driver; the driver keeps only briefing and collecting the report, never the line'"'"'s work.' \
   "global.md commits the spec in the wt checkout before hand-off and keeps the driver to coordination"
-need_flat global.md 'The dotfiles never use `wt`.' "global.md keeps wt out of the dotfiles"
+if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'The dotfiles never use'; then
+  _fail "global.md no longer keeps wt out of the dotfiles" "still present"
+else _pass "global.md no longer keeps wt out of the dotfiles"; fi
+need_flat global.md 'For the dotfiles, the pushed branch is the end.' "global.md keeps the dotfiles' Finishing rule"
 need_flat global.md 'Harness worktrees follow their tool'"'"'s lifecycle.' "global.md leaves harness worktrees to their tool"
 # A trim once cut "chezmoi-managed", leaving agents the deployed Brewfile to edit.
 need_flat global.md 'Homebrew packages go in the chezmoi-managed `~/.config/homebrew/Brewfile`' \
@@ -277,8 +282,11 @@ need_flat claude-code.md 'If `ListAgents` does not list it, tell Michael; never 
   "claude-code.md keeps the wt line out of the main session when its session is missing"
 need_flat claude-code.md 'never create a worktree for one of its tasks' "claude-code.md keeps the parallel-tasks worktree rule"
 # "Its own worktree" read as a harness worktree beside the wt rule (hulder, 2026-11-03).
-need_flat claude-code.md 'A plan runs entirely in its line'"'"'s checkout (dotfiles: a harness worktree);' \
-  "claude-code.md runs a plan in its line's checkout, and a dotfiles plan in a harness worktree"
+need_flat claude-code.md 'A plan runs entirely in its line'"'"'s checkout; never create a worktree for one of its tasks.' \
+  "claude-code.md runs a plan in its line's checkout, the dotfiles' too"
+if tr '\n' ' ' < "$FRAG/claude-code.md" | tr -s ' ' | grep -qF -- '(dotfiles: a harness worktree)'; then
+  _fail "claude-code.md no longer sends a dotfiles plan to a harness worktree" "still present"
+else _pass "claude-code.md no longer sends a dotfiles plan to a harness worktree"; fi
 need_flat claude-code.md '`SendMessage` it the brief: spec, plan or task, branch, artifact paths, what to report back.' \
   "claude-code.md briefs a wt line with its spec, since hand-off comes at spec sign-off"
 # Codex-only text moved to codex.md.
