@@ -52,6 +52,8 @@ def out(m):
 for line in sys.stdin:
     m = json.loads(line); log.write(json.dumps(m) + "\n"); log.flush()
     meth = m.get("method")
+    if meth in run.get("mkdir_on", {}):       # a directory appears when this method arrives
+        os.makedirs(run["mkdir_on"][meth], exist_ok=True)
     if meth in run.get("drop_on", []):        # accept the request, then vanish unanswered
         sys.exit(0)
     if meth in run.get("garbage_on", []):     # a corrupt frame instead of a real response
@@ -1763,6 +1765,10 @@ cl_th() { # cl_th <id> <listed cwd> <rollout origin | - for no rollout | zst:<or
   local path="$CLD/roll/$1.jsonl"
   case "$3" in
     -) ;;
+    zstlisted:*) jq -nc --arg c "${3#zstlisted:}" '{type:"session_meta",payload:{cwd:$c}}' > "$path"   # the daemon names the plain file; only the .zst exists
+           jq -nc '{type:"event_msg"}' >> "$path"; zstd -q -f -o "$path.zst" "$path" && rm -f "$path" ;;
+    zstrev:*) jq -nc --arg c "${3#zstrev:}" '{type:"session_meta",payload:{cwd:$c}}' > "$path"       # listed as .zst, only the plain file exists
+           jq -nc '{type:"event_msg"}' >> "$path"; path="$path.zst" ;;
     zst:*) jq -nc --arg c "${3#zst:}" '{type:"session_meta",payload:{cwd:$c}}' > "$path"
            jq -nc '{type:"event_msg"}' >> "$path"; zstd -q -f -o "$path.zst" "$path" && rm -f "$path"; path="$path.zst" ;;
     *) jq -nc --arg c "$3" '{type:"session_meta",payload:{cwd:$c}}' > "$path"; jq -nc '{type:"event_msg"}' >> "$path" ;;
@@ -1871,6 +1877,7 @@ cl_scn "[$(cl_full), $(cl_full)]"
 rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
 is "CL5 a thread whose rollout is missing is listed under could not read, never archived" \
    "$rc/$(cl_ids "$T/out" "$H_UNREAD")/$(cl_ids "$T/out" "$H_PACKET")/$(ac_sent thread/archive)" "0/p//"
+is "CL5 its line says how it was identified, then why" "$(cl_sec "$T/out" "$H_UNREAD")" "  p  $G  2023-11-14 22:13  packet  cannot read its rollout"
 
 cl_clean
 if [ "$(id -u)" = 0 ]; then
@@ -1915,6 +1922,67 @@ is "CL8 a page that errors files the thread under could not read" "$(cl_ids "$T/
 is "CL8 the pages are joined in order: a greeting then packets is an old pane session" "$(cl_ids "$T/out" "$H_OLD")/$(cl_ids "$T/out" "$H_PACKET")" "h3/"
 is "CL8 every page of each history was read" "$(jq -c 'select(.method == "thread/turns/list") | [.params.threadId, .params.cursor]' "$FAKE_LOG" | paste -sd' ' -)" \
    '["h1",null] ["h1","c1"] ["h2",null] ["h2","c2"] ["h3",null] ["h3","c3"]'
+
+# The daemon names a compressed rollout by its plain name, while only the .zst is on disk.
+cl_clean
+cl_th zr "$G" "zstrev:$G"; cl_hist zr "$PK"
+if [ "$HAVE_ZSTD" = 1 ]; then
+  cl_th zl "$G" "zstlisted:$G"; cl_hist zl "$PK"
+  cl_th zo "$G" "zstlisted:$G"; cl_hist zo hi "$PK"
+else
+  echo "  SKIP: zstd not installed (CL9 zl)"
+fi
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup >"$T/out" 2>"$T/err"; rc=$?
+is "CL9 a rollout listed by its plain name but present only as .zst is read, and classified" \
+   "$rc/$(cl_ids "$T/out" "$H_PACKET")/$(cl_ids "$T/out" "$H_OLD")/$(cl_ids "$T/out" "$H_UNREAD")" \
+   "0/$(cl_zs zr,zl zr)/$(cl_zs zo '')/"
+
+# A state directory that holds only a review-thread naming an archived thread: it is cleared, and
+# no lock file is made where there is no started list.
+cl_fixture
+mkdir -p "$ACR/r"; ac_review r o
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL10 a review-thread in a directory with no started list is cleared" "$rc/$([ -e "$ACR/r/review-thread" ] && echo left || echo gone)" "0/gone"
+is "CL10 and no started list or lock file is made there" "$(ls "$ACR/r")" ""
+
+# A pin or review-thread that is not UTF-8 is a record that names nothing, not a crash.
+cl_fixture
+mkdir -p "$ACR/n2"; printf '\377\376\n' > "$ACR/n2/pin"; printf '\377\n' > "$ACR/g/review-thread"
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL11 a pin and a review-thread that are not UTF-8 do not stop the run" "$rc/$(tail -n 1 "$T/out")/$(grep -c Traceback "$T/err")" "0/Archived $N of $N./0"
+is "CL11 the started entry is dropped all the same" "$([ -e "$ACR/g/started" ] && echo left || echo gone)" gone
+
+# A step that outlives its window is reported as the time budget, not as a lost connection.
+cl_clean
+ac_started g s "$G"; cl_th s "$G" "$G"
+cl_scn "[$(cl_full), $(cl_full)]"
+scenario "$(jq -c '. + {silent:["thread/archive"]}' "$FAKE_SCENARIO")"
+XREVIEW_RPC_ARCHIVE_UNIT=0.1 rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL12 an archive that outlives its window is exit 1, reported as the time budget" \
+   "$rc/$(grep -c 'the time budget for this step ran out' "$T/err")/$(grep -c 'connection' "$T/err")/$(tail -n 1 "$T/out")" "1/1/0/Archived 0 of 1."
+cl_clean
+cl_th p "$G" "$G"; cl_hist p "$PK"
+cl_scn "[$(cl_full), $(cl_full)]"
+scenario "$(jq -c '. + {silent:["thread/turns/list"]}' "$FAKE_SCENARIO")"
+XREVIEW_RPC_ARCHIVE_UNIT=0.1 rpc cleanup >"$T/out" 2>"$T/err"; rc=$?
+is "CL12 so is a history read that outlives its window" "$rc/$(grep -c 'the time budget for this step ran out' "$T/err")/$(grep -c 'connection' "$T/err")" "1/1/0"
+
+# A checkout recreated at a selected thread's path after the survey keeps its thread. The fake
+# creates b's directory when a's archive arrives, which is before b's turn.
+G2="$W/gone2"
+cl_clean; rm -rf "$G2"
+ac_started g a "$G"; ac_started g b "$G2"
+cl_th a "$G" "$G"; cl_th b "$G2" "$G2"
+cl_scn "[$(cl_full), $(cl_full)]"
+scenario "$(jq -c --arg d "$G2" '. + {mkdir_on:{"thread/archive":$d}}' "$FAKE_SCENARIO")"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL13 a thread whose checkout exists again is not archived, and that is not a failure" "$rc/$(ac_sent thread/archive)/$(tail -n 1 "$T/out")" "0/a/Archived 1 of 2."
+is "CL13 stderr says it was kept" "$(cat "$T/err")" "xreview-rpc: kept b: $G2 exists again"
+is "CL13 its started entry stays" "$(ac_ids g)" b
+rm -rf "$G2"
 
 cl_clean
 unset TZ

@@ -728,31 +728,44 @@ def thread_level_compaction(turn):
                                for i in items)
 
 
-def cmd_thread_turns(c, a):
-    """Every turn of a.thread, oldest first, listed with itemsView "full". Any page that cannot
-    be read in full is exit 1: a partial list would read as a history with turns missing."""
+class TurnsUnreadable(Exception):
+    """A thread/turns/list page that cannot be read in full; the message says why."""
+
+
+def all_turns(c, tid, items_view):
+    """Every turn of tid, oldest first, over every page of thread/turns/list. Raises
+    TurnsUnreadable for an error page, an unexpected shape or a repeated cursor: a partial
+    list would read as a history with turns missing."""
     pages, cursor, seen = [], None, set()
     while True:
-        params = {"threadId": a.thread, "limit": 50, "sortDirection": "desc", "itemsView": "full"}
+        params = {"threadId": tid, "limit": 50, "sortDirection": "desc", "itemsView": items_view}
         if cursor:
             params["cursor"] = cursor
         r = c.call("thread/turns/list", params)
         if "error" in r:
-            err("thread/turns/list refused: " + json.dumps(r["error"]))
-            return 1
+            raise TurnsUnreadable("thread/turns/list refused: " + json.dumps(r["error"]))
         res = r.get("result")
         if not isinstance(res, dict) or not isinstance(res.get("data"), list):
-            err("thread/turns/list: unexpected answer " + json.dumps(res, separators=(",", ":")))
-            return 1
+            raise TurnsUnreadable(
+                "thread/turns/list: unexpected answer " + json.dumps(res, separators=(",", ":")))
         pages.append(res["data"])
         cursor = res.get("nextCursor")
         if not cursor:
             break
         if cursor in seen:
-            err(f"thread/turns/list: the cursor {cursor!r} repeated")
-            return 1
+            raise TurnsUnreadable(f"thread/turns/list: the cursor {cursor!r} repeated")
         seen.add(cursor)
-    turns = [t for page in reversed(pages) for t in reversed(page)]
+    return [t for page in reversed(pages) for t in reversed(page)]
+
+
+def cmd_thread_turns(c, a):
+    """Every turn of a.thread, oldest first, listed with itemsView "full". Any page that cannot
+    be read in full is exit 1: a partial list would read as a history with turns missing."""
+    try:
+        turns = all_turns(c, a.thread, "full")
+    except TurnsUnreadable as e:
+        err(str(e))
+        return 1
     if not all(isinstance(t, dict) and isinstance(t.get("id"), str) for t in turns):
         err("thread/turns/list: a turn without an id")
         return 1
@@ -1214,7 +1227,7 @@ def clear_review_thread(sd, tid):
     another thread, which is a different checkout's or a later review's."""
     path = os.path.join(sd, "review-thread")
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             named = fh.read().strip()
         if named != tid:
             return False
@@ -1397,43 +1410,34 @@ def classify(messages):
 
 
 def user_messages(c, tid):
-    """The text of every userMessage of tid, oldest first, over every page of thread/turns/list.
-    None when any page answers with an error or an unexpected shape, or a cursor repeats: a
-    history that cannot be read in full says nothing about a message of Michael's own."""
-    pages, cursor, seen = [], None, set()
-    while True:
-        params = {"threadId": tid, "limit": 50, "sortDirection": "desc", "itemsView": "summary"}
-        if cursor:
-            params["cursor"] = cursor
-        r = c.call("thread/turns/list", params)
-        res = None if "error" in r else r.get("result")
-        if not isinstance(res, dict) or not isinstance(res.get("data"), list):
-            return None
-        pages.append(res["data"])
-        cursor = res.get("nextCursor")
-        if not cursor:
-            break
-        if cursor in seen:
-            return None
-        seen.add(cursor)
+    """The text of every userMessage of tid, oldest first. None when the history cannot be read
+    in full: it says nothing about a message of Michael's own."""
+    try:
+        turns = all_turns(c, tid, "summary")
+    except TurnsUnreadable:
+        return None
     out = []
-    for page in reversed(pages):
-        for turn in reversed(page):
-            items = turn.get("items") if isinstance(turn, dict) else None
-            for it in items if isinstance(items, list) else []:
-                if isinstance(it, dict) and it.get("type") == "userMessage":
-                    parts = it.get("content")
-                    out.append("\n".join(
-                        x["text"] for x in parts if isinstance(x, dict) and x.get("type") == "text"
-                        and isinstance(x.get("text"), str)) if isinstance(parts, list) else "")
+    for turn in turns:
+        items = turn.get("items") if isinstance(turn, dict) else None
+        for it in items if isinstance(items, list) else []:
+            if isinstance(it, dict) and it.get("type") == "userMessage":
+                parts = it.get("content")
+                out.append("\n".join(
+                    x["text"] for x in parts if isinstance(x, dict) and x.get("type") == "text"
+                    and isinstance(x.get("text"), str)) if isinstance(parts, list) else "")
     return out
 
 
 def rollout_origin(path):
     """payload.cwd of the first session_meta line of the rollout at path (a .zst one is read
-    through zstd), or None when it cannot be read. Only reads; nothing of the app's is written."""
+    through zstd; a path that is missing falls back to its .zst or plain twin), or None when it cannot be read. Only reads; nothing of the app's is written."""
     if not isinstance(path, str) or not path:
         return None
+    # The daemon lists a compressed rollout under its plain name, so the file on disk may be the
+    # .zst beside it (and the other way round).
+    alt = path[:-4] if path.endswith(".zst") else path + ".zst"
+    if not os.path.exists(path) and os.path.exists(alt):
+        path = alt
     proc = None
     try:
         if path.endswith(".zst"):
@@ -1469,7 +1473,7 @@ def state_dirs(root):
 
 def review_thread_names(sd, tid):
     try:
-        with open(os.path.join(sd, "review-thread"), encoding="utf-8") as fh:
+        with open(os.path.join(sd, "review-thread"), encoding="utf-8", errors="replace") as fh:
             return fh.read().strip() == tid
     except FileNotFoundError:
         return False
@@ -1487,7 +1491,7 @@ def read_pinned(root):
     out = set()
     for sd in state_dirs(root):
         try:
-            with open(os.path.join(sd, "pin"), encoding="utf-8") as fh:
+            with open(os.path.join(sd, "pin"), encoding="utf-8", errors="replace") as fh:
                 out.add(fh.read().strip())
         except FileNotFoundError:
             pass
@@ -1563,7 +1567,7 @@ def cleanup_survey(c, fresh, started, pinned):
                 continue
             origin = rollout_origin(th.get("path"))
             if origin is None:
-                add("unread", "cannot read its rollout")
+                add("unread", how, "cannot read its rollout")
                 continue
             origins = [origin]
         bad = next((o for o in origins if os.path.realpath(o) != os.path.realpath(cwd)), None)
@@ -1573,6 +1577,14 @@ def cleanup_survey(c, fresh, started, pinned):
         add(how, how)
         selected.append((tid, cwd))
     return groups, selected, empty
+
+
+def lost(c, e):
+    """Say why a call ended the run: the step's window ran out, or the connection went."""
+    if time.monotonic() >= c.deadline:
+        err("the time budget for this step ran out")
+    else:
+        err(f"Codex daemon connection lost: {e}")
 
 
 def cmd_cleanup(a):
@@ -1602,7 +1614,7 @@ def cmd_cleanup(a):
         err(f"{e}; nothing archived")
         return 1
     except (Unreachable, Closed) as e:
-        err(f"Codex daemon connection lost: {e}")
+        lost(c, e)
         return 1
     for key, heading in CLEANUP_HEADINGS:
         print(f"== {heading} ({len(groups[key])})")
@@ -1621,11 +1633,17 @@ def cmd_cleanup(a):
     try:
         for tid, cwd in selected:
             fresh()
+            # The survey may be minutes old: a checkout recreated at this path since then keeps its thread.
+            now = gone(cwd)
+            if now is not True:
+                err(f"kept {tid}: " + (f"{cwd} exists again" if now is False
+                                       else f"cannot tell whether {cwd} exists now"))
+                continue
             ok, r = archive_and_clean(c, tid, cwd, record_dirs(root, tid))
             done += ok
             rc |= r
     except (Unreachable, Closed) as e:
-        err(f"Codex daemon connection lost: {e}")
+        lost(c, e)
         rc = 1
     except OSError as e:
         err(f"cannot read the records under {root}: {e}")
