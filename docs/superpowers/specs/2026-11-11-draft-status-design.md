@@ -1,6 +1,6 @@
 # Draft status for MR and PR spaces
 
-**Status:** Approved
+**Status:** In progress on `feat/draft-status` (dotfiles: no MR)
 **Date:** 2026-11-11
 **Sign-off:** Michael, 2026-11-11 (Codex spec review approved, `xr-1794357508-3017fb0b`); section 5
 (freshness) was added at his sign-off and is reviewed with the plan
@@ -173,6 +173,33 @@ change can take about five minutes to show (the cache files on fenrir confirm th
   Michael as a follow-up.
 - **After the merge:** a changed `StartInterval` needs the LaunchAgent reloaded. That is
   Michael's step, and the line's report gives the exact commands.
+
+#### Amendment, 2026-11-11: per-repository jobs
+
+Michael approved this lever on 2026-11-11, after the line measured fenrir (19 linked spaces, four
+GitLab repositories with 10 open MRs, two GitHub repositories):
+
+| Measure | Value |
+|---|---|
+| Cadence | 202–204 s between run starts, against a 180 s interval: the interval plus about one run |
+| Forced run | 22 s, almost all of it 18 sequential `glab` calls at 1.0–1.5 s each |
+| Worst-case staleness today | ~323 s |
+| Listed levers alone | ~95 s worst case (interval 60 s, run ~28 s and growing about 1.2 s per open GitLab MR); misses the target |
+
+The added lever:
+- **Jobs:** within a run, each repository's lookups and reports run as their own background job,
+  so a run lasts as long as its slowest repository instead of the sum of all of them.
+- **Interval:** `StartInterval` becomes 50 s.
+- **Targets:** a run of ~8 s, a cadence of ~58 s, and a worst case of ~60–65 s.
+- **Budget:** ~1,300 calls/h on GitLab, and ≤ ~1,700/h on GitHub with focus lookups included.
+
+Constraints, each pinned in `tests/herdr-phase.test.sh`:
+- every property pinned at the top of that suite still holds;
+- each workspace is reported by exactly one job, with the one stable source and exactly one token
+  per group;
+- bash 3.2;
+- one repository's slow or failing lookup never stops or corrupts another repository's reports;
+- a run's total time stays well inside the interval.
 
 ## Left to the builder
 
