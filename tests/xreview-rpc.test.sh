@@ -2117,17 +2117,17 @@ is "CL19 a thread whose recorded cwd moved to a checkout that exists is kept, th
 is "CL19 stderr names where it moved" "$(cat "$T/err")" "xreview-rpc: kept b: its recorded cwd moved to $E"
 is "CL19 its started entry stays" "$(ac_ids g)" b
 
-# A thread that moved to another gone path is kept too; one that stays under the same gone
-# directory is archived, and the confirmation filter carries the fresh cwd and the listed one.
+# A thread whose recorded cwd moved to any other path is kept, a descendant of the selected gone
+# directory included: selection is by equality, so the re-check is too.
 cl_clean
-ac_started g a "$G"; ac_started g b "$G"
+ac_started g a "$G"; ac_started g b "$G"; ac_review g b
 cl_th a "$G" "$G"; cl_th b "$G" "$G"
 cl_scn "[$(cl_full), $(cl_full)]"
 scenario "$(jq -c --arg o "$W/other-gone" --arg s "$G/sub" '.by_thread["thread/read"].a = [.by_thread["thread/read"].a, {result:{thread:{id:"a",cwd:$o}}}]
   | .by_thread["thread/read"].b = [.by_thread["thread/read"].b, {result:{thread:{id:"b",cwd:$s}}}]' "$FAKE_SCENARIO")"
 rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
-is "CL19b a thread moved to another gone path is kept; one still under the same gone directory is archived" "$rc/$(ac_sent thread/archive)/$(cat "$T/err")" "0/b/xreview-rpc: kept a: its recorded cwd moved to $W/other-gone"
-is "CL19b the archive is confirmed through the fresh cwd and the listed one" "$(jq -c 'select(.method == "thread/list" and .params.archived == true) | .params.cwd' "$FAKE_LOG" | paste -sd' ' -)" "[\"$G/sub\",\"$G\"]"
+is "CL19b a thread moved to another gone path, or to a descendant of the selected one, is kept" "$rc/$(ac_sent thread/archive)/$(cat "$T/err")" "0//xreview-rpc: kept a: its recorded cwd moved to $W/other-gone"$'\n'"xreview-rpc: kept b: its recorded cwd moved to $G/sub"
+is "CL19b their started entries and review-thread stay" "$(ac_ids g)/$(cat "$ACR/g/review-thread")" "a,b/b"
 
 # An old pane session opens with a greeting, one word, then only packets. A first message that is
 # anything else, however many packets follow, is Michael's own work: listed apart, never selected.

@@ -1732,7 +1732,7 @@ def cmd_cleanup(a):
             if not isinstance(now_cwd, str) or not now_cwd:
                 err(f"kept {tid}: cannot read its recorded cwd from the daemon")
                 continue
-            if not under(now_cwd, cwd):
+            if os.path.realpath(now_cwd) != os.path.realpath(cwd):
                 err(f"kept {tid}: its recorded cwd moved to {now_cwd}")
                 continue
             now = gone(now_cwd)
