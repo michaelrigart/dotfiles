@@ -1529,10 +1529,11 @@ def unarchived_threads(c, fresh):
         seen.add(cursor)
 
 
-def vanished_origin(th, cwd, paths):
-    """An origin of th that is gone and is not cwd, or None. paths: its started paths, if any;
-    otherwise its rollout's origin is read. An origin that cannot be read or tested is None."""
-    for o in paths or [rollout_origin(th.get("path"))]:
+def vanished_origin(rollout, cwd, paths):
+    """An origin of a thread that is gone and is not cwd, or None. paths: its started paths, if
+    any; otherwise the origin of its rollout is read. An origin that cannot be read or tested
+    is None."""
+    for o in paths or [rollout_origin(rollout)]:
         if isinstance(o, str) and o and os.path.realpath(o) != os.path.realpath(cwd) and gone(o) is True:
             return o
     return None
@@ -1549,11 +1550,24 @@ def cleanup_survey(c, fresh, started, pinned):
     selected, empty = [], 0
     for th in threads:
         fresh()
-        tid, cwd = th["id"], th.get("cwd")
+        tid = th["id"]
+        # thread/list reports the cwd a thread began in; thread/read the one the daemon records
+        # now (C7), which is what the checkout rules are about. Every decision uses the latter.
+        r = c.call("thread/read", {"threadId": tid, "includeTurns": False})
+        rec = None if "error" in r else (r.get("result") or {}).get("thread")
+        cwd = rec.get("cwd") if isinstance(rec, dict) else None
+        path = th.get("path") or (rec.get("path") if isinstance(rec, dict) else None)
+        if not isinstance(cwd, str) or not cwd:
+            cwd = th.get("cwd")
+            if isinstance(cwd, str) and cwd and gone(cwd) is False:
+                continue
+            groups["unread"].append("  " + "  ".join(
+                (tid, str(cwd), stamp(th.get("updatedAt")), "cannot read it from the daemon")))
+            continue
 
         def add(key, *tail):
-            groups[key].append("  " + "  ".join((tid, str(cwd), stamp(th.get("updatedAt"))) + tail))
-        missing = gone(cwd) if isinstance(cwd, str) and cwd else None
+            groups[key].append("  " + "  ".join((tid, cwd, stamp(th.get("updatedAt"))) + tail))
+        missing = gone(cwd)
         if missing is False:
             # A checkout that exists is never touched. A thread that began in one that is gone
             # (a later turn ran here) is only listed, as the amended spec asks; reading its
@@ -1561,7 +1575,7 @@ def cleanup_survey(c, fresh, started, pinned):
             # exists, ends at the origin, before any history is read.
             if tid in pinned:
                 continue
-            origin = vanished_origin(th, cwd, started.get(tid))
+            origin = vanished_origin(path, cwd, started.get(tid))
             if origin is None:
                 continue
             if tid in started:
@@ -1592,7 +1606,7 @@ def cleanup_survey(c, fresh, started, pinned):
             how = classify(msgs)
             if how is None:
                 continue
-            origin = rollout_origin(th.get("path"))
+            origin = rollout_origin(path)
             if origin is None:
                 add("unread", how, "cannot read its rollout")
                 continue

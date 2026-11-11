@@ -1764,7 +1764,7 @@ E="$W/exists-cl"
 PK=$'<cross-review-request>\nplease review'
 HAVE_ZSTD=0; command -v zstd >/dev/null 2>&1 && HAVE_ZSTD=1
 cl_clean() { ac_clean; rm -rf "$CLD" "$E"; mkdir -p "$CLD/roll" "$CLD/hist"; : > "$CLD/ents.jsonl"; }
-cl_th() { # cl_th <id> <listed cwd> <rollout origin | - for no rollout | zst:<origin>>
+cl_th() { # cl_th <id> <listed cwd> <rollout origin | - for no rollout | zst:<origin>> [recorded cwd | ERR]
   local path="$CLD/roll/$1.jsonl"
   case "$3" in
     -) ;;
@@ -1776,7 +1776,8 @@ cl_th() { # cl_th <id> <listed cwd> <rollout origin | - for no rollout | zst:<or
            jq -nc '{type:"event_msg"}' >> "$path"; zstd -q -f -o "$path.zst" "$path" && rm -f "$path"; path="$path.zst" ;;
     *) jq -nc --arg c "$3" '{type:"session_meta",payload:{cwd:$c}}' > "$path"; jq -nc '{type:"event_msg"}' >> "$path" ;;
   esac
-  jq -nc --arg i "$1" --arg c "$2" --arg p "$path" '{id:$i,cwd:$c,updatedAt:1700000000,path:$p,preview:"x"}' >> "$CLD/ents.jsonl"
+  jq -nc --arg i "$1" --arg c "$2" --arg p "$path" --arg r "${4:-}" \
+    '{id:$i,cwd:$c,updatedAt:1700000000,path:$p,preview:"x"} + (if $r == "" then {} else {rec:$r} end)' >> "$CLD/ents.jsonl"
 }
 cl_turn() { jq -nc --arg t "$1" '{id:"t",status:"completed",items:[{type:"userMessage",content:[{type:"text",text:$t}]},{type:"agentMessage",text:"ok"}]}'; }
 cl_page() { # cl_page <next cursor or ""> <turn json>... : one page of the listing, newest first as given
@@ -1797,7 +1798,9 @@ cl_full() { jq -sc '{result:{data:.}}' "$CLD/ents.jsonl"; }
 cl_scn() { # cl_scn <thread/list answers, a JSON list> [extra by_thread JSON, e.g. {"thread/archive":{...}}]
   scenario "$(jq -nc --argjson l "$1" --argjson x "${2:-null}" \
     --argjson bt "$(jq -sc 'map({(.id): .resp}) | add // {}' "$CLD"/hist/*.json)" \
-    '{responses:{"thread/list":$l},by_thread:({"thread/turns/list":$bt} + ($x // {}))}')"
+    --argjson rd "$(jq -sc 'map({(.id): (if .rec == "ERR" then {error:{code:-1,message:"nope"}}
+      else {result:{thread:{id:.id,cwd:(.rec // .cwd),path:.path}}} end)}) | add // {}' "$CLD/ents.jsonl")" \
+    '{responses:{"thread/list":$l},by_thread:({"thread/turns/list":$bt,"thread/read":$rd} + ($x // {}))}')"
 }
 cl_sec() { awk -v h="== $2 (" 'index($0, h) == 1 {on=1; next} /^[^ ]/ {on=0} on' "$1"; }   # <out file> <heading>
 cl_ids() { cl_sec "$1" "$2" | awk '{print $1}' | paste -sd, -; }
@@ -2002,6 +2005,24 @@ else
   is "CL13b a path that cannot be tested is not archived either, and that is not a failure" "$rc/$(ac_sent thread/archive)/$(tail -n 1 "$T/out")" "0/a/Archived 1 of 2."
   is "CL13b stderr says why it was kept" "$(cat "$T/err")" "xreview-rpc: kept b: cannot tell whether $L2/gone exists now"
 fi
+
+# thread/list says where a thread began; thread/read where the daemon records it now. The checkout
+# rules use the latter.
+cl_clean; mkdir -p "$E"
+cl_th p "$G" "$G"; cl_hist p "$PK"
+cl_th r1 "$G" "$G" "$E"; cl_hist r1 "$PK"
+cl_th r2 "$G" "$G" ERR; cl_hist r2 "$PK"
+cl_th r3 "$E" "$E" ERR; cl_hist r3 "$PK"
+ac_started g r4 "$G"; cl_th r4 "$G" "$G" "$E"
+cl_scn "[$(cl_full), $(cl_full)]"
+rpc cleanup --archive >"$T/out" 2>"$T/err"; rc=$?
+is "CL15 a thread that began in a gone checkout but is recorded in one that exists is listed under differs, with its origin and recorded cwd" \
+   "$rc/$(cl_ids "$T/out" "$H_DIFFERS")/$(cl_sec "$T/out" "$H_DIFFERS" | grep -c "^  r1  $E  2023-11-14 22:13  packet  origin $G\$")" "0/r1,r4/1"
+is "CL15 the one the daemon records in the gone checkout too is selected and archived, and no other" "$(ac_sent thread/archive)/$(cl_ids "$T/out" "$H_PACKET")" "p/p"
+is "CL15 a started thread recorded elsewhere keeps its entry" "$(ac_ids g)" r4
+is "CL15 a thread/read that fails is could-not-read when the listed cwd is gone, and silent when it exists" \
+   "$(cl_sec "$T/out" "$H_UNREAD")" "  r2  $G  2023-11-14 22:13  cannot read it from the daemon"
+is "CL15 a thread whose thread/read failed has no history read, whichever its listed cwd" "$(ac_sent thread/turns/list)" "p,r1"
 
 # A thread whose recorded cwd exists but whose origin is gone is listed under differs and never
 # touched; one whose origin is its cwd, or still exists, costs no history read and is not listed.
