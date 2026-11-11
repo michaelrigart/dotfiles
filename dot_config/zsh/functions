@@ -1413,8 +1413,8 @@ _wt_rm_branch() {
 # _wt_rm_archive <dest> — archive the review threads Codex still holds for a removed
 # checkout (`xreview-rpc archive-checkout`). Last in a removal and cosmetic: whatever it
 # reports, the removal stands, so it always returns 0 and a failure only prints the id of
-# what to retry and the command that retries it. The command's own retry line is dropped
-# from the echoed stderr, since the one printed here replaces it.
+# what to retry and the command that retries it. The command's stderr is echoed on every
+# status, except its own retry line, which the one printed here replaces.
 _wt_rm_archive() {
   emulate -L zsh
   local dest="$1" out err line
@@ -1426,22 +1426,26 @@ _wt_rm_archive() {
     return 0
   fi
   err="$(command mktemp "${TMPDIR:-/tmp}/wt-rm-archive.XXXXXX" 2>/dev/null)" || err=/dev/null
-  out="$(command xreview-rpc archive-checkout --dir "$dest" 2>"$err")"
-  rc=$?
-  for line in ${(f)out}; do
-    [[ "$line" == "archived "* ]] && print -r -- "✓ archived review thread ${line#"archived "}"
-  done
-  case $rc in
-    0) ;;
-    5) print -ru2 -- "wt-rm: the Codex daemon is not reachable — review threads not archived; the removal stands."
-       print -ru2 -- "$retry" ;;
-    *) print -ru2 -- "wt-rm: could not archive every review thread of $dest (status $rc); the removal stands."
-       for line in ${(f)"$(<$err)"}; do
-         [[ "$line" == "xreview-rpc: retry:"* ]] || print -ru2 -- "    $line"
-       done
-       print -ru2 -- "$retry" ;;
-  esac
-  [[ "$err" == /dev/null ]] || command rm -f -- "$err"
+  {
+    out="$(command xreview-rpc archive-checkout --dir "$dest" 2>"$err")"
+    rc=$?
+    for line in ${(f)out}; do
+      [[ "$line" == "archived "* ]] && print -r -- "✓ archived review thread ${line#"archived "}"
+    done
+    case $rc in
+      0) ;;
+      5) print -ru2 -- "wt-rm: the Codex daemon is not reachable — review threads not archived; the removal stands." ;;
+      *) print -ru2 -- "wt-rm: could not archive every review thread of $dest (status $rc); the removal stands." ;;
+    esac
+    # Every status: a clean run still reports the threads it kept, and a daemon that is
+    # unreachable names the ids it could not archive.
+    for line in ${(f)"$(<$err)"}; do
+      [[ "$line" == "xreview-rpc: retry:"* ]] || print -ru2 -- "    $line"
+    done
+    (( rc )) && print -ru2 -- "$retry"
+  } always {
+    [[ "$err" == /dev/null ]] || command rm -f -- "$err"
+  }
   return 0
 }
 

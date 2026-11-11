@@ -3079,12 +3079,18 @@ setup
 run "$REPO" wt arch-ok
 AO="$HOME/Code/Org/repo-arch-ok"
 export MOCK_XARCH_OUT='archived th-1\n'
-run "$REPO" wt-rm arch-ok
+RT=$(mkd)
+TMPDIR="$RT" run "$REPO" wt-rm arch-ok
 rc_is 0 "W9 an archived thread leaves wt-rm successful"
 has "✓ archived review thread th-1" "W9 the archived thread is reported"
 hasnt "could not archive" "W9 a clean archive reports no failure"
 [[ -d "$AO" ]] && _fail "W9 the checkout is removed" || _pass "W9 the checkout is removed"
 eq "$(grep -v '^---$' "$XLOG" | tr '\n' ' ')" "release --dir $AO archive-checkout --dir $AO " "W9 archive-checkout runs after release"
+eq "$(ls "$RT" | grep -c 'wt-rm-archive')" "0" "W9 the archive's scratch file is removed"
+# Ruling 9: the archive is the last step, after the branch step.
+W9_BR=$(oline "Deleted branch arch-ok"); W9_AR=$(oline "✓ archived review thread th-1")
+(( ${W9_BR:-0} > 0 && ${W9_AR:-0} > ${W9_BR:-0} )) \
+  && _pass "W9 the archive is reported after the branch step" || _fail "W9 the archive is reported after the branch step"
 
 setup
 run "$REPO" wt arch-fail
@@ -3104,12 +3110,26 @@ eq "$OUT" "" "W10 the branch step still ran"
 setup
 run "$REPO" wt arch-down
 AD="$HOME/Code/Org/repo-arch-down"
-export MOCK_XARCH_RC=5 MOCK_XARCH_ERR='xreview-rpc: Codex daemon unreachable: gone\n'
+export MOCK_XARCH_RC=5 MOCK_XARCH_ERR='xreview-rpc: th-4: not archived: the Codex daemon is unreachable\nxreview-rpc: retry: xreview-rpc archive-checkout --dir /elsewhere\n'
 run "$REPO" wt-rm arch-down
 rc_is 0 "W11 an unreachable daemon never changes wt-rm's status"
 has "wt-rm: the Codex daemon is not reachable — review threads not archived; the removal stands." "W11 the daemon line is printed"
+has "    xreview-rpc: th-4: not archived: the Codex daemon is unreachable" "W11 the command's id line is shown, indented"
+hasnt "retry: xreview-rpc archive-checkout --dir /elsewhere" "W11 the command's own retry line is left out"
 has "    Retry: xreview-rpc archive-checkout --dir $AD" "W11 the retry is printed"
 hasnt "could not archive every review thread" "W11 status 5 is not the generic failure"
+
+# Status 0 with threads kept: the command's stderr is shown, and it is no failure.
+setup
+run "$REPO" wt arch-kept
+AK="$HOME/Code/Org/repo-arch-kept"
+export MOCK_XARCH_OUT='archived th-1\n' MOCK_XARCH_ERR='kept th-2: its daemon cwd lies outside the checkout\n'
+run "$REPO" wt-rm arch-kept
+rc_is 0 "W11b an archive that kept a thread leaves wt-rm successful"
+has "✓ archived review thread th-1" "W11b the archived thread is reported"
+has "    kept th-2: its daemon cwd lies outside the checkout" "W11b the kept line is shown, indented"
+hasnt "could not archive" "W11b a kept thread is not a failure"
+hasnt "Retry:" "W11b status 0 prints no retry"
 
 # A removal that stops before Git has deleted the checkout never asks for the archive.
 setup
@@ -3155,7 +3175,7 @@ git -C "$REPO" worktree unlock "$AR2"
 rm -rf "$AR2"
 export MOCK_XARCH_RC=1 MOCK_XARCH_ERR='xreview-rpc: boom\n'
 run "$REPO" wt-rm arch-reg2
-rc_is 0 "W13 a failed archive keeps _wt_rm_registration's status"
+rc_is 0 "W13 a failed archive (status 1) does not change the registration path's exit status"
 has "    Retry: xreview-rpc archive-checkout --dir $AR2" "W13 the retry is printed"
 
 # No xreview-rpc on PATH: only the registration path can reach the archive (a release would
