@@ -18,8 +18,8 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   trees needs its own `!` entry, or `chezmoi add` silently drops it.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `tests/`, `.scripts/` are ignored so
   they never land in `$HOME`.
-- Edit here and `chezmoi apply`; never hand-edit a deployed file. `chezmoi apply` is
-  Michael's. Agents preview with `command chezmoi cat <target>` and
+- Edit the source in a `wt` checkout (never in the main one) and `chezmoi apply`; never
+  hand-edit a deployed file. `chezmoi apply` is Michael's. Agents preview with `command chezmoi cat <target>` and
   `command chezmoi apply --dry-run --verbose`: sandboxed, so running the working tree's
   scripts is safe. In a `wt` sibling a bare `command chezmoi` renders the main checkout, so
   preview with `command chezmoi --source <checkout> cat <target>` and
@@ -44,10 +44,13 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   public: nothing private goes in them. `global.md` stays within 150 lines,
   `claude-code.md` within 50 and `codex.md` within 30; `tests/agent-instructions.test.sh`
   pins all three, and the renders.
-- The main checkout `~/.local/share/chezmoi` stays on `main` and is never switched, because
-  Michael applies from it. Every branch is a `wt` checkout at `~/.local/share/chezmoi-<branch>`,
-  run by its own session with its own Codex pane. Check `git branch --show-current` before
-  each commit.
+- The main checkout `~/.local/share/chezmoi` stays on a clean `main`: never switched, never
+  edited in place, because Michael applies from it and the wrapper needs a clean `main`. Every
+  branch is a `wt` checkout at `~/.local/share/chezmoi-<branch>`, run by its own session with
+  its own Codex pane. The sandbox grants a sibling's writes only to its own session's shell, so
+  another session (the driver in the main checkout) writes there only with its Edit/Write tools
+  and its git commands. Check `git branch --show-current` before each commit, since a session
+  can sit in the wrong checkout.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction.

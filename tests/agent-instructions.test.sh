@@ -252,6 +252,8 @@ if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'The driver may ope
 else _pass "global.md no longer makes a wt checkout optional"; fi
 need_flat global.md 'Never run `wt-rm` or `git worktree remove`: the line'"'"'s final report (the driver'"'"'s, if dropped before hand-off) gives Michael the `wt-rm <branch>` command to run once it is merged or abandoned.' \
   "global.md keeps teardown Michael's and has a final report hand him the wt-rm command, a dropped line's too"
+need_flat global.md '`wt <branch>` makes a sibling checkout `<repo>-<branch>` beside the main one' \
+  "global.md names the wt checkout's location generically, so the dotfiles' is not read as under ~/Code"
 need_flat global.md 'its own Herdr workspace and a Claude Code session in it' \
   "global.md says the wt workspace starts a Claude Code session"
 # A spec written from the main checkout landed on main, not on the line's branch.

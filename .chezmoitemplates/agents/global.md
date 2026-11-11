@@ -18,9 +18,9 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 ## Repositories and worktrees
 
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
-- **`wt` worktrees.** `wt <branch>` makes a sibling checkout `~/Code/<Org>/<repo>-<branch>` with its
-  own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis and
-  storage. Every new branch in `~/Code` or the dotfiles is one, small changes included: never a
+- **`wt` worktrees.** `wt <branch>` makes a sibling checkout `<repo>-<branch>` beside the main one
+  with its own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis
+  and storage. Every new branch in `~/Code` or the dotfiles is one, small changes included: never a
   plain branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt`
   as declared, without asking. The driver runs `wt --no-focus <branch> <local-branch>` (a remote
   start point sets an upstream) before the line's first file and names the checkout in its report;
