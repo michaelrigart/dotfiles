@@ -200,8 +200,12 @@ if [ "${1:-}" = "workspace" ] && [ "${2:-}" = "list" ]; then
   [ -z "${TSLOG:-}" ] || echo "$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.3f", time') list" >> "$TSLOG"
   cat "$WSJSON"
 fi
-# KILLJOB_WS=<id>: the report for that workspace kills its caller, the repository's job.
-if [ "${2:-}" = "report-metadata" ] && [ -n "${KILLJOB_WS:-}" ] && [ "${3:-}" = "$KILLJOB_WS" ]; then kill -9 "$PPID"; fi
+# KILLJOB_WS=<id>: the report for that workspace kills its caller, the repository's job. With
+# KILLJOB_LINGER naming a file, that report then writes its PID there and stays 5 s in the job's group.
+if [ "${2:-}" = "report-metadata" ] && [ -n "${KILLJOB_WS:-}" ] && [ "${3:-}" = "$KILLJOB_WS" ]; then
+  kill -9 "$PPID"
+  [ -z "${KILLJOB_LINGER:-}" ] || { echo "$$" > "$KILLJOB_LINGER"; exec /bin/sleep 5; }
+fi
 exit 0
 H
 
@@ -1065,7 +1069,8 @@ echo "N. each repository is its own job"
 #                      a second `herdr workspace list` is in the call log (a second refresh has
 #                      started), 10 s at most, then 2 s more
 #   hang-<repo>        every list call records its PID in pid-<repo> and sleeps 30 s; when the file
-#                      says ignore-term, it ignores TERM first (the ignore survives the exec)
+#                      says ignore-term, it ignores TERM first, before the PID is written (the
+#                      ignore survives the exec)
 #   api-fail           every api call fails
 # With $TSLOG set, the stubs log `<seconds.millis> list|open|merged` for workspace lists and list calls.
 # Every wait is bounded, so a regression fails the case and never hangs the suite.
@@ -1086,8 +1091,8 @@ done
 state=open; case " $* " in *" --merged "*) state=merged ;; esac
 [ -z "${TSLOG:-}" ] || echo "$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.3f", time') $state" >> "$TSLOG"
 if [ -e "$GLD/hang-$repo" ]; then
-  echo "$$" > "$GLD/pid-$repo"
   [ "$(cat "$GLD/hang-$repo")" != ignore-term ] || trap '' TERM
+  echo "$$" > "$GLD/pid-$repo"
   exec /bin/sleep 30
 fi
 if [ "$state" = open ]; then
@@ -1123,9 +1128,9 @@ waitfor() { # waitfor <file> -> 0 once the file exists, 1 after 5 s
   local i=0
   while [ ! -e "$1" ]; do i=$((i + 1)); [ "$i" -le 50 ] || return 1; sleep 0.1; done
 }
-bg_phase() { # bg_phase <args...> -> BGPID: phase.sh in the background, as run() starts it
+bg_phase() { # bg_phase <args...> -> BGPID: phase.sh in the background, as run() starts it; stderr to $BGERR
   PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" HERDR_PHASE_CACHE_DIR="$T/cache" HERDR_PHASE_TTL=120 \
-    HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" "$@" >/dev/null 2>&1 &
+    HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" "$@" >/dev/null 2>"${BGERR:-/dev/null}" &
   BGPID=$!
 }
 lock_busy() { # lock_busy -> how many lock files in the cache dir are still held
@@ -1319,8 +1324,9 @@ check "$(ls "$T/cache" | grep -Ec '\.(tsv|pipeline)\.')" "0" "no temporary file 
 check "$({ ls "$T/cache/.tmp/test%2Fproj"; ls "$T/cache/.tmp/test%2Fproj2"; } | grep -c .)" "0" "and none is left in a repository's staging directory"
 check "$(grep -c . "$T/cache/test%2Fproj.tsv")" "7" "the replaced table is whole"
 
-# The replacement is a rename of a sibling temporary file onto the target, for both forges (a
-# delete-then-write would change the inode too, and leave a gap a reader could fall into).
+# The replacement is a rename onto the target of a temporary file in the repository's staging
+# directory, for both forges (a delete-then-write would change the inode too, and leave a gap a
+# reader could fall into).
 : > "$MVLOG"; job_reset
 run refresh --force
 check "$(grep -cE "^mv -f $T/cache/\.tmp/test%2Fproj/test%2Fproj\.tsv\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.tsv\$" "$MVLOG")" "1" \
@@ -1333,18 +1339,20 @@ check "$(grep -cE "^mv -f $T/cache/\.tmp/github@test%2Fproj3/github@test%2Fproj3
   "the GitHub table is renamed into place from a temporary file in the repository's staging directory"
 
 # A job sweeps its repository's staging directory (stray temporary files of a refresh killed
-# mid-write) under the lock, and nothing else: no name pattern over the shared cache directory
-# exists, so a sibling key's real files (test/proj.tsv.a's lock, test/proj.tsv.ab's table, and so
-# on) and another repository's staging directory are never touched.
-job_reset; mkdir -p "$T/cache/.tmp/test%2Fproj" "$T/cache/.tmp/other%2Frepo"
+# mid-write, a dotfile among them: a key, and so a temporary file's name, can start with a dot) under
+# the lock, and nothing else: no name pattern over the shared cache directory exists, so a sibling
+# key's real files (test/proj.tsv.a's lock, test/proj.tsv.ab's table, and so on) and a sibling key's
+# staging directory (test/proj.tsv.a's, whose name starts with this key) are never touched.
+job_reset; mkdir -p "$T/cache/.tmp/test%2Fproj" "$T/cache/.tmp/test%2Fproj.tsv.a"
 : > "$T/cache/.tmp/test%2Fproj/test%2Fproj.tsv.ABCDEF"; : > "$T/cache/.tmp/test%2Fproj/test%2Fproj.mr10.pipeline.ABCDEF"
-: > "$T/cache/.tmp/other%2Frepo/other%2Frepo.tsv.ABCDEF"
+: > "$T/cache/.tmp/test%2Fproj/.ABCDEF"
+: > "$T/cache/.tmp/test%2Fproj.tsv.a/test%2Fproj.tsv.a.tsv.ABCDEF"
 : > "$T/cache/test%2Fproj.tsv.a.lock"; : > "$T/cache/test%2Fproj.tsv.ab.tsv"
 : > "$T/cache/test%2Fproj.lookup.a.lock"; : > "$T/cache/test%2Fproj.mr5.pipeline.lookup"
 : > "$T/cache/test%2Fproj.tsv.lookup"; : > "$T/cache/test%2Fproj.mrx.mr5.pipeline.ABCDEF"
 run refresh --force
-check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "a refresh sweeps its repository's staging directory"
-check "$(ls "$T/cache/.tmp/other%2Frepo" | tr '\n' ' ')" "other%2Frepo.tsv.ABCDEF " "and leaves another repository's staging directory alone"
+check "$(ls -A "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "a refresh sweeps its repository's staging directory, a dotfile included"
+check "$(ls -A "$T/cache/.tmp/test%2Fproj.tsv.a" | tr '\n' ' ')" "test%2Fproj.tsv.a.tsv.ABCDEF " "and leaves a sibling key's staging directory alone"
 check "$(ls "$T/cache" | grep -E '^test%2Fproj\.(tsv\.a\.lock|tsv\.ab\.tsv|lookup\.a\.lock|mr5\.pipeline\.lookup|tsv\.lookup|mrx\.mr5\.pipeline\.ABCDEF)$' | wc -l | tr -d ' ')" "6" \
   "and never deletes a sibling key's real files from the shared cache directory"
 
@@ -1357,9 +1365,45 @@ check "$(printf '%s\n' "$OUT" | grep -c 'a refresh job ended abnormally')" "1" "
 check "$(nreports wA)$(nreports wB)" "11" "the other repository's spaces are still reported"
 check "$(lock_busy)" "0" "no lock outlives the killed job"
 
+# Only a job the deadline ended is named as killed at the run deadline. One whose first process died
+# of a signal on its own is named as ended abnormally, even while its group still has a member when
+# the wait ends: here the report that killed it stays 5 s, so end_jobs has that group to end too.
+job_reset; rm -f "$T/linger.pid"
+KILLJOB_WS=w4 KILLJOB_LINGER="$T/linger.pid" run refresh --force
+check "$RC" "0" "a job killed by a signal of its own, its group still alive: the refresh exits 0"
+check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: a refresh job ended abnormally (status 137)$')" "1" \
+  "and the job is named once as ended abnormally (status 137)"
+check "$(printf '%s\n' "$OUT" | grep -c 'killed at the run deadline')" "0" "and not as killed at the run deadline"
+lpid="$(cat "$T/linger.pid" 2>/dev/null)"
+if [ -z "$lpid" ]; then _fail "and its group's lingering process is ended (it never started)"
+elif kill -0 "$lpid" 2>/dev/null; then _fail "and its group's lingering process is ended"; kill -9 "$lpid" 2>/dev/null
+else _pass "and its group's lingering process is ended"; fi
+check "$(lock_busy)" "0" "no lock outlives the job killed by a signal of its own"
+
 # The lock wait is 30 s and the run deadline 40 s unless the suite lowers them.
 check "$(grep -c '^LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"' "$PHASE")" "1" "the lock wait defaults to 30 s"
 check "$(grep -c '^RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE:-40}"' "$PHASE")" "1" "the run deadline defaults to 40 s"
+
+# A run deadline of 0 ends every job at once, and the refresh still exits 0 and names each
+# repository it ended (06a0b8b died here under set -u, silently, its stderr on /dev/null).
+job_reset
+DEADLINE=0 run refresh --force
+check "$RC" "0" "a run deadline of 0: the refresh exits 0"
+check "$(printf '%s\n' "$OUT" | grep -c -E '^phase.sh: test%2Fproj2?: killed at the run deadline$')" "2" \
+  "a run deadline of 0: each repository is named once as killed at the run deadline"
+check "$(lock_busy)" "0" "a run deadline of 0: no lock outlives the run"
+# Any other value that is not a whole number of seconds is refused before a job starts: wait_jobs
+# does arithmetic with it, which would run PATH[$(cmd)] and end the shell silently on 1.5 or 08.
+for _v in 1.5 08 "PATH[\$(touch $T/pwned)]"; do
+  job_reset; rm -f "$T/pwned"
+  DEADLINE="$_v" run refresh --force
+  case "$_v" in PATH*) _l="a run deadline holding a command substitution" ;; *) _l="a run deadline of $_v" ;; esac
+  check "$RC" "2" "$_l is refused (exit 2)"
+  check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: HERDR_PHASE_RUN_DEADLINE is not a whole number of seconds$')" "1" "$_l: and the refusal is on stderr"
+  check "$(grep -c 'report-metadata' "$CALLS")" "0" "$_l: and nothing is reported"
+  [ ! -e "$T/pwned" ] && _pass "$_l: and nothing in it runs" || _fail "$_l: and nothing in it runs"
+done
+rm -f "$T/pwned"
 
 # A file dated in the future (the clock stepped back) is expired, not fresh: a table from the
 # future is looked up again by a default refresh, and a pipeline status from the future does not
@@ -1411,24 +1455,77 @@ printf 'ignore-term' > "$GLD/hang-test__proj"
 t0="$(now_s)"; DEADLINE=2 run refresh --force; t1="$(now_s)"
 hung_check "a TERM-ignoring forge call" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
 
+# The deadline is read on a clock that follows the wall clock ($SECONDS in bash 3.2), so a clock
+# stepped back must not stretch the wait, and the 0.1 s ticks cap it whichever way the clock moves.
+# The suite cannot step the real clock: it sources phase.sh in a subshell, replaces `clock` with a
+# fake and runs wait_jobs on a stand-in job (an 8 s sleep in a process group of its own).
+fake_wait() { # fake_wait <deadline> <stepback|frozen> -> FW_SECS (wall time), FW_ERR (stderr), FW_PID (stand-in)
+  local t0 t1 dl="$1" how="$2"
+  t0="$(now_s)"
+  FW_ERR="$( (
+    set --; . "$PHASE" >/dev/null 2>&1
+    reads=0
+    case "$how" in
+      stepback) clock() { reads=$((reads + 1)); if [ "$reads" -eq 1 ]; then NOW=1000; else NOW=900; fi; } ;;
+      frozen) clock() { NOW=1000; } ;;
+    esac
+    RUN_DEADLINE="$dl"
+    set -m; /bin/sleep 8 >/dev/null 2>&1 & set +m
+    echo "stand-in $!" >&2
+    JOB_PIDS=" $!"; JOB_ROOTS="$!"$'\t'"$T/no-repository"$'\n'
+    exec 8>&2; wait_jobs 2>/dev/null
+  ) 2>&1 )"
+  t1="$(now_s)"
+  FW_SECS="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
+  FW_PID="$(printf '%s\n' "$FW_ERR" | sed -n 's/^stand-in //p')"
+}
+fake_wait_gone() { # fake_wait_gone <label> -> the stand-in job was ended and named
+  check "$(printf '%s\n' "$FW_ERR" | grep -c '^phase.sh: (no forge): killed at the run deadline$')" "1" "$1: the stand-in job is named as killed at the run deadline"
+  if [ -z "$FW_PID" ]; then _fail "$1: the stand-in job is gone (it never started)"
+  elif kill -0 "$FW_PID" 2>/dev/null; then _fail "$1: the stand-in job is gone"; kill -9 "$FW_PID" 2>/dev/null
+  else _pass "$1: the stand-in job is gone"; fi
+}
+# Stepped back 100 s after the first reading: the elapsed time is negative, so the deadline (5 s) has
+# passed at once.
+fake_wait 5 stepback
+check "$(awk -v e="$FW_SECS" 'BEGIN { print (e < 2.5) ? "at once" : "late" }')" "at once" \
+  "a clock stepped back ends the wait at once, as expired (took $FW_SECS s; the deadline is 5 s)"
+fake_wait_gone "a clock stepped back"
+# A clock that stands still never reaches the deadline (1 s): the ticks end the wait after 20 (10 for
+# each second of the deadline, and 10 of margin), so not before 2 s, and well before the stand-in's 8 s.
+fake_wait 1 frozen
+check "$(awk -v e="$FW_SECS" 'BEGIN { print (e >= 1.9 && e < 6) ? "capped" : "not capped" }')" "capped" \
+  "a clock that stands still is ended by the tick cap, after 2 s and well before 8 s (took $FW_SECS s)"
+fake_wait_gone "a clock that stands still"
+
 # TERM to the main shell (launchd's bootout): the jobs sit in groups of their own, out of reach of
 # launchd's group kill, so the main shell ends them itself and exits, well inside launchd's 20 s
-# ExitTimeOut. The deadline is left at its default, so only the trap can have ended them.
-job_reset
-: > "$GLD/hang-test__proj"
-bg_phase refresh --force; mpid=$BGPID
-waitfor "$GLD/pid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
-t0="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
-i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done
-t1="$(now_s)"
-if kill -0 "$mpid" 2>/dev/null; then _fail "the main shell exits within 5 s of TERM"; kill -9 "$mpid" 2>/dev/null
-else _pass "the main shell exits within 5 s of TERM ($(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }') s)"; fi
-wait "$mpid" 2>/dev/null; mrc=$?
-check "$mrc" "143" "and exits with status 143"
-spid="$(cat "$GLD/pid-test__proj" 2>/dev/null || echo 0)"
-if kill -0 "$spid" 2>/dev/null; then _fail "the hung forge call is dead once the main shell is gone"; kill -9 "$spid" 2>/dev/null
-else _pass "the hung forge call is dead once the main shell is gone"; fi
-check "$(lock_busy)" "0" "and its repository's lock is free"
+# ExitTimeOut. The deadline is left at its default, so only the trap can have ended them, and the
+# forge call ignores TERM, so only the KILL after the grace ends it (about 2.3 to 2.7 s). A second
+# signal during the grace (HUP 0.5 s after the TERM) is ignored: the abort still runs to its end.
+abort_case() { # abort_case <label> [<second signal>]
+  local i n=50 mrc spid
+  job_reset; : > "$T/bg.err"
+  printf 'ignore-term' > "$GLD/hang-test__proj"
+  BGERR="$T/bg.err" bg_phase refresh --force; mpid=$BGPID
+  waitfor "$GLD/pid-test__proj" && _pass "$1: the hung forge call started" || _fail "$1: the hung forge call started"
+  t0="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
+  if [ -n "${2:-}" ]; then sleep 0.5; kill -"$2" "$mpid" 2>/dev/null; n=45; fi
+  i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt "$n" ]; do i=$((i + 1)); sleep 0.1; done
+  t1="$(now_s)"
+  if kill -0 "$mpid" 2>/dev/null; then _fail "$1: the main shell exits within 5 s of TERM"; kill -9 "$mpid" 2>/dev/null
+  else _pass "$1: the main shell exits within 5 s of TERM ($(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }') s)"; fi
+  wait "$mpid" 2>/dev/null; mrc=$?
+  check "$mrc" "143" "$1: and exits with status 143"
+  check "$(lock_busy)" "0" "$1: and its repository's lock is free"
+  spid="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
+  if [ -z "$spid" ]; then _fail "$1: the hung forge call is dead once the main shell is gone (it never started)"
+  elif kill -0 "$spid" 2>/dev/null; then _fail "$1: the hung forge call is dead once the main shell is gone"; kill -9 "$spid" 2>/dev/null
+  else _pass "$1: the hung forge call is dead once the main shell is gone"; fi
+  check "$(grep -c -E 'Terminated|Hangup|Killed' "$T/bg.err")" "0" "$1: and no shell notice about an ended job reaches stderr"
+}
+abort_case "TERM to the main shell"
+abort_case "TERM, then HUP during the grace" HUP
 
 # The grace between TERM and KILL has to fit inside launchd's ExitTimeOut (20 s).
 kg="$(sed -n 's/^KILL_GRACE=\([0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p' "$PHASE")"
@@ -1567,8 +1664,8 @@ check "$(gh_calls)" "0" "a GitHub --fresh again at once makes no gh call"
 phase_check wG1 review "$ICON_MR #21" "and the report is unchanged"
 [ -e "$T/cache/github@test%2Fproj3.lookup" ] && _pass "a GitHub lookup writes github@<key>.lookup" || _fail "a GitHub lookup writes github@<key>.lookup"
 
-# The stamp is replaced atomically, never touched in place (Ruling 12): a rename of a sibling
-# temporary file onto it, so its inode changes, and none is left behind.
+# The stamp is replaced atomically, never touched in place (Ruling 12): a rename onto it of a
+# temporary file in the repository's staging directory, so its inode changes, and none is left behind.
 job_reset
 : > "$MVLOG"
 run refresh --force
@@ -1711,7 +1808,8 @@ else
     && _fail "the agent does not ask for low-priority I/O" \
     || _pass "the agent does not ask for low-priority I/O"
   # launchd ends a job's whole process group when its main process exits, unless told to abandon
-  # it. phase.sh ends its own jobs at the run deadline; this is the second line of defence.
+  # it. That covers only the main shell's own group: phase.sh's repository jobs sit in groups of
+  # their own, which it ends itself (at the run deadline, and from its TERM, HUP and INT trap).
   grep -q '<key>AbandonProcessGroup</key>' "$PLIST" \
     && _fail "the agent does not abandon its process group" \
     || _pass "the agent does not abandon its process group"

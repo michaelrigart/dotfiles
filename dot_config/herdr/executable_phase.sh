@@ -49,8 +49,15 @@
 # KILL_GRACE s later to any group that still has a member), which takes its forge call with it and
 # frees its lock. The other repositories are reported as usual, and the exit status stays 0. The
 # jobs sit in process groups of their own, out of reach of launchd's group kill, so the main shell
-# traps TERM, HUP and INT and ends them itself; SIGKILL of the main shell cannot be covered.
+# traps TERM, HUP and INT and ends them itself.
 # Temporary files stage in .tmp/<key> of the cache directory, one directory per repository.
+#
+# Accepted limits:
+#   - SIGKILL of the main shell cannot be trapped, and nothing bounds a job it orphans: forge calls
+#     have no timeout and a job has no deadline of its own. If that job's forge call hangs, the
+#     repository's badges stay frozen until the call ends (every later run skips the repository,
+#     whose lock the call holds). `pkill -f phase.sh` ends the job's shells but not the forge call,
+#     which keeps the lock: `lsof -t <cache dir>/<key>.lock` names every process to end.
 #
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
 # glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
@@ -232,8 +239,8 @@ age_of() { # age_of <file>
 # Replaces a cache file atomically: a temporary file in the repository's own staging directory
 # (.tmp/<key>, on the same filesystem), then a rename onto the target. A refresh killed mid-write
 # leaves the previous file, never half of a new one that would later read as a valid, shorter table.
-# The staging directory is the repository's alone (a key holds %2F, never a /, and never starts a
-# name with a dot), so what is in it is that repository's stray temporary files and nothing else.
+# The staging directory is the repository's alone (a key holds no /), so what is in it is that
+# repository's stray temporary files and nothing else.
 write_cache() { # write_cache <key> <file> <content>
   local stage="$CACHE_DIR/.tmp/$1" tmp
   mkdir -p "$stage" || return 1
@@ -589,8 +596,10 @@ refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>pa
     exec 9>>"$CACHE_DIR/$key.lock" || { echo "phase.sh: skipped $key: cannot open its lock file" >&2; return 0; }
     /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || { echo "phase.sh: skipped $key: its lock is held" >&2; return 0; }
     # Stray temporary files come from a refresh killed mid-write; they live in this repository's
-    # staging directory alone, and the lock keeps this from deleting a live job's file.
-    rm -f "$CACHE_DIR/.tmp/$key/"*
+    # staging directory alone (a key holds no /), whole: a key, and so a temporary file's name, can
+    # start with a dot. The lock keeps this from deleting a live job's file; write_cache makes the
+    # directory again.
+    rm -rf "$CACHE_DIR/.tmp/$key"
     # The lookup mode is decided here, once, with the lock held: a --fresh refresh trusts the cache
     # while a lookup of this repository began less than FRESH_GAP ago, and looks up otherwise.
     case "$run" in
@@ -675,9 +684,12 @@ end_jobs() {
 # TERM, HUP or INT to the main shell (launchd's bootout, a kill, ^C): launchd's group kill cannot
 # reach the jobs, which sit in groups of their own, so the main shell ends them itself, then exits.
 # SIGKILL of the main shell cannot be caught: its jobs run on, and the next run waits for their lock.
+# The signals are ignored from here on, not reset: a second one during the grace would otherwise end
+# the main shell before its KILL, and a TERM still trapped keeps bash's notice of each ended job off
+# stderr.
 abort_run() { # abort_run <exit status>
   local pid
-  trap - TERM HUP INT
+  trap '' TERM HUP INT
   end_jobs
   for pid in $JOB_PIDS; do wait "$pid" 2>/dev/null; done
   exit "$1"
@@ -690,26 +702,41 @@ job_key() { # job_key <pid> -> the cache key of that job's repository, for its s
   if [ -n "$slug" ]; then cache_key "${slug%% *}" "${slug#* }"; else echo "(no forge)"; fi
 }
 
-# Waits for the jobs at most RUN_DEADLINE seconds of wall time (bash 3.2 has no `wait -n` and no
-# timeout on `wait`, so it polls), then ends every job that still has a process (end_jobs). That
-# reaches the forge call too, so no process of a job outlives the run, and the kernel frees the
-# job's lock. A stuck forge call therefore holds up no other repository and not the next timer run.
-# Each job is then reaped on its own: one that was signalled and died of it (status 128 or more) is
-# named as ended at the deadline, one that died abnormally otherwise is named too. A failed lookup
-# is not a failed refresh: the status stays 0. Runs with stderr on /dev/null and writes its own
-# lines to fd 8.
+# The clock the run deadline is read on, in whole seconds; the suite replaces it with a fake one. In
+# bash 3.2 $SECONDS is time(NULL) minus the shell's start, so it follows the wall clock.
+clock() { NOW=$SECONDS; }
+
+# Waits for the jobs at most RUN_DEADLINE seconds (bash 3.2 has no `wait -n` and no timeout on
+# `wait`, so it polls), then ends every job that still has a process (end_jobs). That reaches the
+# forge call too, so no process of a job outlives the run, and the kernel frees the job's lock. A
+# stuck forge call therefore holds up no other repository and not the next timer run.
+# A clock stepped back would stretch the wait, so an elapsed time below zero counts as expired (as
+# age_of treats a future mtime), and the 0.1 s ticks, which no clock step moves, cap the wait at
+# RUN_DEADLINE and a second more whichever way the clock goes (on a steady clock the elapsed time
+# ends it first).
+# Each job is then reaped on its own. One whose first process was still running at the deadline
+# sample and that died of a signal (status 128 or more) is named as killed at the run deadline; any
+# other that ended abnormally is named as such. A failed lookup is not a failed refresh: the status
+# stays 0. Runs with stderr on /dev/null and writes its own lines to fd 8.
 wait_jobs() {
-  local pid st start=$SECONDS
+  local pid st late start elapsed ticks=0 cap=$((RUN_DEADLINE * 10 + 10))
   LEFT=""; TERMED=""
-  while [ $((SECONDS - start)) -lt "$RUN_DEADLINE" ]; do
+  clock; start=$NOW
+  while :; do
+    clock; elapsed=$((NOW - start))
+    [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$RUN_DEADLINE" ] && [ "$ticks" -lt "$cap" ] || break
     live_jobs
     [ -n "$LEFT" ] || break
     sleep 0.1
+    ticks=$((ticks + 1))
   done
+  # The deadline sample: only a job whose first process is still running now is ended by the
+  # deadline. One whose first process died on its own was not, even if its group has a member left.
+  live_jobs; late="$LEFT"
   end_jobs
   for pid in $JOB_PIDS; do
     wait "$pid"; st=$?
-    case " $TERMED " in
+    case " $late " in
       *" $pid "*)
         if [ "$st" -ge 128 ]; then echo "phase.sh: $(job_key "$pid"): killed at the run deadline" >&8; continue; fi ;;
     esac
@@ -719,6 +746,10 @@ wait_jobs() {
 
 cmd_refresh() {
   local run="ttl" only=""
+  # wait_jobs does arithmetic with RUN_DEADLINE, which runs a value such as PATH[$(cmd)] and ends the
+  # shell, its jobs orphaned and its stderr on /dev/null, on one such as 1.5 or 08. So only a whole
+  # number of seconds is taken; 0 ends every job at once.
+  case "$RUN_DEADLINE" in ''|*[!0-9]*|0?*) die "HERDR_PHASE_RUN_DEADLINE is not a whole number of seconds" ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) run="force"; shift ;;
