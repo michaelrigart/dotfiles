@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Tests for the chezmoi_top_git_module_hooks probe and the failed_keys line of
+# Tests for the chezmoi_top_git_module_hooks probe, the sibling probe and the failed_keys line of
 # tests/live-write-boundary.test.sh, without measuring a sandbox.
 #
 # The suite runs against a throwaway HOME in TMPDIR, with a mkdir stub in front of PATH that
-# refuses to create the checkout's .git/modules with a chosen message. Every other key in that
-# run is meaningless (nothing is denied in a throwaway HOME), so only the one key and the
-# failed_keys line are judged. Running it sandboxed is fine and expected; the sandbox is
+# refuses to create the checkout's .git/modules, or a sibling checkout under ~/.local/share, with
+# a chosen message, and logs every mkdir it sees. Every other key in that run is meaningless
+# (nothing is denied in a throwaway HOME), so only the keys named below and the failed_keys line
+# are judged. Running it sandboxed is fine and expected; the sandbox is
 # never turned off.
 #
 #   ./tests/write-boundary-probe.test.sh
@@ -19,7 +20,8 @@ _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/wbprobe.XXXXXX") || exit 2
 T=$(cd "$T" && pwd -P) || exit 2
-trap 'rm -rf "$T"' EXIT
+# W4 makes a sibling read-only; restore it so rm can remove the tree.
+trap 'chmod 755 "$H/.local/share/chezmoi-wt" 2>/dev/null; rm -rf "$T"' EXIT
 # git without the global and system configuration: the fixture must not sign through the agent.
 g() { env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
 H="$T/home"
@@ -32,8 +34,10 @@ g init -q -b main "$cz" \
   || { echo "INCONCLUSIVE: could not build the checkout fixture" >&2; exit 2; }
 cat > "$T/bin/mkdir" <<'STUB'
 #!/bin/sh
+printf '%s\n' "$*" >> "${MKDIR_LOG:-/dev/null}"
 for a in "$@"; do
   case "$a" in
+    */.local/share/chezmoi-*) if [ -n "${STUB_SIBLING_MSG:-}" ]; then printf 'mkdir: %s: %s\n' "$a" "$STUB_SIBLING_MSG" >&2; exit 1; fi ;;
     */chezmoi/.git/modules|*/chezmoi/.git/modules/*) printf 'mkdir: %s: %s\n' "$a" "$STUB_MSG" >&2; exit 1 ;;
   esac
 done
@@ -41,9 +45,11 @@ exec /bin/mkdir "$@"
 STUB
 chmod 755 "$T/bin/mkdir"
 
-# run_suite <stub message> <session start dir>: the suite's output, with the stub refusing as told.
+# run_suite <stub message> <session start dir> [sibling stub message]: the suite's output, with the
+# stub refusing as told; mkdir arguments go to $T/mkdir.log.
 run_suite() {
-  HOME="$H" TMPDIR="$T/tmp" RUN_SH_START_DIR="$2" STUB_MSG="$1" PATH="$T/bin:$PATH" "$SUITE" 2>&1
+  HOME="$H" TMPDIR="$T/tmp" RUN_SH_START_DIR="$2" STUB_MSG="$1" STUB_SIBLING_MSG="${3:-}" \
+    MKDIR_LOG="$T/mkdir.log" PATH="$T/bin:$PATH" "$SUITE" 2>&1
 }
 key=chezmoi_top_git_module_hooks
 # verdict <output> <expected value>
@@ -81,6 +87,56 @@ last=$(printf '%s\n' "$out" | tail -n 1)
 case "$last" in failed_keys=*) _pass "failed_keys is the last line of a failing run" ;; *) _fail "failed_keys is the last line of a failing run" "$last" ;; esac
 n=$(printf '%s\n' "$last" | sed 's/^failed_keys=//' | tr ',' '\n' | grep -c .)
 if [ "$rc" -eq "$n" ]; then _pass "the exit status equals the number of failed keys"; else _fail "the exit status equals the number of failed keys" "exit $rc, keys $n"; fi
+
+# The sibling probe. value <output> <key>: the key's value, or <none>.
+value() { local v; v=$(printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1); printf '%s' "${v:-<none>}"; }
+# has_line <output> <ERE>: whether some line matches.
+has_line() { printf '%s\n' "$1" | grep -Eq "$2"; }
+shared="$H/.local/share"
+sw="$shared/chezmoi-wt"
+
+# W1: a session outside any sibling creates a scratch sibling, probes it and removes it, link included.
+out=$(run_suite "Operation not permitted" "$T/start")
+w=$(value "$out" sibling_write); m=$(value "$out" sibling_mcp_json)
+if [ "$w" = WRITABLE ]; then _pass "W1 a scratch sibling is writable"; else _fail "W1 a scratch sibling is writable" "sibling_write=$w"; fi
+case $m in "<none>"|SKIPPED) _fail "W1 the sibling battery runs" "sibling_mcp_json=$m" ;; *) _pass "W1 the sibling battery runs" ;; esac
+left=$(ls -A "$shared" | grep '^chezmoi-zz-write-boundary-' || true)
+if [ -z "$left" ]; then _pass "W1 the scratch sibling and its link are removed"; else _fail "W1 the scratch sibling and its link are removed" "$left"; fi
+
+# W2: a sibling that cannot be created is inconclusive, never a pass or a failed key.
+out=$(run_suite "Operation not permitted" "$T/start" "Operation not permitted"); rc=$?
+w=$(value "$out" sibling_write); g=$(value "$out" sibling_git_file); m=$(value "$out" sibling_mcp_json)
+if [ "$w" = DENIED ]; then _pass "W2 a refused sibling reads sibling_write=DENIED"; else _fail "W2 a refused sibling reads sibling_write=DENIED" "sibling_write=$w"; fi
+if has_line "$out" '^INCONCLUSIVE: sibling:'; then _pass "W2 and prints an INCONCLUSIVE: sibling: line"; else _fail "W2 and prints an INCONCLUSIVE: sibling: line" "$out"; fi
+if [ "$g" = SKIPPED ]; then _pass "W2 sibling_git_file is SKIPPED"; else _fail "W2 sibling_git_file is SKIPPED" "sibling_git_file=$g"; fi
+if [ "$m" = "<none>" ]; then _pass "W2 the sibling battery does not run"; else _fail "W2 the sibling battery does not run" "sibling_mcp_json=$m"; fi
+line=$(printf '%s\n' "$out" | grep -E '^failed_keys=' | tail -n 1)
+case ",${line#failed_keys=}," in *,sibling_write,*) _fail "W2 sibling_write is not a failed key" "$line" ;; *) _pass "W2 sibling_write is not a failed key" ;; esac
+last=$(printf '%s\n' "$out" | tail -n 1)
+inc=$(printf '%s\n' "$out" | grep -n '^INCONCLUSIVE: sibling:' | head -n 1 | cut -d: -f1)
+fk=$(printf '%s\n' "$out" | grep -n '^failed_keys=' | tail -n 1 | cut -d: -f1)
+case "$last" in failed_keys=*) if [ -n "$inc" ] && [ -n "$fk" ] && [ "$inc" -lt "$fk" ]; then _pass "W2 failed_keys stays last, after the INCONCLUSIVE line"; else _fail "W2 failed_keys stays last, after the INCONCLUSIVE line" "inconclusive line $inc, failed_keys line $fk"; fi ;; *) _fail "W2 failed_keys stays last, after the INCONCLUSIVE line" "$last" ;; esac
+
+# W3: a session in a sibling probes that checkout: its .git file is only opened for append, and no
+# scratch sibling is made.
+mkdir -p "$sw"
+printf 'gitdir: /nowhere\n' > "$sw/.git"
+cp "$sw/.git" "$T/git-file.before"
+: > "$T/mkdir.log"
+out=$(run_suite "Operation not permitted" "$sw")
+w=$(value "$out" sibling_write); g=$(value "$out" sibling_git_file)
+if [ "$w" = WRITABLE ]; then _pass "W3 a session sibling is writable"; else _fail "W3 a session sibling is writable" "sibling_write=$w"; fi
+case $g in "<none>"|SKIPPED|ABSENT) _fail "W3 sibling_git_file is measured on the session's .git file" "sibling_git_file=$g" ;; *) _pass "W3 sibling_git_file is measured on the session's .git file" ;; esac
+if cmp -s "$sw/.git" "$T/git-file.before"; then _pass "W3 the session's .git file is unchanged"; else _fail "W3 the session's .git file is unchanged" "$(cat "$sw/.git" 2>&1)"; fi
+if grep -q 'chezmoi-zz-write-boundary' "$T/mkdir.log"; then _fail "W3 no scratch sibling is made" "$(grep chezmoi-zz-write-boundary "$T/mkdir.log" | head -n 1)"; else _pass "W3 no scratch sibling is made"; fi
+
+# W4: a session sibling that cannot be written is inconclusive too.
+chmod 555 "$sw"
+out=$(run_suite "Operation not permitted" "$sw")
+chmod 755 "$sw"
+w=$(value "$out" sibling_write)
+if [ "$w" = DENIED ]; then _pass "W4 a read-only session sibling reads sibling_write=DENIED"; else _fail "W4 a read-only session sibling reads sibling_write=DENIED" "sibling_write=$w"; fi
+if has_line "$out" '^INCONCLUSIVE: sibling:'; then _pass "W4 and prints an INCONCLUSIVE: sibling: line"; else _fail "W4 and prints an INCONCLUSIVE: sibling: line" "$out"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
