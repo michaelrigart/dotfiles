@@ -21,7 +21,10 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 - Edit here and `chezmoi apply`; never hand-edit a deployed file. `chezmoi apply` is
   Michael's. Agents preview with `command chezmoi cat <target>` and
   `command chezmoi apply --dry-run --verbose`: sandboxed, so running the working tree's
-  scripts is safe. The zsh wrapper reaches agent shells too (Claude Code's shell snapshot
+  scripts is safe. In a `wt` sibling a bare `command chezmoi` renders the main checkout, so
+  preview with `command chezmoi --source <checkout> cat <target>` and
+  `command chezmoi --source <checkout> apply --dry-run --verbose`. The zsh wrapper reaches
+  agent shells too (Claude Code's shell snapshot
   omits every function whose name starts with a single `_`, so each public function in
   `~/.config/zsh/functions` that uses a helper reloads the file when it is missing): off
   main it refuses previews, and on main its clone into `~/.cache` hits a sandbox denial.
@@ -41,9 +44,10 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   public: nothing private goes in them. `global.md` stays within 150 lines,
   `claude-code.md` within 50 and `codex.md` within 30; `tests/agent-instructions.test.sh`
   pins all three, and the renders.
-- This checkout is shared: other sessions switch branches in it, and uncommitted work
-  follows the switch. Re-check `git branch --show-current` right before each commit.
-  Work here on a branch; a harness worktree reviews in this checkout's Codex pane.
+- The main checkout `~/.local/share/chezmoi` stays on `main` and is never switched, because
+  Michael applies from it. Every branch is a `wt` checkout at `~/.local/share/chezmoi-<branch>`,
+  run by its own session with its own Codex pane. Check `git branch --show-current` before
+  each commit.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction.
@@ -143,6 +147,10 @@ wall time):
 | `live-codex-daemon` | unsandboxed + live `herdr` + clean daemon | drives the real Codex daemon and a scratch tab; the canary for Codex protocol changes. Run from inside a herdr pane after `chezmoi apply` |
 | `live-deny-modes` | unsandboxed + model | spends model calls (four modes and a control, each capped by `--max-budget-usd`), and `claude` writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary`, `live-write-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
+
+`live-write-boundary` also probes a dotfiles `wt` sibling. That probe measures only from a
+session started in one (`~/.local/share/chezmoi-<branch>`); from anywhere else it reads
+INCONCLUSIVE.
 
 **Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or `live-write-boundary`
 with the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:
