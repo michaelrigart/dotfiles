@@ -149,7 +149,7 @@ A command in `xreview-rpc`, named by the builder:
   ("hi", "ready") and every later one is an `xreview` packet. The cleanup also selects these, but
   only when their checkout is gone and every user message after the first is an `xreview` packet.
   This is the one exception to the anti-goal on threads `xreview` did not start. The dry run lists
-  them under their own heading.
+  them under their own heading. The Amendment narrows the rule to a one-word first message.
 - It is safe to re-run by hand, and it clears `review-thread` records as §2 does. Nothing triggers
   it automatically.
 - A harness worktree's last review thread still stays behind after this change, because nothing
@@ -238,6 +238,15 @@ select it, which is the safe direction. §3 now lists such threads and never sel
   - Not selected: 1 pinned thread, and 13 threads whose origin differs from their recorded cwd.
   - The 13 are harness-worktree reviews whose later turns ran in the main checkout. §3's re-runnable cleanup therefore never archives them, which narrows its claim to catch a harness worktree's last thread.
   - 34 more old pane sessions mix in hand-relayed `<from-claude-code>` messages. They are not `xreview` packets, so the cleanup does not select them.
+
+**Old pane sessions narrowed (driver ruling, 2026-11-12, overnight; Codex pre-merge round 1).**
+- §3 describes the old pane sessions' first message as a greeting. Its selection sentence read more broadly.
+- An old pane session is now selected only when all three hold:
+  - its first user message is a single word, compared case-insensitively with punctuation stripped;
+  - every later message is an `xreview` packet;
+  - its checkout is gone.
+- A thread that met the broader reading but not this one is listed under "Not selected: old pane, first message is not a greeting", and is never selected.
+- In the first dry run, 28 of the 33 old pane sessions start with "hi" or "ready". The other 5 start with a Claude Code pane-setup message. Archiving those 5 from the app's own UI also clears them from the app's list, which the daemon's archive cannot do.
 
 ## Left to the builder
 

@@ -328,3 +328,8 @@ Made during execution (2026-11-11):
 14. **The cleanup lists, under "differs" and never selects, a review thread whose recorded cwd exists but whose origin is gone.** This is the case the amendment was written for, and it was otherwise invisible.
 15. **An archive is confirmed through every cwd the thread may be listed under,** because `thread/list`'s `cwd` filter matches the original cwd: the recorded cwd, plus the `started` paths, the listed cwd or the rollout's origin. `xreview-rpc release` keeps its single-cwd calls (spec §2: release keeps today's behaviour).
 16. **Before each archive, the cleanup re-checks** that the recorded cwd is still gone, and keeps a thread that is running a turn.
+
+From the Codex pre-merge review, round 1:
+
+17. **Fresh checks just before each archive.** The cleanup archives on a fresh `thread/read`. It keeps a thread whose recorded cwd has moved, is no longer gone, or that is running a turn. `archive-checkout` re-checks that `--dir` is still gone before each archive. When it is not, it archives nothing further and keeps the remaining records, which exits 1 with the retry line.
+18. **Old pane sessions need a one-word greeting** (driver ruling, 2026-11-12, overnight, narrowing §3 to its own description). The first message must be a single word, compared case-insensitively with punctuation stripped. The others are listed under "Not selected: old pane, first message is not a greeting".
