@@ -23,7 +23,7 @@ tests' fake daemon cannot listen on one.
   turn-start      --thread ID --input FILE --schema FILE [--known FILE] [--cwd DIR]   prints the turn id
   turn-wait       --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
                   [--report FILE]    on exit 0 or 4, writes {"turn", "compacted": bool|null}
-  thread-archive  --thread ID
+  thread-archive  --thread ID                               a refused archive is still 0 when the archived listing shows the thread
   thread-unarchive --thread ID
   thread-fork     --thread ID [--last-turn ID] [--cwd DIR]   prints the new thread's id
   thread-turns    --thread ID    {"turns": [{"id", "status", "compacted"}], "thread_compactions"}
@@ -32,19 +32,26 @@ tests' fake daemon cannot listen on one.
   release         --dir DIR                                  unload every thread under DIR
                   (archive, then restore); prints "released <id>" per thread.
                   Spec: docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md
+  archive-checkout --dir DIR                                 archives for good every thread xreview started under
+                  the removed checkout DIR (its "started" lists); prints "archived <id>" per thread.
+                  Spec: docs/superpowers/specs/2026-11-11-archive-review-threads-design.md
 
 Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
 4 answer does not match the schema (raw text on stdout), 5 daemon unreachable,
 6 turn/start sent but not answered - the turn may be running, so never re-dispatch.
 release: 5 only when no restore is owed under DIR; a lost connection is 1.
+archive-checkout: 0 done or nothing to do, 1 any failure, 2 DIR still exists, 5 the daemon is
+unreachable and there are threads to archive; every exit but 0 and 2 ends stderr with a retry line.
 """
 import argparse
 import base64
 import fcntl
+import glob
 import json
 import os
 import re
 import select
+import shlex
 import socket
 import struct
 import subprocess
@@ -653,6 +660,13 @@ def cmd_hooks_status(c, a):
 def cmd_thread_archive(c, a):
     r = c.call("thread/archive", {"threadId": a.thread})
     if "error" in r:
+        # An archive that already landed (a retry, or one made elsewhere) is refused, but the
+        # archived listing shows the thread: that is done.
+        t = c.call("thread/read", {"threadId": a.thread, "includeTurns": False})
+        th = None if "error" in t else (t.get("result") or {}).get("thread")
+        cwd = th.get("cwd") if isinstance(th, dict) else None
+        if isinstance(cwd, str) and cwd and archived(c, a.thread, cwd) is True:
+            return 0
         err("thread/archive refused: " + json.dumps(r["error"]))
         return 1
     return 0
@@ -826,7 +840,8 @@ def take_lock(sd, deadline):
     stale. Raises OSError when the state directory or the lock file cannot be made."""
     os.makedirs(sd, exist_ok=True)
     fd = os.open(os.path.join(sd, "release.lock"), os.O_RDWR | os.O_CREAT, 0o600)
-    busy = lambda: err("waiting for another release to finish")
+    def busy():
+        err("waiting for another release to finish")
     return fd if flock_until(fd, deadline, busy) else None
 
 
@@ -1150,6 +1165,167 @@ def cmd_release(a):
         pass
     return 1
 
+# --- archive-checkout (spec: docs/superpowers/specs/2026-11-11-archive-review-threads-design.md, section 2)
+
+def gone(path):
+    """True when path does not exist, False when it does (a dangling symlink still does), None
+    when that cannot be told, such as a parent directory that denies the lookup."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return None
+    return False
+
+
+def started_drop(path, ids):
+    """Rewrite the started list at path without the entries for ids, under its lock, and remove
+    the file when nothing is left. Raises TimeoutError when the lock stays busy, OSError for
+    anything else."""
+    fd = started_lock(path, time.monotonic() + env_secs("XREVIEW_STARTED_LOCK_WAIT", 10))
+    if fd is None:
+        raise TimeoutError(f"{path}.lock is held by another process")
+    try:
+        keep = [(t, p) for t, p in read_started(path) if t not in ids]
+        if not keep:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            return
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for t, p in keep:
+                fh.write(json.dumps({"id": t, "path": p}) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        os.close(fd)
+
+
+def clear_review_thread(sd, tid):
+    """Remove sd/review-thread when it names tid; True when it did. Left alone when it names
+    another thread, which is a different checkout's or a later review's."""
+    path = os.path.join(sd, "review-thread")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            named = fh.read().strip()
+        if named != tid:
+            return False
+        os.remove(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def archive_for_good(c, tid, cwd):
+    """None once the archived listing shows tid, else why not. The listing decides, whatever
+    thread/archive answered (C9): an archive refused because it already landed is done, and one
+    that answered is not done until the listing says so."""
+    r = c.call("thread/archive", {"threadId": tid})
+    if archived(c, tid, cwd) is True:
+        return None
+    if "error" in r:
+        e = r["error"]
+        return f"archive failed: {e.get('message', e) if isinstance(e, dict) else e}"
+    return "archive not confirmed"
+
+
+def archive_candidates(root, d):
+    """[(state dir, id, path)] for every started entry under d, state directories in name order."""
+    out = []
+    for f in sorted(glob.glob(os.path.join(glob.escape(root), "*", "started"))):
+        sd = os.path.dirname(f)
+        out += [(sd, tid, p) for tid, p in read_started(f) if under(p, d)]
+    return out
+
+
+def archive_thread(c, d, tid, sds):
+    """Archive tid for good if the daemon records it under d too: 0 done or kept, 1 failed.
+    sds: the state directories whose started list named it under d."""
+    r = c.call("thread/read", {"threadId": tid, "includeTurns": False})
+    th = None if "error" in r else (r.get("result") or {}).get("thread")
+    cwd = th.get("cwd") if isinstance(th, dict) else None
+    if not isinstance(cwd, str) or not cwd:
+        err(f"{tid}: cannot read it from the daemon")
+        return 1
+    if not under(cwd, d):
+        err(f"kept {tid}: the daemon records it in {cwd}, outside {d}")
+        return 0
+    status = th.get("status")
+    if isinstance(status, dict) and status.get("type") == "active":
+        err(f"{tid}: running a turn")
+        return 1
+    why = archive_for_good(c, tid, cwd)
+    if why:
+        err(f"{tid}: {why}")
+        return 1
+    print(f"archived {tid}", flush=True)
+    rc = 0
+    for sd in sds:
+        try:
+            started_drop(os.path.join(sd, "started"), {tid})
+            clear_review_thread(sd, tid)
+        except (OSError, TimeoutError) as e:
+            err(f"{tid}: archived, but its record in {sd} could not be cleaned up: {e}")
+            rc = 1
+    return rc
+
+
+def archive_checkout(a):
+    d = a.dir
+    missing = gone(d)
+    if missing is None:
+        why = "unknown error"
+        try:
+            os.lstat(d)
+        except OSError as e:
+            why = e.strerror or str(e)
+        err(f"cannot tell whether {d} exists ({why}); nothing archived")
+        return 1
+    if not missing:
+        err(f"{d} still exists; nothing archived")
+        return 2
+    try:
+        cands = archive_candidates(xreview_state_root(), d)
+    except OSError as e:
+        err(f"cannot read the started lists: {e}")
+        return 1
+    if not cands:
+        return 0
+    sds = {}
+    for sd, tid, _ in cands:
+        sds.setdefault(tid, [])
+        if sd not in sds[tid]:
+            sds[tid].append(sd)
+    try:
+        c = Client()
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon unreachable: {e}")
+        for tid in sds:
+            err(f"{tid}: not archived: the Codex daemon is unreachable")
+        return 5
+    rc, left = 0, list(sds)
+    try:
+        for tid in sds:
+            rc |= archive_thread(c, d, tid, sds[tid])
+            left.remove(tid)
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon connection lost: {e}")
+        for tid in left:
+            err(f"{tid}: not archived: the connection to the Codex daemon was lost")
+        return 1
+    return rc
+
+
+def cmd_archive_checkout(a):
+    rc = archive_checkout(a)
+    if rc not in (0, 2):
+        err(f"retry: xreview-rpc archive-checkout --dir {shlex.quote(a.dir)}")
+    return rc
+
 
 class ListUnreadable(Exception):
     """thread/turns/list errored on every attempt within the budget - distinct from a
@@ -1370,12 +1546,15 @@ def main(argv=None):
     p.add_argument("--schema")
     p.add_argument("--report")
     sub.add_parser("release").add_argument("--dir", required=True)
+    sub.add_parser("archive-checkout").add_argument("--dir", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "release":
         if not os.path.isdir(a.dir):
             err(f"not a directory: {a.dir}")
             return 2
         return cmd_release(a)
+    if a.cmd == "archive-checkout":
+        return cmd_archive_checkout(a)
     if a.cmd == "turn-wait":
         return cmd_turn_wait(a)
     if a.cmd == "thread-resolve":

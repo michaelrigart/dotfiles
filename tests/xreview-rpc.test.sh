@@ -27,7 +27,8 @@ cat > "$T/fake.py" <<'PY'
 # behave differently. A run maps a method to its response and to notifications sent after
 # that response; "exit_after" drops the connection after that many messages sent,
 # "drop_on" vanishes on receiving a method, and "silent" never answers a method. In a
-# "responses" list, the string "__silent__" leaves that one call unanswered.
+# "responses" list, the string "__silent__" leaves that one call unanswered. "by_thread" maps
+# a method to {threadId: response-or-list} and is consulted before "responses".
 import json, os, sys
 scen = json.load(open(os.environ["FAKE_SCENARIO"]))
 runs = scen.get("runs") or [scen]
@@ -60,8 +61,15 @@ for line in sys.stdin:
         # An unscripted mcpServerStatus/list answers "no servers"; the barrier refuses any other shape.
         dflt = {"result": {"data": [], "nextCursor": None}} if meth == "mcpServerStatus/list" else {"result": {}}
         resp = run.get("responses", {}).get(meth, dflt)
+        key = meth
+        # "by_thread": {method: {threadId: response-or-list}} is consulted before "responses",
+        # keyed on params.threadId.
+        tid = (m.get("params") or {}).get("threadId")
+        bt = run.get("by_thread", {}).get(meth) or {}
+        if isinstance(tid, str) and tid in bt:
+            resp, key = bt[tid], (meth, tid)
         if isinstance(resp, list):   # a different answer on each successive call
-            i = calls.get(meth, 0); calls[meth] = i + 1
+            i = calls.get(key, 0); calls[key] = i + 1
             resp = resp[min(i, len(resp) - 1)]
         if resp != "__silent__":
             out(dict(resp, id=m["id"]))
@@ -188,10 +196,13 @@ scenario '{"responses":{"thread/start":{"result":{"thread":{"id":"../x"}}}}}'
 out="$(rpc thread-start --cwd "$T/st/link" --started "$F" 2>"$T/st/err")"; rc=$?
 is "ST7 an id that is not a plain name is printed, not recorded" "$out/$rc/$([ -e "$F" ] && echo exists || echo none)" "../x/0/none"
 is "ST7 and says what was not recorded" "$(grep -c 'could not record ../x' "$T/st/err")" 1
-rm -f "$F" "$F.lock" "$T/st/held" "$T/st/busy"; scenario "$NEW1"; : > "$T/st/out8"
+rm -f "$F" "$F.lock" "$T/st/held" "$T/st/busy" "$T/st/go"; scenario "$NEW1"; : > "$T/st/out8"
+# The holder lets go only when the test says so (bounded), after it has seen the wait begin.
 /usr/bin/python3 -c '
-import fcntl, sys, time
-fd = open(sys.argv[1], "w"); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True); time.sleep(1.5)' "$F.lock" > "$T/st/held" &
+import fcntl, os, sys, time
+fd = open(sys.argv[1], "w"); fcntl.flock(fd, fcntl.LOCK_EX); print("held", flush=True)
+end = time.monotonic() + 15
+while not os.path.exists(sys.argv[2]) and time.monotonic() < end: time.sleep(0.02)' "$F.lock" "$T/st/go" > "$T/st/held" &
 HOLD=$!
 for _ in $(seq 100); do [ -s "$T/st/held" ] && break; sleep 0.05; done
 [ -s "$T/st/held" ] || _fail "ST8 the lock holder started" "never printed held"
@@ -201,6 +212,7 @@ START=$!
 for _ in $(seq 100); do [ -e "$T/st/busy" ] && break; sleep 0.05; done
 [ -e "$T/st/busy" ] || _fail "ST8 thread-start reached the lock wait" "no busy mark"
 is "ST8 the id is not printed while the list is still being written" "$(cat "$T/st/out8")" ""
+: > "$T/st/go"
 wait "$HOLD"; wait "$START"
 is "ST8 the id is printed and recorded once the lock is free" "$(cat "$T/st/out8")/$(jq -r .id "$F")" "th-new-1/th-new-1"
 unset XDG_STATE_HOME
@@ -842,6 +854,22 @@ echo "K. thread-archive"
 scenario '{}'
 rpc thread-archive --thread th; is "it exits 0" "$?" 0
 is "it archives that thread" "$(params thread/archive | jq -r .threadId)" th
+
+echo "K2. thread-archive accepts a thread the daemon already archived"
+# A refused archive is still success when the thread is already in the archived listing: the
+# retry of an archive whose first attempt landed, or a thread archived elsewhere.
+K2ERR='{"error":{"code":-1,"message":"nope"}}'
+k2() { # k2 <thread/list data>
+  scenario "$(jq -nc --argjson e "$K2ERR" --argjson d "$1" \
+    '{responses:{"thread/archive":$e,"thread/read":{result:{thread:{id:"th",cwd:"/x/repo",status:{type:"notLoaded"}}}},"thread/list":{result:{data:$d}}}}')"
+}
+k2 '[{"id":"th"}]'
+rpc thread-archive --thread th 2>/dev/null; rc=$?
+is "K2 a refused archive of a thread the archived listing shows exits 0" "$rc" 0
+is "K2 the listing is asked for the thread's own cwd" "$(params thread/list | jq -c '[.archived, .cwd]')" '[true,["/x/repo"]]'
+k2 '[]'
+rpc thread-archive --thread th 2>/dev/null; rc=$?
+is "K2 a refused archive of a thread the listing does not show exits 1" "$rc" 1
 
 echo "TT. thread-turns"
 # A listed turn as itemsView "full" shows it: ti <id> <items-json>.
@@ -1518,6 +1546,163 @@ is "R18 a deadline already passed when the lock is taken exits 1 and asks nothin
 scenario '{"silent":["initialize"]}'
 XREVIEW_RPC_RELEASE_DEADLINE=0.5 rpc release --dir "$W/repo" 2>/dev/null; rc=$?
 is "R18 a connection that runs out of deadline exits 1, not 5" "$rc" 1
+echo "AC. archive-checkout --dir"
+export XDG_STATE_HOME="$T/ac"
+ACR="$T/ac/xreview"
+G="$W/gone"
+ERRNO='{"error":{"code":-1,"message":"nope"}}'
+ac_clean() { chmod -R u+rwx "$W/locked" 2>/dev/null; rm -rf "$ACR" "$G" "$W/gone dir" "$W/r" "$W/locked"; }
+ac_started() { mkdir -p "$ACR/$1"; jq -nc --arg i "$2" --arg p "$3" '{id:$i,path:$p}' >> "$ACR/$1/started"; }   # <state dir> <id> <path>
+ac_review() { printf '%s\n' "$2" > "$ACR/$1/review-thread"; }
+ac_pin() { printf '%s\n' "$2" > "$ACR/$1/pin"; }
+ac_ids() { jq -r .id "$ACR/$1/started" 2>/dev/null | paste -sd, -; }
+ac_scn() { # ac_scn <{id: thread/read answer}> <responses object>
+  scenario "$(jq -nc --argjson r "$1" --argjson x "$2" '{by_thread:{"thread/read":$r},responses:$x}')"
+}
+ac_sent() { jq -r --arg m "$1" 'select(.method == $m) | .params.threadId' "$FAKE_LOG" | paste -sd, -; }
+LIST_AX='{"thread/list":{"result":{"data":[{"id":"a"},{"id":"x"}]}}}'
+LIST_NONE='{"thread/list":{"result":{"data":[]}}}'
+last_line() { tail -n 1 "$1"; }
+RETRY="xreview-rpc: retry: xreview-rpc archive-checkout --dir $G"
+
+ac_clean
+ac_started g a "$G"; ac_review g a
+ac_started n x "$G/.claude/worktrees/x"; ac_pin n a
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" --argjson x "$(th x "$G/.claude/worktrees/x" idle)" '{a:$a,x:$x}')" "$LIST_AX"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC1 both threads are archived, in state-directory order, exit 0" "$rc/$out" "0/archived a"$'\n'"archived x"
+is "AC1 their started lists are gone" "$([ -e "$ACR/g/started" ] || [ -e "$ACR/n/started" ] && echo left || echo gone)" gone
+is "AC1 the review-thread naming a is cleared" "$([ -e "$ACR/g/review-thread" ] && echo left || echo gone)" gone
+is "AC1 a pin naming it is never touched" "$(cat "$ACR/n/pin")" a
+is "AC1 each thread was archived and then confirmed" "$(ac_sent thread/archive)" "a,x"
+is "AC1 and said nothing on stderr" "$(cat "$T/err")" ""
+
+ac_clean
+ac_started g a "$G"
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" --argjson z "$(th z "$G" idle)" '{a:$a,z:$z}')" "$LIST_AX"
+rpc archive-checkout --dir "$G" >/dev/null 2>&1
+is "AC2 a thread in no started list is never read or archived" "$(ac_sent thread/read)/$(ac_sent thread/archive)" "a/a"
+
+ac_clean
+mkdir -p "$W/r/a/b"
+ac_started r_a_b p "$W/r/a_b"; ac_started r_a_b q "$W/r/a/b"; ac_review r_a_b q
+ac_scn "$(jq -nc --argjson p "$(th p "$W/r/a_b" idle)" --argjson q "$(th q "$W/r/a/b" idle)" '{p:$p,q:$q}')" \
+  '{"thread/list":{"result":{"data":[{"id":"p"},{"id":"q"}]}}}'
+out="$(rpc archive-checkout --dir "$W/r/a_b" 2>/dev/null)"; rc=$?
+is "AC3 of two checkouts sharing a state directory only the removed one's thread is archived" "$rc/$out/$(ac_sent thread/archive)" "0/archived p/p"
+is "AC3 the other checkout's thread is never read" "$(ac_sent thread/read)" p
+is "AC3 its review-thread and started entry stay" "$(cat "$ACR/r_a_b/review-thread")/$(ac_ids r_a_b)" "q/q"
+
+ac_clean
+ac_started g a "$G"
+ac_scn "$(jq -nc --argjson a "$(th a "$W/elsewhere" idle)" '{a:$a}')" "$LIST_AX"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC4 a thread whose recorded cwd is outside the directory is kept: exit 0, nothing archived" "$rc/$out/$(ac_sent thread/archive)" "0//"
+is "AC4 and says so" "$(cat "$T/err")" "xreview-rpc: kept a: the daemon records it in $W/elsewhere, outside $G"
+is "AC4 its started entry stays" "$(ac_ids g)" a
+
+ac_clean
+mkdir -p "$G"; ac_started g a "$G"
+scenario '{}'
+rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC5 a directory that still exists is exit 2, nothing archived" "$rc/$(cat "$T/out")/$(grep -c 'still exists; nothing archived' "$T/err")/$([ -s "$FAKE_LOG" ] && echo asked || echo silent)" "2//1/silent"
+is "AC5 and no retry line, which could not help" "$(grep -c 'retry:' "$T/err")" 0
+
+ac_clean
+if [ "$(id -u)" = 0 ]; then
+  echo "  skip: AC5b (root ignores a mode 000 directory)"
+else
+  mkdir -p "$W/locked"; ac_started g a "$W/locked/gone"; chmod 000 "$W/locked"
+  scenario '{}'
+  rpc archive-checkout --dir "$W/locked/gone" >"$T/out" 2>"$T/err"; rc=$?
+  chmod 755 "$W/locked"
+  is "AC5b a directory that cannot be tested is exit 1, nothing archived" "$rc/$(grep -c 'cannot tell whether' "$T/err")/$([ -s "$FAKE_LOG" ] && echo asked || echo silent)" "1/1/silent"
+  is "AC5b and the retry line comes last" "$(last_line "$T/err")" "xreview-rpc: retry: xreview-rpc archive-checkout --dir $W/locked/gone"
+fi
+
+ac_clean
+scenario '{}'
+XREVIEW_RPC_STDIO=false rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC6 nothing to archive needs no daemon: exit 0 and no output" "$rc/$(cat "$T/out")/$(cat "$T/err")" "0//"
+ac_started g a "$W/elsewhere"
+XREVIEW_RPC_STDIO=false rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC6 a started entry outside the directory is not a candidate" "$rc/$(cat "$T/out")/$(cat "$T/err")" "0//"
+
+ac_clean
+ac_started g a "$G"; ac_started g x "$G/sub"
+XREVIEW_RPC_STDIO=false rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC7 candidates and no daemon: exit 5, nothing on stdout" "$rc/$(cat "$T/out")" "5/"
+is "AC7 each candidate is named, then the retry line comes last" "$(tail -n 3 "$T/err")" \
+   "xreview-rpc: a: not archived: the Codex daemon is unreachable"$'\n'"xreview-rpc: x: not archived: the Codex daemon is unreachable"$'\n'"$RETRY"
+is "AC7 the entries stay" "$(ac_ids g)" "a,x"
+ac_clean
+ac_started g a "$W/gone dir"
+XREVIEW_RPC_STDIO=false rpc archive-checkout --dir "$W/gone dir" >/dev/null 2>"$T/err"
+is "AC7 the retry line quotes a directory with a space" "$(last_line "$T/err")" "xreview-rpc: retry: xreview-rpc archive-checkout --dir '$W/gone dir'"
+
+ac_clean
+ac_started g a "$G"; ac_review g a
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$(jq -nc --argjson e "$ERRNO" '{"thread/archive":$e,"thread/list":{result:{data:[]}}}')"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC8 a refused archive the listing does not show is exit 1, nothing on stdout" "$rc/$out" "1/"
+is "AC8 stderr names the thread and why, then the retry line" "$(tail -n 2 "$T/err")" "xreview-rpc: a: archive failed: nope"$'\n'"$RETRY"
+is "AC8 the entry and review-thread stay" "$(ac_ids g)/$(cat "$ACR/g/review-thread")" "a/a"
+
+ac_clean
+ac_started g a "$G"; ac_review g a
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$(jq -nc --argjson e "$ERRNO" '{"thread/archive":$e,"thread/list":{result:{data:[{id:"a"}]}}}')"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC9 a refused archive the listing shows is done: printed, exit 0" "$rc/$out" "0/archived a"
+is "AC9 its entry and review-thread are dropped" "$([ -e "$ACR/g/started" ] || [ -e "$ACR/g/review-thread" ] && echo left || echo gone)" gone
+
+ac_clean
+ac_started g a "$W/gone"
+ln -sfn "$W" "$T/ac/wlink"
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$LIST_AX"
+out="$(rpc archive-checkout --dir "$T/ac/wlink/gone" 2>/dev/null)"; rc=$?
+is "AC10 a directory given through a symlink matches the real paths recorded" "$rc/$out" "0/archived a"
+
+ac_clean
+ac_started g a "$G"
+ac_scn "$(jq -nc --argjson a "$(th a "$G" active)" '{a:$a}')" "$LIST_AX"
+rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC11 a thread running a turn is exit 1, never archived" "$rc/$(cat "$T/out")/$(ac_sent thread/archive)" "1//"
+is "AC11 stderr says so, then the retry line" "$(tail -n 2 "$T/err")" "xreview-rpc: a: running a turn"$'\n'"$RETRY"
+is "AC11 the entry stays" "$(ac_ids g)" a
+
+ac_clean
+ac_started g a "$G"; ac_review g a
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$LIST_NONE"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC12 an archive the listing does not confirm is exit 1, nothing on stdout" "$rc/$out" "1/"
+is "AC12 stderr says so, then the retry line" "$(tail -n 2 "$T/err")" "xreview-rpc: a: archive not confirmed"$'\n'"$RETRY"
+is "AC12 the entry and review-thread stay" "$(ac_ids g)/$(cat "$ACR/g/review-thread")" "a/a"
+is "AC12 the listing was asked for after the archive" "$(jq -r 'select(.id != null and .method != "initialize" and .method != "thread/read") | .method' "$FAKE_LOG" | paste -sd, -)" "thread/archive,thread/list"
+
+ac_clean
+ac_started g a "$G"; ac_review g a
+ac_scn "$(jq -nc --argjson a "$(th a "$G" idle)" '{a:$a}')" "$(jq -nc --argjson e "$ERRNO" '{"thread/list":$e}')"
+out="$(rpc archive-checkout --dir "$G" 2>"$T/err")"; rc=$?
+is "AC13 a listing that errors is not a confirmation either" "$rc/$out/$(tail -n 2 "$T/err" | head -n 1)/$(ac_ids g)" "1//xreview-rpc: a: archive not confirmed/a"
+
+ac_clean
+ac_started g a "$G"; ac_started g x "$G/sub"; ac_review g x
+ac_scn "$(jq -nc --argjson a "$(th a "$G" active)" --argjson x "$(th x "$G/sub" idle)" '{a:$a,x:$x}')" "$LIST_AX"
+out="$(rpc archive-checkout --dir "$G" 2>/dev/null)"; rc=$?
+is "AC14 one thread's failure does not stop the others, and the run fails" "$rc/$out" "1/archived x"
+is "AC14 only the failed one stays listed" "$(ac_ids g)" a
+is "AC14 the archived one's review-thread is cleared" "$([ -e "$ACR/g/review-thread" ] && echo left || echo gone)" gone
+
+ac_clean
+ac_started g a "$G"
+scenario "$(jq -nc --argjson a "$(th a "$G" idle)" '{by_thread:{"thread/read":{a:$a}},drop_on:["thread/archive"]}')"
+rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
+is "AC15 a connection lost mid-run is exit 1, with the retry line last" "$rc/$(cat "$T/out")/$(last_line "$T/err")" "1//$RETRY"
+is "AC15 and the entry stays" "$(ac_ids g)" a
+
+ac_clean
+unset XDG_STATE_HOME
+
 echo "P. a hostile PATH is never consulted (xreview-rpc runs outside the sandbox)"
 # The stdio transport's command runs through a shell on the script's own PATH, so a hostile
 # python3 ahead of the caller's PATH would run if the script did not pin it.
