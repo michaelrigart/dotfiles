@@ -18,7 +18,7 @@
 
 - `git branch -d` stays first; the merge-tree test stays last and unchanged; the no-net-change guard stays before all three tests, unchanged.
 - Every failure keeps the branch, for that test and that base: a failed command, an empty id list, output that is not lines of two hex object ids, a conflict, a git without `--merge-base` (before 2.40), any other tree.
-- Patch ids come from plumbing only, exactly: `git rev-list --no-merges <range> | git diff-tree --stdin -p --full-index --no-renames | git patch-id --verbatim`, and for a whole change `git diff-tree -p --full-index --no-renames <from> <to> | git patch-id --verbatim`. Never `git cherry`, `git diff` or `git log -p`.
+- Patch ids come from plumbing only, exactly (amended 2026-11-11: with `--ignore-submodules=none`): `git rev-list --no-merges <range> | git diff-tree --stdin -p --full-index --no-renames --ignore-submodules=none | git patch-id --verbatim`, and for a whole change `git diff-tree -p --full-index --no-renames --ignore-submodules=none <from> <to> | git patch-id --verbatim`. Never `git cherry`, `git diff` or `git log -p`.
 - A patch-id match only nominates. It counts once `git merge-tree --write-tree --merge-base=<F> <X^> <T>` prints `X^{tree}`.
 - No decision uses commit metadata (author, date, message, PR number). The test is all or nothing.
 - No fetching. Bases are today's, in today's order: the main checkout's `symbolic-ref HEAD`, then `refs/remotes/origin/HEAD`; a base equal to the branch is skipped.
@@ -37,7 +37,10 @@ Conditions the spec implies but its cases 1–8 do not exercise:
 3. **The replay command fails after printing a tree** (a git that exits non-zero). The exit status decides, not the output; the branch is kept. Test `rb11`.
 4. **Repository configuration that changes porcelain diffs** (`diff.noprefix`, `color.diff=always`). The ids must not change. Case `rb1` sets both in its fixture.
 
-No fifth one found: several merge-bases, a root commit on the base side and a pre-2.40 git all end in a failed command or an unmatched id, which Global Constraints already require to keep the branch.
+5. **A commit hidden by `submodule.<name>.ignore`** (final review, 2026-11-11). Plumbing diff honours the setting, so a commit that only bumps such a gitlink has no patch id and would count as empty. It must count. Test `rb14`.
+6. **A tag with the branch's name** (final review, 2026-11-11). Git resolves `refs/tags/<name>` before `refs/heads/<name>`, while `git branch -D` deletes the branch, so the branch is what is judged. Test `rb15`.
+
+Several merge-bases, a root commit on the base side and a pre-2.40 git all end in a failed command or an unmatched id, which Global Constraints already require to keep the branch.
 
 ---
 
@@ -119,6 +122,8 @@ rb_kept() {   # rb_kept <slug> <label> — after `run "$REPO" wt-rm <slug>`
 | `rb11` (focus 3) | The `rb1` fixture with one branch commit (the `log.txt` one), no config. Run `wt-rm` as `PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='merge-tree --write-tree' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" wt-rm rb11` (no `WT_FAIL_SKIP`: the real git prints its tree, then the stub exits 128). Assert the fixture: line 1 of `$FLOG` contains `--merge-base=`. | `rb_kept` |
 | `rb12` (task review) | Seed `log.txt` = `l1`–`l5`. Branch: one commit turns `l3` into `A`, a second adds `feature.txt`. Base: one commit changes `l1` to `L1` (context drift, so no patch id matches), then one commit applies `l3` to `A` and adds `feature.txt`. Pins the merge-tree fallback (spec, Order 3). | `rb_gone rb12 merged main` |
 | `rb13` (task review) | The `rb11` fixture. Run `wt-rm` as `PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='rev-list --no-merges' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" wt-rm rb13`. Assert the fixture: line 1 of `$FLOG` contains `rev-list --no-merges`. Pins that a patch-id pipeline whose first command fails after printing keeps the branch. | `rb_kept` |
+| `rb14` (final review) | The seed also commits `.gitmodules` (`[submodule "sub"]`, `path = sub`, `url = ./sub`, `ignore = all`) and a gitlink `sub` (`git update-index --add --cacheinfo 160000,<40-hex>,sub`). Branch: `rbc "$WT" log.txt a l1 l2 l3 rb14-a`, then a commit that only bumps `sub` to another 40-hex id. Base moves. Copy the first commit only. Later commit changing the `rb14-a` line. Assert the fixture: `main:sub` differs from `rb14:sub`. Pins that a commit hidden by submodule ignore configuration still counts. | `rb_kept` |
+| `rb15` (final review) | Branch: `rbc "$WT" a.txt a a1`, `rbc "$WT" b.txt b b1`. `git tag rb15 rb15~1`. Base moves. Copy the first commit only. Later commit changing the `a.txt` line. Pins that the branch itself is judged, not a tag of the same name. Fixture commands use full refs. | `rb_kept` |
 
 Why `rb6` uses a merge with an added file instead of a resolved conflict: the spec's point is a merge commit with content of its own, and this fixture has it without making the copies conflict (a ruling inside the spec).
 
@@ -167,8 +172,10 @@ One variant at a time: apply the edit, run `./tests/wt-functions.test.sh > "$TMP
 | V8 | `_wt_squash_merged`: the replay check always succeeds | `rb8` |
 | V11 | `_wt_replays_as`: ignore `merge-tree`'s exit status | `rb11` |
 | V13 | `_wt_patch_ids`: judge by the pipeline's output alone, ignoring a failed `rev-list` | `rb13` |
+| V14 | `_wt_patch_ids`: drop `--ignore-submodules=none` | `rb14` |
+| V15 | `_wt_branch_content_merged`: judge the short branch name instead of `refs/heads/<branch>` | `rb15` |
 
-- [ ] **Step 1: Run V3, V4, V5, V6, V7a, V7b, V8, V11 and V13**, in that order, as above.
+- [ ] **Step 1: Run V3, V4, V5, V6, V7a, V7b, V8, V11, V13, V14 and V15**, in that order, as above.
 - [ ] **Step 2: Record** each run in the table under "Mutation record" at the end of this plan: the date, the suite's exit status and the FAIL lines of the named case, verbatim.
 - [ ] **Step 3: Confirm the functions are restored**: `git diff --stat -- dot_config/zsh/functions` prints nothing, then run the suite once more; expected exit 0 and no FAIL line.
 - [ ] **Step 4: Commit**
@@ -216,7 +223,7 @@ git commit -m "Amend the worktree hook protocol spec and mark the wt-rm rebase-m
 
 ## Mutation record
 
-Filled in by Task 2.
+Filled in by Task 2. V14 and V15 ran after the final review, on `git archive` copies of f9dcfb2 under `$TMPDIR`, each a one-line edit (V14 drops the flag from the `diff-tree --stdin` call in `_wt_patch_ids`; V15 sets `ref="$2"` in `_wt_branch_content_merged`); each failed only its own case (1227/1229).
 
 | Variant | Date | Suite exit | FAIL lines of the named case |
 |---|---|---|---|
@@ -229,6 +236,8 @@ Filled in by Task 2.
 | V8 | 2026-11-11 | 1 | FAIL: rb8 repeated block, whole change: wt-rm says the branch is kept<br>FAIL: rb8 repeated block, whole change: the branch still exists ('' != 'rb8') |
 | V11 | 2026-11-11 | 1 | FAIL: rb11 failing replay: wt-rm says the branch is kept<br>FAIL: rb11 failing replay: the branch still exists ('' != 'rb11') |
 | V13 | 2026-11-11 | 1 | FAIL: rb13 failing patch-id pipeline: wt-rm says the branch is kept<br>FAIL: rb13 failing patch-id pipeline: the branch still exists ('' != 'rb13') |
+| V14 | 2026-11-11 | 1 | FAIL: rb14 commit hidden by submodule ignore: wt-rm says the branch is kept<br>FAIL: rb14 commit hidden by submodule ignore: the branch still exists ('' != 'rb14') |
+| V15 | 2026-11-11 | 1 | FAIL: rb15 tag with the branch's name: wt-rm says the branch is kept<br>FAIL: rb15 tag with the branch's name: the branch still exists ('' != 'rb15') |
 
 ## Execution notes (2026-11-11)
 
@@ -242,3 +251,4 @@ Filled in by Task 2.
 - `rb6` gives its merge commit content of its own with an added file instead of a resolved conflict (see Task 1).
 - `rb12`, `rb13` and V13 were added after Task 1's review (2026-11-11): with the rebase test in front, `sq1` and `sq2` no longer reach the merge-tree test's yes, so `rb12` pins that fallback and its `merged` line; `rb13` pins that a failed patch-id pipeline keeps the branch. Every case also asserts that its fixture built.
 - `rb9`–`rb11` and the configuration lines in `rb1` come from Review Focus, not from the spec's list. V11 is added so that `rb11` is shown to fail without the status check.
+- The pipeline in Global Constraints gained `--ignore-submodules=none` and the tests judge `refs/heads/<branch>`, both after the final review, both on the side of keeping; see the spec's 2026-11-11 amendment. `rb14`, `rb15`, V14 and V15 pin them.

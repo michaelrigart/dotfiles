@@ -100,6 +100,12 @@ If no base says yes, the branch is kept with today's message.
 
 ### Patch ids
 
+> **2026-11-11 — amended during the build.** Both `diff-tree` calls also pass
+> `--ignore-submodules=none`, because `submodule.<name>.ignore` hides a gitlink change from plumbing
+> too, and a hidden commit would count as empty (found by the final review; it can only keep more
+> branches). The tests judge `refs/heads/<branch>`, so a tag of the same name is never judged in
+> the branch's place. The plan's cases `rb9`–`rb15` add to the spec's eight.
+
 Both new tests find candidates by **verbatim patch id**. A matching id only nominates a pair; the
 pair counts only once the replay check (below) passes. Ids are computed one per non-merge commit,
 with plumbing only:
@@ -219,6 +225,8 @@ once per base. No path filter or cache is needed.
   (repeated blocks, with the base having removed one of them), the check trusts it. A rebase-merge
   of the same commit would have landed exactly that.
 - **Order.** The rebase test does not check that the copies landed in the branch's order.
+- **Partial clones** (added 2026-11-11). Computing patch ids for the base side fetches the blobs those
+  commits touch; a failure keeps the branch, so the cost is time and network only.
 
 ## Tests
 
