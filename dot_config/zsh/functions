@@ -1319,7 +1319,7 @@ _wt_stop_herdr_workspaces() {
 
 # _wt_patch_ids <main> <rev-list-arg>... — one `<patch-id> <commit>` line per non-merge
 # commit in the range that has a patch, in rev-list order. Verbatim ids from plumbing
-# only, so neither whitespace nor user diff configuration changes them. Any failed
+# only: whitespace counts, and user diff configuration cannot change them. Any failed
 # command, no id at all, or a line that is not two hex object ids prints nothing and
 # returns 1.
 _wt_patch_ids() {
@@ -1429,9 +1429,10 @@ _wt_squash_merged() {
 # while the base's tip IS the squash commit, and stops working after the next
 # unrelated merge.
 #
-# Both the local base and the remote's default branch count. Fails closed: no base, a
-# failed command, an empty or malformed patch-id list, a conflict, or a git without
-# --write-tree or --merge-base all keep the branch.
+# Both the local base and the remote's default branch count. Fails closed, per test and
+# per base: no base, a failed command, an empty or malformed patch-id list or a conflict
+# makes that test say no, and the next test still runs. A git without --merge-base
+# makes only the two patch-id tests say no; the merge-tree test still runs.
 _wt_branch_content_merged() {
   emulate -L zsh
   local main="$1" branch="$2" base merged want mb how
