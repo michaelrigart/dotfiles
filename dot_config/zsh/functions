@@ -1410,6 +1410,41 @@ _wt_rm_branch() {
   return 0
 }
 
+# _wt_rm_archive <dest> — archive the review threads Codex still holds for a removed
+# checkout (`xreview-rpc archive-checkout`). Last in a removal and cosmetic: whatever it
+# reports, the removal stands, so it always returns 0 and a failure only prints the id of
+# what to retry and the command that retries it. The command's own retry line is dropped
+# from the echoed stderr, since the one printed here replaces it.
+_wt_rm_archive() {
+  emulate -L zsh
+  local dest="$1" out err line
+  local -i rc
+  local retry="    Retry: xreview-rpc archive-checkout --dir $(_wt_q "$dest")"
+  if ! command -v xreview-rpc >/dev/null 2>&1; then
+    print -ru2 -- "wt-rm: xreview-rpc is missing — review threads not archived; the removal stands."
+    print -ru2 -- "$retry"
+    return 0
+  fi
+  err="$(command mktemp "${TMPDIR:-/tmp}/wt-rm-archive.XXXXXX" 2>/dev/null)" || err=/dev/null
+  out="$(command xreview-rpc archive-checkout --dir "$dest" 2>"$err")"
+  rc=$?
+  for line in ${(f)out}; do
+    [[ "$line" == "archived "* ]] && print -r -- "✓ archived review thread ${line#"archived "}"
+  done
+  case $rc in
+    0) ;;
+    5) print -ru2 -- "wt-rm: the Codex daemon is not reachable — review threads not archived; the removal stands."
+       print -ru2 -- "$retry" ;;
+    *) print -ru2 -- "wt-rm: could not archive every review thread of $dest (status $rc); the removal stands."
+       for line in ${(f)"$(<$err)"}; do
+         [[ "$line" == "xreview-rpc: retry:"* ]] || print -ru2 -- "    $line"
+       done
+       print -ru2 -- "$retry" ;;
+  esac
+  [[ "$err" == /dev/null ]] || command rm -f -- "$err"
+  return 0
+}
+
 # _wt_rm_registration <main> <dest> <branch> <qb> — finish a removal that deleted the
 # checkout but not Git's registration of it. Runs under wt-rm's lock, when $dest is
 # not a directory.
@@ -1462,6 +1497,9 @@ _wt_rm_registration() {
   fi
   print -r -- "✓ removed Git's registration of $dest"
   _wt_rm_branch "$main" "$branch" "$qb"
+  local -i rc=$?
+  _wt_rm_archive "$dest"
+  return $rc
 }
 
 # wt-rm <branch> — retire a worktree made by `wt`. Run from another checkout of the
@@ -1485,11 +1523,15 @@ _wt_rm_registration() {
 #      which Git and Herdr cannot see. After teardown because stopping project
 #      services is what teardown is for. It re-scans every 0.5 s for up to 5 s, since
 #      some processes exit only after their workspace closes. A heuristic, not a proof.
+#   8. archive the checkout's review threads (`xreview-rpc archive-checkout`), after Git has
+#      removed it and the branch step and the recreated-files warning have run. Cosmetic: a
+#      failed or unconfirmed archive prints the retry command and never changes wt-rm's order,
+#      refusals or exit status.
 #
 # A checkout that is gone while Git still registers it — a removal that failed after
 # deleting it — skips hook validation, the mise trust checks, checks 1-4, teardown and the
 # release (steps 1 and 3-7): _wt_rm_registration proves the absence, reruns the lock
-# classification and step 2, and removes only the registration.
+# classification and step 2, removes only the registration, then archives (step 8).
 #
 # Runs under the per-target lock, released in an `always` block. An interrupt is not
 # covered by it; see the interruption note above _wt_hook_check for why no INT/TERM
@@ -1719,6 +1761,7 @@ wt-rm() {
 
     [[ -d "$dest" ]] \
       && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
+    _wt_rm_archive "$dest"
     return 0
   } always {
     _wt_unlock
