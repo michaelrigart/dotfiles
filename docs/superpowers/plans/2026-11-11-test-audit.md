@@ -38,12 +38,12 @@
 ## Calls made in this plan, not in the spec
 
 - **The harness:** `.scripts/test-audit/audit.py` (CLI, copy, lock, runner, attribution, store), `mutators.py` (code mutants), `rules.py` (rule mutants). Python stdlib only.
-- **The copy** is a fresh git repository holding one commit of `git archive <sha>`. Each harness process builds its own copy at `<copy-root>/<sha12>-<command>-<pid>` and removes it on exit, including on SIGINT and SIGTERM. Concurrent processes never share a copy.
+- **The copy** is a fresh git repository holding one commit of `git archive <sha>`. Each harness process builds its own copy at `<copy-root>/<sha12>-<command>-<pid>`. Every exit path (normal, exception, SIGINT, SIGTERM) runs the same cleanup, in this order: kill and reap the running suite's process group, restore any mutated file, remove the copy, and only then release the lock. Concurrent processes never share a copy.
 - **Run conditions** copy `run.sh`'s: the suite runs as `./<name>.test.sh`, with `cwd` the copy's `tests/` and stdin from `/dev/null`. It sees `RUN_SH_LOCKED=1`, `RUN_SH_START_DIR=<copy>` and `RUN_SH_LOCK=<lock>`, and gets its `# test-args:` with `{repo}` set to the copy. The timeout is `max(--timeout-floor, 3 × the session's baseline seconds)`. On timeout the process group is killed.
 - **Labels:** an assertion is a line `run.sh` counts: `^\s*(ok|PASS)(\s|:)` passed, `^\s*(FAIL|not ok)(\s|:)` failed. The label is the rest of the line after the token and an optional `:`. Whitespace is collapsed. The copy's path becomes `<copy>`, and any path under `/tmp`, `/private/tmp`, `/var/folders` or `/private/var/folders` becomes `<tmp>`. The n-th repeat of a label (n ≥ 2) gets ` #n`.
 - **Attribution:** the baseline is green when it exits 0 and has at least one passed and no failed assertion. Without a green baseline, every mutant of that suite in that session is `baseline-red` and is not run. A mutant run is:
-  - `killed` when a label failed. Killers are the failed labels that passed in the baseline; the other failed labels are `unmatched`.
-  - `inconclusive` when it timed out, exited non-zero with no failed label, or exited 0 with fewer assertions than the baseline.
+  - `inconclusive` when it did not complete: it timed out, printed fewer assertions (passed plus failed) than the baseline, or exited non-zero with no failed label. This test comes first, so a run that printed a FAIL and then hung or crashed is never `killed`.
+  - `killed` when it completed and a label failed. Killers are the failed labels that passed in the baseline; the other failed labels are `unmatched`.
   - `survived` otherwise.
   A survivor runs once more. A second-run kill makes the mutant `killed` with `flaky: true`, listed separately in the findings.
 - **Code mutants** apply only to shell (`bash`, `zsh`, `sh`) and Python files. Data files and chezmoi data templates get none. Prose gets rule mutants only where a rule is pinned.
@@ -51,7 +51,10 @@
 - **Targeted mutants** always run the candidate's own suite. A claimed cross-suite duplicate also runs every suite that loads the mutated file (`subjects.tsv`).
   - A candidate is `evidenced` when it kills each of its mutants and another assertion kills each of them too.
   - It is `unique` when some mutant is killed only by the candidate, and `mis-targeted` when the candidate does not kill one of its mutants.
-  - The ranked list accepts deletions greedily, in rank order: a candidate is accepted only when each of its mutants has a killer that is neither itself nor an already-accepted deletion. Two deletions therefore never rely on each other.
+  - The ranked list accepts deletions greedily, in rank order, and checks the whole set each time (`accept`, Task 2).
+    - Every `delete` and `merge` candidate takes part, class-evidence ones included, because a deleted wording pin can be another candidate's only other killer. A merge counts all its labels as removed.
+    - A candidate X joins the accepted set D only if, after adding X, every targeted mutant of every candidate in D still has a killer whose label is outside the labels of the whole set. A mutant that would lose its last remaining killer rejects X, whichever candidate the mutant belongs to.
+    - So an accepted deletion never relies on a test that another accepted deletion removes.
 - **Phase 3 validation** also re-runs the targeted mutants of the approved deletions.
 - **Rule mutants:**
   - Operators: the sentence deleted; one strength word weakened (`Never`→`Prefer not to`, `never`→`preferably not`, `must`→`should`, `Must`→`Should`, `always`→`usually`, `Always`→`Usually`, `only`→`mostly`, `Every`→`Most`, `every`→`most`, one occurrence per mutant); one item dropped from a list of three or more (at most 4 per rule).
@@ -116,10 +119,14 @@
   - **B2. label drift** (a kill lost to a temp path in the label): `s.test.sh` prints a label holding its `mktemp` path. A mutant breaking that case gives `killed`, with the killer label ending in `<tmp>`. A mutant that makes `s.test.sh` print a FAIL label absent from the baseline gives `killed`, with that label in `unmatched`.
   - **B3. survivor** (an uncovered line counted as killed): a mutant on `s.sh`'s uncovered line gives `survived`.
   - **C1. hang** (a timeout counted as a kill, or orphans left behind): a mutant that makes `s.sh` loop forever around `sleep 30 # audit-hang-marker`, with `--timeout-floor 2`, gives `inconclusive` and `timed_out: true` in under 10 s, and `pgrep -f audit-hang-marker` finds nothing afterwards.
-  - **C2. died partway** (a crash counted as a kill): a mutant making the suite exit 3 with no FAIL line gives `inconclusive`. A mutant that makes it exit 0 after fewer PASS lines than the baseline gives `inconclusive`.
+  - **C2. died partway** (a crash counted as a kill): each of these mutants gives `inconclusive`:
+    - the suite exits 3 with no FAIL line;
+    - it exits 0 after fewer PASS lines than the baseline;
+    - it prints a FAIL and then hangs (`--timeout-floor 2`);
+    - it prints a FAIL and then exits before its remaining cases.
   - **D. red baseline** (kills measured against a failing suite): `try` against `red` gives `baseline-red`, and the mutant's run marker is absent.
   - **E. checkout untouched** (mutants applied in the checkout): after every case, `git -C $T/repo status --porcelain` is empty.
-  - **F. interrupted** (a mutated copy reused, or one reaching the checkout): start the C1 mutant with `--timeout-floor 60` in the background, wait 2 s, then send SIGTERM. The harness exits, its copy directory is gone, and `$T/repo` is clean. A following B1 `try` gives `killed`.
+  - **F. interrupted** (a mutated copy reused, or one reaching the checkout): start the C1 mutant with `--timeout-floor 60` in the background, wait 2 s, then send SIGTERM. The harness exits, `pgrep -f audit-hang-marker` finds nothing, its copy directory is gone, `lockf -t 0 $T/lock true` exits 0, and `$T/repo` is clean. A following B1 `try` gives `killed`.
   - **G1. lock per run** (the lock never taken, or held after the run): `lock.test.sh` passes `lock is held during the run` only when `lockf -t 0 "$RUN_SH_LOCK" true` exits 75 and `RUN_SH_LOCKED` is `1`. `try bin/s.sh <covered expression> <broken> lock` gives `survived`, which needs a green baseline. After the harness exits, `lockf -t 0 $T/lock true` exits 0.
   - **G2. lock wait not timed** (another line's run trips the timeout): with `lockf -k $T/lock sleep 4 &` holding the lock, a B1 `try` with `--timeout-floor 2` gives `killed`, and stderr has `waiting for the test-run lock`.
   - **H. inventory** (miscounted assertions; gated suites run): `inventory` writes one row per fixture suite. `s` has the assertion count `run.sh` reports for it (check by running this repository's `tests/run.sh`, copied into `$T/repo/tests/` at setup, with `RUN_SH_LOCK=$T/lock`). `gated` (`# test-requires: unsandboxed`) has `seconds: null` and its run marker is absent. `report --section inventory` prints a row for `s`.
@@ -130,7 +137,7 @@
   - The lock: `fcntl.flock(LOCK_EX|LOCK_NB)`. On `BlockingIOError`, print the waiting line and take `LOCK_EX`. The clock starts after the lock is held.
   - The run: `subprocess.Popen(..., start_new_session=True)`, with `os.killpg(SIGKILL)` on timeout.
   - The copy: `git archive <sha> | tar -x`, then `git init -q`, `git add -A` and a commit with `-c user.name=test-audit -c user.email=test-audit@localhost -c commit.gpgsign=false`.
-  - Exit handling: a SIGINT or SIGTERM handler restores any mutated file and removes the process's copy.
+  - Exit handling: SIGINT and SIGTERM raise `SystemExit`, so they reach the same `finally` cleanup as a normal or failing exit, in the order given under "The copy" above.
 - [ ] **Step 4: Run the suite.** `./tests/test-audit.test.sh` passes all cases (report passed/total). It takes under 60 s.
 - [ ] **Step 5: Commit** `Add the test-audit harness core and its suite`.
 
@@ -177,7 +184,8 @@
     - `kills`: a row per file (`sampled, killed, flaky, survived, inconclusive, baseline-red, stale, kill rate = killed ÷ (killed + survived)`) and a row per assertion (`suite, label`, and the count and ids of the mutants it killed).
     - `gaps`: every survivor (`file:line, op, before → after`).
     - `targeted`: a row per candidate with its verdict and each mutant's killers.
-    - `--compare STATE`: every mutant, of any kind, killed in STATE and not killed here.
+    - `--compare STATE [--only FILE...]`: of STATE's killed mutants on the selected files, it lists `lost` (run here, not killed) and `not run` (no final record here). Without `--only`, the selection is the files with any final record here, so mutants that were never rerun do not show as lost. Any kind of mutant counts.
+  - `accept CLASSIFICATION_TSV MANIFEST` runs the greedy acceptance above over the `delete` and `merge` rows, in rank order: estimated seconds saved from the inventory, descending, with ties broken by suite and line. It prints one row per candidate: `accepted`, or `rejected` with the reason. The reasons are `not evidenced` (a targeted candidate whose verdict is not `evidenced`), `class evidence in a safety suite`, or `would leave <mutant id> without a killer`. Labels and killers are compared as `suite::label`.
 - The manifest is one JSONL object per candidate:
   - `candidate`, `suite`, `labels` (normalized as in Task 1), `claim` (`duplicate|wording|stub|other`), `duplicate_of` (`["suite::label"]`), `safety` (bool).
   - `mutants`: `[{file, find, replace, line?}]`. `find` must occur exactly once in the file, or exactly once on `line` when that is given. Otherwise the run exits 2 naming the candidate.
@@ -189,7 +197,8 @@
   - **M4. run and resume** (a lost or repeated run): `sample` leaves a final record for every sampled mutant, and every survivor has an attempt 2. A second `sample` prints `remaining: 0` and adds no line to `runs-sample.jsonl`. `--max-minutes 0` runs nothing and prints the remaining count.
   - **M5. reports** (miscounted kill rate): `report --section kills` shows the fixture's exact killed and survived counts and its rate. `gaps` names the uncovered line's mutants.
   - **M6. targeted verdicts** (a deletion justified by its own kill, or by an untargeted mutant): a fixture manifest with four candidates gets `evidenced`, `unique`, `mis-targeted`, and a cross-suite duplicate whose second killer lives in `s2`, which runs only because the claim is `duplicate`, so that one is `evidenced` too. A `find` that occurs twice exits 2 naming its candidate.
-  - **M7. compare** (a cut that loses a kill): in a state against a commit where `s.test.sh` lacks the killing case, `report --compare` lists the mutant.
+  - **M7. compare** (a cut that loses a kill, or unrun mutants reported as lost): in a state against a commit where `s.test.sh` lacks the killing case, `sample --sample-from <first> --only bin/s.sh` then `report --compare <first>` lists that mutant as `lost`. It does not list `bin/p.py`'s killed mutants. `--only bin/s.sh bin/p.py` lists them as `not run`.
+  - **M8. acceptance** (two deletions that each rely on the other's test): a classification has candidates A, B and W in rank order. A's mutant is killed by A and B; B's mutant is killed by B and C; W is a class-evidence wording pin and is the only other killer of a fourth candidate D's mutant (D ranked after W). `accept` accepts A, rejects B with `would leave <A's mutant> without a killer`, accepts W, and rejects D. A class-evidence row in a safety suite is rejected with `class evidence in a safety suite`.
 - [ ] **Step 2: Watch the new cases fail.** Run the suite.
 - [ ] **Step 3: Implement** `mutators.py` and the new commands. A per-state, per-command `flock` on `<state>/<command>.lock` gives the "another run holds" refusal.
 - [ ] **Step 4: Run the suite.** All cases pass (passed/total), in under 90 s.
@@ -213,6 +222,8 @@
   - It resolves the suite's `NAME=value` assignments. An argument it cannot resolve exits 1, naming the line.
 - `rules.rule_mutants(file, text, rule_id, anchor) -> list[Mutant]` finds the anchor in the whitespace-flattened text. Sentences end at `.`, `?` or `!` followed by whitespace, outside backticks; blocks are bullets and paragraphs. The operators are those under "Rule mutants" above. An anchor that is not found yields no mutants and marks the rule `missing`.
 - `rules [--max-minutes N] [--check-cmd CMD] RULES_TSV` runs each rule mutant against every suite in the file's `loaded_by`. With `--check-cmd`, it runs only CMD instead, as the pseudo-suite `check`, split with `shlex` and with `{copy}` replaced by the copy's path. Resume and lock rules as in Task 2, over `runs-rules.jsonl`.
+  - Binding: on first use, `meta.json` records the sha256 of RULES_TSV, the `--check-cmd` string, and the sha256 of each of its arguments that names an existing file. A later `rules` on that state with any of these different exits 2 with `state is bound to another rule set or check; use another --state`. Resumed results therefore always belong to the same rules and the same checker.
+  - Missing rules: each rule whose anchor is not found prints `missing: <id>`, and `rules` exits 1 after its runs.
 - `report --section rules` prints a row per rule (`id, safety, mutants, killed, survivors as op:item`), then the `missing` rules.
 
 - [ ] **Step 1: Extend the suite.** Add a fixture `docs/rules.md` with a wrapped bullet:
@@ -228,6 +239,9 @@
     - Applied, `delete-sentence` leaves `- **Confirm.** Keep notes.` once whitespace is flattened.
     - Dropping `delete` leaves `Never push or merge without asking.`
   - **R3. runs** (rule kills misattributed): `rules` with the exact pin in `pins.test.sh` kills all five. With `--check-cmd` set to a script that only greps `**Confirm.**`, all five survive, and `report --section rules` lists five survivors.
+  - **R4. binding and missing rules** (a revised checker never exercised; an approved rule silently untested):
+    - After R3's `--check-cmd` run, editing that check script and running `rules` on the same state exits 2 with `state is bound to another rule set or check`.
+    - A rules TSV row whose anchor is absent prints `missing: <id>`, and `rules` exits 1.
 - [ ] **Step 2: Watch the new cases fail.**
 - [ ] **Step 3: Implement** `rules.py`, `pins` and `rules`.
 - [ ] **Step 4: Run the suite.** All cases pass (passed/total).
@@ -324,14 +338,19 @@
 - [ ] **Step 1: Extract the pins.** Run `audit.py pins tests/agent-instructions.test.sh > .scripts/test-audit/pinned-rules.tsv`. The row count must equal `rg -c '^(need|need_flat|need_in) ' tests/agent-instructions.test.sh`, which is 77 at `523a95d`.
   - Add a row by hand for each direct `grep -q` check that pins a rule. Rows for other suites' pins on fragment text come from Task 7.
   - Fill `safety` from the Anti-goals list.
-- [ ] **Step 2: Measure the baseline.** `audit.py --state .superpowers/test-audit-rules --ref 523a95d rules .scripts/test-audit/pinned-rules.tsv`, then `report --section rules`. Step 4's states pass `--ref 523a95d` too.
+- [ ] **Step 2: Measure the baseline.** `audit.py --state .superpowers/test-audit-rules --ref 523a95d rules .scripts/test-audit/pinned-rules.tsv`, then `report --section rules`. Every pin passes at `523a95d`, so a `missing` rule means the locator is wrong: fix the harness, not the TSV. Step 4's states pass `--ref 523a95d` too.
 - [ ] **Step 3: Write the proposal.**
-  - `proposed-rules.tsv`: one row per rule whose loss would matter, including every `safety=yes` rule. `anchor` is a short, stable phrase, preferably the bullet's bold label. `terms` are the strength word and each named boundary.
+  - `proposed-rules.tsv`: one row per rule whose loss would matter, including every `safety=yes` rule. `anchor` is a short, stable phrase, preferably the bullet's bold label. `terms` must cover what the rule mutants change:
+    - each strength word in the rule's sentence, together with the words it governs (`only if its bug`, not `only`), since the word alone may occur elsewhere in the block;
+    - each item of each list of three or more, one term per item;
+    - text that only a sentence deletion removes.
   - `rule-check.sh <rules.tsv> <source root>`: for each row, find the block that holds the anchor in the whitespace-flattened file, check each term is in that block, and print `  PASS: rule <id>` or `  FAIL: rule <id>`. Exit with the failure count.
 - [ ] **Step 4: Measure the proposal against the old pins.**
-  - `audit.py --state .superpowers/test-audit-pins rules .scripts/test-audit/proposed-rules.tsv` runs the old pins on the proposal's mutants.
-  - `audit.py --state .superpowers/test-audit-checks rules --check-cmd '<checkout>/.scripts/test-audit/rule-check.sh <checkout>/.scripts/test-audit/proposed-rules.tsv {copy}' .scripts/test-audit/proposed-rules.tsv` runs the draft checks on the same mutants.
-  - `report --section rules --compare .superpowers/test-audit-pins`, in the checks state, must list no mutant killed by the pins and missed by the checks. Revise the terms until it lists none, or record the rule as a gap.
+  Each revision `<n>` of the proposal (1, 2, …) gets fresh states. The harness refuses a reused state anyway, because it binds the rule set and the checker.
+  - `audit.py --state .superpowers/test-audit-pins-<n> --ref 523a95d rules .scripts/test-audit/proposed-rules.tsv` runs the old pins on the proposal's mutants.
+  - `audit.py --state .superpowers/test-audit-checks-<n> --ref 523a95d rules --check-cmd '<checkout>/.scripts/test-audit/rule-check.sh <checkout>/.scripts/test-audit/proposed-rules.tsv {copy}' .scripts/test-audit/proposed-rules.tsv` runs the draft checks on the same mutants.
+  - `report --section rules --compare .superpowers/test-audit-pins-<n>`, in the checks state, must list nothing `lost` and nothing `not run`, and no rule may be `missing`. Revise the terms until it is clean, or record the rule as a gap.
+  - The final revision's states are the ones Task 15 compares against. Record `<n>` in the findings.
 - [ ] **Step 5: Commit** `Measure the pinned instruction rules and propose their replacement`.
 
 ### Task 9: Targeted runs
@@ -357,7 +376,7 @@
      - default and heavy wall times, and per-suite seconds;
      - kill rate overall and per file, with flaky, inconclusive, `copy-red` and `stale` counts;
      - the harness suite on its own line.
-  2. **Ranked list:** every `delete` and `merge`, ordered by estimated seconds saved. Columns: rank, suite, test (lines and labels), verdict, kind, evidence (class; or the targeted mutant ids with their killers; or `duplicate of`), seconds saved, safety, accepted.
+  2. **Ranked list:** every `delete` and `merge`, ordered by estimated seconds saved. Columns: rank, suite, test (lines and labels), verdict, kind, evidence (class; or the targeted mutant ids with their killers; or `duplicate of`), seconds saved, safety, and accepted. "Accepted" is the `audit.py accept docs/superpowers/plans/2026-11-11-test-audit-classification.tsv .scripts/test-audit/targeted.jsonl` result, with the reason for each rejection.
   3. **Keep summary:** a row per suite, counting its tests by kind.
   4. **Proposed replacement checks:** the `proposed-rules.tsv` table, the measured comparison, and each safety rule marked.
   5. **Gaps:** survivors counted per file, with the full list in an appendix.
@@ -389,7 +408,7 @@ No task. Michael approves the list, wholly or in part, through the driver. Gaps 
   - `inventory` of the affected suites;
   - `sample --sample-from .superpowers/test-audit --only <affected files>`;
   - `targeted` for the approved candidates in affected suites;
-  - `rules .scripts/test-audit/pinned-rules.tsv` when a fragment changed.
+  - when a fragment changed: `rules .scripts/test-audit/pinned-rules.tsv` there, and `rules .scripts/test-audit/proposed-rules.tsv` in `--state .superpowers/test-audit-refresh-pins --ref main` (the old pins on the proposal's mutants, Task 15's counterpart).
 
   An approved deletion whose evidence no longer holds is dropped from the cut and reported to the driver.
 - [ ] **Step 5: Commit** the refreshed findings section.
@@ -438,17 +457,22 @@ No task. Michael approves the list, wholly or in part, through the driver. Gaps 
 - [ ] **Step 2: Make the restatements say the same.**
   - `SKILL.md`: `Test paths stay writable, because a real bug fix ships with a test that fails without it.`
   - `sp-architect.md` and `sp-reviewer.md`: the finding list becomes `a speculative abstraction, a workaround where a refactor belongs, a test that pins wording instead of behaviour, a test added for a review finding whose bug could not plausibly return, or a test that would still pass with the bug back`.
-- [ ] **Step 3: Update the rule set.** The testing rule's row in `rules.tsv` gets the anchor `Test behaviour, not wording` and the terms `real bug fix ships with a test;review finding;plausibly return;revert the fix`. Rows for the `SKILL.md` and agent restatements, if approved, are updated to the new text.
+- [ ] **Step 3: Update the rule set.** The testing rule's row in `rules.tsv` gets the anchor `Test behaviour, not wording` and these terms, following Task 8's terms rule: `extend a case before adding one;A real bug fix ships with a test;a review finding, only if its bug could plausibly return;revert the fix;see it fail;restore it;Never special-case code to pass a test`. Rows for the `SKILL.md` and agent restatements, if approved, are updated to the new text by the same rule.
 - [ ] **Step 4: Run** `./tests/run.sh agent-instructions xreview-skill review agent-skills`: green (passed/total).
-- [ ] **Step 5: Commit** `Tighten the testing rule: behaviour over wording, findings tested only when they can recur`.
+- [ ] **Step 5: Mutate the rows this task changed.** In a fresh state with `--ref` set to the working commit (commit first if needed), run `audit.py rules` on a TSV holding only those rows. It must exit 0, and `report --section rules` must show every mutant killed. Fix the terms until it does.
+- [ ] **Step 6: Commit** `Tighten the testing rule: behaviour over wording, findings tested only when they can recur`.
 
 ### Task 15: Validate the final state
 
 **Depends on:** Tasks 12, 13 and 14.
 
-- [ ] **Step 1: Code mutants.** In `--state .superpowers/test-audit-after --ref chore/test-audit`, run `sample --sample-from <before> --only <files whose suites changed>`. `<before>` is the refresh state for files Task 11 refreshed, and the phase 1 state otherwise. `report --compare <before>` must list nothing.
+- [ ] **Step 1: Code mutants.**
+  - The selection is every file whose own suite this branch changed: `git diff --name-only main...chore/test-audit -- tests/`, joined with `subjects.tsv`.
+  - `<before>` is the refresh state for files Task 11 refreshed, and the phase 1 state otherwise.
+  - In `--state .superpowers/test-audit-after --ref chore/test-audit`, run `sample --sample-from <before> --only <selection>`, once per `<before>` with its share of the selection.
+  - `report --compare <before> --only <the same files>` must list nothing `lost` and nothing `not run`.
 - [ ] **Step 2: Targeted mutants.** Run `targeted` over the approved deletions' manifest entries. Every mutant must still be killed, now by an assertion that remains.
-- [ ] **Step 3: Rule mutants.** Run `rules tests/fixtures/agent-instructions/rules.tsv`, regenerated from the final text. Every mutant must be killed. The only exception is a survivor whose counterpart (same rule id, operator and removed word or item) also survived in `.superpowers/test-audit-pins` (Task 8); list each one. The tightened testing rule has no counterpart, so all its mutants must be killed.
+- [ ] **Step 3: Rule mutants.** In a fresh state, run `rules tests/fixtures/agent-instructions/rules.tsv`, regenerated from the final text. It must exit 0: every approved rule resolves, and none is `missing`. Every approved rule must have at least one mutant. Every mutant must be killed. The only exception is a survivor whose counterpart (same rule id, operator and removed word or item) also survived in the counterpart state, which is `.superpowers/test-audit-refresh-pins` if Task 11 made one and otherwise Task 8's final `.superpowers/test-audit-pins-<n>`; list each one. The tightened testing rule has no counterpart, so all its mutants must be killed.
 - [ ] **Step 4: The whole runs.** Run `./tests/run.sh` and `./tests/run.sh xreview git-forge-guard wt-functions`: both green, with passed/total and wall times recorded.
 - [ ] **Step 5: Record the after-numbers** beside the before-numbers in the findings, then commit `Record the test audit's after-numbers`. A fix after this step repeats Task 15.
 
