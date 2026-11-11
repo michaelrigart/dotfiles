@@ -1267,9 +1267,15 @@ def archive_candidates(root, d):
     return out
 
 
+class CheckoutBack(Exception):
+    """The checkout being archived exists again, or cannot be tested any more, so nothing more
+    may be archived. args[0] is gone()'s answer: False or None."""
+
+
 def archive_thread(c, d, tid, sds, paths=()):
     """Archive tid for good if the daemon records it under d too: 0 done or kept, 1 failed.
-    sds: the state directories whose started list named it under d; paths: the paths they named."""
+    sds: the state directories whose started list named it under d; paths: the paths they named.
+    Raises CheckoutBack, with tid not archived, when d is no longer known to be gone."""
     r = c.call("thread/read", {"threadId": tid, "includeTurns": False})
     th = None if "error" in r else (r.get("result") or {}).get("thread")
     cwd = th.get("cwd") if isinstance(th, dict) else None
@@ -1283,6 +1289,11 @@ def archive_thread(c, d, tid, sds, paths=()):
     if isinstance(status, dict) and status.get("type") == "active":
         err(f"{tid}: running a turn")
         return 1
+    # The checkout may have been recreated since the run began, or while earlier threads were
+    # archived: checked last, right before the archive.
+    now = gone(d)
+    if now is not True:
+        raise CheckoutBack(now)
     return archive_and_clean(c, tid, list(dict.fromkeys([cwd, *paths])), sds)[1]
 
 
@@ -1357,16 +1368,14 @@ def archive_checkout(a):
     rc, left = 0, list(sds)
     try:
         for tid in sds:
-            # The checkout may have been recreated since the start, or while earlier threads were
-            # archived: from then on nothing is archived, and the rest keep their records.
-            now = gone(d)
-            if now is not True:
-                for t in left:
-                    err(f"{t}: not archived: " + (f"{d} exists again" if now is False
-                                                  else f"cannot tell whether {d} exists"))
-                return 1
             rc |= archive_thread(c, d, tid, sds[tid], paths[tid])
             left.remove(tid)
+    except CheckoutBack as e:
+        # From here on nothing is archived: the thread that hit it and the rest keep their records.
+        for tid in left:
+            err(f"{tid}: not archived: " + (f"{d} exists again" if e.args[0] is False
+                                            else f"cannot tell whether {d} exists"))
+        return 1
     except (Unreachable, Closed) as e:
         if time.monotonic() >= c.deadline:
             err("the time budget for this run ran out")

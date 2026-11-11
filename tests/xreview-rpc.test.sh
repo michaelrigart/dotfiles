@@ -1796,7 +1796,7 @@ rpc archive-checkout --dir "$G" >"$T/out" 2>"$T/err"; rc=$?
 is "AC21 a checkout that exists again keeps the later threads: only the first is archived, exit 1" "$rc/$(cat "$T/out")/$(ac_sent thread/archive)" "1/archived a/a"
 is "AC21 stderr names the one not archived, then the retry line" "$(cat "$T/err")" "xreview-rpc: x: not archived: $G exists again"$'\n'"$RETRY"
 is "AC21 its entry stays" "$(ac_ids g)" x
-is "AC21 and it was not even read after the checkout came back" "$(ac_sent thread/read)" "a"
+is "AC21 the check is the last step before the archive: x was read, and not archived" "$(ac_sent thread/read)/$(ac_sent thread/archive)" "a,x/a"
 
 # The same when whether the checkout exists can no longer be told.
 if [ "$(id -u)" = 0 ]; then
