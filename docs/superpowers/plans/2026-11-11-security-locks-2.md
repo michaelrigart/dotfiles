@@ -19,7 +19,7 @@
 - One test per behaviour change, as the spec names it. A review finding gets code only when a real caller can reach it; otherwise it becomes a line under Rulings.
 - This repository is public: no token, hostname or private path beyond those already in the tree.
 - Suites are executed (`./tests/<name>.test.sh` or `./tests/run.sh <name>`), never run through an interpreter prefix. No `cd … &&` compounds; use paths relative to the checkout or `git -C`.
-- Implementers of tasks 1-4 do not commit and run only their focused suite; the controller commits one task at a time. Commit messages are imperative, with no agent attribution.
+- Tasks 1-4 are one batch: no dependency between them, disjoint files, no shared test resource. Their implementers are dispatched together in this checkout, do not commit and run only their focused suite. The controller then commits the tasks one at a time (staging only that task's files), reviews each on exactly its commit, and runs `./tests/run.sh` once for the batch. Task 5 follows, then Task 6. Commit messages are imperative, with no agent attribution.
 - Another branch (`fable-review`) adds a `.sandbox.enabled` assertion to `tests/claude-settings.test.sh`: do not add one here.
 - No comments or docs beyond the ones a step names.
 
@@ -70,7 +70,7 @@ Commit (controller): `Fail closed without a sandbox, deny Bundler's config and n
 - Modify: `dot_config/zsh/zshenv` (the "Bundler config vars" block, `:55-58`)
 - Test: `tests/zshenv.test.sh`
 
-- [ ] **Step 1: Write the failing assertions** in `tests/zshenv.test.sh`, using its `probe` helper: the clean login shell prints `8` for `$BUNDLE_JOBS` and `--with-opt-dir=/opt/homebrew/opt/libpq` for `$BUNDLE_BUILD__PG`. Labels: `zshenv exports BUNDLE_JOBS` and `zshenv exports the pg build option`.
+- [ ] **Step 1: Write the failing assertions** in `tests/zshenv.test.sh`, using its `probe` helper to read the environment a child process receives, not the shell variable: `probe '/usr/bin/printenv BUNDLE_JOBS'` prints `8` and `probe '/usr/bin/printenv BUNDLE_BUILD__PG'` prints `--with-opt-dir=/opt/homebrew/opt/libpq` (an assignment without `export` must fail them). Labels: `zshenv exports BUNDLE_JOBS` and `zshenv exports the pg build option`.
 - [ ] **Step 2: Run** `./tests/zshenv.test.sh`. Expected: the two new assertions fail with empty values.
 - [ ] **Step 3: Implement.**
   - `git mv dot_config/bundler/config.tmpl dot_config/bundler/private_config.tmpl`.
@@ -137,11 +137,11 @@ Commit (controller): `Name the private Bundler template and the Codex daemon pin
 **Depends on:** Tasks 1-5
 
 - [ ] **Step 1:** Final whole-branch review (`sp-architect`) of `main..HEAD` against the spec; fix findings in scope, record trade-offs under Rulings below.
-- [ ] **Step 2:** `./tests/run.sh xreview git-forge-guard wt-functions` (the three heavy suites; `dot_config/zsh/functions` changed). The machine-wide lock may make this wait.
-- [ ] **Step 3:** `./tests/run.sh` on the final commit; report every suite as passed/total.
-- [ ] **Step 4:** Item 4's measurement is Michael's (the daemon socket is denied to the sandbox). If it is not available, it stays an open item and the spec's item 4 says "measurement pending".
-- [ ] **Step 5:** Codex pre-merge review (`xreview dispatch --checkpoint pre-merge`).
-- [ ] **Step 6:** In the final commit set the spec's and this plan's `**Status:**` to `Implemented` (branch `fix/security-locks`), then push the branch. No merge.
+- [ ] **Step 2: Stop gate, item 4's measurement.** It is Michael's (the daemon socket is denied to the sandbox): after his `--from-cli` pin, `codex app-server daemon version` shows equal CLI and running versions, and after two scheduled cycles `current` still names the CLI's release. With the evidence: record it under the spec's item 4 and go on to Step 3. Without it: set the spec's Status to `In progress`, run Steps 4 and 5 on that commit, push the branch and report the line blocked on the measurement. Steps 3 and 6 then wait for it; the pre-merge review never runs before the measurement.
+- [ ] **Step 3:** Commit the final content: the measurement in the spec, and `**Status:** Implemented` (branch `fix/security-locks`) in the spec and this plan. Every later step runs on this commit; a fix after it repeats Steps 4 to 6 on the new head.
+- [ ] **Step 4:** `./tests/run.sh xreview git-forge-guard wt-functions` (the three heavy suites; `dot_config/zsh/functions` changed). The machine-wide lock may make this wait.
+- [ ] **Step 5:** `./tests/run.sh` on that commit; report every suite as passed/total.
+- [ ] **Step 6:** Codex pre-merge review of that commit (`xreview dispatch --checkpoint pre-merge`), then push the branch. No merge.
 
 ## Rulings
 
