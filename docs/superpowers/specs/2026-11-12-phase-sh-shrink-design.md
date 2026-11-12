@@ -1,8 +1,8 @@
 # Shrink Herdr's `phase.sh`
 
-**Status:** In progress
+**Status:** Approved
 **Date:** 2026-11-12
-**Sign-off:** pending (Michael)
+**Sign-off:** Michael, 2026-11-12 (Codex spec review approved, `xr-1794520796-fe06b267`)
 **Branch:** `refactor/phase-sh`, in the `wt` checkout `~/.local/share/chezmoi-refactor-phase-sh`
 **Origin:** item 36 of the 2026-11-11 setup review: "`phase.sh` (848 lines, a display badge) to
 about 150 with `timeout` and one run lock."
