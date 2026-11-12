@@ -312,7 +312,12 @@ Rulings by the line (refactor/phase-sh), put to the driver session under Michael
    call sits outside the run's process group, so its own bound is what ends it. After an INT the lock is
    therefore held at most until about the run's own deadline, 40 s after it began (whole-second
    arithmetic can add one). The same bound now covers
-   two other limits of section 7: a KILL of `timeout` itself, and a job whose shell died.
+   two other limits of section 7: a KILL of `timeout` itself, and a job that outlives the worker.
+   Two things escape it, both accepted: a local git or file operation that hangs (in an intact
+   run the outer deadline ends it; in an orphaned job it holds the lock until it ends), and a
+   process that a call leaves behind with the call's stdout open (the inner `timeout` returns
+   when the CLI exits and cuts nothing; the job waits for that process, and an orphaned job
+   holds the lock meanwhile). Neither is a network call.
    - This also changes section 6, items 2 and 6: a hung forge call is cut at 35 s, its job falls
      back to the cached table and reports, the other repositories are untouched, and the run
      exits 0. Exit 137 remains only for the outer deadline, the backstop for a hang that is not
