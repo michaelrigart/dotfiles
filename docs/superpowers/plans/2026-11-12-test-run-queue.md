@@ -79,7 +79,7 @@
   | a runner that waited says how long | `hold 20` | `waited [0-9]+ s for the test-run lock` |
   | a runner that did not wait says nothing | free lock | no `waited`, no `waiting` |
   | a wait shorter than the poll is still reported | default poll (60), `hold 20` with a record | one waiting line naming the holder, then `waited [0-9]+ s`, then `ok +lockheld` |
-  | a nested runner writes no record and reports no wait | fixture suite `nestedrun` starts `"$T/run.sh" plain-alpha` and saves its output and `ls "$RUN_SH_LOCK.holder"` before and after into `$MARK`; the outer run waited behind `hold 20` | the nested output has no `waited`; the record still exists after the nested run and still names the outer runner |
+  | a nested runner writes no record and reports no wait | fixture suite `nestedrun` starts `"$T/run.sh" plain-alpha` and saves its output and the record's contents (`cat "$RUN_SH_LOCK.holder"`) before and after into `$MARK`; the outer run is `"$T/run.sh" nestedrun` and waited behind `hold 20` | the nested output has no `waited`; the two saved records are byte-identical, non-empty, and their third field is `nestedrun` |
   | the holder record is removed after a run | free lock, run `plain` | `[ ! -e "$L.holder" ]` |
   | a running runner's record names its checkout and arguments | fixture suite `holderseen` cats `$RUN_SH_LOCK.holder` into `$MARK` | field 2 equals the start directory, field 3 equals `holderseen` |
   | a stale record with a free lock prints no waiting line | write `$L.holder`, no holder | no `wait`, `ok +plain-alpha` |
