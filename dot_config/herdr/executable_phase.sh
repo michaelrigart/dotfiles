@@ -21,15 +21,16 @@
 # ($CACHE_DIR/run.lock, fd 9, /usr/bin/lockf, LOCK_WAIT s, else it skips), sweeps stale +tmp.*
 # files, starts one background job per repository and waits. Descendants inherit fd 9, so the lock
 # is free when the last exits. The deadline covers the lock wait, and a cache write is a rename of
-# a temporary file beside its target, so a KILL at any point leaves the previous file.
+# a temporary file beside its target, so a KILL at any point leaves the previous file. Every glab,
+# gh and herdr call also has its own timeout, measured from the run's start (glab and gh CALL_MARGIN
+# s before the deadline): a hung forge call is cut, the job falls back to its cache and reports.
 #
 # Accepted failure modes (each costs stale badges until its cause ends):
-#   - KILL of `timeout` itself, a TERM that a descendant ignores, a descendant that leaves the
-#     group or outlives its job's shell: it holds the lock and later runs skip (`lsof -t <cache
-#     dir>/run.lock` names it).
-#   - INT (a ^C on a terminal run): bash ignores INT in `&` jobs when job control is off, and their
-#     children inherit that, so it ends timeout and the worker but no job. The jobs run on outside
-#     the deadline, holding the lock until their forge calls end. launchd's TERM does reach them.
+#   - INT (a ^C on a terminal run; launchd sends TERM, which reaches the jobs): bash ignores INT in
+#     `&` jobs when job control is off, so it ends timeout and the worker but not the jobs. The same
+#     holds for a KILL of `timeout` and for a job whose shell died. They hold the lock until every
+#     external call is cut, about CALL_MARGIN s before the deadline, counted from the run's start;
+#     only a hung local git or file operation outlasts that (`lsof -t <cache dir>/run.lock`).
 #   - A job cut at the deadline leaves some of its spaces on their previous badge; each report is
 #     one call, so none is half-painted.
 #   - The caller's environment reaches the script (overrides, BASH_ENV, exported functions, glab's
@@ -58,6 +59,7 @@ HERDR_ARGS=""
 TTL=120
 STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
 FRESH_GAP=10          # seconds a --fresh refresh trusts the cache after a lookup of the repository began
+CALL_MARGIN=2         # seconds before the run deadline at which forge calls are cut, so a job can still fall back to its cache and report
 LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT-10}"   # seconds the worker waits for the run lock; lockf takes it as given
 RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE-40}"   # seconds a run lasts at most, lock wait included; refresh checks it
 
@@ -132,6 +134,26 @@ usage() {
 }
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
+
+# timeout reads a duration of 0 as no limit, and a run must never be unbounded. The digits are
+# listed, as in slug_chars_ok: under a UTF-8 locale bash 3.2 lets U+2185 through the range [0-9].
+# The worker does arithmetic on the value, so `refresh` and `_refresh` both check it.
+require_deadline() {
+  case "$RUN_DEADLINE" in ''|*[!0123456789]*|0*) die "HERDR_PHASE_RUN_DEADLINE is not a positive whole number of seconds" ;; esac
+}
+
+# Every external call (glab, gh, herdr) runs under its own timeout, measured from the run's start, so
+# an orphaned job (an INT ends timeout and the worker but not the jobs) cannot hold the run lock
+# beyond the deadline. --foreground keeps the call in the caller's process group; KILL cannot be
+# ignored. A cut call is a failed call, and the failed-lookup paths handle it. Forge calls end at
+# CALL_END, CALL_MARGIN before the run deadline; herdr calls at RUN_END, the deadline itself, so a
+# job whose forge call was cut still reports.
+bounded() { # bounded <end: epoch seconds> <command...>
+  local left=$(( $1 - $(date +%s) ))
+  shift
+  [ "$left" -gt 0 ] || return 124
+  /usr/bin/timeout --foreground -s KILL "$left" "$@"
+}
 
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
@@ -264,12 +286,12 @@ gitlab_rows() { # gitlab_rows <slug> -> table rows; 0 full, 3 open rows only, el
   # Two queries, not one: `glab mr list` caps --per-page at 100 and this never paginates, so
   # a single --all query drops the oldest rows once a repo passes 100 MRs. The OPEN list on
   # its own keeps the rows a review badge depends on far from the cap.
-  open_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
+  open_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
   [ -n "$open_json" ] || return 1
   # Merged state is best-effort: if only this half fails the open rows still stand, and the
   # table is not cached, so the miss lasts one cycle instead of a TTL.
   local cacheable=1
-  merged_json="$(glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
+  merged_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
   printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
@@ -311,12 +333,12 @@ for b, m in seen.items():
 # not (measured: 5.1 s and 240 KB with it, 0.54 s without).
 github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, else failed
   local slug="$1" open_json merged_json rc
-  open_json="$(env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state open --limit 100 \
+  open_json="$(bounded "$CALL_END" env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state open --limit 100 \
     --json headRefName,state,number,isDraft,isCrossRepository,statusCheckRollup 2>/dev/null)" || return 1
   # Each status is taken on its own, never through a pipe into the parser. The merged half is
   # best-effort, as on GitLab: "null" stands for a failed call and the parser reads it as not
   # being a list.
-  merged_json="$(env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state merged --limit 100 \
+  merged_json="$(bounded "$CALL_END" env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state merged --limit 100 \
     --json headRefName,state,number,isDraft,isCrossRepository 2>/dev/null)" || merged_json="null"
 
   # Exit 1: the open answer is not a list. Exit 3: the rows are the open ones alone, because the
@@ -407,7 +429,7 @@ pipeline_class() { # pipeline_class <slug> <iid> <mode: ttl|force|cached>
       # glab prints an API error's JSON body on stdout and exits non-zero (a 401, 404, 429 or
       # 5xx), so its status is taken on its own, never through a pipe into the parser. An empty
       # status is a failed call or a body that is not this MR; a pipeline-less MR prints "none".
-      json="$(glab api --hostname "$GITLAB_HOST_NAME" \
+      json="$(bounded "$CALL_END" glab api --hostname "$GITLAB_HOST_NAME" \
         "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
       if [ -n "$json" ]; then
         status="$(printf '%s' "$json" | "$PY" -I -c '
@@ -519,7 +541,7 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
     if [ "$t" = "$ci" ]; then args+=(--token "ci_$t=$g")
     else args+=(--clear-token "ci_$t"); fi
   done
-  herdr $HERDR_ARGS "${args[@]}" >/dev/null 2>&1 9>&- || true
+  bounded "$RUN_END" herdr $HERDR_ARGS "${args[@]}" >/dev/null 2>&1 9>&- || true
 }
 
 # ------------------------------------------------------------------ spaces
@@ -529,7 +551,7 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
 # Sorted by repo_root because Herdr does not return the list grouped and the worker starts one
 # job per run of equal roots. The sort is stable, so Herdr order holds within a repo.
 spaces() {
-  herdr $HERDR_ARGS workspace list 2>/dev/null 9>&- | "$PY" -I -c '
+  bounded "$RUN_END" herdr $HERDR_ARGS workspace list 2>/dev/null 9>&- | "$PY" -I -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -605,9 +627,7 @@ cmd_refresh() {
       *) die "unknown option for refresh: $1" ;;
     esac
   done
-  # timeout reads a duration of 0 as no limit, and a run must never be unbounded. The digits are
-  # listed, as in slug_chars_ok: under a UTF-8 locale bash 3.2 lets U+2185 through the range [0-9].
-  case "$RUN_DEADLINE" in ''|*[!0123456789]*|0*) die "HERDR_PHASE_RUN_DEADLINE is not a positive whole number of seconds" ;; esac
+  require_deadline
   [ -x /usr/bin/timeout ] && [ -x /usr/bin/lockf ] || die "/usr/bin/timeout and /usr/bin/lockf are required"
   # The script has done `cd /`, so a relative $0 would no longer name it.
   case "$0" in /*) ;; *) die "run phase.sh by its absolute path" ;; esac
@@ -619,6 +639,8 @@ cmd_refresh() {
 # outside its write list) nor for reading. A run that cannot get the lock in LOCK_WAIT s does nothing.
 cmd_worker() { # cmd_worker <run: ttl|force|fresh> <workspace id or "">
   local run="${1:-ttl}" only="${2:-}" lock="$CACHE_DIR/run.lock" rc=0
+  require_deadline
+  RUN_END=$(( $(date +%s) + RUN_DEADLINE )); CALL_END=$(( RUN_END - CALL_MARGIN ))
   mkdir -p "$CACHE_DIR" || exit 2
   ( umask 577; : >> "$lock" ) || exit 2
   exec 9>>"$lock" || exit 2

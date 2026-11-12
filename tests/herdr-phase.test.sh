@@ -1335,30 +1335,60 @@ touch -t "$(date -v+1H +%Y%m%d%H%M.%S)" "$CACHE/test%2Fproj.mr10.pipeline"
 run refresh --workspace w4
 ci_check w4 none "a pipeline status dated an hour ahead gives no CI badge when the call fails"
 
-# The deadline. A forge call that ignores TERM and sleeps 30 s is gone 2 s into the run: timeout
-# sends KILL to the whole process group, jobs and forge calls alike, and exits 137. The lock is free
-# at once, the other repository was reported, and the hung repository's table is byte for byte what
-# it was. Bug caught: a deadline that sends TERM (the call survives, holds the lock and the run lasts
-# 30 s), or a lookup that writes its table before the answer is complete.
+# The per-call bound. Every glab, gh and herdr call runs under its own timeout, measured from the
+# run's start and cut CALL_MARGIN (2 s) before the deadline. A forge call that ignores TERM and sleeps
+# 30 s is dead about 3 s into a 5 s run (KILL cannot be ignored); the job falls back to its cached
+# table and reports, the other repository is reported, the hung repository's table is byte for byte
+# what it was, the run exits 0 and the lock is free. Bug caught: a call with no bound of its own,
+# which survives until the run's outer KILL (exit 137) or, once its run is gone, holds the lock.
 job_reset
 printf '[{"iid":20,"source_branch":"feature/one","state":"opened","draft":false},\n {"iid":21,"source_branch":"feature/two","state":"opened","draft":false}]\n' > "$GLD/open-test__proj2.json"
 run refresh --force
 cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
 printf 'ignore-term' > "$GLD/hang-test__proj"
-t0="$(now_s)"; DEADLINE=2 run refresh --force; t1="$(now_s)"
+t0="$(now_s)"; DEADLINE=5 run refresh --force; t1="$(now_s)"
 elapsed="$(secs "$t0" "$t1")"
-check "$(within "$elapsed" 4)" "yes" "a hung forge call: the run ended in under 4 s (took $elapsed s)"
-check "$RC" "137" "a hung forge call: the run was killed at the deadline (exit 137)"
+check "$(within "$elapsed" 5)" "yes" "a hung forge call: the run ended before its deadline (took $elapsed s)"
+check "$RC" "0" "a hung forge call: the run exits 0, not killed at the deadline"
 _p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
 if [ -z "$_p" ]; then _fail "a hung forge call: the TERM-ignoring call is dead (it never started)"
 elif kill -0 "$_p" 2>/dev/null; then _fail "a hung forge call: the TERM-ignoring call is dead"; kill -9 "$_p" 2>/dev/null
 else _pass "a hung forge call: the TERM-ignoring call is dead"; fi
-check "$(lock_busy)" "0" "a hung forge call: the lock is free at once"
+check "$(lock_busy)" "0" "a hung forge call: the lock is free"
 case "$(report_for wA)" in *"--token review=$ICON_MR !20 "*) _pass "a hung forge call: test/proj2's wA was reported with its phase";;
   *) _fail "a hung forge call: test/proj2's wA was reported with its phase (got: $(report_for wA))";; esac
 case "$(report_for wB)" in *"--token review=$ICON_MR !21 "*) _pass "a hung forge call: test/proj2's wB was reported with its phase";;
   *) _fail "a hung forge call: test/proj2's wB was reported with its phase (got: $(report_for wB))";; esac
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "a hung forge call: test/proj's w4 was reported from its cached table";;
+  *) _fail "a hung forge call: test/proj's w4 was reported from its cached table (got: $(report_for w4))";; esac
 check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "a hung forge call: the hung repository's table is byte for byte what it was"
+
+# INT to the run (a ^C on a terminal): bash ignores INT in `&` jobs when job control is off, so the jobs
+# go on after timeout and the worker end, and a hung forge call would hold the lock for good. The
+# run is started through perl, which puts INT back to its default (a job the suite starts with `&`
+# would otherwise inherit INT ignored and the INT would do nothing). With a 5 s deadline the forge call
+# is cut at about 3 s whatever happened to the run: the stub is dead and the lock free within 5 s of
+# the run's start. Pins the bound, not the signal's delivery. Bug caught: a call with no bound of its own.
+job_reset
+: > "$GLD/hang-test__proj"
+t0="$(now_s)"
+PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" HERDR_PHASE_RUN_DEADLINE=5 \
+  /usr/bin/perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' /bin/bash "$PHASE" refresh --force >/dev/null 2>&1 &
+mpid=$!
+waitfor "$GLD/pid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
+kill -INT "$mpid" 2>/dev/null
+i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
+_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
+if kill -0 "$_p" 2>/dev/null; then echo "  note: INT ended the run and the hung forge call outlived it, so the bound is what frees the lock"
+else echo "  note: INT took the hung forge call with it, so the bound is not exercised"; fi
+i=0; while { kill -0 "$_p" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 70 ]; do i=$((i + 1)); sleep 0.1; done
+t1="$(now_s)"
+check "$(within "$(secs "$t0" "$t1")" 5.5)" "yes" "after INT the forge call is dead and the lock free within 5 s of the run's start ($(secs "$t0" "$t1") s)"
+if [ -z "$_p" ]; then _fail "after INT the hung forge call is dead (it never started)"
+elif kill -0 "$_p" 2>/dev/null; then _fail "after INT the hung forge call is dead"; kill -9 "$_p" 2>/dev/null
+else _pass "after INT the hung forge call is dead"; fi
+check "$(lock_busy)" "0" "after INT the lock is free"
+wait "$mpid" 2>/dev/null
 
 # The deadline counts the wait for the lock: the run starts its clock before it asks for the lock, so
 # a run that waits for a lock held throughout still ends at the deadline. Bug caught: a deadline that
@@ -1421,15 +1451,18 @@ for _f in tsv lookup; do
     "the GitHub .$_f is renamed into place from a +tmp.XXXXXX file in the cache directory"
 done
 
-# A run killed in the middle of a cache write (the logging mv hangs on the table) leaves the previous
-# table byte for byte, and its temporary file. Bug caught: a half-written table that later reads as a
-# valid, shorter one.
+# The outer backstop, and a write cut in the middle. The logging mv is not under a call bound, so a mv
+# that hangs on the table is ended by timeout's KILL at the run deadline (exit 137): the previous table
+# is left byte for byte, with the write's temporary file, and the lock is free. The deadline is 4 s so
+# the forge calls (cut at 2 s) still run first. Bug caught: no outer KILL (the run hangs on whatever
+# is not a forge call), or a half-written table that later reads as a valid, shorter one.
 job_reset
 run refresh --force
 cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
 printf '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]\n' > "$GLD/open-test__proj.json"
 printf 'test%%2Fproj.tsv' > "$T/mvhang"
-MVHANG="$T/mvhang" DEADLINE=2 run refresh --force --workspace w4
+t0="$(now_s)"; MVHANG="$T/mvhang" DEADLINE=4 run refresh --force --workspace w4; t1="$(now_s)"
+check "$(within "$(secs "$t0" "$t1")" 5.5)" "yes" "a run held up by a hung mv ended at its deadline ($(secs "$t0" "$t1") s)"
 check "$RC" "137" "a run killed inside a cache write exits 137"
 check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the killed write"
 check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "1" "the killed write left its one temporary file"
