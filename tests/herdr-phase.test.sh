@@ -223,6 +223,7 @@ glab_stub() {
 cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
+{ : >&9; } 2>/dev/null && echo "glab-fd9-open" >> "$CALLS"
 [ -z "${PWDS:-}" ] || echo "$PWD" >> "$PWDS"
 if [ "${1:-}" = "api" ]; then
   if [ -e "${PIPEFAIL:-}" ]; then
@@ -263,6 +264,7 @@ cat > "$T/gh.stub" <<'G'
 #!/usr/bin/env bash
 GHDIR=@GHDIR@
 echo "gh $*" >> @CALLS@
+{ : >&9; } 2>/dev/null && echo "gh-fd9-open" >> @CALLS@
 echo "$PWD" >> @PWDS@
 env >> @GHENV@
 mode=""; [ -r "$GHDIR/mode" ] && mode="$(cat "$GHDIR/mode")"
@@ -1073,7 +1075,8 @@ echo "N. one run: repositories side by side, one lock, one deadline"
 #                      the first open list creates started-<repo>, stalls 2 s, then answers this
 #   hang-<repo>        every list call records its PID in pid-<repo> and sleeps 30 s; when the file
 #                      says ignore-term, it ignores TERM first, before the PID is written (the
-#                      ignore survives the exec)
+#                      ignore survives the exec); when it says grandchild, a TERM-ignoring child
+#                      records its PID in gpid-<repo> and shares the call's stdout first
 #   api-fail           every api call fails
 # Every wait is bounded, so a regression fails the case and never hangs the suite.
 GLD="$T/gld"; export GLD
@@ -1082,6 +1085,7 @@ glab_job_stub() {
 cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
+{ : >&9; } 2>/dev/null && echo "glab-fd9-open" >> "$CALLS"
 if [ "${1:-}" = "api" ]; then
   [ ! -e "$GLD/api-fail" ] || { echo "glab: HTTP 502" >&2; exit 1; }
   echo "{\"iid\":${4##*/},\"head_pipeline\":null}"; exit 0
@@ -1093,7 +1097,11 @@ done
 [ ! -e "$GLD/fail-$repo" ] || { echo "glab: HTTP 502" >&2; exit 1; }
 state=open; case " $* " in *" --merged "*) state=merged ;; esac
 if [ -e "$GLD/hang-$repo" ]; then
-  [ "$(cat "$GLD/hang-$repo")" != ignore-term ] || trap '' TERM
+  mode="$(cat "$GLD/hang-$repo")"
+  # grandchild: a child that ignores TERM, shares this call's stdout and records its PID, as a
+  # credential helper or git run by gh would
+  case "$mode" in *grandchild*) ( trap '' TERM; exec /bin/sleep 30 ) & echo "$!" > "$GLD/gpid-$repo" ;; esac
+  case "$mode" in *ignore-term*) trap '' TERM ;; esac
   echo "$$" > "$GLD/pid-$repo"
   exec /bin/sleep 30
 fi
@@ -1210,8 +1218,9 @@ counts=""; for w in $LINKED; do counts="$counts$(nreports $w) "; done
 check "$counts" "1 1 1 1 1 1 1 1 1 1 1 1 1 1 " "every linked space of the interleaved list is reported exactly once"
 check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "14" "and nothing else is reported"
 # Bug caught: a herdr call that inherits the run lock, so a server the CLI starts holds it for ever.
-check "$(grep -c '^herdr workspace' "$CALLS")" "15" "PRECONDITION: the stub saw the list and every report"
-check "$(grep -c '^herdr-fd9-open$' "$CALLS")" "0" "no herdr call inherits the run lock (fd 9)"
+check "$(grep -c '^herdr workspace' "$CALLS")" "15" "PRECONDITION: the stubs saw the list and every report"
+check "$(grep -c '^glab mr list' "$CALLS")" "4" "PRECONDITION: the stubs saw the glab calls"
+check "$(grep -c -- '-fd9-open$' "$CALLS")" "0" "no herdr or glab call inherits the run lock (fd 9)"
 
 # A single space is still one report, and a workspace id that matches nothing is none and no forge call.
 job_reset
@@ -1336,29 +1345,37 @@ run refresh --workspace w4
 ci_check w4 none "a pipeline status dated an hour ahead gives no CI badge when the call fails"
 
 # The per-call bound. Every glab, gh and herdr call runs under its own timeout, measured from the
-# run's start and cut CALL_MARGIN (2 s) before the deadline. A forge call that ignores TERM and sleeps
-# 30 s is dead about 3 s into a 5 s run (KILL cannot be ignored); the job falls back to its cached
-# table and reports, the other repository is reported, the hung repository's table is byte for byte
-# what it was, the run exits 0 and the lock is free. Bug caught: a call with no bound of its own,
-# which survives until the run's outer KILL (exit 137) or, once its run is gone, holds the lock.
+# run's start, in a process group of its own and without fd 9; forge calls are cut CALL_MARGIN (5 s)
+# before the deadline and herdr calls at the deadline. With a deadline of 8 s the forge call is cut 2 to
+# 4 s in (whole-second arithmetic). The stub ignores TERM, sleeps 30 s and starts a TERM-ignoring
+# grandchild that shares its stdout: both are dead after the cut (KILL cannot be ignored, and it takes
+# the call's whole group), the job falls back to its cached table and reports, the other repository is
+# reported, the hung repository's table is byte for byte what it was, the run exits 0 before its outer
+# deadline and the lock is free. Bugs caught: a call with no bound of its own, which survives until the
+# run's outer KILL (exit 137); a cut that kills the call's own process and not its children (the
+# grandchild holds the stdout pipe, so the job waits for it, and the lock with it).
 job_reset
 printf '[{"iid":20,"source_branch":"feature/one","state":"opened","draft":false},\n {"iid":21,"source_branch":"feature/two","state":"opened","draft":false}]\n' > "$GLD/open-test__proj2.json"
 run refresh --force
 cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
-printf 'ignore-term' > "$GLD/hang-test__proj"
-t0="$(now_s)"; DEADLINE=5 run refresh --force; t1="$(now_s)"
+printf 'ignore-term grandchild' > "$GLD/hang-test__proj"
+t0="$(now_s)"; DEADLINE=8 run refresh --force; t1="$(now_s)"
 elapsed="$(secs "$t0" "$t1")"
-check "$(within "$elapsed" 5)" "yes" "a hung forge call: the run ended before its deadline (took $elapsed s)"
+check "$(within "$elapsed" 8)" "yes" "a hung forge call: the run ended before its deadline (took $elapsed s)"
 check "$RC" "0" "a hung forge call: the run exits 0, not killed at the deadline"
-_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
-if [ -z "$_p" ]; then _fail "a hung forge call: the TERM-ignoring call is dead (it never started)"
-elif kill -0 "$_p" 2>/dev/null; then _fail "a hung forge call: the TERM-ignoring call is dead"; kill -9 "$_p" 2>/dev/null
-else _pass "a hung forge call: the TERM-ignoring call is dead"; fi
+for _f in pid gpid; do
+  _p="$(cat "$GLD/$_f-test__proj" 2>/dev/null)"
+  if [ -z "$_p" ]; then _fail "a hung forge call: the TERM-ignoring $_f process is dead (it never started)"
+  elif kill -0 "$_p" 2>/dev/null; then _fail "a hung forge call: the TERM-ignoring $_f process is dead"; kill -9 "$_p" 2>/dev/null
+  else _pass "a hung forge call: the TERM-ignoring $_f process is dead"; fi
+done
 check "$(lock_busy)" "0" "a hung forge call: the lock is free"
 case "$(report_for wA)" in *"--token review=$ICON_MR !20 "*) _pass "a hung forge call: test/proj2's wA was reported with its phase";;
   *) _fail "a hung forge call: test/proj2's wA was reported with its phase (got: $(report_for wA))";; esac
 case "$(report_for wB)" in *"--token review=$ICON_MR !21 "*) _pass "a hung forge call: test/proj2's wB was reported with its phase";;
   *) _fail "a hung forge call: test/proj2's wB was reported with its phase (got: $(report_for wB))";; esac
+counts=""; for w in $LINKED; do counts="$counts$(nreports $w) "; done
+check "$counts" "1 1 1 1 1 1 1 1 1 1 1 1 1 1 " "a hung forge call: every space, the hung repository's included, was reported once"
 case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "a hung forge call: test/proj's w4 was reported from its cached table";;
   *) _fail "a hung forge call: test/proj's w4 was reported from its cached table (got: $(report_for w4))";; esac
 check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "a hung forge call: the hung repository's table is byte for byte what it was"
@@ -1366,27 +1383,30 @@ check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo ch
 # INT to the run (a ^C on a terminal): bash ignores INT in `&` jobs when job control is off, so the jobs
 # go on after timeout and the worker end, and a hung forge call would hold the lock for good. The
 # run is started through perl, which puts INT back to its default (a job the suite starts with `&`
-# would otherwise inherit INT ignored and the INT would do nothing). With a 5 s deadline the forge call
-# is cut at about 3 s whatever happened to the run: the stub is dead and the lock free within 5 s of
-# the run's start. Pins the bound, not the signal's delivery. Bug caught: a call with no bound of its own.
+# would otherwise inherit INT ignored and the INT would do nothing). With an 8 s deadline the forge
+# call and its grandchild are cut 2 to 4 s in whatever happened to the run: both are dead and the lock
+# free before the deadline (8 s, and whole seconds can add one). Pins the bound, not the signal's
+# delivery. Bug caught: a call with no bound of its own, or one that leaves its children behind.
 job_reset
-: > "$GLD/hang-test__proj"
+printf 'grandchild' > "$GLD/hang-test__proj"
 t0="$(now_s)"
-PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" HERDR_PHASE_RUN_DEADLINE=5 \
+PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" HERDR_PHASE_RUN_DEADLINE=8 \
   /usr/bin/perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' /bin/bash "$PHASE" refresh --force >/dev/null 2>&1 &
 mpid=$!
-waitfor "$GLD/pid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
+waitfor "$GLD/gpid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
 kill -INT "$mpid" 2>/dev/null
 i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
-_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
+_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"; _g="$(cat "$GLD/gpid-test__proj" 2>/dev/null)"
 if kill -0 "$_p" 2>/dev/null; then echo "  note: INT ended the run and the hung forge call outlived it, so the bound is what frees the lock"
 else echo "  note: INT took the hung forge call with it, so the bound is not exercised"; fi
-i=0; while { kill -0 "$_p" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 70 ]; do i=$((i + 1)); sleep 0.1; done
+i=0; while { kill -0 "$_p" 2>/dev/null || kill -0 "$_g" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
 t1="$(now_s)"
-check "$(within "$(secs "$t0" "$t1")" 5.5)" "yes" "after INT the forge call is dead and the lock free within 5 s of the run's start ($(secs "$t0" "$t1") s)"
-if [ -z "$_p" ]; then _fail "after INT the hung forge call is dead (it never started)"
-elif kill -0 "$_p" 2>/dev/null; then _fail "after INT the hung forge call is dead"; kill -9 "$_p" 2>/dev/null
-else _pass "after INT the hung forge call is dead"; fi
+check "$(within "$(secs "$t0" "$t1")" 8.5)" "yes" "after INT the forge call and its child are dead and the lock free by the deadline ($(secs "$t0" "$t1") s)"
+for _x in "$_p" "$_g"; do
+  if [ -z "$_x" ]; then _fail "after INT the hung forge process is dead (it never started)"
+  elif kill -0 "$_x" 2>/dev/null; then _fail "after INT the hung forge process $_x is dead"; kill -9 "$_x" 2>/dev/null
+  else _pass "after INT the hung forge process is dead"; fi
+done
 check "$(lock_busy)" "0" "after INT the lock is free"
 wait "$mpid" 2>/dev/null
 
@@ -1401,25 +1421,31 @@ check "$(within "$(secs "$t0" "$t1")" 4)" "yes" "a run waiting for a held lock e
 check "$RC" "137" "and was killed at the deadline, not skipped (exit 137)"
 check "$(herdr_calls)" "0" "and made no herdr call"
 
-# TERM to the run (launchd's bootout, a kill, ^C): timeout is the run's process and forwards it to the
-# group, so an ordinary hung forge call ends with it, the run exits 143 at once and the lock is free.
-# Bug caught: a TERM that stops the shell and leaves its forge call running with the lock.
+# TERM to the run (launchd's bootout, a kill): timeout is the run's process and forwards it to the
+# worker's group, so the run exits 143 at once. A forge call has a process group of its own, out of
+# reach of that TERM: its own bound ends it, so the stub is dead and the lock free by the 8 s deadline
+# (the cut lands 2 to 4 s in). Bug caught: a TERM that stops the shell and leaves its forge call
+# running with the lock for good.
 job_reset
 : > "$GLD/hang-test__proj"
-bg_phase refresh --force; mpid=$BGPID
+t0="$(now_s)"
+DEADLINE=8 bg_phase refresh --force; mpid=$BGPID
 waitfor "$GLD/pid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
-t0="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
+t1="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
 i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
-t1="$(now_s)"
+t2="$(now_s)"
 if kill -0 "$mpid" 2>/dev/null; then _fail "the run exits within 2 s of TERM"; kill -9 "$mpid" 2>/dev/null
-else _pass "the run exits within 2 s of TERM ($(secs "$t0" "$t1") s)"; fi
+else _pass "the run exits within 2 s of TERM ($(secs "$t1" "$t2") s)"; fi
 wait "$mpid" 2>/dev/null; mrc=$?
 check "$mrc" "143" "and exits with status 143"
-check "$(lock_busy)" "0" "and the lock is free"
 _p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
+i=0; while { kill -0 "$_p" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
+t3="$(now_s)"
+check "$(within "$(secs "$t0" "$t3")" 8.5)" "yes" "and the hung forge call is dead and the lock free by the deadline ($(secs "$t0" "$t3") s)"
 if [ -z "$_p" ]; then _fail "and the hung forge call is dead (it never started)"
 elif kill -0 "$_p" 2>/dev/null; then _fail "and the hung forge call is dead"; kill -9 "$_p" 2>/dev/null
 else _pass "and the hung forge call is dead"; fi
+check "$(lock_busy)" "0" "and the lock is free"
 
 # Cache writes are atomic: a replaced file is a new file, made beside its target with a fixed prefix,
 # and no temporary one is left behind. Bug caught: a write straight onto the target, which a run
@@ -1446,23 +1472,36 @@ check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.look
   "the GitLab .lookup is renamed into place from a +tmp.XXXXXX file in the cache directory"
 : > "$MVLOG"; rm -rf "$CACHE"
 ghrun refresh --force
+check "$(gh_calls)$(grep -c -- '-fd9-open$' "$CALLS")" "20" "PRECONDITION: the gh stub saw both calls, and none inherits the run lock (fd 9)"
 for _f in tsv lookup; do
   check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/github@test%2Fproj3\.$_f\$" "$MVLOG")" "1" \
     "the GitHub .$_f is renamed into place from a +tmp.XXXXXX file in the cache directory"
 done
 
-# The outer backstop, and a write cut in the middle. The logging mv is not under a call bound, so a mv
-# that hangs on the table is ended by timeout's KILL at the run deadline (exit 137): the previous table
-# is left byte for byte, with the write's temporary file, and the lock is free. The deadline is 4 s so
-# the forge calls (cut at 2 s) still run first. Bug caught: no outer KILL (the run hangs on whatever
-# is not a forge call), or a half-written table that later reads as a valid, shorter one.
+# The outer backstop. The logging mv is not under a call bound, so a mv that hangs on the lookup stamp
+# (written before any forge call) is ended by timeout's KILL at the run deadline: exit 137 at 2 s with
+# the lock free and the previous table byte for byte. Bug caught: no outer KILL, so the run hangs on
+# whatever is not a forge or herdr call.
+job_reset
+run refresh --force
+cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
+printf 'test%%2Fproj.lookup' > "$T/mvhang"
+t0="$(now_s)"; MVHANG="$T/mvhang" DEADLINE=2 run refresh --force --workspace w4; t1="$(now_s)"
+check "$(within "$(secs "$t0" "$t1")" 3.5)" "yes" "a run held up by a hung mv ended at its 2 s deadline ($(secs "$t0" "$t1") s)"
+check "$RC" "137" "a run held up by a hung mv exits 137"
+check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was"
+check "$(lock_busy)" "0" "no lock outlives the killed run"
+
+# A write cut in the middle. The mv that hangs is the table's, so the run must get that far: the
+# deadline is 8 s, CALL_MARGIN + 3, which leaves the forge calls (cut at 3 s, 2 to 4 with rounding)
+# time to answer. The previous table is left byte for byte, with the write's temporary file.
+# Bug caught: a half-written table that later reads as a valid, shorter one.
 job_reset
 run refresh --force
 cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
 printf '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]\n' > "$GLD/open-test__proj.json"
 printf 'test%%2Fproj.tsv' > "$T/mvhang"
-t0="$(now_s)"; MVHANG="$T/mvhang" DEADLINE=4 run refresh --force --workspace w4; t1="$(now_s)"
-check "$(within "$(secs "$t0" "$t1")" 5.5)" "yes" "a run held up by a hung mv ended at its deadline ($(secs "$t0" "$t1") s)"
+MVHANG="$T/mvhang" DEADLINE=8 run refresh --force --workspace w4
 check "$RC" "137" "a run killed inside a cache write exits 137"
 check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the killed write"
 check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "1" "the killed write left its one temporary file"
