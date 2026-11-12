@@ -290,6 +290,41 @@ re-taken on that `main`.
   `bootstrap`; the commands go in the final report), watch one cycle, remove the old cache
   debris, and run the sandboxed lock probe of section 3.
 
+## Amendment, 2026-11-12: findings of the Task 2 review
+
+Rulings by the line (refactor/phase-sh), put to the driver session under Michael's delegation of
+2026-11-12. They correct sections 1, 5 and 7; where they differ, this section holds.
+
+1. **INT orphans every job** (corrects section 7, "TERM, HUP or INT"). bash ignores INT and QUIT
+   in `&` jobs when job control is off, and their children inherit that (measured with Apple's
+   `timeout` and `/bin/bash` 3.2). An INT to the run, such as ^C on a `refresh` started in a
+   terminal, ends `timeout` and the worker; every job runs on, outside the deadline, and holds
+   the lock until its forge call ends. TERM and HUP reach the jobs as section 7 says, and launchd
+   sends TERM. Undoing it needs a trap or job control, which this design removes.
+   **Delegated ruling** (the driver session, chezmoi-87, on Michael's word of 2026-11-12; his to
+   overrule): accepted as a named failure mode on condition that an orphaned job cannot hold the
+   lock without bound. So every `glab`, `gh` and `herdr` call runs under
+   `/usr/bin/timeout --foreground -s KILL <left>`, counted from the run's start: a forge call
+   is cut 2 s before the run's deadline, and a `herdr` call at the deadline itself, so a job
+   whose forge call was cut can still report (measured: the foreground form stays in the run's
+   process group and cuts the call whatever signals the job ignores). After an INT the lock is
+   therefore held at most until about the run's own deadline, 40 s after it began (whole-second
+   arithmetic can add one). The same bound now covers
+   two other limits of section 7: a KILL of `timeout` itself, and a job whose shell died.
+   - This also changes section 6, items 2 and 6: a hung forge call is cut at 38 s, its job falls
+     back to the cached table and reports, the other repositories are untouched, and the run
+     exits 0. Exit 137 remains only for the outer deadline, the backstop for a hang that is not
+     an external call (git, `jq`, a file operation).
+   - A run deadline of 2 s or less cuts every external call at once.
+2. **Temporary files are named `+tmp.XXXXXX`, not `.tmp.XXXXXX`** (corrects section 5). A GitLab
+   slug may start with `.tmp.`, so that prefix let the sweep delete a repository's cache files.
+   No cache key can hold `+`.
+3. **`refresh` refuses a relative `$0`** (adds to section 1): it exits 2 with
+   `phase.sh: run phase.sh by its absolute path`. The script has done `cd /` before the exec, so a
+   relative path would otherwise end in a silent 127. Every caller passes an absolute path.
+4. **`herdr` never inherits the run lock** (adds to section 1): both `herdr` calls run with
+   `9>&-`, so a server the CLI might start cannot hold the lock for its lifetime.
+
 ## Left to the builder
 
 - How the two forge answers reach `jq`.
