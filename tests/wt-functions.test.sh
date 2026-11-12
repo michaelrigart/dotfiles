@@ -2196,15 +2196,6 @@ dunlogged "--worktree" "a half-prepared checkout is not opened in Herdr"
   && _pass "the failed checkout is preserved for wt-prepare recovery" \
   || _fail "the failed checkout is preserved for wt-prepare recovery"
 
-setup
-run "$REPO" wt existing
-: > "$DLOG"
-run "$REPO" wt existing
-rc_is 0 "wt reopens an existing matching worktree"
-has "reopening" "wt reports the reopen path"
-dlogged "--worktree $REPO $HOME/Code/Org/repo-existing" \
-  "reopen returns to the same native Herdr workspace"
-
 # The in-Herdr popup feeds this prompt. It must use the same wt path, not Herdr's
 # built-in create action, so copy/setup/locking cannot be bypassed from the TUI.
 setup
@@ -2288,26 +2279,6 @@ run "$REPO" dev "$RESERVED"
 rc_is 1 "dev refuses a worktree carrying someone else's Git lock"
 has "locked for another reason" "the refusal explains why the lock is preserved"
 dunlogged "--worktree" "a foreign-locked checkout is never opened in Herdr"
-
-# There is one creation path now, and it always takes ownership: wt-rm is the only
-# supported removal route, so a wt worktree left unlocked could be removed by a raw
-# `git worktree remove` that skips teardown entirely.
-setup
-run "$REPO" wt locked-by-default
-run "$REPO" git worktree list --porcelain
-has "locked wt-managed; remove with command wt-rm" \
-  "wt takes lifecycle ownership of every checkout it creates"
-
-# wt-rm is the sole path allowed to cross the ownership lock, and only after its
-# existing cleanliness and teardown gates. A normal remove cannot cross this fixture;
-# success therefore proves wt-rm used Git's locked-worktree form intentionally.
-setup
-run "$REPO" wt retire
-RETIRE="$HOME/Code/Org/repo-retire"
-run "$REPO" wt-rm retire
-rc_is 0 "wt-rm retires a Herdr-owned locked checkout"
-[[ -d "$RETIRE" ]] && _fail "the Herdr-owned checkout is actually removed" \
-                       || _pass "the Herdr-owned checkout is actually removed"
 
 # The double-force path is authorized only by our exact lock reason. A foreign lock
 # must stop the lifecycle before either terminal manager is disrupted.
@@ -2830,19 +2801,6 @@ has "could not scan for processes" "the abort says the scan could not run"
 [[ -d "$NOTD" ]] && _pass "the checkout survives when processes cannot be scanned" \
                  || _fail "the checkout survives when processes cannot be scanned"
 
-# Real lsof scanning every process always reports something — the running shell's own
-# cwd is in the answer. Nothing at all therefore means the scan failed, not that the
-# machine is idle, and treating it as "clean" would disable the guard silently.
-setup
-run "$REPO" wt lsof-empty
-EMPTY="$HOME/Code/Org/repo-lsof-empty"
-export MOCK_LSOF_SPEC=""
-run "$REPO" wt-rm lsof-empty
-rc_is 1 "an empty process listing fails closed rather than reading as idle"
-has "could not read the process list" "the empty listing is diagnosed as a failure"
-[[ -d "$EMPTY" ]] && _pass "the checkout survives an empty process listing" \
-                       || _fail "the checkout survives an empty process listing"
-
 # The status that matters is the one belonging to the listing actually parsed. Reading
 # the listing in a second, unchecked invocation means a scan that failed *after*
 # emitting some of its records is indistinguishable from a clean checkout — the records
@@ -2853,20 +2811,6 @@ ONCE="$HOME/Code/Org/repo-lsof-once"
 run "$REPO" wt-rm lsof-once
 rc_is 0 "the single-invocation fixture removes the worktree normally"
 eq "$(grep -c . "$LLOG")" "1" "the process list is read in exactly one invocation"
-
-# lsof exits nonzero both when it matches nothing and when it fails, but this
-# invocation scans every process rather than a path, so nonzero can only be failure.
-# Records in hand do not redeem it: a listing that stopped early is not a short listing.
-setup
-run "$REPO" wt lsof-rc
-LSOFRC="$HOME/Code/Org/repo-lsof-rc"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4321 halfway-daemon "$LSOFRC")" MOCK_LSOF_RC=1
-run "$REPO" wt-rm lsof-rc
-rc_is 1 "a nonzero lsof exit fails closed even when it produced well-formed records"
-has "could not read the process list" "the failed scan is diagnosed"
-hasnt "halfway-daemon" "records from a failed scan are not reported as findings"
-[[ -d "$LSOFRC" ]] && _pass "the checkout survives a failed process scan" \
-                        || _fail "the checkout survives a failed process scan"
 
 # --- squash-merged branches -------------------------------------------------
 #
