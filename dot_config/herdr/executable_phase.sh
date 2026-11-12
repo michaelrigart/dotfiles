@@ -1,107 +1,38 @@
 #!/bin/bash
-# Badge Herdr spaces with where a worktree sits between "I'm working on this" and
-# "this is waiting to be merged".
+# Badge Herdr spaces with where a worktree sits between "I'm working on this" and "this is
+# waiting to be merged". Managed by chezmoi (source: dot_config/herdr/executable_phase.sh).
 #
-# Managed by chezmoi (source: dot_config/herdr/executable_phase.sh).
+# Tokens are display-only and do NOT survive a Herdr server restart, so this script alone keeps
+# the badges alive: re-runnable, and it never reads back what it reported. One `herdr workspace
+# report-metadata` call per space sets one phase token (active, draft, review, merged) and, beside
+# an open MR or PR, one pipeline token (ci_ok, ci_fail, ci_run), and clears the rest.
 #
-# Reported tokens are display-only and do NOT survive a Herdr server restart, so this script
-# is the only thing keeping the badges alive. It must be cheap and safely re-runnable, and
-# it must never read back state it previously reported.
+# Three things drive it: the dev.phase plugin's startup hook, its workspace.focused /
+# worktree.created / worktree.removed hooks, and a LaunchAgent running `refresh --force` every 50 s.
+# The timer is not redundant: opening or merging an MR fires no Herdr event. It must not be
+# throttled (no ProcessType=Background or LowPriorityIO): a run that outlasts its interval makes
+# launchd skip cycles while reporting exit code 0.
 #
-# Each report carries seven keys in one `herdr workspace report-metadata` call: the phase
-# (active, draft, review or merged) and, for a space with an open MR (draft or not), the head
-# pipeline's status (ci_ok, ci_fail or ci_run). One of each group is set and the rest cleared.
+# Freshness: --force (the timer) looks every repository up now; --fresh (a focus refresh) does too
+# unless the repository's stamp <key>.lookup, written before every lookup, is under FRESH_GAP (10 s)
+# old, then it answers from the cache; the other hooks use the 120 s TTL.
 #
-# Three things drive it, and the periodic one is not redundant:
-#   - the dev.phase plugin's [[startup]] hook, which repaints every badge after a restart;
-#   - its [[events]] hooks on workspace.focused / worktree.created / worktree.removed;
-#   - a LaunchAgent (be.netronix.herdr-phase-refresh) running `refresh --force` every 50 seconds.
+# Structure: `refresh` replaces itself with `/usr/bin/timeout -s KILL $RUN_DEADLINE`, which runs
+# the worker (`_refresh`) in a process group of its own. The worker takes one run lock
+# ($CACHE_DIR/run.lock, fd 9, /usr/bin/lockf, LOCK_WAIT s, else it skips), sweeps stale .tmp.*
+# files, starts one background job per repository and waits. Descendants inherit fd 9, so the lock
+# is free when the last exits. The deadline covers the lock wait, and a cache write is a rename of
+# a temporary file beside its target, so a KILL at any point leaves the previous file.
 #
-# The event hooks alone cannot keep an MR badge true: opening or merging an MR produces no
-# Herdr event, and UI-driven workspace switches may not fire workspace.focused. The
-# LaunchAgent must not be throttled (no ProcessType=Background or LowPriorityIO): a run
-# that outlasts its interval makes launchd skip cycles while reporting exit code 0.
-#
-# How fresh a badge is depends on who asked:
-#   - the timer forces every lookup (--force), so a change shows within about a minute. Without
-#     --force a focus refresh would renew a cache and the next timer run would reuse it;
-#   - a focus refresh (--fresh --workspace) looks its space's repository up whatever the TTL, so the
-#     phase being read is at most about FRESH_GAP (10 s) old, unless a lookup of that repository
-#     started less than FRESH_GAP ago: then it answers from the cache, as a failed lookup would. The
-#     stamp is per repository but the lookup is only the focused space's: a CI token is as old as
-#     the last lookup of that space's own pipeline;
-#   - the startup and worktree hooks use the TTL (120 s), and the keybinding is `--force`.
-# The gap is measured from <key>.lookup, a stamp every forge lookup writes before it calls out. It
-# is written and read only under the repository's lock, so a failing forge, or two refreshes at
-# once, are rate-limited too, and --force ignores it.
-#
-# A refresh runs one background job per repository, side by side, and each job holds a kernel lock
-# on that repository's lock file (<key>.lock in the cache directory, fd 9, /usr/bin/lockf) from its
-# stamp check to its last report. Two refreshes of one repository (the timer and a focus hook, say) run
-# one after the other, and an older lookup can never publish after a newer one. A job that cannot
-# take the lock within LOCK_WAIT seconds skips its repository and says so on stderr; that run's
-# spaces keep their last badge until the next run (the holder reports only the spaces it was
-# started for). Cache files are replaced atomically, so a refresh killed mid-write leaves the
-# previous table, and each job sweeps its repository's stray temporary files under the lock.
-#
-# A stuck job is ended at the run deadline: the refresh waits for its jobs at most RUN_DEADLINE
-# (40 s, under the 50 s interval), then sends TERM to each unfinished job's process group (KILL
-# KILL_GRACE s later to any group that still has a member), which takes its forge call with it and
-# frees its lock. The other repositories are reported as usual, and the exit status stays 0. The
-# jobs sit in process groups of their own, out of reach of launchd's group kill, so the main shell
-# traps TERM, HUP and INT and ends them itself.
-# Temporary files stage in .tmp/<key> of the cache directory, one directory per repository.
-#
-# Accepted limits:
-#   - SIGKILL of the main shell cannot be trapped, and nothing bounds a job it orphans: forge calls
-#     have no timeout and a job has no deadline of its own. If that job's forge call hangs, the
-#     repository's badges stay frozen until the call ends (every later run skips the repository,
-#     whose lock the call holds). `pkill -f phase.sh` ends the job's shells but not the forge call,
-#     which keeps the lock: `lsof -t <cache dir>/<key>.lock` names every process to end.
-#   - A TERM, HUP or INT that lands between a job's fork and the recording of its PID (microseconds)
-#     orphans that one job, bounded only by its forge calls, as above.
-#   - The tick cap on the wait is RUN_DEADLINE x 10 + 10 ticks of 0.1 s plus a fork each: about 44 s
-#     at the default 40. On a working clock it is reached only after the clock steps back by less
-#     than the time already waited (a larger step reads as expired at once, and a steady clock ends
-#     the wait at 40 s).
-#   - A fork that fails in the main shell (a full process table, or the user's process limit) ends
-#     it at once with status 128, as bash 3.2 does in a non-interactive shell; during the wait that
-#     is silent, its stderr being on /dev/null. end_jobs never runs, so its jobs are orphaned and
-#     bounded only by their forge calls, as under a SIGKILL of the main shell (first entry).
-#   - The suite drives the deadline through a fake clock(), so nothing pins that the real one
-#     advances: one that stood still would be masked by the cap, about 4 s more per run with a hung
-#     job.
-#   - RUN_DEADLINE has no upper bound, and the cap (RUN_DEADLINE x 10 + 10) wraps from about 9.2e17
-#     on. A value that wraps it to 0 or below (922337203685477580 gives a negative cap,
-#     9223372036854775807 gives 0) ends every job at once (each named, exit 0), as does any value
-#     past 9223372036854775807; one that wraps it to a large positive cap waits as usual.
-#   - The sweep's `rm -rf <cache dir>/.tmp/<key>` follows a symlinked .tmp and deletes <key>
-#     wherever it points. That needs a cache directory a sandboxed command can write, which only a
-#     caller environment can name: XDG_CACHE_HOME. The default ~/.cache/herdr-phase is not
-#     sandbox-writable.
-#   - A sandboxed command can hold a repository's lock, because flock needs only read access to the
-#     lock file: that repository's badges freeze and each run pays LOCK_WAIT (bounded by the run
-#     deadline). Denying the cache directory to reads in the sandbox is the follow-up.
-#   - `spaces()` (`herdr workspace list`) runs before the deadline clock and has no bound: a hung
-#     Herdr server holds the run, and launchd never overlaps runs.
-#   - glab runs in the caller's environment (GITLAB_TOKEN, GLAB_CONFIG_DIR, proxy and CA variables
-#     reach it), unlike gh, which runs under `env -i`. The GitLab lookup is unchanged by design.
-#   - A partial answer (exit 3: the merged half failed) publishes fresh open rows without caching them,
-#     so a `--fresh` within the gap or a TTL hook can republish the older cached table until the next
-#     timer run.
-#   - bash 3.2 occasionally prints `child setpgid (<pid> to <pid>): Operation not permitted` on stderr
-#     (about 1 run in 100): the child's own setpgid races the parent's, which has already moved it
-#     into its group. It is cosmetic and does not affect the deadline kill; it reaches a hook's
-#     stderr (launchd's goes to /dev/null).
-#   - bash's own startup inputs are not scrubbed: it sources BASH_ENV and imports exported functions
-#     (BASH_FUNC_<name>%%) before the first line, and one named like a command called here (git,
-#     glab, herdr) runs in its place. Like PINNED_PATH and HERDR_PHASE_*, the caller's environment
-#     reaches the script.
-#
-# When Herdr is not running, `spaces` comes back empty and refresh returns before any git,
-# glab or gh work. It never fetches: `origin/<branch>` is read as-is, and only the MR and PR state,
-# where freshness matters, is cached with a TTL: the table per repo (GitLab through glab, GitHub
-# through gh), and each open GitLab MR's pipeline status per repo and MR number.
+# Accepted failure modes (each costs stale badges until its cause ends):
+#   - KILL of `timeout` itself, a TERM, HUP or INT that a descendant ignores, a descendant that
+#     leaves the group, or one that outlives its job's shell: it holds the lock and later runs
+#     skip. `lsof -t <cache dir>/run.lock` names it.
+#   - A job cut at the deadline leaves some of its spaces on their previous badge; each report is
+#     one call, so none is half-painted.
+#   - The caller's environment reaches the script: overrides, BASH_ENV, exported functions and
+#     glab's variables (GITLAB_TOKEN, GLAB_CONFIG_DIR, proxy and CA), unlike gh, under `env -i`.
+#   - A partial answer (the merged half failed) is published but not cached.
 #
 # Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
 # sandboxed command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang,
@@ -125,12 +56,8 @@ HERDR_ARGS=""
 TTL=120
 STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
 FRESH_GAP=10          # seconds a --fresh refresh trusts the cache after a lookup of the repository began
-LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"   # seconds a refresh waits for a repository's lock; the suite lowers it
-RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE:-40}"   # seconds a refresh waits for its jobs before ending them; the suite lowers it
-# Seconds between TERM and KILL when jobs are ended. On `launchctl bootout` launchd sends TERM and
-# KILLs the main shell after its ExitTimeOut (20 s by default); the trap's grace, KILL and reap
-# must finish well inside that, so this stays small (the suite pins it at 5 s or less).
-KILL_GRACE=2
+LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT-10}"   # seconds the worker waits for the run lock; lockf takes it as given
+RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE-40}"   # seconds a run lasts at most, lock wait included; refresh checks it
 
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
@@ -204,15 +131,6 @@ usage() {
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
 
-# whole_seconds <variable name> <value>: dies unless the value is a whole number of seconds, 0 included
-# and no leading zero. The numeric overrides reach `[ -lt ]`, lockf and shell arithmetic, which would
-# run a value such as PATH[$(cmd)] or fail on 1.5 or 08 with a misleading message. The digits are
-# listed, as in slug_chars_ok: under a UTF-8 locale bash 3.2 lets a character such as U+2185 through
-# the range [0-9].
-whole_seconds() {
-  case "$2" in ''|*[!0123456789]*|0?*) die "HERDR_PHASE_$1 is not a whole number of seconds" ;; esac
-}
-
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
 # Prints nothing and fails when the repo is on neither GitLab nor GitHub or the lookup did not work.
@@ -284,16 +202,13 @@ age_of() { # age_of <file>
   if [ "$age" -ge 0 ]; then echo "$age"; else echo 999999999; fi
 }
 
-# Replaces a cache file atomically: a temporary file in the repository's own staging directory
-# (.tmp/<key>, on the same filesystem), then a rename onto the target. A refresh killed mid-write
-# leaves the previous file, never half of a new one that would later read as a valid, shorter table.
-# The staging directory is the repository's alone (a key holds no /), so what is in it is that
-# repository's stray temporary files and nothing else.
-write_cache() { # write_cache <key> <file> <content>
-  local stage="$CACHE_DIR/.tmp/$1" tmp
-  mkdir -p "$stage" || return 1
-  tmp="$(mktemp "$stage/${2##*/}.XXXXXX")" || return 1
-  if printf '%s\n' "$3" > "$tmp" && mv -f "$tmp" "$2"; then return 0; fi
+# Replaces a cache file atomically: a temporary file beside it (same filesystem, fixed .tmp. prefix
+# for the worker's sweep), then a rename onto the target. A run killed mid-write leaves the previous
+# file, never half of a new one that would later read as a valid, shorter table.
+write_cache() { # write_cache <file> <content>
+  local tmp
+  tmp="$(mktemp "$CACHE_DIR/.tmp.XXXXXX")" || return 1
+  if printf '%s\n' "$2" > "$tmp" && mv -f "$tmp" "$1"; then return 0; fi
   rm -f "$tmp"
   return 1
 }
@@ -328,11 +243,11 @@ mr_table() { # mr_table <forge> <slug> <mode: ttl|force|cached>
   # a stale table beats a table asserted to be empty.
   if [ "$mode" = "cached" ]; then rows=""; rc=1
   else
-    write_cache "$key" "$CACHE_DIR/$key.lookup" "" || true
+    write_cache "$CACHE_DIR/$key.lookup" "" || true
     rows="$("${forge}_rows" "$slug")"; rc=$?
   fi
   case "$rc" in
-    0) write_cache "$key" "$cache" "$rows" ;;
+    0) write_cache "$cache" "$rows" ;;
     3) ;;
     *)
       if [ -f "$cache" ]; then read_table "$cache"; return 0; fi
@@ -486,7 +401,7 @@ pipeline_class() { # pipeline_class <slug> <iid> <mode: ttl|force|cached>
   fi
   if [ -z "$status" ]; then
     if [ "$mode" != "cached" ]; then
-      write_cache "$key" "$CACHE_DIR/$key.lookup" "" || true
+      write_cache "$CACHE_DIR/$key.lookup" "" || true
       # glab prints an API error's JSON body on stdout and exits non-zero (a 401, 404, 429 or
       # 5xx), so its status is taken on its own, never through a pipe into the parser. An empty
       # status is a failed call or a body that is not this MR; a pipeline-less MR prints "none".
@@ -506,7 +421,7 @@ s = p.get("status") if isinstance(p, dict) else None
 print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
 ' "$iid" 2>/dev/null)" || status=""
       fi
-      [ -z "$status" ] || write_cache "$key" "$cache" "$status"
+      [ -z "$status" ] || write_cache "$cache" "$status"
     fi
     if [ -z "$status" ] && [ -f "$cache" ]; then
       # A failed call (or none, in cached mode) is not evidence that the pipeline went away, so a
@@ -609,7 +524,7 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
 # Only linked worktrees are badged: a main checkout is nearly always dirty, and would read
 # permanently active.
 #
-# Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh starts one
+# Sorted by repo_root because Herdr does not return the list grouped and the worker starts one
 # job per run of equal roots. The sort is stable, so Herdr order holds within a repo.
 spaces() {
   herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -I -c '
@@ -630,26 +545,14 @@ for w in d.get("result", {}).get("workspaces", []):
 
 # ------------------------------------------------------------------ commands
 # One repository's refresh: its table, then derive, CI and a report for each of its spaces. Runs in
-# a background subshell, never in the main shell: the lock is on that subshell's fd 9, and it is
-# released only when the job and every child that inherited fd 9 have exited.
+# a background subshell of the worker, which holds the run lock.
 refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>path<TAB>root lines>
   local root="$1" run="$2" spaces="$3" ws path r phase value table="" forge="" slug="" key out first second ci iid age mode="ttl"
   slug="$(repo_slug "$root" || true)"
   if [ -n "$slug" ]; then
     forge="${slug%% *}"; slug="${slug#* }"
     key="$(cache_key "$forge" "$slug")"
-    # The kernel releases the lock only when every process holding fd 9 has exited, so a parent
-    # that dies while this job lives on does not free it, and nothing reclaims or breaks it. A job
-    # stuck in a forge call is ended at the run deadline, with its process group.
-    mkdir -p "$CACHE_DIR"
-    exec 9>>"$CACHE_DIR/$key.lock" || { echo "phase.sh: skipped $key: cannot open its lock file" >&2; return 0; }
-    /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || { echo "phase.sh: skipped $key: its lock is held" >&2; return 0; }
-    # Stray temporary files come from a refresh killed mid-write; they live in this repository's
-    # staging directory alone (a key holds no /), whole: a key, and so a temporary file's name, can
-    # start with a dot. The lock keeps this from deleting a live job's file; write_cache makes the
-    # directory again.
-    rm -rf "$CACHE_DIR/.tmp/$key"
-    # The lookup mode is decided here, once, with the lock held: a --fresh refresh trusts the cache
+    # The lookup mode is decided here, once, under the run lock: a --fresh refresh trusts the cache
     # while a lookup of this repository began less than FRESH_GAP ago, and looks up otherwise.
     case "$run" in
       force) mode="force" ;;
@@ -686,121 +589,12 @@ refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>pa
   return 0
 }
 
-# Starts a repository's job in its own process group (job control on just for the fork, so the job's
-# group is its PID and a group signal reaches the forge call it runs inside $(...)), with no stdin.
-# Records the PID in JOB_PIDS and PID<TAB>root in JOB_ROOTS.
-spawn_job() { # spawn_job <root> <run> <spaces>
-  set -m
-  ( refresh_repo "$1" "$2" "$3" ) </dev/null &
-  set +m
-  JOB_PIDS="$JOB_PIDS $!"
-  JOB_ROOTS="$JOB_ROOTS$!"$'\t'"$1"$'\n'
-}
-
-live_jobs() { # live_jobs -> LEFT: the jobs of JOB_PIDS whose first process is still running
-  local pid
-  LEFT=""
-  for pid in $JOB_PIDS; do
-    if kill -0 "$pid" 2>/dev/null; then LEFT="$LEFT $pid"; fi
-  done
-}
-
-live_groups() { # live_groups -> LEFT: the jobs of JOB_PIDS whose process group still has a member
-  local pid
-  LEFT=""
-  for pid in $JOB_PIDS; do
-    if kill -0 -- "-$pid" 2>/dev/null; then LEFT="$LEFT $pid"; fi
-  done
-}
-
-# Ends every job that still has a process: TERM to its group, then KILL to each group that still has
-# a member after KILL_GRACE seconds. The first process of a job (bash) always dies on TERM, so the
-# grace is judged on the whole group: a forge call that ignores TERM is still a member. TERMED holds
-# the jobs that were signalled.
-end_jobs() {
-  local i pid
-  live_groups
-  TERMED="$LEFT"
-  for pid in $TERMED; do kill -TERM -- "-$pid" 2>/dev/null; done
-  for ((i = 0; i < KILL_GRACE * 10; i++)); do
-    live_groups
-    [ -n "$LEFT" ] || break
-    sleep 0.1
-  done
-  for pid in $LEFT; do kill -KILL -- "-$pid" 2>/dev/null; done
-}
-
-# TERM, HUP or INT to the main shell (launchd's bootout, a kill, ^C): launchd's group kill cannot
-# reach the jobs, which sit in groups of their own, so the main shell ends them itself, then exits.
-# SIGKILL of the main shell cannot be caught: its jobs run on, and the next run waits for their lock.
-# The signals are ignored from here on, not reset: a second one during the grace would otherwise end
-# the main shell before its KILL, and a TERM still trapped keeps bash's notice of each ended job off
-# stderr.
-abort_run() { # abort_run <exit status>
-  local pid
-  trap '' TERM HUP INT
-  end_jobs
-  for pid in $JOB_PIDS; do wait "$pid" 2>/dev/null; done
-  exit "$1"
-}
-
-job_key() { # job_key <pid> -> the cache key of that job's repository, for its stderr line
-  local root slug
-  root="$(printf '%s' "$JOB_ROOTS" | awk -F'\t' -v p="$1" '$1 == p { print $2; exit }')"
-  slug="$(repo_slug "$root" || true)"
-  if [ -n "$slug" ]; then cache_key "${slug%% *}" "${slug#* }"; else echo "(no forge)"; fi
-}
-
-# The clock the run deadline is read on, in whole seconds; the suite replaces it with a fake one. In
-# bash 3.2 $SECONDS is time(NULL) minus the shell's start, so it follows the wall clock.
-clock() { NOW=$SECONDS; }
-
-# Waits for the jobs at most RUN_DEADLINE seconds (bash 3.2 has no `wait -n` and no timeout on
-# `wait`, so it polls), then ends every job that still has a process (end_jobs). That reaches the
-# forge call too, so no process of a job outlives the run, and the kernel frees the job's lock. A
-# stuck forge call therefore holds up no other repository and not the next timer run.
-# A clock stepped back would stretch the wait, so an elapsed time below zero counts as expired (as
-# age_of treats a future mtime), and the ticks, which no clock step moves, cap the wait at
-# RUN_DEADLINE x 10 + 10 of them whichever way the clock goes: about 44 s at 40, each being 0.1 s and
-# a fork (on a steady clock the elapsed time ends it first).
-# Each job is then reaped on its own. One whose first process was still running at the deadline
-# sample and that died of a signal (status 128 or more) is named as killed at the run deadline; any
-# other that ended abnormally is named as such. A failed lookup is not a failed refresh: the status
-# stays 0. Runs with stderr on /dev/null and writes its own lines to fd 8.
-wait_jobs() {
-  local pid st late start elapsed ticks=0 cap=$((RUN_DEADLINE * 10 + 10))
-  LEFT=""; TERMED=""
-  clock; start=$NOW
-  while :; do
-    clock; elapsed=$((NOW - start))
-    [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$RUN_DEADLINE" ] && [ "$ticks" -lt "$cap" ] || break
-    live_jobs
-    [ -n "$LEFT" ] || break
-    sleep 0.1
-    ticks=$((ticks + 1))
-  done
-  # The deadline sample: only a job whose first process is still running now is ended by the
-  # deadline. One whose first process died on its own was not, even if its group has a member left.
-  live_jobs; late="$LEFT"
-  end_jobs
-  for pid in $JOB_PIDS; do
-    wait "$pid"; st=$?
-    case " $late " in
-      *" $pid "*)
-        if [ "$st" -ge 128 ]; then echo "phase.sh: $(job_key "$pid"): killed at the run deadline" >&8; continue; fi ;;
-    esac
-    [ "$st" -eq 0 ] || echo "phase.sh: a refresh job ended abnormally (status $st)" >&8
-  done
-}
-
+# `refresh` checks its arguments and the two system tools, then becomes timeout: at the deadline
+# timeout sends KILL to the whole process group of the worker it runs, so no job, forge call or
+# herdr call outlives the run, and a TERM to the run is forwarded to that group. The worker is this
+# script again (the suite runs it as /bin/bash <path>, so $0 is that path).
 cmd_refresh() {
   local run="ttl" only=""
-  # wait_jobs does arithmetic with RUN_DEADLINE, which runs a value such as PATH[$(cmd)] and ends the
-  # shell, its jobs orphaned and its stderr on /dev/null, on one such as 1.5 or 08. So each numeric
-  # override is checked before a job starts. 0 is allowed for both: a deadline that ends every
-  # job at once, and a wait that skips a held repository at once.
-  whole_seconds RUN_DEADLINE "$RUN_DEADLINE"
-  whole_seconds LOCK_WAIT "$LOCK_WAIT"
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) run="force"; shift ;;
@@ -809,38 +603,52 @@ cmd_refresh() {
       *) die "unknown option for refresh: $1" ;;
     esac
   done
+  # timeout reads a duration of 0 as no limit, and a run must never be unbounded. The digits are
+  # listed, as in slug_chars_ok: under a UTF-8 locale bash 3.2 lets U+2185 through the range [0-9].
+  case "$RUN_DEADLINE" in ''|*[!0123456789]*|0*) die "HERDR_PHASE_RUN_DEADLINE is not a positive whole number of seconds" ;; esac
+  [ -x /usr/bin/timeout ] && [ -x /usr/bin/lockf ] || die "/usr/bin/timeout and /usr/bin/lockf are required"
+  exec /usr/bin/timeout -s KILL "$RUN_DEADLINE" /bin/bash "$0" _refresh "$run" "$only"
+}
+
+# The run under timeout. The lock file is created with mode 0200 and opened for append: flock needs an
+# open descriptor, which a sandboxed command can then get neither for writing (the cache directory is
+# outside its write list) nor for reading. A run that cannot get the lock in LOCK_WAIT s does nothing.
+cmd_worker() { # cmd_worker <run: ttl|force|fresh> <workspace id or "">
+  local run="${1:-ttl}" only="${2:-}" lock="$CACHE_DIR/run.lock" rc=0
+  mkdir -p "$CACHE_DIR" || exit 2
+  ( umask 577; : >> "$lock" ) || exit 2
+  exec 9>>"$lock" || exit 2
+  /usr/bin/lockf -s -t "$LOCK_WAIT" 9 || rc=$?
+  case "$rc" in
+    0) ;;
+    75) echo "phase.sh: skipped: another refresh holds the lock" >&2; exit 0 ;;
+    *) exit 2 ;;
+  esac
+  find "$CACHE_DIR" -maxdepth 1 -name '.tmp.*' -mmin +1 -delete 2>/dev/null || true
 
   local list ws path root group="" last_root="" nl=$'\n' tab=$'\t'
   list="$(spaces)"
   [ -n "$list" ] || return 0
-  JOB_PIDS=""; JOB_ROOTS=""
-  trap 'abort_run 143' TERM
-  trap 'abort_run 129' HUP
-  trap 'abort_run 130' INT
-
   # `spaces` sorts by repo, so each repository's spaces are one run of lines; every run is a job.
   while IFS=$'\t' read -r ws path root; do
     [ -n "$ws" ] || continue
     [ -z "$only" ] || [ "$ws" = "$only" ] || continue
     [ -d "$path" ] || continue
     if [ "$root" != "$last_root" ] && [ -n "$group" ]; then
-      spawn_job "$last_root" "$run" "$group"
+      ( refresh_repo "$last_root" "$run" "$group" ) </dev/null &
       group=""
     fi
     last_root="$root"
     group="${group:+$group$nl}$ws$tab$path$tab$root"
   done < <(printf '%s\n' "$list")
-  if [ -n "$group" ]; then spawn_job "$last_root" "$run" "$group"; fi
-  # The shell's own notices about a signalled job go nowhere; the script's lines use fd 8, opened
-  # only now so that no job holds it.
-  exec 8>&2
-  wait_jobs 2>/dev/null
-  exec 8>&-
+  if [ -n "$group" ]; then ( refresh_repo "$last_root" "$run" "$group" ) </dev/null & fi
+  wait
   return 0
 }
 
 case "${1:---help}" in
   refresh) shift; cmd_refresh "$@" ;;
+  _refresh) shift; cmd_worker "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; die "unknown subcommand: $1" ;;
 esac

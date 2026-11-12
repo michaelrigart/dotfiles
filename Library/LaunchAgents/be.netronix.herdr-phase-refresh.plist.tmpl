@@ -32,7 +32,7 @@
     <!-- Forced every 50 s: --force looks every repository up whatever the cache TTL (120 s), which
          now applies only to the startup and worktree hooks. Without it a focus refresh would renew
          a cache and the next timer run would reuse it. A run takes about 8 s (one background job
-         per repository, and one refresh of a repository at a time), so the cadence is about 58 s
+         per repository, and one refresh at a time), so the cadence is about 58 s
          and a change shows within about 65 s. A focus refresh (--fresh) looks its space's
          repository up whenever the last lookup is more than 10 s old, so the phase being read is at
          most about 10 s old (its CI token as the header of phase.sh says). -->
