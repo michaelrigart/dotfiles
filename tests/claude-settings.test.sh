@@ -385,6 +385,8 @@ if [ -s /etc/ssl/cert.pem ]; then
 else
   _fail "the pinned root bundle exists on this machine" "/etc/ssl/cert.pem missing or empty"
 fi
+jq_is '.sandbox.enabled' true \
+      "the sandbox ships enabled — a template with it off would pass every other check"
 # The weaker-isolation escape hatch fixes the same failure by opening trustd. Staying off
 # is the point of setting SSL_CERT_FILE.
 jq_is '.sandbox | has("enableWeakerNetworkIsolation")' false \

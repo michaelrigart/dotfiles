@@ -60,6 +60,11 @@ else
   _fail "~/.local/bin precedes /opt/homebrew/bin on PATH" "$path"
 fi
 
+# Regression: a nested shell re-sources zshenv and every PATH entry doubled.
+dups=$(probe 'source "'"$ZSHENV"'"; print -r -- $PATH' | tr ':' '\n' | sort | uniq -d)
+[ -z "$dups" ] && _pass "sourcing zshenv twice leaves no duplicate PATH entry" \
+  || _fail "sourcing zshenv twice leaves no duplicate PATH entry" "$(printf '%s' "$dups" | tr '\n' ' ')"
+
 got=$(probe 'print -r -- $HOMEBREW_PREFIX')
 [ "$got" = /opt/homebrew ] && _pass "HOMEBREW_PREFIX comes from brew shellenv" || _fail "HOMEBREW_PREFIX comes from brew shellenv" "$got"
 got=$(probe 'print -r -- $RUBY_CONFIGURE_OPTS')

@@ -61,9 +61,11 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `--replace` to overwrite a different policy) is Michael's; agents run it only in test mode,
   through its suite and `tests/provision.test.sh`.
   `measure-interventions.py` sits beside them: the transcript metrics for the
-  safe-autonomy evaluation. `skill-updates.sh` is non-interactive too and runs weekly in
-  the `skill-updates` workflow. The scripts are mode `755` (not the 644 policy file) — git
-  stores only the exec bit, so a clone yields 755, never 700.
+  safe-autonomy evaluation, and `process-replay.py` (with its package `process_replay/`,
+  plain 644 modules) and `xreview-replay.py` are the replay-experiment harnesses.
+  `skill-updates.sh` is non-interactive too and runs weekly in the `skill-updates` workflow.
+  The scripts are mode `755` (not the 644 policy file) — git stores only the exec bit, so a
+  clone yields 755, never 700.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
 - Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
@@ -80,9 +82,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `current: <name> <tag>` (a SHA that exists only in a fork still downloads). The commit
   message carries `Closes #<issue>`.
 - Permissions: `~/.ssh` 700, private keys 600, public keys 644, sensitive configs 600.
-- Brewfile: only tools actually in use. Add packages via
-  `chezmoi edit ~/.config/homebrew/Brewfile`, then `chezmoi apply` and
-  `brew bundle install --file ~/.config/homebrew/Brewfile`.
+- Brewfile: only tools actually in use. Add packages by editing
+  `dot_config/homebrew/Brewfile.tmpl` in a `wt` checkout; once merged, Michael runs
+  `chezmoi apply` and `brew bundle install --file ~/.config/homebrew/Brewfile`.
 - `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`, because `zshenv`
   puts `~/.local/bin` in front of Homebrew after `brew shellenv` (which prepends);
   `tests/zshenv.test.sh` pins the order. Interactive starts attach to the
