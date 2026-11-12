@@ -27,7 +27,7 @@ g-records-trigger	.chezmoitemplates/agents/global.md	Load the `design-records` s
 g-secrets	.chezmoitemplates/agents/global.md	**Secrets:**	yes	they come from 1Password (`op`).;Never commit, print or log one.;Check staged changes before every commit and push.	secrets never leave 1Password; unpinned today
 g-confirm-first	.chezmoitemplates/agents/global.md	**Every agent confirms first**	yes	**Every agent confirms first** before force-pushing without a lease, rewriting history others have, deleting branches, tags, data or infrastructure, discarding uncommitted work it did not create, or pushing to the default branch.;Exempt: a lease on your own branch, a merged branch's pinned delete, `git branch -d`.;Harness prompts are a backstop, not the check.	p188; the confirm-first list is unpinned beyond the exemption
 g-merge-requests	.chezmoitemplates/agents/global.md	**Merge requests.**	yes	Load the `merge-request` skill before opening an MR, PR or issue.;Never add agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines, "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or review comments.;The published record is Michael's.	p201 p240; the forge guard cites this bullet
-g-second-brain	.chezmoitemplates/agents/global.md	**Second brain.**	no	only when asked	p203
+g-second-brain	.chezmoitemplates/agents/global.md	**Second brain.**	yes	Offer a note when work produces durable knowledge and write it only when asked\; the `second-brain` skill holds the conventions.	p203; approval gate: write a note only when asked (R28)
 g-eng-heading	.chezmoitemplates/agents/global.md	## Engineering judgement	no	Engineering judgement	p195; sp-reviewer cites the section by name
 g-testing	.chezmoitemplates/agents/global.md	Each test names the behaviour it pins	no	reuse existing coverage;fails without it;revert the fix;watch the test fail;restore it	p207; Phase 3 rewrites this rule, so the row follows the final text
 g-autonomy-approval	.chezmoitemplates/agents/global.md	Michael signs off specs and merges	yes	Michael signs off specs and merges\; in between, the driver proceeds on its own.	unpinned today
@@ -55,7 +55,7 @@ dr-legacy	dot_claude/skills/design-records/SKILL.md	Legacy records keep their st
 dr-point-in-time	dot_claude/skills/design-records/SKILL.md	Don't rewrite point-in-time facts	no	point-in-time facts	p347
 dr-canonical	dot_claude/skills/design-records/SKILL.md	Keep one canonical spec	no	repository and path;forge link;never as a bare path	p349
 cr-plan-review	dot_claude/skills/cross-review/SKILL.md	Codex reviews every plan	yes	Codex reviews every plan, and execution starts once it approves.	p353; execution waits for Codex's approval (close call: yes, R21)
-cr-show-plan	dot_claude/skills/cross-review/SKILL.md	If Michael asked at spec	no	stop after Codex approves	p355
+cr-show-plan	dot_claude/skills/cross-review/SKILL.md	If Michael asked at spec	yes	If Michael asked at spec sign-off to see the plan, stop after Codex approves.	p355; approval gate: stop after Codex approves when Michael asked to see the plan (R28)
 cr-plan-path	dot_claude/skills/cross-review/SKILL.md	Either way, put the plan's path	no	next status message	p357
 cr-no-consensus	dot_claude/skills/cross-review/SKILL.md	Never prolong a loop for consensus	no	for consensus	p359
 cr-fix-rule	dot_claude/skills/cross-review/SKILL.md	a fix ships with a test that fails without it	no	Test paths stay writable	p361; Phase 3 rewrites this clause

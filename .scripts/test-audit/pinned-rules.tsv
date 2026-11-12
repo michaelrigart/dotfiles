@@ -12,7 +12,7 @@ p196	.chezmoitemplates/agents/global.md	- **Sizing.** Size the process to the ch
 p198	.chezmoitemplates/agents/global.md	Unsure or outgrown: not small; say which.	yes	-	the Sizing rule treats an unsure or outgrown change as not small
 p199	.chezmoitemplates/agents/global.md	- **Convergence.** A loop converges when each round leaves less to fix.	no	-	global.md carries the Convergence rule
 p201	.chezmoitemplates/agents/global.md	Never add agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines, "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or review comments.	yes	-	global.md keeps the no-attribution rule in full
-p203	.chezmoitemplates/agents/global.md	write it only when asked	no	-	global.md keeps the vault rule: write a note only when asked
+p203	.chezmoitemplates/agents/global.md	write it only when asked	yes	-	global.md keeps the vault rule: write a note only when asked
 p204	dot_agents/skills/second-brain/SKILL.md	**Never store** secrets, credentials, customer data, raw conversations or transient working notes in the vault	yes	-	second-brain holds every never-store category for the vault
 p207	.chezmoitemplates/agents/global.md	a fix ships with a test that fails without it: revert the fix, watch the test fail, restore it.	no	-	global.md states the fix rule as a revert check
 p215	.chezmoitemplates/agents/global.md	`design-records`	no	-	global.md names the design-records skill
@@ -71,7 +71,7 @@ p345	dot_claude/skills/design-records/SKILL.md	Legacy records keep their status 
 p347	dot_claude/skills/design-records/SKILL.md	Don't rewrite point-in-time facts.	no	-	design-records holds the point-in-time rule
 p349	dot_claude/skills/design-records/SKILL.md	Keep one canonical spec, referenced by repository and path, preferably as a forge link and never as a bare path.	no	-	design-records holds the canonical-spec rule
 p353	dot_claude/skills/cross-review/SKILL.md	Codex reviews every plan, and execution starts once it approves.	yes	-	cross-review holds the plan-review rule
-p355	dot_claude/skills/cross-review/SKILL.md	If Michael asked at spec sign-off to see the plan, stop after Codex approves.	no	-	cross-review holds the show-the-plan rule
+p355	dot_claude/skills/cross-review/SKILL.md	If Michael asked at spec sign-off to see the plan, stop after Codex approves.	yes	-	cross-review holds the show-the-plan rule
 p357	dot_claude/skills/cross-review/SKILL.md	Either way, put the plan's path in your next status message.	no	-	cross-review holds the plan-path status rule
 p359	dot_claude/skills/cross-review/SKILL.md	Never prolong a loop for consensus.	no	-	cross-review holds the no-consensus-prolonging rule
 p361	dot_claude/skills/cross-review/SKILL.md	a fix ships with a test that fails without it	no	-	cross-review states the fix rule in the apply window
