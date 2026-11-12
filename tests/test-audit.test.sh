@@ -491,6 +491,53 @@ has "lost: 0" "M7: a targeted comparison selects no files here" "$OUT"
 run --state "$T/state3" report --section kills --compare "$T/state"
 rc_is 2 "M7: --compare without --kind exits 2"
 
+# M9: --killed-in re-runs only what the before state killed (R33 d). $first is the commit that
+# state measured; $second dropped the greet check.
+mkdir -p "$T/stateK"; cp "$T/state/meta.json" "$T/state/sample.jsonl" "$T/state/runs-sample.jsonl" "$T/stateK/"
+python3 - "$T/stateK/runs-sample.jsonl" <<'PY'
+import json, sys
+p = sys.argv[1]
+recs = [json.loads(l) for l in open(p)]
+s = [r for r in recs if r["file"] == "bin/s.sh"]
+next(r for r in s if r["verdict"] == "killed")["verdict"] = "inconclusive"
+open(p, "w").write("".join(json.dumps(r) + "\n" for r in recs))
+PY
+run --state "$T/state9" --ref "$first" sample --sample-from "$T/stateK" --killed-in "$T/stateK" --only bin/s.sh
+rc_is 0 "M9: sample --killed-in succeeds"
+has "[sample] bin/s.sh: 5/5 (killed 5, survived 0, inconclusive 0, baseline-red 0)" "M9: only the five still-killed bin/s.sh mutants ran" "$OUT"
+has "remaining: 0" "M9: remaining counts only the selected mutants" "$OUT"
+eq "$(python3 - "$T/stateK" "$T/state9" <<'PY'
+import json, sys
+before = {}
+for l in open(sys.argv[1] + "/runs-sample.jsonl"):
+    r = json.loads(l); before[r["id"]] = r["verdict"]
+ran = [json.loads(l)["id"] for l in open(sys.argv[2] + "/runs-sample.jsonl")]
+print(len(ran), sorted({before[i] for i in ran}))
+PY
+)" "5 ['killed']" "M9: the survived and the inconclusive mutants are neither run nor recorded, nor is bin/p.py"
+run --state "$T/state9" --ref "$first" sample --sample-from "$T/stateK" --killed-in "$T/stateK" --only bin/s.sh
+has "remaining: 0" "M9: a second run has nothing remaining" "$OUT"
+
+run --state "$T/state10" --ref "$second" sample --sample-from "$T/state" --killed-in "$T/state" --only bin/s.sh
+rc_is 0 "M9: the killed mutants re-run on the commit that dropped the greet check"
+run --state "$T/state10" report --section kills --compare "$T/state" --kind code
+has "lost: 3" "M9: the three mutants only the removed check killed still fail the compare" "$OUT"
+for id in $lostids; do has "- $id bin/s.sh" "M9: $id is listed as lost" "$OUT"; done
+has "not run: 0" "M9: and every killed mutant of the selection was run" "$OUT"
+
+run --state "$T/state11" --ref "$first" sample --sample-from "$T/state" --killed-in "$T/state"
+rc_is 0 "M9: the killed mutants re-run on the unchanged commit"
+has "remaining: 0" "M9: nothing remains" "$OUT"
+eq "$(wc -l <"$T/state11/runs-sample.jsonl" | tr -d ' ')" 12 "M9: exactly the twelve killed mutants of both files ran"
+run --state "$T/state11" report --section kills --compare "$T/state" --kind code
+has "lost: 0" "M9: a mutant still killed after the commit is not lost" "$OUT"
+has "not run: 0" "M9: and none is unrun" "$OUT"
+
+run --state "$T/state12" --ref "$first" sample --sample-from "$T/state" --killed-in "$T/state0"
+rc_is 2 "M9: --killed-in on a state without sample runs exits 2"
+has "$T/state0 has no sample runs" "M9: the refusal names the state" "$ERR"
+[ ! -e "$T/state12/runs-sample.jsonl" ] && _pass "M9: and records nothing" || _fail "M9: and records nothing"
+
 # M8: the targeted records of the M6 run, with a hand-written inventory that fixes the ranking.
 mkdir -p "$T/state8"; cp "$T/state/meta.json" "$T/state/runs-targeted.jsonl" "$T/state8/"
 python3 - "$T/state8/inventory.jsonl" <<'PY'
