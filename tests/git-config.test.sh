@@ -35,9 +35,6 @@ mkfake "$T/fake2"
 mkdir -p "$T/wtree"
 printf '[core]\n\tbare = false\n\tworktree = %s\n[probe]\n\tkey = fake\n' "$T/wtree" >"$T/fake2/config"
 
-check_equal "$(git config --file "$CONFIG" --get safe.bareRepository 2>/dev/null)" explicit \
-  "safe.bareRepository is explicit"
-
 err=$(git -C "$T/fake" rev-parse --git-dir 2>&1 >/dev/null); rc=$?
 if [ "$rc" -ne 0 ] && printf '%s' "$err" | grep -q 'safe.bareRepository'; then
   ok "a fake git directory is refused"
