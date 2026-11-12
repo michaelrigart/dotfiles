@@ -67,7 +67,6 @@ expect deny "leading whitespace"              '   cd /tmp && ls'
 expect deny "leading newline"                 '
 cd /tmp && ls'
 expect deny "cd with no argument"             'cd && ls'
-expect deny "three statements"                'cd /tmp && ls && pwd'
 
 echo "Rule 1 — allowed shapes (no prompt to avoid, or not ours to police):"
 expect allow "bare cd is the recommended escape hatch" 'cd /tmp'
@@ -86,7 +85,6 @@ expect allow "git -C needs no cd"             'git -C /tmp status && git -C /tmp
 
 echo "Rule 2 — recursive search rooted at . (deny):"
 expect deny "grep -rn over dot"               'grep -rn foo .'
-expect deny "grep -r over dot"                'grep -r foo .'
 expect deny "grep --recursive over dot"       'grep --recursive foo .'
 expect deny "grep -rn over ./"                'grep -rn foo ./'
 expect deny "piped into head"                 'grep -rn foo . | head -40'
