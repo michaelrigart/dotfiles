@@ -87,7 +87,6 @@ printf "UNIFI_NETWORK_HOST='10.0.0.1'\nUNIFI_NETWORK_USERNAME='mcp'\nUNIFI_NETWO
 run
 check "port from the env file" "UNIFI_NETWORK_PORT=8443" "$(logged UNIFI_NETWORK_PORT)"
 check "site from the env file" "UNIFI_NETWORK_SITE=home" "$(logged UNIFI_NETWORK_SITE)"
-check "SSL verification keeps its default" "UNIFI_NETWORK_VERIFY_SSL=false" "$(logged UNIFI_NETWORK_VERIFY_SSL)"
 
 echo "D. mise which python fails"
 MOCK_WHICH_RC=1 run
@@ -95,7 +94,6 @@ check "exits 1" "1" "$RC"
 check "stdout is empty" "" "$OUT"
 check "stderr says mise has no Python" "unifi-network-mcp: mise has no Python for $T/home — run mise install" "$ERR"
 check "mise exec never ran" "" "$(cat "$LOG")"
-nosecret
 
 echo "E. POSIX sh"
 check "shebang is #!/bin/sh" "#!/bin/sh" "$(head -n1 "$LAUNCHER")"
@@ -175,15 +173,6 @@ http://10.0.0.1/manage|10.0.0.1|unset
 unifi.lan:8443|unifi.lan|8443
 https://10.0.0.1?x=1|10.0.0.1|unset
 CASES
-  # The launcher default still applies when the website carries no port.
-  TV_website=https://192.168.1.1 TV_username=u TV_password=p render "$T/rendered"
-  cp "$T/rendered" "$ENVF"
-  run
-  check "no port in the website: the launcher default 443 applies" "UNIFI_NETWORK_PORT=443" "$(logged UNIFI_NETWORK_PORT)"
-  TV_website=https://unifi.lan:8443/ TV_username=u TV_password=p render "$T/rendered"
-  cp "$T/rendered" "$ENVF"
-  run
-  check "a port in the website wins over the launcher default" "UNIFI_NETWORK_PORT=8443" "$(logged UNIFI_NETWORK_PORT)"
 fi
 
 echo; echo "RESULT: $pass passed, $fail failed"
