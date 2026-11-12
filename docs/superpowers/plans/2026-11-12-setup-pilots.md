@@ -229,6 +229,23 @@ property the task exists for. That meets this protocol's drop condition as far a
 can, pending the final review and Codex. The verdicts disagree on Task 1 in the other
 direction: Sonnet asked for fixes where Opus approved.
 
+**Re-review of Task 1's fix round (`071b2a5`), same brief, clean export.** Both found all four
+findings addressed and no Critical or Important breakage.
+
+| Reviewer | New findings | Tool calls | Wall time |
+|---|---|---|---|
+| Opus | 1 minor: a test comment claims the 2,000-label row guards the quadratic rescan, which it does not | 9 | 71 s |
+| Sonnet | none | 9 | 34 s |
+
+Sonnet saw the same fact ("the row only pins correctness, not timing") and accepted it instead
+of raising it: counted as a miss. Its two out-of-scope notes, hand-checked: the spec's line 212
+still says "after the same strip" while the code follows coverage's wider predicate (true,
+wording only); the spec's line 89 says "Printed as given" (not a defect: that table records the
+state before the change). One explanation in its report is wrong (it derives 31,605 as
+21 x (1,500 + 105)); the verdict it supports is right.
+
+Running total, 3 reviews: Sonnet raised 3 of Opus's 7 findings and missed 4.
+
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
 
