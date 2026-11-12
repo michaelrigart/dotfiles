@@ -116,8 +116,9 @@ GitHub's terms allow one free machine account beside a personal account.
 No second account. Fine-grained personal access tokens are generally available on GitLab.com
 (19.2) and on Free.
 
-- Michael creates one token limited to what agents do: read projects, repositories, pipelines,
-  jobs and issues; create and update merge requests and their notes. It has no Merge Request
+- Michael creates one token limited to what agents do: read projects, repositories, branches and
+  their protection, pipelines, jobs and issues; create and update merge requests and their notes.
+  It has no Merge Request
   **Merge** or **Approve**, no Branch **Protect**, no Project **Update**, no member or token
   administration. The plan lists the exact permission names from the token form.
 - Agent sessions read it from `GITLAB_TOKEN` in the `env` block; `glab` prefers it to the keyring.
@@ -174,11 +175,22 @@ Michael could force-push `main` again.
 On the default branch of every project: allowed to push and merge **No one**, allowed to merge
 **Maintainers**, force push off. All of it is in Free.
 
-- 9 projects: `glab api --method POST projects/<id>/protected_branches -f name=<default> -f
-  push_access_level=0 -f merge_access_level=40 -f allow_force_push=false`.
-- 17 projects: the existing rule goes from Maintainers to No one (unprotect and protect again; the
-  check prints both commands as one line each), and the one that allows force push loses it.
-- 2 projects protect a branch that is not the default: the default branch gets the rule too.
+GitLab applies the most permissive of all rules that match a branch. The target is therefore a
+property of **every** protected-branch rule whose name or wildcard matches the default branch, not
+of one rule: none of them may allow a push by any role, or a force push. The check evaluates all
+matching rules, and the remediation it prints covers each one.
+
+- 9 projects, and the 2 that protect only another branch: `glab api --method POST
+  projects/<id>/protected_branches -f name=<default> -f push_access_level=0 -f
+  merge_access_level=40 -f allow_force_push=false`.
+- 17 projects: each existing rule goes from Maintainers to No one, and the one that allows force
+  push loses it, **in place**. A rule is never removed and created again: between the two calls,
+  or for good if the second fails, the branch would accept a force push its old rule refused.
+  In place means `glab api --method PATCH projects/<id>/protected_branches/<name>` (the plan
+  establishes the exact fields that Free accepts on one project of Michael's choosing before the
+  check prints it for the rest), or, where the API refuses, the UI: Settings > Repository >
+  Protected branches, the "Allowed to push and merge" dropdown and the "Allowed to force push"
+  toggle of the existing row. The check never prints a DELETE.
 
 What this costs Michael: he can no longer push a default branch directly on GitLab, on the small
 single-developer projects included; every change lands through a merge request he merges. An
@@ -212,6 +224,17 @@ az repos policy approver-count create --org <org url> --project <project> --repo
 It needs the Edit policies permission (Project Administrators). Where Michael lacks it, the
 repository joins the list below.
 
+A policy binds only an identity without the bypass permissions, and agents push with Michael's
+login. These repositories are unread, so the defaults prove nothing. A repository counts as
+protected only when, in addition to the policy, Michael's **effective** permissions on the default
+branch (own and inherited, as Repos > Branches > the branch's menu > Branch security shows them
+for his user) do not allow "Bypass policies when pushing", "Bypass policies when completing pull
+requests" or "Force push (rewrite history, delete branches and tags)". Where one is allowed, the
+remediation is to set it to Deny for his user on that branch, in the same dialog; where he cannot,
+the repository joins the list below. The check reads these with `az devops security permission
+show` when it can reach Azure; until it can, Michael reads the dialog and the three repositories
+stay in his exceptions file (section 3).
+
 ### 2.4 Where the forge cannot hold the boundary
 
 | Remote | Why | What protects it |
@@ -231,9 +254,18 @@ that stubs `gh`, `glab` and `az`.
 
 - It walks the dotfiles checkout and `~/Code/*/*`, reads each `origin`, and asks the forge for the
   default branch and its protection with GET calls only.
-- Per repository it prints one row: `ok`, `drift` with the exact command that reaches the target
-  state of section 2, or `unreadable` with the reason. It exits 0 only when every readable
-  repository is `ok`; unreadable ones are listed and counted separately.
+- Per repository it prints one row: `ok`, `drift` with the exact command or click path that reaches
+  the target state of section 2, `unreadable` with the reason, or `excepted`.
+- **It exits 0 only when every repository is `ok` or `excepted`.** An unreadable repository fails
+  the check like a drifted one: a token that cannot read protection, a forge that does not answer
+  or a project that returns 404 is never counted as protected.
+- `excepted` comes only from Michael's own list, `~/.config/forge-protection/exceptions`: one
+  remote URL per line, the repositories of section 2.4 he accepts as unprotected. The file is his,
+  outside the sandbox's writable paths and outside this repository; the script reads it and prints
+  how many rows it excepted. Without the file nothing is excepted.
+- It works with the agent identity: the GitLab token can read branch protection (section 1.2),
+  and the GitHub rules of a public repository are readable by the machine account. The suite pins
+  that a 403 on the protection read is `unreadable`, and that `unreadable` fails.
 - It never writes to a forge. There is no apply mode: Michael runs the printed commands. The suite
   pins that the script contains no write verb (`POST`, `PUT`, `PATCH`, `DELETE`, `create`,
   `update`) outside the strings it prints.
@@ -287,13 +319,21 @@ branches (merged-branch deletes, dry runs, the test audit) changed the same code
 
 - `dot_config/git/hooks/executable_pre-push`, enabled by `core.hooksPath = ~/.config/git/hooks` in
   the global git config.
-- It reads git's own lines on stdin (`<local ref> <local sha> <remote ref> <remote sha>`) and, for
-  each updated ref, scans `gitleaks git --redact --log-opts="<local sha> --not --remotes=<remote>"`.
-  Git names the commits, so the guard's refspec arithmetic for the scan is deleted with it.
+- **The scan moves; it is not rewritten.** The helper's scan (`scan`, `run_gitleaks`,
+  `expected_commits`, `leak_reason`, the neutralised git configuration, `PATCH_OPTS` with
+  `--diff-merges=remerge`, `--root`, `--text`, `--no-textconv`, `--no-ext-diff`,
+  `--submodule=short`, the scanned-commit count check and the time budget) becomes its own script
+  beside the hook, taking the repository, the remote and the commits to scan. Every safeguard and
+  its regression rows move with it into the hook's suite; none is dropped. A secret added while
+  committing a merge, in a file marked binary, or in a root commit is found as today.
+- The hook reads git's own lines on stdin (`<local ref> <local sha> <remote ref> <remote sha>`) and
+  hands the script each updated ref's local sha, excluding `--remotes=<remote>` as today. Git names
+  the commits, so only the guard's refspec-to-source arithmetic is deleted.
 - A leak, a missing gitleaks or a gitleaks error blocks the push, with the rule, file and commit,
   never the value. `.gitleaksignore` works as today.
-- It then runs the repository's own `.git/hooks/pre-push`, if executable, with the same stdin and
-  arguments.
+- It then runs the repository's own `pre-push` hook, if executable, with the same stdin and
+  arguments, found at `$(git rev-parse --git-common-dir)/hooks/pre-push`: in a linked worktree
+  `.git` is a file, and `--git-path hooks` would answer with the global directory.
 - Hygiene, not a boundary: `--no-verify`, `core.hooksPath=` or `HOME=` turn it off, and a
   repository that sets its own `core.hooksPath` (none does today) replaces it.
 
@@ -306,38 +346,53 @@ hook, so no push is scanned twice and none goes unscanned.
 
 ## 6. Order
 
-1. **Lands first, changes no verdict:** `forge-protection check`, the `pre-push` hook with the
-   scan's removal from the helper, the agent identity plumbing (inert until the 1Password items
-   exist: no item, no variable, and the sessions behave as today).
-2. **Michael's forge actions** (list below), then `chezmoi apply` and a new session.
-3. **Verification, recorded under Implementation notes with repository names left out:**
-   - `forge-protection check` exits 0, or lists only the repositories of section 2.4;
-   - `gh api repos/<owner>/<repo>/rules/branches/<default> --jq '[.[].type] | sort'` prints
-     `["creation","deletion","non_fast_forward","update"]` for both GitHub repositories, and
-     `gh api repos/<owner>/<repo>/collaborators/<machine account>/permission --jq .permission`
-     prints `write`;
-   - `ssh -T git@github.com` from an agent session greets the machine account;
-   - `glab api projects/<id>/protected_branches` with the agent token answers 403 or an empty
-     permission error on one project (a GET; the token has no Branch permission at all).
+`chezmoi apply` deploys origin's `main`, so nothing on a branch is live. The line therefore lands
+in two merges, each with its own pre-merge review, and the retirement is the second.
 
-   These verify configuration, not a refused push. No live push against a default branch is
-   attempted: a probe that the forge failed to refuse would itself move the branch.
-4. **Only then: the retirement commits** (section 4), on this branch, after step 3's results are
-   in the spec. The branch is pushed once at the end; Michael merges.
+**Merge 1, changes no verdict of rule 4.** `forge-protection check`; the `pre-push` hook with the
+scan moved out of the helper (one commit, so that one apply swaps them); the agent identity
+plumbing, inert until the 1Password items exist (no item: no variable, no SSH override, sessions
+behave as today). Pushed, reviewed, merged by Michael.
 
-If step 2 has not happened when the code is ready, the branch stops after step 1 and is reported
-as waiting on Michael; step 4 never merges ahead of step 3.
+**Michael's forge actions** (list below), in this order: the accounts, tokens and 1Password items;
+`chezmoi apply` of merge 1 and a new Claude Code session; then the forge rules, from the commands
+the deployed check prints.
+
+**Verification**, from a new agent session, recorded under Implementation notes with repository
+names left out:
+
+- `forge-protection check` exits 0. Every row is `ok` or `excepted`, and the excepted rows are the
+  repositories of section 2.4 and no others (Michael confirms the count);
+- `gh api repos/<owner>/<repo>/rules/branches/<default> --jq '[.[].type] | sort'` prints
+  `["creation","deletion","non_fast_forward","update"]` for both GitHub repositories, and
+  `gh api repos/<owner>/<repo>/collaborators/<machine account>/permission --jq .permission`
+  prints `write`;
+- `ssh -T git@github.com` from the agent session greets the machine account;
+- with the agent token, a GET of one project's protected branches succeeds (the check depends on
+  it) and `glab api personal_access_tokens/self` lists no merge, approve, protect or project-update
+  permission.
+
+These verify configuration, not a refused push. No live push against a default branch is
+attempted: a probe that the forge failed to refuse would itself move the branch.
+
+**Merge 2, the retirement** (section 4). Its commits are written only after the verification
+results are in the spec, on the same branch rebased onto the new `main`, with a fresh pre-merge
+review. Until merge 2 is applied the full local guard is live, so there is no moment at which
+neither the forge nor the guard refuses.
+
+If Michael's actions have not happened when merge 1 is done, the line stops there and is reported
+as waiting on him.
 
 ### Michael's forge actions
 
 1. Create the GitHub machine account; add its SSH key and token to 1Password.
 2. GitHub: `main-owner-only` on both repositories, `protect-main` on the second, the collaborator
    invitation on both (accepted from the machine account).
-3. GitLab: create the fine-grained token; run the commands `forge-protection check` prints for the
-   28 projects.
-4. Azure DevOps: read the three repositories' policies and set the one in 2.3, or report which he
-   cannot edit.
-5. `chezmoi apply`, then a new Claude Code session.
+3. GitLab: create the fine-grained token; after the apply, run the commands `forge-protection
+   check` prints for the 28 projects (in place, never unprotecting).
+4. Azure DevOps: read the three repositories' policies and his effective permissions, set what
+   section 2.3 names, or report which he cannot edit.
+5. Write `~/.config/forge-protection/exceptions` with the remotes he accepts as unprotected.
 
 ## 7. Rollback
 
@@ -364,11 +419,16 @@ as waiting on Michael; step 4 never merges ahead of step 3.
 ## Tests
 
 - `tests/forge-protection.test.sh`: each forge's `ok`, `drift` and `unreadable` rows from stubbed
-  API answers; the printed command for each drift shape of section 2; the exit status; no write
-  verb outside printed strings; no repository name from a fixture in a tracked file.
-- `tests/git-pre-push-hook.test.sh`: a leak blocks and names no value; a clean push passes; missing
-  gitleaks blocks; a new branch and a deleted ref are handled; the repository's own hook runs and
-  its failure blocks; `.gitleaksignore` is honoured.
+  API answers; the printed remediation for each drift shape of section 2, never a DELETE; a
+  permissive wildcard rule beside a strict exact rule is `drift`; a 403, a 404 and a forge that
+  does not answer are `unreadable` and fail; an excepted remote passes only through the exceptions
+  file, and a missing file excepts nothing; an Azure branch with the policy but an allowed bypass
+  permission is `drift`; no write verb outside printed strings; fixtures use invented names.
+- `tests/git-pre-push-hook.test.sh`: the scan sections of `git-forge-guard.test.sh` ("the secret
+  scan", "the scan fails closed"), moved and driven through the hook: every existing row keeps its
+  verdict, the merge-commit, binary-attribute, root-commit, count-mismatch and timeout rows
+  included. New rows: a new branch, a deleted ref, several refs in one push; the repository's own
+  hook runs, its failure blocks, and it is found from a linked worktree.
 - `tests/git-forge-guard.test.sh`: the default-branch rows move from ask to deny; the sections
   listed in 4.3 are deleted, not skipped; one row per retired class pins that the guard is now
   **silent** on it (so a later change cannot bring a half-hunt back unnoticed); the plain-grammar,
@@ -380,7 +440,8 @@ as waiting on Michael; step 4 never merges ahead of step 3.
 
 ## After Michael's apply
 
-1. `forge-protection check` exits 0, or lists only the repositories of section 2.4.
+1. After merge 1: the verification of section 6. After merge 2: `forge-protection check` still
+   exits 0, with the same excepted rows.
 2. `./tests/run.sh git-forge-guard` and the new suites pass; the heavy tag is gone if the time
    allows.
 3. A push of a feature branch from an agent session to GitHub shows the machine account as pusher
