@@ -2,36 +2,38 @@
 # Badge Herdr spaces with where a worktree sits between "I'm working on this" and "this is
 # waiting to be merged". Managed by chezmoi (source: dot_config/herdr/executable_phase.sh).
 #
-# Tokens are display-only and do NOT survive a Herdr server restart, so this script alone keeps
-# the badges alive: re-runnable, and it never reads back what it reported. One `herdr workspace
-# report-metadata` call per space sets one phase token (active, draft, review, merged) and, beside
-# an open MR or PR, one pipeline token (ci_ok, ci_fail, ci_run), and clears the rest.
+# Tokens do NOT survive a Herdr server restart, so this script alone keeps the badges alive and
+# never reads back what it reported. One `herdr workspace report-metadata` call per space sets one
+# phase token (active, draft, review, merged) and, beside an open MR or PR, one pipeline token
+# (ci_ok, ci_fail, ci_run), and clears the rest.
 #
-# Three things drive it: the dev.phase plugin's startup hook, its workspace.focused /
-# worktree.created / worktree.removed hooks, and a LaunchAgent running `refresh --force` every 50 s.
-# The timer is not redundant: opening or merging an MR fires no Herdr event. It must not be
-# throttled (no ProcessType=Background or LowPriorityIO): a run that outlasts its interval makes
-# launchd skip cycles while reporting exit code 0.
+# Driven by the dev.phase plugin's startup and workspace/worktree hooks, and by a LaunchAgent
+# running `refresh --force` every 50 s. The timer is not redundant: opening or merging an MR fires
+# no Herdr event. It must not be throttled (no ProcessType=Background or LowPriorityIO): a run that
+# outlasts its interval makes launchd skip cycles while reporting exit code 0.
 #
 # Freshness: --force (the timer) looks every repository up now; --fresh (a focus refresh) does too
-# unless the repository's stamp <key>.lookup, written before every lookup, is under FRESH_GAP (10 s)
-# old, then it answers from the cache; the other hooks use the 120 s TTL.
+# unless its stamp <key>.lookup is under FRESH_GAP (10 s) old, then it answers from the cache; the
+# other hooks use the 120 s TTL.
 #
 # Structure: `refresh` replaces itself with `/usr/bin/timeout -s KILL $RUN_DEADLINE`, which runs
 # the worker (`_refresh`) in a process group of its own. The worker takes one run lock
-# ($CACHE_DIR/run.lock, fd 9, /usr/bin/lockf, LOCK_WAIT s, else it skips), sweeps stale .tmp.*
+# ($CACHE_DIR/run.lock, fd 9, /usr/bin/lockf, LOCK_WAIT s, else it skips), sweeps stale +tmp.*
 # files, starts one background job per repository and waits. Descendants inherit fd 9, so the lock
 # is free when the last exits. The deadline covers the lock wait, and a cache write is a rename of
 # a temporary file beside its target, so a KILL at any point leaves the previous file.
 #
 # Accepted failure modes (each costs stale badges until its cause ends):
-#   - KILL of `timeout` itself, a TERM, HUP or INT that a descendant ignores, a descendant that
-#     leaves the group, or one that outlives its job's shell: it holds the lock and later runs
-#     skip. `lsof -t <cache dir>/run.lock` names it.
+#   - KILL of `timeout` itself, a TERM that a descendant ignores, a descendant that leaves the
+#     group or outlives its job's shell: it holds the lock and later runs skip (`lsof -t <cache
+#     dir>/run.lock` names it).
+#   - INT (a ^C on a terminal run): bash ignores INT in `&` jobs when job control is off, and their
+#     children inherit that, so it ends timeout and the worker but no job. The jobs run on outside
+#     the deadline, holding the lock until their forge calls end. launchd's TERM does reach them.
 #   - A job cut at the deadline leaves some of its spaces on their previous badge; each report is
 #     one call, so none is half-painted.
-#   - The caller's environment reaches the script: overrides, BASH_ENV, exported functions and
-#     glab's variables (GITLAB_TOKEN, GLAB_CONFIG_DIR, proxy and CA), unlike gh, under `env -i`.
+#   - The caller's environment reaches the script (overrides, BASH_ENV, exported functions, glab's
+#     variables), unlike gh, which runs under `env -i`.
 #   - A partial answer (the merged half failed) is published but not cached.
 #
 # Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
@@ -202,12 +204,12 @@ age_of() { # age_of <file>
   if [ "$age" -ge 0 ]; then echo "$age"; else echo 999999999; fi
 }
 
-# Replaces a cache file atomically: a temporary file beside it (same filesystem, fixed .tmp. prefix
+# Replaces a cache file atomically: a temporary file beside it (same filesystem, fixed +tmp. prefix
 # for the worker's sweep), then a rename onto the target. A run killed mid-write leaves the previous
 # file, never half of a new one that would later read as a valid, shorter table.
 write_cache() { # write_cache <file> <content>
   local tmp
-  tmp="$(mktemp "$CACHE_DIR/.tmp.XXXXXX")" || return 1
+  tmp="$(mktemp "$CACHE_DIR/+tmp.XXXXXX")" || return 1
   if printf '%s\n' "$2" > "$tmp" && mv -f "$tmp" "$1"; then return 0; fi
   rm -f "$tmp"
   return 1
@@ -517,7 +519,7 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
     if [ "$t" = "$ci" ]; then args+=(--token "ci_$t=$g")
     else args+=(--clear-token "ci_$t"); fi
   done
-  herdr $HERDR_ARGS "${args[@]}" >/dev/null 2>&1 || true
+  herdr $HERDR_ARGS "${args[@]}" >/dev/null 2>&1 9>&- || true
 }
 
 # ------------------------------------------------------------------ spaces
@@ -527,7 +529,7 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
 # Sorted by repo_root because Herdr does not return the list grouped and the worker starts one
 # job per run of equal roots. The sort is stable, so Herdr order holds within a repo.
 spaces() {
-  herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -I -c '
+  herdr $HERDR_ARGS workspace list 2>/dev/null 9>&- | "$PY" -I -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -607,6 +609,8 @@ cmd_refresh() {
   # listed, as in slug_chars_ok: under a UTF-8 locale bash 3.2 lets U+2185 through the range [0-9].
   case "$RUN_DEADLINE" in ''|*[!0123456789]*|0*) die "HERDR_PHASE_RUN_DEADLINE is not a positive whole number of seconds" ;; esac
   [ -x /usr/bin/timeout ] && [ -x /usr/bin/lockf ] || die "/usr/bin/timeout and /usr/bin/lockf are required"
+  # The script has done `cd /`, so a relative $0 would no longer name it.
+  case "$0" in /*) ;; *) die "run phase.sh by its absolute path" ;; esac
   exec /usr/bin/timeout -s KILL "$RUN_DEADLINE" /bin/bash "$0" _refresh "$run" "$only"
 }
 
@@ -624,7 +628,7 @@ cmd_worker() { # cmd_worker <run: ttl|force|fresh> <workspace id or "">
     75) echo "phase.sh: skipped: another refresh holds the lock" >&2; exit 0 ;;
     *) exit 2 ;;
   esac
-  find "$CACHE_DIR" -maxdepth 1 -name '.tmp.*' -mmin +1 -delete 2>/dev/null || true
+  find "$CACHE_DIR" -maxdepth 1 -name '+tmp.*' -mmin +1 -delete 2>/dev/null || true
 
   local list ws path root group="" last_root="" nl=$'\n' tab=$'\t'
   list="$(spaces)"

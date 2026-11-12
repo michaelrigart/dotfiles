@@ -196,6 +196,8 @@ CALLS="$T/calls"; : > "$CALLS"
 cat > "$BIN/herdr" <<'H'
 #!/usr/bin/env bash
 echo "herdr $*" >> "$CALLS"
+# The run lock is fd 9 of the script: a herdr it starts must not inherit it.
+{ : >&9; } 2>/dev/null && echo "herdr-fd9-open" >> "$CALLS"
 if [ "${1:-}" = "workspace" ] && [ "${2:-}" = "list" ]; then
   cat "$WSJSON"
 fi
@@ -1064,6 +1066,8 @@ echo "N. one run: repositories side by side, one lock, one deadline"
 # repository from files in $GLD (open-<repo>.json, merged-<repo>.json, <repo> being the slug with /
 # as __), and:
 #   sleep-<repo>       seconds every mr list call sleeps
+#   overlap            the first open list of each repository creates up-<repo>, waits up to 5 s for
+#                      the other repository's up- file and logs `overlap` or `timeout` to the call log
 #   fail-<repo>        every call exits 1
 #   first-open-<repo>.json
 #                      the first open list creates started-<repo>, stalls 2 s, then answers this
@@ -1092,6 +1096,15 @@ if [ -e "$GLD/hang-$repo" ]; then
   [ "$(cat "$GLD/hang-$repo")" != ignore-term ] || trap '' TERM
   echo "$$" > "$GLD/pid-$repo"
   exec /bin/sleep 30
+fi
+if [ "$state" = open ] && [ -e "$GLD/overlap" ]; then
+  : > "$GLD/up-$repo"; got=timeout
+  for ((i = 0; i < 50; i++)); do
+    for f in "$GLD"/up-*; do [ "$f" = "$GLD/up-$repo" ] || got=overlap; done
+    [ "$got" = overlap ] && break
+    sleep 0.1
+  done
+  echo "$got" >> "$CALLS"
 fi
 if [ "$state" = open ] && [ -r "$GLD/first-open-$repo.json" ] && mkdir "$GLD/first-taken-$repo" 2>/dev/null; then
   : > "$GLD/started-$repo"
@@ -1146,9 +1159,10 @@ printf '#!/bin/sh\necho "mv $*" >> "$MVLOG"\nif [ -n "${MVHANG:-}" ] && [ -r "$M
 LINKED="w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 wA wB"
 glab_job_stub
 
-# Side by side. Each repository's two list calls sleep 1 s, so its job takes 2 s and two jobs one
-# after the other 4 s; one space each keeps the git work out of the timing. Bug caught: a worker
-# that runs repositories in turn.
+# Side by side: each repository's first open list waits (5 s at most) until the other repository's has
+# started, and logs `overlap` or `timeout`. That is proof the two jobs run at once, with no clock in
+# it; one space each keeps the git work out of the way. Bug caught: a worker that runs repositories in
+# turn, where the first job's wait ends in `timeout`.
 cat > "$T/ws-two.json" <<J
 {"id":"x","result":{"type":"workspace_list","workspaces":[
  {"workspace_id":"w4","label":"review","worktree":{"checkout_path":"$T/repo-review","is_linked_worktree":true,"repo_root":"$REPO"}},
@@ -1156,12 +1170,11 @@ cat > "$T/ws-two.json" <<J
 ]}}
 J
 job_reset
-for _r in test__proj test__proj2; do echo 1 > "$GLD/sleep-$_r"; done
-t0="$(now_s)"; WSJSON="$T/ws-two.json" run refresh --force; t1="$(now_s)"
-elapsed="$(secs "$t0" "$t1")"
+: > "$GLD/overlap"
+WSJSON="$T/ws-two.json" run refresh --force
 check "$RC" "0" "a refresh with per-repository jobs exits 0"
-check "$(grep -c '^glab mr list' "$CALLS")" "4" "each of the two repositories made its two list calls"
-check "$(within "$elapsed" 3.5)" "yes" "two repositories at 2 s each finish in under 3.5 s (took ${elapsed} s; in turn it is 4 s or more)"
+check "$(grep -c '^overlap$' "$CALLS")" "2" "each repository's lookup saw the other's started while it was still running"
+check "$(grep -c '^timeout$' "$CALLS")" "0" "no repository waited for another"
 check "$(nreports w4)$(nreports wA)" "11" "each repository reported its space once"
 check "$(lock_busy)" "0" "no lock outlives the run"
 
@@ -1196,17 +1209,24 @@ case "$(report_for wB)" in *"--token review=$ICON_MR !22 "*) _pass "test/proj2's
 counts=""; for w in $LINKED; do counts="$counts$(nreports $w) "; done
 check "$counts" "1 1 1 1 1 1 1 1 1 1 1 1 1 1 " "every linked space of the interleaved list is reported exactly once"
 check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "14" "and nothing else is reported"
+# Bug caught: a herdr call that inherits the run lock, so a server the CLI starts holds it for ever.
+check "$(grep -c '^herdr workspace' "$CALLS")" "15" "PRECONDITION: the stub saw the list and every report"
+check "$(grep -c '^herdr-fd9-open$' "$CALLS")" "0" "no herdr call inherits the run lock (fd 9)"
 
 # A single space is still one report, and a workspace id that matches nothing is none and no forge call.
 job_reset
 run refresh --workspace w4
 check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "1" "refresh --workspace makes exactly one report"
 check "$(nreports w4)" "1" "and it is the asked space's"
-job_reset
-run refresh --workspace 'w 4*'
-check "$RC" "0" "a workspace id that matches no space exits 0"
-check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "0" "and reports nothing"
-check "$(grep -c -E '^(glab|gh) ' "$CALLS")" "0" "and makes no forge call"
+# Bugs caught: 'w4 x' an unquoted expansion of the id that reports w4, 'w*' a pattern comparison that
+# reports every space.
+for _id in 'w4 x' 'w*'; do
+  job_reset
+  run refresh --workspace "$_id"
+  check "$RC" "0" "workspace id '$_id', which matches no space, exits 0"
+  check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "0" "workspace id '$_id': reports nothing"
+  check "$(grep -c -E '^(glab|gh) ' "$CALLS")" "0" "workspace id '$_id': makes no forge call"
+done
 
 # An older lookup never lands last (the reason for the lock). A's first open list answers the draft
 # after a 2 s stall; B's lookup answers ready. B must wait at the lock for A's whole run, so B's
@@ -1221,6 +1241,7 @@ job_reset; job_ready
 : > "$CALLS"
 bg_phase refresh --force --workspace w5; apid=$BGPID
 waitfor "$GLD/started-test__proj" && _pass "A's lookup started and is stalled" || _fail "A's lookup started and is stalled"
+kill -0 "$apid" 2>/dev/null && _pass "A is still running when B starts" || _fail "A is still running when B starts"
 KEEPLOG=1 run refresh --force --workspace w5
 wait "$apid" 2>/dev/null
 check "$(nreports w5)" "2" "A and B each reported w5"
@@ -1382,22 +1403,22 @@ ino2="$(stat -f %i "$CACHE/test%2Fproj.tsv")"; pino2="$(stat -f %i "$CACHE/test%
   || _fail "a forced lookup replaces the table file (inode $ino1 -> $ino2)"
 [ "$pino1" != "$pino2" ] && _pass "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)" \
   || _fail "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)"
-check "$(ls -A "$CACHE" | grep -c '^\.tmp\.')" "0" "no temporary file is left in the cache directory"
+check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "0" "no temporary file is left in the cache directory"
 check "$(grep -c . "$CACHE/test%2Fproj.tsv")" "7" "the replaced table is whole"
 : > "$MVLOG"; job_reset
 run refresh --force
 for _f in tsv mr10.pipeline; do
-  check "$(grep -cE "^mv -f $CACHE/\.tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.$_f\$" "$MVLOG")" "1" \
-    "the GitLab .$_f is renamed into place from a .tmp.XXXXXX file in the cache directory"
+  check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.$_f\$" "$MVLOG")" "1" \
+    "the GitLab .$_f is renamed into place from a +tmp.XXXXXX file in the cache directory"
 done
 # The stamp is written before the table's lookup and before each pipeline's: five times here.
-check "$(grep -cE "^mv -f $CACHE/\.tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
-  "the GitLab .lookup is renamed into place from a .tmp.XXXXXX file in the cache directory"
+check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
+  "the GitLab .lookup is renamed into place from a +tmp.XXXXXX file in the cache directory"
 : > "$MVLOG"; rm -rf "$CACHE"
 ghrun refresh --force
 for _f in tsv lookup; do
-  check "$(grep -cE "^mv -f $CACHE/\.tmp\.[A-Za-z0-9]{6} $CACHE/github@test%2Fproj3\.$_f\$" "$MVLOG")" "1" \
-    "the GitHub .$_f is renamed into place from a .tmp.XXXXXX file in the cache directory"
+  check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/github@test%2Fproj3\.$_f\$" "$MVLOG")" "1" \
+    "the GitHub .$_f is renamed into place from a +tmp.XXXXXX file in the cache directory"
 done
 
 # A run killed in the middle of a cache write (the logging mv hangs on the table) leaves the previous
@@ -1411,19 +1432,36 @@ printf 'test%%2Fproj.tsv' > "$T/mvhang"
 MVHANG="$T/mvhang" DEADLINE=2 run refresh --force --workspace w4
 check "$RC" "137" "a run killed inside a cache write exits 137"
 check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the killed write"
-check "$(ls -A "$CACHE" | grep -c '^\.tmp\.')" "1" "the killed write left its one temporary file"
+check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "1" "the killed write left its one temporary file"
 check "$(lock_busy)" "0" "no lock outlives the killed write"
 
 # The worker sweeps the temporary files of runs killed mid-write: those older than a minute, and
-# nothing else (a younger one may be a live run's, and the name must start with .tmp.). Bug caught: a
-# pattern that matches other files, or no sweep at all.
+# nothing else (a younger one may be a live run's, and the name must start with +tmp.). Bug caught: a
+# pattern that matches other files, a cache key's among them, or no sweep at all.
 job_reset; mkdir -p "$CACHE"
-: > "$CACHE/.tmp.old"; : > "$CACHE/.tmp.new"; : > "$CACHE/x.tmp.y"
-touch -t "$(date -v-5M +%Y%m%d%H%M.%S)" "$CACHE/.tmp.old" "$CACHE/x.tmp.y"
+: > "$CACHE/+tmp.old"; : > "$CACHE/+tmp.new"; : > "$CACHE/x.tmp.y"
+# A GitLab slug may start with ".tmp." (a repository named .tmp.x/y), and its cache files are named
+# after it: the sweep's prefix is one no cache key can start with, so these old files stay.
+for _k in tsv lookup mr5.pipeline; do : > "$CACHE/.tmp.x%2Fy.$_k"; done
+touch -t "$(date -v-5M +%Y%m%d%H%M.%S)" "$CACHE/+tmp.old" "$CACHE/x.tmp.y" "$CACHE"/.tmp.x%2Fy.*
 run refresh --force --workspace w4
-[ ! -e "$CACHE/.tmp.old" ] && _pass "a temporary file aged 5 minutes is swept" || _fail "a temporary file aged 5 minutes is swept"
-[ -e "$CACHE/.tmp.new" ] && _pass "a temporary file made just now is left" || _fail "a temporary file made just now is left"
-[ -e "$CACHE/x.tmp.y" ] && _pass "an old file whose name does not start with .tmp. is left" || _fail "an old file whose name does not start with .tmp. is left"
+check "$(ls -A "$CACHE" | grep -c '^\.tmp\.x%2Fy\.')" "3" "old cache files of a repository whose key starts with .tmp. are not swept"
+[ ! -e "$CACHE/+tmp.old" ] && _pass "a temporary file aged 5 minutes is swept" || _fail "a temporary file aged 5 minutes is swept"
+[ -e "$CACHE/+tmp.new" ] && _pass "a temporary file made just now is left" || _fail "a temporary file made just now is left"
+[ -e "$CACHE/x.tmp.y" ] && _pass "an old file whose name does not start with +tmp. is left" || _fail "an old file whose name does not start with +tmp. is left"
+
+# The worker is this script run again by $0, and the script has done `cd /` by then: a relative $0 is
+# refused with a message and no herdr call, while --help by a relative path still works. Bug caught: a
+# run that starts timeout on a path that no longer exists and so badges nothing, silently.
+job_reset
+PHASE_SAVE="$PHASE"; PHASE="dot_config/herdr/executable_phase.sh"
+RUNDIR="$ROOT" run refresh --force
+check "$RC" "2" "a run by a relative path exits 2"
+check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: run phase.sh by its absolute path$')" "1" "and says why on stderr"
+check "$(herdr_calls)" "0" "and makes no herdr call"
+RUNDIR="$ROOT" run --help
+check "$RC" "0" "--help by a relative path still works"
+PHASE="$PHASE_SAVE"
 
 # The script needs /usr/bin/timeout (and /usr/bin/lockf): without it a run ends with a message and
 # no work. Bug caught: a missing tool that lets the run start with no deadline.
@@ -1563,16 +1601,16 @@ job_reset
 : > "$MVLOG"
 run refresh --force
 ino1="$(stat -f %i "$T/cache/herdr-phase/test%2Fproj.lookup")"
-check "$(grep -cE "^mv -f $T/cache/herdr-phase/\.tmp\.[A-Za-z0-9]{6} $T/cache/herdr-phase/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
-  "the stamp is renamed into place from a .tmp.XXXXXX file in the cache directory"
+check "$(grep -cE "^mv -f $T/cache/herdr-phase/[+]tmp\.[A-Za-z0-9]{6} $T/cache/herdr-phase/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
+  "the stamp is renamed into place from a +tmp.XXXXXX file in the cache directory"
 run refresh --force
 ino2="$(stat -f %i "$T/cache/herdr-phase/test%2Fproj.lookup")"
 [ "$ino1" != "$ino2" ] && _pass "a lookup replaces the stamp file (inode $ino1 -> $ino2)" \
   || _fail "a lookup replaces the stamp file (inode $ino1 -> $ino2)"
-check "$(ls -A "$T/cache/herdr-phase" | grep -c '^\.tmp\.')" "0" "no temporary stamp file is left in the cache directory"
-: > "$T/cache/herdr-phase/.tmp.ABCDEF"; touch -t "$(date -v-5M +%Y%m%d%H%M.%S)" "$T/cache/herdr-phase/.tmp.ABCDEF"
+check "$(ls -A "$T/cache/herdr-phase" | grep -c '^[+]tmp\.')" "0" "no temporary stamp file is left in the cache directory"
+: > "$T/cache/herdr-phase/+tmp.ABCDEF"; touch -t "$(date -v-5M +%Y%m%d%H%M.%S)" "$T/cache/herdr-phase/+tmp.ABCDEF"
 run refresh --force
-check "$(ls -A "$T/cache/herdr-phase" | grep -c '^\.tmp\.')" "0" "a refresh sweeps a stray temporary stamp"
+check "$(ls -A "$T/cache/herdr-phase" | grep -c '^[+]tmp\.')" "0" "a refresh sweeps a stray temporary stamp"
 
 # A stamp whose mtime is in the future (the clock stepped back) is not evidence of a recent lookup:
 # trusted, it would hold --fresh off the forge until the clock caught up.
