@@ -1422,14 +1422,13 @@ check "$RC" "137" "and was killed at the deadline, not skipped (exit 137)"
 check "$(herdr_calls)" "0" "and made no herdr call"
 
 # TERM to the run (launchd's bootout, a kill): timeout is the run's process and forwards it to the
-# worker's group, so the run exits 143 at once. A forge call has a process group of its own, out of
-# reach of that TERM: its own bound ends it, so the stub is dead and the lock free by the 8 s deadline
-# (the cut lands 2 to 4 s in). Bug caught: a TERM that stops the shell and leaves its forge call
-# running with the lock for good.
+# worker's group, so the run exits 143 at once and its job shells die with it, which frees the lock
+# within a second. The hung forge call is in a group of its own (out of reach of that TERM) and ends by
+# its own bound, which the per-call and INT cases pin; it is killed here. Bug caught: jobs that
+# survive a TERM, so the lock stays held until their forge calls end.
 job_reset
 : > "$GLD/hang-test__proj"
-t0="$(now_s)"
-DEADLINE=8 bg_phase refresh --force; mpid=$BGPID
+bg_phase refresh --force; mpid=$BGPID
 waitfor "$GLD/pid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
 t1="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
 i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
@@ -1438,14 +1437,9 @@ if kill -0 "$mpid" 2>/dev/null; then _fail "the run exits within 2 s of TERM"; k
 else _pass "the run exits within 2 s of TERM ($(secs "$t1" "$t2") s)"; fi
 wait "$mpid" 2>/dev/null; mrc=$?
 check "$mrc" "143" "and exits with status 143"
-_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
-i=0; while { kill -0 "$_p" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
-t3="$(now_s)"
-check "$(within "$(secs "$t0" "$t3")" 8.5)" "yes" "and the hung forge call is dead and the lock free by the deadline ($(secs "$t0" "$t3") s)"
-if [ -z "$_p" ]; then _fail "and the hung forge call is dead (it never started)"
-elif kill -0 "$_p" 2>/dev/null; then _fail "and the hung forge call is dead"; kill -9 "$_p" 2>/dev/null
-else _pass "and the hung forge call is dead"; fi
-check "$(lock_busy)" "0" "and the lock is free"
+i=0; while [ "$(lock_busy)" != 0 ] && [ "$i" -lt 10 ]; do i=$((i + 1)); sleep 0.1; done
+check "$(lock_busy)" "0" "and the lock is free within a second of that"
+_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"; [ -z "$_p" ] || kill -9 "$_p" 2>/dev/null
 
 # Cache writes are atomic: a replaced file is a new file, made beside its target with a fixed prefix,
 # and no temporary one is left behind. Bug caught: a write straight onto the target, which a run
@@ -1472,7 +1466,8 @@ check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.look
   "the GitLab .lookup is renamed into place from a +tmp.XXXXXX file in the cache directory"
 : > "$MVLOG"; rm -rf "$CACHE"
 ghrun refresh --force
-check "$(gh_calls)$(grep -c -- '-fd9-open$' "$CALLS")" "20" "PRECONDITION: the gh stub saw both calls, and none inherits the run lock (fd 9)"
+check "$(gh_calls)" "2" "PRECONDITION: the gh stub saw both calls"
+check "$(grep -c -- '-fd9-open$' "$CALLS")" "0" "no gh call inherits the run lock (fd 9)"
 for _f in tsv lookup; do
   check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/github@test%2Fproj3\.$_f\$" "$MVLOG")" "1" \
     "the GitHub .$_f is renamed into place from a +tmp.XXXXXX file in the cache directory"
@@ -1492,20 +1487,24 @@ check "$RC" "137" "a run held up by a hung mv exits 137"
 check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was"
 check "$(lock_busy)" "0" "no lock outlives the killed run"
 
-# A write cut in the middle. The mv that hangs is the table's, so the run must get that far: the
-# deadline is 8 s, CALL_MARGIN + 3, which leaves the forge calls (cut at 3 s, 2 to 4 with rounding)
-# time to answer. The previous table is left byte for byte, with the write's temporary file.
-# Bug caught: a half-written table that later reads as a valid, shorter one.
+# A write cut in the middle. The mv that hangs is the table's: once the stub has logged it, TERM to the
+# run ends the run (143) in the middle of that write. The previous table is left byte for byte, with the
+# write's temporary file. Bug caught: a half-written table that later reads as a valid, shorter one.
 job_reset
 run refresh --force
 cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
 printf '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]\n' > "$GLD/open-test__proj.json"
 printf 'test%%2Fproj.tsv' > "$T/mvhang"
-MVHANG="$T/mvhang" DEADLINE=8 run refresh --force --workspace w4
-check "$RC" "137" "a run killed inside a cache write exits 137"
-check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the killed write"
-check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "1" "the killed write left its one temporary file"
-check "$(lock_busy)" "0" "no lock outlives the killed write"
+: > "$MVLOG"
+MVHANG="$T/mvhang" bg_phase refresh --force --workspace w4; mpid=$BGPID
+i=0; while ! grep -q '^mv .*test%2Fproj\.tsv$' "$MVLOG" && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done
+grep -q '^mv .*test%2Fproj\.tsv$' "$MVLOG" && _pass "the table's write started" || _fail "the table's write started"
+kill -TERM "$mpid" 2>/dev/null
+wait "$mpid" 2>/dev/null; mrc=$?
+check "$mrc" "143" "a run ended inside a cache write exits 143"
+check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the cut write"
+check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "1" "the cut write left its one temporary file"
+check "$(lock_busy)" "0" "no lock outlives the cut write"
 
 # The worker sweeps the temporary files of runs killed mid-write: those older than a minute, and
 # nothing else (a younger one may be a live run's, and the name must start with +tmp.). Bug caught: a

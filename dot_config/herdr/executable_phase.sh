@@ -2,10 +2,9 @@
 # Badge Herdr spaces with where a worktree sits between "I'm working on this" and "this is
 # waiting to be merged". Managed by chezmoi (source: dot_config/herdr/executable_phase.sh).
 #
-# Tokens do NOT survive a Herdr server restart, so this script alone keeps the badges alive and
-# never reads back what it reported. One `herdr workspace report-metadata` call per space sets one
-# phase token (active, draft, review, merged) and, beside an open MR or PR, one pipeline token
-# (ci_ok, ci_fail, ci_run), and clears the rest.
+# Tokens do NOT survive a Herdr server restart, so this script alone keeps the badges alive. One
+# `herdr workspace report-metadata` call per space sets one phase token (active, draft, review,
+# merged) and, beside an open MR or PR, one pipeline token (ci_ok, ci_fail, ci_run), clears the rest.
 #
 # Driven by the dev.phase plugin's startup and workspace/worktree hooks, and by a LaunchAgent
 # running `refresh --force` every 50 s. The timer is not redundant: opening or merging an MR fires
@@ -19,7 +18,7 @@
 # Structure: `refresh` becomes `/usr/bin/timeout -s KILL $RUN_DEADLINE`, which runs the worker
 # (`_refresh`) in a process group of its own. The worker takes one run lock
 # ($CACHE_DIR/run.lock, fd 9, /usr/bin/lockf, LOCK_WAIT s, else it skips), sweeps stale +tmp.*
-# files, starts one background job per repository and waits. Descendants inherit fd 9, so the lock
+# files, starts one background job per repository and waits. The shells inherit fd 9, so the lock
 # is free when the last exits. The deadline covers the lock wait, and a cache write is a rename of
 # a temporary file beside its target, so a KILL at any point leaves the previous file. Every glab,
 # gh and herdr call also runs under its own timeout from the run's start, in a process group of its
@@ -28,13 +27,16 @@
 # does not reach a call; its own bound ends it.
 #
 # Accepted failure modes (each costs stale badges until its cause ends):
-#   - INT (a ^C on a terminal run; launchd sends TERM): bash ignores INT in `&` jobs when job control
-#     is off, so it ends timeout and the worker but not the jobs. The same holds for a KILL of
-#     `timeout`, a TERM and a job whose shell died. The lock is then held until about the run's
-#     deadline at most (whole seconds can add one), as every call is cut with its group by then;
-#     only a hung local git or file operation outlasts that, until an intact run's outer deadline.
-#   - A job cut at the deadline leaves some of its spaces on their previous badge; each report is
-#     one call, so none is half-painted.
+#   - INT (a person at a terminal; launchd sends TERM): bash ignores INT in `&` jobs when job control
+#     is off, so it ends timeout and the worker but not the jobs, which hold the lock until their
+#     calls are cut, about the run's deadline at most (whole seconds can add one). The same holds
+#     for a KILL of `timeout` and a job whose shell died. TERM and HUP end timeout, the worker and
+#     the jobs and free the lock at once; a call in flight lives on, in its own group and without
+#     the lock, until its bound.
+#   - A hung local git or file operation outlasts every bound, until an intact run's outer deadline.
+#     A process a call leaves behind (the CLI exited, so its timeout cut nothing) that keeps the
+#     call's stdout open blocks its job, and in an orphaned job the lock, until it exits.
+#   - A job cut at the deadline leaves some spaces on their previous badge (a report is one call).
 #   - The caller's environment reaches the script (overrides, BASH_ENV, exported functions, glab's
 #     variables), unlike gh, which runs under `env -i`.
 #   - A partial answer (the merged half failed) is published but not cached.
@@ -148,16 +150,17 @@ require_deadline() {
 # an orphaned job (an INT ends timeout and the worker but not the jobs) cannot hold the run lock
 # beyond the deadline. The call gets a process group of its own (timeout without --foreground) and
 # the KILL at its bound, which cannot be ignored, takes the whole group: what gh or glab start (a
-# credential helper, git) dies with it. It also has no fd 9, so nothing a call starts can hold the
-# run lock. The call is thereby out of reach of the run's outer KILL or a forwarded TERM: its own
-# bound ends it. A cut call is a failed call, and the failed-lookup paths handle it. Forge calls end
-# at CALL_END, CALL_MARGIN before the run deadline; herdr calls at RUN_END, the deadline itself, so a
-# job whose forge call was cut still reports.
+# credential helper, git) dies with it. It has no fd 9, so nothing a call starts can hold the run
+# lock, and no stdin, so a call in a background group cannot stop on the terminal. The call is
+# thereby out of reach of the run's outer KILL or a forwarded TERM: its own bound ends it. A cut
+# call is a failed call, and the failed-lookup paths handle it. Forge calls end at CALL_END,
+# CALL_MARGIN before the run deadline; herdr calls at RUN_END, the deadline itself, so a job whose
+# forge call was cut still reports.
 bounded() { # bounded <end: epoch seconds> <command...>
   local left=$(( $1 - $(date +%s) ))
   shift
   [ "$left" -gt 0 ] || return 124
-  /usr/bin/timeout -s KILL "$left" "$@" 9>&-
+  /usr/bin/timeout -s KILL "$left" "$@" </dev/null 9>&-
 }
 
 # ------------------------------------------------------------------ MR state
@@ -619,9 +622,9 @@ refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>pa
 }
 
 # `refresh` checks its arguments and the two system tools, then becomes timeout: at the deadline
-# timeout sends KILL to the whole process group of the worker it runs, so no job, forge call or
-# herdr call outlives the run, and a TERM to the run is forwarded to that group. The worker is this
-# script again (the suite runs it as /bin/bash <path>, so $0 is that path).
+# timeout sends KILL to the process group of the worker it runs (the worker's shells; each call has
+# a group of its own), and a TERM, HUP or INT to the run is forwarded to that group. The worker is
+# this script again (the suite runs it as /bin/bash <path>, so $0 is that path).
 cmd_refresh() {
   local run="ttl" only=""
   while [ $# -gt 0 ]; do
