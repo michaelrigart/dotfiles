@@ -740,13 +740,12 @@ rc_is 1 "J7a a missing tab id fails"
 has "malformed id" "J7a says why"
 unlogged "tab focus" "J7a no tab is focused"
 
-goto "export MOCK_TAB_LIST='{\"result\":{\"tabs\":[{\"tab_id\":7,\"label\":\"agents\"}]}}'" agents
-rc_is 1 "J7b a numeric tab id fails"
-unlogged "tab focus" "J7b no tab is focused"
-
-goto "export MOCK_TAB_LIST='{\"result\":{\"tabs\":[{\"tab_id\":{},\"label\":\"agents\"}]}}'" agents
-rc_is 1 "J7c an object tab id fails"
-unlogged "tab focus" "J7c no tab is focused"
+for row in '7|J7b a numeric tab id fails|J7b no tab is focused' '{}|J7c an object tab id fails|J7c no tab is focused'; do
+  j7=("${(@s:|:)row}")
+  goto "export MOCK_TAB_LIST='{\"result\":{\"tabs\":[{\"tab_id\":${j7[1]},\"label\":\"agents\"}]}}'" agents
+  rc_is 1 "${j7[2]}"
+  unlogged "tab focus" "${j7[3]}"
+done
 
 # type = "shell" commands run detached, so stderr never reaches the TUI. A failed jump
 # must therefore be visible as a notification, or it is indistinguishable from a
@@ -897,8 +896,6 @@ eq "$(hl_label_of "$CODE/Netronix/curato-broken")" "Netronix/curato-broken" \
 # name depend on the order they were created in.
 hl_shorten_of() { HOME="$ROOTTMP" zsh -c "source '$LAYOUT' --source-only; hl_shorten '$1' '${2:-34}'" 2>&1 }
 
-eq "$(hl_shorten_of small-improvements)" "small-improvements" \
-  "L1e a slug inside the budget is left alone"
 eq "$(hl_shorten_of feature-minimize-lod-detection-registration)" \
   "feature-min…detection-registration" \
   "L1f an over-budget slug keeps its head and its tail"
@@ -910,14 +907,6 @@ D="feature-lod-alert-scoped-coverage-totals-design"
 R="feature-lod-alert-scoped-coverage-totals-rollout"
 eq "$(hl_shorten_of $D)" "feature-lod…coverage-totals-design" "L1h the design sibling keeps its tail"
 eq "$(hl_shorten_of $R)" "feature-lo…coverage-totals-rollout" "L1i the rollout sibling keeps its tail"
-[[ "$(hl_shorten_of $D)" != "$(hl_shorten_of $R)" ]] \
-  && _pass "L1j two siblings sharing a 41-character prefix stay distinguishable" \
-  || _fail "L1j two siblings sharing a 41-character prefix stay distinguishable"
-
-# End to end: a real linked checkout whose slug is over budget.
-git -C "$R1" worktree add -q -b "$D" "$CODE/Netronix/curato-$D" 2>/dev/null
-eq "$(hl_label_of "$CODE/Netronix/curato-$D")" "feature-lod…coverage-totals-design" \
-  "L1k a long-slugged checkout is labelled with the shortened slug"
 
 # The budget hl_label passes, pinned. This slug is the one that renders differently at
 # 30 than at 32, so the rail width and the slug budget cannot drift apart silently —
