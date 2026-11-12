@@ -11,6 +11,25 @@ numbers and no conclusion beyond them. Nothing here changes the default setup; a
 proposal to Michael after the result. A switch in another line's session is that line's to make,
 on Michael's word. No pilot may add permission prompts. Main-session effort stays xhigh.
 
+## To paste (Michael)
+
+**Pilot A**, in the `feat/review-loop` session, before it starts Task 0:
+
+```
+/goal Tasks 0-6 of docs/superpowers/plans/2026-11-12-review-loop.md are committed, the full suite and the pre-merge reviews are recorded, the branch is pushed and the final report is written; or the session is waiting on a decision only Michael can make; or stop after 40 turns
+```
+
+If it stops to ask something, answer and paste the same line again. Off: `/goal clear`.
+
+**Pilot B**, in the suite-speed line's Claude pane, right after `wt` creates it: exit the
+session, then
+
+```
+claude --continue --settings '{"permissions":{"denyInsteadOfPrompting":true}}'
+```
+
+Off: exit and start `claude --continue`. Never on the same line as Pilot A.
+
 ## Verified facts (Claude Code 2.1.322, 2026-11-12)
 
 Checked against the installed binary and code.claude.com (`goal`, `settings-reference`,
