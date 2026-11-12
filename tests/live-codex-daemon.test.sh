@@ -448,15 +448,19 @@ is "R1 the scratch thread is loaded before the release" \
 rel_cwd="$(thread_cwd "$rel_thread")"
 is "R1 thread/read reports the scratch directory as the thread's cwd" "$rel_cwd" "$RELD"
 # Same scan as below. Whether a loaded thread has helpers in its cwd (C1) depends on which MCP
-# servers are enabled: none are since node_repl and cua_repl went off (2026-10-24), so "none
-# left" below is only a real observation of C4 when this reads present. The unload itself is
-# pinned by loaded/notLoaded either way; what must hold here is that the scan answers at all.
+# servers run per thread: the managed config turns node_repl and cua_repl off (2026-10-24), and
+# with only those configured there are none, so "none left" below is a real observation of C4
+# only when this reads present. The unload itself is pinned by loaded/notLoaded either way.
+# What must hold here is that the scan can see the daemon's processes at all: lsof always
+# prints the pid field, so the daemon's own pid in the listing is the positive control.
 scan="$(lsof -a -d cwd -Fn 2>/dev/null)"
 if [ -z "$scan" ]; then before=unknown
 elif grep -qxF "n$RELD" <<< "$scan"; then before=present
 else before=absent; fi
-if [ "$before" = unknown ]; then _fail "R1 the cwd scan answers before the release" "$before"
-else _pass "R1 the cwd scan answers before the release"; fi
+rel_dpid="$(daemon_pid)"
+if [ -n "$rel_dpid" ] && grep -qxF "p$rel_dpid" <<< "$scan"; then sees=yes; else sees=no; fi
+is "R1 the cwd scan sees the daemon before the release" "$sees" yes
+# Not an assertion, and run.sh shows it only on a failing run: run the suite directly to read it.
 echo "  note: helpers in the scratch directory before the release (C1): $before"
 out="$(XDG_STATE_HOME="$T/rel/state" rpc release --dir "$RELD")"; rc=$?
 is "R1 release exits 0" "$rc" 0

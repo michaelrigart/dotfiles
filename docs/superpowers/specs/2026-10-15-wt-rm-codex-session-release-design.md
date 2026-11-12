@@ -32,6 +32,12 @@ outcome, not the exception. A retry a minute later passes.
 Probed 2026-10-15 against Codex 0.162.1 (the launchd daemon and `codex app-server
 generate-json-schema`), with scratch threads in scratch directories, all archived afterwards.
 
+> **Amended 2026-11-12:** C1 describes a daemon with the `node_repl` and `cua_repl` MCP servers
+> enabled. [Idle MCP servers](2026-10-24-idle-mcp-servers-design.md) turned both off, and a loaded
+> thread then has no process in its `cwd` (measured 2026-11-12, Codex 0.167.2: the daemon's only
+> child is `codex-code-mode`, cwd `~`). The helper clauses of C2 and C4 apply only where a
+> per-thread MCP server runs; the `live-codex-daemon` canary no longer requires helpers.
+
 | # | Fact |
 |---|---|
 | C1 | Each loaded thread has three helper processes whose cwd is the thread's `cwd`: `node_repl` (the `node_repl` MCP server) and `node` running `cua-repl.mjs` with its own `node_repl` child. All are children of the daemon. They start with the thread and exit when it unloads. |
