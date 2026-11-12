@@ -204,6 +204,11 @@ around its `run_gitleaks` with the Read tool; do not name that file in a Bash co
   written to `<file>`, created new with mode 0600 (`os.open` with `O_CREAT|O_EXCL|O_WRONLY`; an
   existing file is replaced by unlinking first), stdout is empty, exit 4. Without `--raw`, the
   miss behaves as today (the replay harnesses do not pass it).
+- `escape` keeps line breaks (ruling, 2026-11-13): it escapes its input line by line and writes each
+  line's `\n` back as it was, so a multi-line pane excerpt stays multi-line. Task 1 built it to
+  turn `\n` into `<U+000A>`; change that here, with a row R12c: `printf 'a\nb\xe2\x80\x8bc\n' | xreview-rpc escape`
+  prints two lines, `a` and `b<U+200B>c`. `render` is unchanged: a newline inside a finding's text
+  still becomes `<U+000A>`.
 - `validate`'s problems name schema paths and fixed words only: `<path>: not an allowed value`,
   `<path>: unexpected key` (the key's name is not printed), the others unchanged.
 
