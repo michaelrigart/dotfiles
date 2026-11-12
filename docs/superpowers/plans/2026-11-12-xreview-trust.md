@@ -238,7 +238,12 @@ around its `run_gitleaks` with the Read tool; do not name that file in a Bash co
     print in `_collect_slices`, the re-collect of `turns/<nonce>.merged` in `cmd_collect`, and the
     "another collect finished the round" print in `_slices_sync`. `turns/<nonce>.merged` keeps
     holding the merged validated answer, not the rendering. A sliced round's shown list is the
-    concatenation of `.packets[].shown` when every one is a list, else null.
+    concatenation of `.packets[].shown` when every one is a list, else null. `_collect_slices`
+    deletes `turns/<nonce>.slices` once the round is recorded, and `turns/<nonce>.shown` holds only
+    the first packet's labels, so the combined list is saved as `turns/<nonce>.shown.all` (one JSON
+    value: the list, or `null`) under the slices lock, before `.merged` is written and the state is
+    removed. Both finished-round prints (`cmd_collect`'s re-collect and `_slices_sync`'s) read
+    their shown list from that file; a missing or unreadable one is null.
   - `_collect_wait` passes `--raw "$dir/turns/$nonce.raw"` to `turn-wait`.
   - `_collect_fail`'s exit-4 arm prints nothing on stdout and this on stderr, then exits 4:
     `xreview: the review failed: the reviewer's answer <does not match the findings schema|exceeds xreview's bounds> (<detail from xreview-rpc's stderr line>). Nothing was recorded. The answer is kept for Michael in <file> and is in the Codex pane. It is not printed here and is not to be read into this session. Report it; do not re-dispatch.`
@@ -248,6 +253,12 @@ around its `run_gitleaks` with the Read tool; do not name that file in a Bash co
     `  | ` prefix is added. If `escape` fails, print the single line
     `  | (the pane's screen is withheld: it could not be scanned)`.
 - The suite sets `XREVIEW_TEXT_SCAN` to the source copy, as it sets `XREVIEW_LEDGER`.
+- The suite shadows `xreview-rpc` with a shell stub (`$STUB/xreview-rpc`, written near line 225).
+  Extend the stub, in this task: `render` and `escape` `exec` the source
+  `dot_local/bin/executable_xreview-rpc` with the same arguments (after the stub's call log line),
+  so the real rendering runs; and the stub's `turn-wait` arm honours `--raw <file>` in its
+  schema-miss scenario exactly as Task 3 defines it (text to the file with mode 600, empty stdout,
+  exit 4).
 
 - [ ] **Step 1: Write the failing rows** in `tests/xreview.test.sh`, reusing its fake daemon and
   fixtures:
@@ -256,8 +267,9 @@ around its `run_gitleaks` with the Read tool; do not name that file in a Bash co
     is in stdout or stderr.
   - W1: a single-turn collect whose summary holds U+200B → stdout's first key is `xreview`, holds
     `<U+200B>`, and the receipt is written as before.
-  - W2: a sliced round whose second slice's summary holds U+200B → the same; collecting the
-    finished round again prints the same rendering.
+  - W2: a sliced round whose second slice's summary holds U+200B → the same, and
+    `reviewed_files` holds a label shown only by the first slice and one shown only by the second;
+    collecting the finished round again prints the same rendering, both labels included.
   - W3: a turn with no `.shown` file collects, and the rendering has no `reviewed_files` key.
   - W4: with `XREVIEW_TEXT_SCAN=/nonexistent`, collect exits 1, prints nothing on stdout and
     writes no receipt; run again with the module restored, it collects.
@@ -308,8 +320,13 @@ named, and no other sentence.
 
 **Interfaces:**
 - Consumes: `check`, `remote_head`, `one`, `current_source`, `Deny`, the ledger module.
-- Produces: `gated_verb` returns `{"tool": "az", "kind": "az-create"|"az-update"|"reordered", "args": [...]}`;
-  `judge` routes the first two to `judge_az(shape, ledger)`.
+- Produces: `gated_verb` returns `{"tool": "az", "kind": "az-create"|"az-update", "args": [...]}`,
+  or for a reordered form `{"tool": "az", "kind": "reordered", "args": rest, "verb": ("repos pr", "create"|"update")}`:
+  `parse_plain` (near line 1017) reads `noun, name = verb["verb"]` for every reordered shape.
+  `judge` routes the first two kinds to `judge_az(shape, ledger)`.
+- `parse_plain` builds the plain form it recommends per tool. For `az` the form is
+  `az repos pr <verb> [options]`, with no `-R <project>` part; the forge wording stays as it is for
+  glab and gh.
 
 **Rules (§5.1), all of them:**
 - Accepted form: `az repos pr create|update [options]`, the three words directly after `az`, after
@@ -360,7 +377,8 @@ named, and no other sentence.
   - A6: `--subscription x` → denied, naming `--subscription`.
   - A7: none named, origin `git@github.com:acme/repo.git` → denied; origin on Azure with a
     different push URL → denied.
-  - A8: `az --debug repos pr create …` → denied as reordered.
+  - A8: `az --debug repos pr create …` → denied as reordered; the reason holds
+    `az repos pr create [options]` and does not hold `-R`.
   - A9: `echo "az repos pr create"`, `rg 'az repos pr update' docs`, `lazy create x`,
     `ls azure && git status`, `az repos pr create --help`, `az repos pr list` → allowed, and the
     last four cost no helper deny.
