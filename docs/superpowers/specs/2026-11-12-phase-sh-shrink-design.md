@@ -304,18 +304,24 @@ Rulings by the line (refactor/phase-sh), put to the driver session under Michael
    **Delegated ruling** (the driver session, chezmoi-87, on Michael's word of 2026-11-12; his to
    overrule): accepted as a named failure mode on condition that an orphaned job cannot hold the
    lock without bound. So every `glab`, `gh` and `herdr` call runs under
-   `/usr/bin/timeout --foreground -s KILL <left>`, counted from the run's start: a forge call
-   is cut 2 s before the run's deadline, and a `herdr` call at the deadline itself, so a job
-   whose forge call was cut can still report (measured: the foreground form stays in the run's
-   process group and cuts the call whatever signals the job ignores). After an INT the lock is
+   `/usr/bin/timeout -s KILL <left>` with fd 9 closed, counted from the run's start: a forge
+   call is cut 5 s before the run's deadline, and a `herdr` call at the deadline itself, so a
+   job whose forge call was cut can still report. The call is cut with its whole process group
+   (measured: the `--foreground` form kills only the direct child, so a helper that `gh` or
+   `glab` starts would survive), and neither it nor anything it starts holds the run lock. The
+   call sits outside the run's process group, so its own bound is what ends it. After an INT the lock is
    therefore held at most until about the run's own deadline, 40 s after it began (whole-second
    arithmetic can add one). The same bound now covers
    two other limits of section 7: a KILL of `timeout` itself, and a job whose shell died.
-   - This also changes section 6, items 2 and 6: a hung forge call is cut at 38 s, its job falls
+   - This also changes section 6, items 2 and 6: a hung forge call is cut at 35 s, its job falls
      back to the cached table and reports, the other repositories are untouched, and the run
      exits 0. Exit 137 remains only for the outer deadline, the backstop for a hang that is not
      an external call (git, `jq`, a file operation).
-   - A run deadline of 2 s or less cuts every external call at once.
+   - A run deadline of 5 s or less cuts every forge call at once.
+   - It also corrects section 7 on TERM and HUP: they end `timeout`, the worker and the jobs, but
+     not an external call in flight, which sits in its own process group, out of reach of the
+     forwarded signal and of launchd's group kill. That call holds no lock and ends at its own
+     bound, at the latest about the deadline of the run that started it.
 2. **Temporary files are named `+tmp.XXXXXX`, not `.tmp.XXXXXX`** (corrects section 5). A GitLab
    slug may start with `.tmp.`, so that prefix let the sweep delete a repository's cache files.
    No cache key can hold `+`.
