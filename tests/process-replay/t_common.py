@@ -672,7 +672,7 @@ FAKE = os.path.join(ROOT, "fake")
 ANS1 = {"verdict": "changes", "findings": [{"severity": "P1", "file": "a.py", "line": 1, "summary": "s", "failure_scenario": "f"}], "reviewed_files": ["a.py"]}
 ANS2 = {"verdict": "approve", "findings": [], "reviewed_files": []}
 script = {"turns": [{"answer": ANS1, "tokens": 1500, "rate_limits": {"primary": {"used_percent": 10, "window_minutes": 10080}}},
-                    {"answer": ANS2, "rc3": 2, "compacted": True}],
+                    {"answer": ANS2, "compacted": True}],
           "threads": {"th2": [{"answer": ANS2, "rc": 4, "raw": "not json"}]}}
 rpc = helpers.stub_rpc(FAKE, os.path.join(ROOT, "rpc-home-default"), script)
 XRM.RPC = rpc
@@ -691,13 +691,9 @@ is_("stub_rpc: and reports the compaction", C.jload(rep), {"turn": tu1, "compact
 rc, out, _err = XRM.rpc("thread-start", "--cwd", ROOT)
 th2 = out.strip()
 rc, out, _err = XRM.rpc("turn-start", "--thread", th2, "--input", inp, "--schema", "/s")
-tu2 = out.strip()
-rc, out, _err = XRM.rpc("turn-wait", "--thread", th2, "--turn", tu2, "--budget", "5")
 rc, out, _err = XRM.rpc("thread-start", "--cwd", ROOT)
 th3 = out.strip()
 rc, out, _err = XRM.rpc("turn-start", "--thread", th3, "--input", inp, "--schema", "/s")
-tu3 = out.strip()
-waits = [XRM.rpc("turn-wait", "--thread", th3, "--turn", tu3, "--budget", "5")[0] for _ in range(3)]
 rc, _out, err = XRM.rpc("turn-start", "--thread", th3, "--input", inp, "--schema", "/s")
 ok("stub_rpc: a turn past the end of the script fails loudly", rc == 1 and "no turn left" in err, err)
 is_("stub_rpc: an unknown command exits 2", XRM.rpc("thread-fork", "--thread", th1)[0], 2)
