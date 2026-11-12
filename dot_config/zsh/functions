@@ -1317,23 +1317,133 @@ _wt_stop_herdr_workspaces() {
   return 0
 }
 
-# _wt_branch_content_merged — true when <branch> would add nothing to <base>.
+# _wt_patch_ids <main> <rev-list-arg>... — one `<patch-id> <commit>` line per non-merge
+# commit in the range that has a patch, in rev-list order. Verbatim ids from plumbing
+# only: whitespace counts, and neither diff configuration nor submodule ignore settings
+# (`--ignore-submodules=none`) can change or hide a patch. Any failed
+# command, no id at all, or a line that is not two hex object ids prints nothing and
+# returns 1.
+_wt_patch_ids() {
+  emulate -L zsh
+  local main="$1" out line
+  shift
+  out="$(setopt pipefail
+    _wt_git -C "$main" rev-list --no-merges "$@" 2>/dev/null \
+      | _wt_git -C "$main" diff-tree --stdin -p --full-index --no-renames --ignore-submodules=none 2>/dev/null \
+      | _wt_git -C "$main" patch-id --verbatim 2>/dev/null)" || return 1
+  [[ -n "$out" ]] || return 1
+  for line in "${(@f)out}"; do
+    [[ "$line" =~ '^[0-9a-f]{40,64} [0-9a-f]{40,64}$' ]] || return 1
+  done
+  print -r -- "$out"
+}
+
+# _wt_change_patch_id <main> <from> <to> — the verbatim patch id of the whole change.
+_wt_change_patch_id() {
+  emulate -L zsh
+  local main="$1" out
+  out="$(setopt pipefail
+    _wt_git -C "$main" diff-tree -p --full-index --no-renames --ignore-submodules=none "$2" "$3" 2>/dev/null \
+      | _wt_git -C "$main" patch-id --verbatim 2>/dev/null)" || return 1
+  out="${out%% *}"
+  [[ "$out" =~ '^[0-9a-f]{40,64}$' ]] || return 1
+  print -r -- "$out"
+}
+
+# _wt_replays_as <main> <from> <to> <x> — true when replaying the change <from>..<to>
+# onto <x>'s parent gives exactly <x>'s tree. The exit status decides, never the output
+# alone: a conflict prints a tree too.
+_wt_replays_as() {
+  emulate -L zsh
+  local main="$1" from="$2" to="$3" x="$4" merged want
+  merged="$(_wt_git -C "$main" merge-tree --write-tree --merge-base="$from" "$x^" "$to" 2>/dev/null)" || return 1
+  merged="${merged%%$'\n'*}"
+  want="$(_wt_git -C "$main" rev-parse "$x^{tree}" 2>/dev/null)" || return 1
+  [[ -n "$merged" && "$merged" == "$want" ]]
+}
+
+# _wt_rebase_merged <main> <base> <branch> — every commit of <branch> that has a patch
+# has a copy of its own in <base>: no merge commit on the branch, and each commit pairs,
+# in branch order, with a not yet used base commit of the same patch id whose replay
+# reproduces it.
+_wt_rebase_merged() {
+  emulate -L zsh
+  local main="$1" base="$2" branch="$3" merges mine theirs line c x bline
+  local -a mlines blines
+  local -A used
+  merges="$(_wt_git -C "$main" rev-list --merges "$base..$branch" 2>/dev/null)" || return 1
+  [[ -z "$merges" ]] || return 1
+  mine="$(_wt_patch_ids "$main" --reverse "$base..$branch")" || return 1
+  theirs="$(_wt_patch_ids "$main" "$branch..$base")" || return 1
+  mlines=( "${(@f)mine}" )
+  blines=( "${(@f)theirs}" )
+  for line in $mlines; do
+    c="${line##* }"
+    for bline in $blines; do
+      x="${bline##* }"
+      [[ "${bline%% *}" == "${line%% *}" && -z "${used[$x]:-}" ]] || continue
+      _wt_replays_as "$main" "$c^" "$c" "$x" || continue
+      used[$x]=1
+      continue 2
+    done
+    return 1
+  done
+  return 0
+}
+
+# _wt_squash_merged <main> <base> <branch> — one commit in <base> carries the whole
+# change of <branch>: a single merge-base, a whole-change patch id that none of the
+# branch's own commits has (the rebase test judges those), and a base commit with that
+# id whose replay of the whole change reproduces it.
+_wt_squash_merged() {
+  emulate -L zsh
+  local main="$1" base="$2" branch="$3" mb whole mine theirs line x
+  mb="$(_wt_git -C "$main" merge-base --all "$base" "$branch" 2>/dev/null)" || return 1
+  [[ -n "$mb" && "$mb" != *$'\n'* ]] || return 1
+  whole="$(_wt_change_patch_id "$main" "$mb" "$branch")" || return 1
+  mine="$(_wt_patch_ids "$main" "$base..$branch")" || return 1
+  for line in "${(@f)mine}"; do
+    [[ "${line%% *}" == "$whole" ]] && return 1
+  done
+  theirs="$(_wt_patch_ids "$main" "$mb..$base")" || return 1
+  for line in "${(@f)theirs}"; do
+    [[ "${line%% *}" == "$whole" ]] || continue
+    x="${line##* }"
+    _wt_replays_as "$main" "$mb" "$branch" "$x" && return 0
+  done
+  return 1
+}
+
+# _wt_branch_content_merged — true when <branch>'s work is already in <base>.
 #
-# `git branch -d` asks an ancestry question, which a squash-merge (GitLab's default)
-# answers no by construction. This asks instead whether merging would still change
-# anything: `merge-tree --write-tree` merges in memory, and if the resulting tree is
-# the base's own tree the branch contributes nothing.
+# `git branch -d` asks an ancestry question, which a rebase-merge (every commit copied
+# with a new SHA) and a squash-merge (GitLab's default) both answer no by construction.
+# After the no-net-change guard, which runs first, three questions follow, in order:
+# the rebase test (each commit has a copy in the base), the squash test (one base commit
+# carries the whole change) and the merge-tree test (merging would change nothing:
+# `merge-tree --write-tree` merges in memory, and the base's own tree comes back). The
+# first yes sets _WT_MERGED_HOW to rebase, squash or merge and _WT_MERGED_BASE to the
+# base. A patch-id match only nominates a pair; the replay check decides. The reasons
+# and measurements are in docs/superpowers/specs/2026-11-11-wt-rm-rebase-merged-design.md.
 #
 # Do not compare the two tip trees (`git diff base branch`) instead: that holds only
 # while the base's tip IS the squash commit, and stops working after the next
 # unrelated merge.
 #
-# Both the local base and the remote's default branch count. Fails closed: no base,
-# an unmergeable branch, or a git without --write-tree all keep the branch.
+# The branch is judged as `refs/heads/<branch>` in every revision argument: a bare name
+# resolves to a tag of the same name first, while `git branch -D` deletes the branch.
+#
+# Both the local base and the remote's default branch count. Fails closed. With no base
+# at all it returns 1 before any test; a base with no merge-base, or equal to the branch,
+# is skipped. A failed command, or an empty or malformed patch-id list, inside the rebase
+# or squash test makes that test say no, and the next test still runs; a merge-tree
+# failure or conflict moves on to the next base. A git without --merge-base makes only
+# the two patch-id tests say no; the merge-tree test still runs.
 _wt_branch_content_merged() {
   emulate -L zsh
-  local main="$1" branch="$2" base merged want mb
+  local main="$1" branch="$2" ref="refs/heads/$2" base merged want mb how
   local -a bases
+  typeset -g _WT_MERGED_HOW="" _WT_MERGED_BASE=""
   base="$(_wt_git -C "$main" symbolic-ref --quiet --short HEAD 2>/dev/null)" \
     && bases+=("$base")
   base="$(_wt_git -C "$main" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" \
@@ -1343,12 +1453,22 @@ _wt_branch_content_merged() {
     [[ -n "$base" && "$base" != "$branch" ]] || continue
     # Require a real diff against the merge-base: wt-rm never force-deletes a branch
     # carrying commits the base lacks, however empty they are.
-    mb="$(_wt_git -C "$main" merge-base "$base" "$branch" 2>/dev/null)" || continue
-    _wt_git -C "$main" diff --quiet "$mb" "$branch" 2>/dev/null && continue
-    merged="$(_wt_git -C "$main" merge-tree --write-tree "$base" "$branch" 2>/dev/null)" || continue
-    merged="${merged%%$'\n'*}"
-    want="$(_wt_git -C "$main" rev-parse "$base^{tree}" 2>/dev/null)" || continue
-    [[ -n "$merged" && "$merged" == "$want" ]] && return 0
+    mb="$(_wt_git -C "$main" merge-base "$base" "$ref" 2>/dev/null)" || continue
+    _wt_git -C "$main" diff --quiet "$mb" "$ref" 2>/dev/null && continue
+    how=""
+    if _wt_rebase_merged "$main" "$base" "$ref"; then
+      how=rebase
+    elif _wt_squash_merged "$main" "$base" "$ref"; then
+      how=squash
+    else
+      merged="$(_wt_git -C "$main" merge-tree --write-tree "$base" "$ref" 2>/dev/null)" || continue
+      merged="${merged%%$'\n'*}"
+      want="$(_wt_git -C "$main" rev-parse "$base^{tree}" 2>/dev/null)" || continue
+      [[ -n "$merged" && "$merged" == "$want" ]] && how=merge
+    fi
+    [[ -n "$how" ]] || continue
+    _WT_MERGED_HOW="$how" _WT_MERGED_BASE="$base"
+    return 0
   done
   return 1
 }
@@ -1396,13 +1516,20 @@ _wt_rm_lock_class() {
 # is merged; keeping it is not a failure.
 _wt_rm_branch() {
   emulate -L zsh
-  local main="$1" branch="$2" qb="$3"
-  # -d first, stderr suppressed: its refusal is not a verdict, since a squash-merged
-  # branch fails -d. Only if the content test also declines is the work unmerged.
+  local main="$1" branch="$2" qb="$3" qbase how
+  # -d first, stderr suppressed: its refusal is not a verdict, since a squash- or
+  # rebase-merged branch fails -d. Only if the content tests also decline is the work
+  # unmerged.
   if ! _wt_git -C "$main" branch -d "$branch" 2>/dev/null; then
     if _wt_branch_content_merged "$main" "$branch" \
        && _wt_git -C "$main" branch -D "$branch" >/dev/null 2>&1; then
-      print -r -- "✓ deleted branch $qb (squash-merged — its content is already in the base)"
+      qbase="$(_wt_q "$_WT_MERGED_BASE")"
+      case "$_WT_MERGED_HOW" in
+        rebase) how="rebase-merged — each commit has a copy in $qbase" ;;
+        squash) how="squash-merged — one commit in $qbase carries its whole change" ;;
+        *)      how="merged — its content is already in $qbase" ;;
+      esac
+      print -r -- "✓ deleted branch $qb ($how)"
     else
       print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
     fi

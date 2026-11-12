@@ -2874,8 +2874,12 @@ hasnt "halfway-daemon" "records from a failed scan are not reported as findings"
 # into one new commit on the base, so none of the branch's own commits are
 # ancestors of it and -d refuses — even though every line of the work is already
 # in. GitLab squash-merges by default, so this is the normal end of an MR here,
-# not an edge case. wt-rm asks the stronger question instead: does merging this
-# branch into the base still change anything? If not, the branch is spent.
+# not an edge case. wt-rm asks three content questions after -d: do the branch's
+# commits have copies in the base (rebase), does one base commit carry its whole
+# change (squash), and does merging it into the base still change anything
+# (merge-tree)? A one-commit squash is also a rebase copy, so sq1 and sq2 are
+# answered by the first question; sq3 and sq4 keep the unmerged shapes. The rb
+# cases below pin each of the three tests, rb12 the merge-tree one.
 
 setup
 run "$REPO" wt sq1
@@ -2933,6 +2937,312 @@ git -C "$HOME/Code/Org/repo-sq4" add -A
 git -C "$HOME/Code/Org/repo-sq4" commit -q -m "added after the merge"
 run "$REPO" wt-rm sq4
 has "not fully merged" "a partly-merged branch is kept"
+
+# --- rebase- and squash-merged branches, after the base has moved on ---------
+#
+# The merge-tree question above stops working once a later base commit touches the lines
+# the merged work touched: the in-memory merge then conflicts. A rebase-merge copies every
+# commit onto the base, and a GitLab squash lands one commit with the branch's whole
+# change. wt-rm finds the copies by verbatim patch id and accepts one only when replaying
+# the change onto the copy's parent reproduces the copy's tree. The cases below move the
+# base before copying, so the copies get new SHAs and `git branch -d` refuses them.
+#
+# Every fixture command goes through rbc or rb_do, which record a failure in RB_BAD, and
+# each case asserts once with rb_built that its fixture was built: a broken fixture would
+# otherwise keep the branch for the wrong reason and still pass.
+
+RB_BAD=""
+rbc() {   # rbc <dir> <file> <msg> <line>... — write <file> as those lines, commit it
+  local d="$1" f="$2" m="$3"; shift 3
+  print -rl -- "$@" > "$d/$f"
+  { git -C "$d" add -A && git -C "$d" commit -q -m "$m" } || RB_BAD+="[rbc $d $f $m] "
+}
+rb_do() {   # rb_do <command>... — a fixture command, output discarded, failure recorded
+  "$@" >/dev/null 2>&1 || RB_BAD+="[$*] "
+}
+rb_built() {   # rb_built <label> — assert that no fixture command of the case failed
+  OUT="$RB_BAD"
+  [[ -z "$RB_BAD" ]] && _pass "$1 fixture: every setup command succeeded" \
+                     || _fail "$1 fixture: every setup command succeeded"
+}
+rb_dup() {   # rb_dup <dir> <msg> <first> <second> — dup.txt: two identical blocks, one word differing
+  rbc "$1" dup.txt "$2" A1 A2 A3 "$3" A4 A5 A6 ---- A1 A2 A3 "$4" A4 A5 A6
+}
+rb_seed_dup() { rb_dup "$REPO" dups old old }
+rb_seed_l5() { rbc "$REPO" log.txt seed5 l1 l2 l3 l4 l5 }
+rb_start() {   # rb_start <slug> [<seed-fn>] — fresh repo with a seeded log.txt, <seed-fn> run on it, and the worktree
+  RB_BAD=""
+  setup
+  rbc "$REPO" log.txt seed l1 l2 l3
+  [[ -z "${2:-}" ]] || "$2"
+  run "$REPO" wt "$1"
+  [[ "$RC" == 0 ]] || RB_BAD+="[wt $1] "
+  WT="$HOME/Code/Org/repo-$1"
+}
+rb_pid() {   # rb_pid <from> <to> — the verbatim patch id of that change
+  local out
+  out="$(git -C "$REPO" diff-tree -p --full-index --no-renames "$1" "$2" | git patch-id --verbatim)"
+  print -r -- "${out%% *}"
+}
+rb_gone() {   # rb_gone <slug> <how> <base> <label> — after `run "$REPO" wt-rm <slug>`
+  rc_is 0 "$4: the worktree is removed"
+  has "deleted branch $1 ($2" "$4: the deletion line names the $2 test"
+  has " in $3" "$4: the deletion line names the base $3"
+  hasnt "not fully merged" "$4: no kept warning"
+  run "$REPO" git branch --list --format='%(refname:lstrip=2)' "$1"
+  eq "$OUT" "" "$4: the branch is deleted"
+}
+rb_kept() {   # rb_kept <slug> <label> — after `run "$REPO" wt-rm <slug>`
+  rc_is 0 "$2: the worktree is removed"
+  has "branch $1 kept (not fully merged)" "$2: wt-rm says the branch is kept"
+  run "$REPO" git branch --list --format='%(refname:lstrip=2)' "$1"
+  eq "$OUT" "$1" "$2: the branch still exists"
+}
+
+# rb1 (rebase-merge, then a conflicting base commit): the branch's two commits are
+# cherry-picked onto a moved base, then a later base commit edits the same line. The
+# merge-tree test conflicts here. Catches: no rebase test, so the branch is kept. The
+# diff configuration is hostile on purpose: ids from `git diff` would differ or vanish.
+rb_start rb1
+rb_do git -C "$REPO" config diff.noprefix true
+rb_do git -C "$REPO" config color.diff always
+rbc "$WT" log.txt a l1 l2 l3 rb1-a
+rbc "$WT" feature.txt b f1
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick main..rb1
+rbc "$REPO" log.txt later l1 l2 l3 "rb1-a CHANGED"
+rb_built rb1
+[[ "$(git -C "$REPO" rev-parse main~2)" != "$(git -C "$REPO" rev-parse rb1~1)" ]] \
+  && _pass "rb1 fixture: the copy has a new SHA, so git branch -d refuses it" \
+  || _fail "rb1 fixture: the copy has a new SHA, so git branch -d refuses it"
+run "$REPO" wt-rm rb1
+rb_gone rb1 rebase-merged main "rb1 rebase-merge then conflicting commit"
+
+# rb2 (GitLab squash, then a conflicting base commit): a squash commit with the
+# merge-base as parent and the branch's tree, merged --no-ff, then a later commit on the
+# same line. Catches: no squash test, so the branch is kept.
+rb_start rb2
+rbc "$WT" log.txt a l1 l2 l3 rb2-a
+rbc "$WT" feature.txt b f1
+rbc "$REPO" other.txt "base moves" o1
+SQ=$(git -C "$REPO" commit-tree "rb2^{tree}" -p "$(git -C "$REPO" merge-base main rb2)" -m squash) \
+  || RB_BAD+="[commit-tree] "
+rb_do git -C "$REPO" merge -q --no-ff -m "merge rb2" "$SQ"
+rbc "$REPO" log.txt later l1 l2 l3 "rb2-a CHANGED"
+rb_built rb2
+run "$REPO" wt-rm rb2
+rb_gone rb2 squash-merged main "rb2 squash-merge then conflicting commit"
+
+# rb3 (one unmerged commit among copied ones): only the first of two commits landed.
+# Catches: a rebase test that accepts "most of it".
+rb_start rb3
+rbc "$WT" a.txt a a1
+rbc "$WT" b.txt b b1
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb3~1
+rb_built rb3
+run "$REPO" wt-rm rb3
+rb_kept rb3 "rb3 one commit not copied"
+
+# rb4 (no net change): the branch adds a change and reverts it, and both are copied.
+# Catches: the new tests running before, or without, the no-net-change guard.
+rb_start rb4
+rbc "$WT" x.txt add x1
+rb_do git -C "$WT" revert --no-edit HEAD
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick main..rb4
+rb_built rb4
+run "$REPO" wt-rm rb4
+rb_kept rb4 "rb4 no net change"
+
+# rb5 (repeated block, one commit): the branch changes the first of two identical blocks
+# and a base commit makes the same change to the second: equal patch ids, but the
+# branch's change never landed. Catches: a rebase test without the replay check.
+rb_start rb5 rb_seed_dup
+rb_dup "$WT" chg new old
+rb_dup "$REPO" chg old new
+rb_built rb5
+[[ -n "$(rb_pid rb5^ rb5)" && "$(rb_pid rb5^ rb5)" == "$(rb_pid main^ main)" ]] \
+  && _pass "rb5 fixture: the branch and base commits have the same patch id" \
+  || _fail "rb5 fixture: the branch and base commits have the same patch id"
+run "$REPO" wt-rm rb5
+rb_kept rb5 "rb5 repeated block, one commit"
+
+# rb6 (merge commit with content of its own): the branch's merge commit adds c.txt, which
+# the base lacks; its other commits are copied. Catches: a rebase test that ignores
+# merge commits.
+rb_start rb6
+rbc "$WT" a.txt c1 a1
+rb_do git -C "$WT" switch -q -c rb6-side main
+rbc "$WT" b.txt s b1
+rb_do git -C "$WT" switch -q rb6
+rb_do git -C "$WT" merge -q --no-ff --no-commit rb6-side
+print own > "$WT/c.txt"
+rb_do git -C "$WT" add -A
+rb_do git -C "$WT" commit -q -m merge
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb6~1 rb6-side
+rb_built rb6
+run "$REPO" wt-rm rb6
+rb_kept rb6 "rb6 merge commit with its own content"
+
+# rb7 (repeated patch): the branch applies a change, reverts it and applies it again; the
+# base has copies of the first two only. Catches, each on its own: set instead of
+# multiset matching in the rebase test, and a squash test that does not stand aside for
+# one of the branch's own commits.
+rb_start rb7
+rbc "$WT" x.txt apply x1
+rb_do git -C "$WT" revert --no-edit HEAD
+rbc "$WT" x.txt again x1
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb7~2 rb7~1
+rb_built rb7
+run "$REPO" wt-rm rb7
+rb_kept rb7 "rb7 repeated patch"
+
+# rb8 (repeated block, whole change): as rb5, but the branch reaches its change in two
+# commits, so only the squash test can match it. Catches: a squash test without the
+# replay check.
+rb_start rb8 rb_seed_dup
+rb_dup "$WT" step1 mid old
+rb_dup "$WT" step2 new old
+rb_dup "$REPO" chg old new
+rb_built rb8
+[[ -n "$(rb_pid "$(git -C "$REPO" merge-base main rb8)" rb8)" \
+   && "$(rb_pid "$(git -C "$REPO" merge-base main rb8)" rb8)" == "$(rb_pid main^ main)" ]] \
+  && _pass "rb8 fixture: the branch's whole change and the base commit have the same patch id" \
+  || _fail "rb8 fixture: the branch's whole change and the base commit have the same patch id"
+run "$REPO" wt-rm rb8
+rb_kept rb8 "rb8 repeated block, whole change"
+
+# rb9 (the merge is visible only on origin/HEAD): local main is stale, so the second base
+# must get the new tests too, and the message must name it. Catches: the new tests
+# running against the first base only.
+rb_start rb9
+rbc "$WT" log.txt a l1 l2 l3 rb9-a
+rb_do git -C "$REPO" switch -q -c up
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb9
+rbc "$REPO" log.txt later l1 l2 l3 "rb9-a CHANGED"
+rb_do git -C "$REPO" switch -q main
+rb_do git -C "$REPO" update-ref refs/remotes/origin/main up
+rb_do git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+rb_built rb9
+run "$REPO" wt-rm rb9
+rb_gone rb9 rebase-merged origin/main "rb9 merged on origin/HEAD only"
+
+# rb10 (an empty commit among copied ones): it has no patch id, so it neither blocks nor
+# matches. Catches: a rebase test that keeps the branch because a commit has no id.
+rb_start rb10
+rbc "$WT" log.txt a l1 l2 l3 rb10-a
+rb_do git -C "$WT" commit -q --allow-empty -m empty
+rbc "$WT" feature.txt b f1
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb10~2 rb10
+rbc "$REPO" log.txt later l1 l2 l3 "rb10-a CHANGED"
+rb_built rb10
+run "$REPO" wt-rm rb10
+rb_gone rb10 rebase-merged main "rb10 empty commit among copied ones"
+
+# rb11 (the replay fails after printing a tree): the real git prints the matching tree and
+# the stub then exits 128. Catches: a replay check that trusts the output over the exit
+# status.
+rb_start rb11
+rbc "$WT" log.txt a l1 l2 l3 rb11-a
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb11
+rbc "$REPO" log.txt later l1 l2 l3 "rb11-a CHANGED"
+rb_built rb11
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='merge-tree --write-tree' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" \
+  run "$REPO" wt-rm rb11
+[[ "$(sed -n 1p "$FLOG")" == *"--merge-base="* ]] \
+  && _pass "rb11 fixture: the first merge-tree call is the replay" \
+  || _fail "rb11 fixture: the first merge-tree call is the replay"
+rb_kept rb11 "rb11 failing replay"
+
+# rb12 (the merge-tree fallback): the base commit that applied the work sits next to a line
+# changed by an earlier base commit (context drift), so its patch id differs from the
+# branch's and neither patch-id test can match, but merging the branch into the base
+# still changes nothing. Pins the merge-tree fallback for a merge the patch-id tests
+# cannot see (spec, Order 3). Catches: a dropped or broken fallback, which keeps the branch.
+rb_start rb12 rb_seed_l5
+rbc "$WT" log.txt a l1 l2 A l4 l5
+rbc "$WT" feature.txt b f1
+rbc "$REPO" log.txt "base moves" L1 l2 l3 l4 l5
+print -rl -- L1 l2 A l4 l5 > "$REPO/log.txt"
+print -rl -- f1 > "$REPO/feature.txt"
+rb_do git -C "$REPO" add -A
+rb_do git -C "$REPO" commit -q -m "lands the work"
+rb_built rb12
+run "$REPO" wt-rm rb12
+rb_gone rb12 merged main "rb12 merge-tree fallback"
+
+# rb13 (the patch-id pipeline fails after printing): the real git prints the commit list
+# and the stub then exits 128, while the rest of the pipeline succeeds on it. Pins that a
+# patch-id pipeline whose first command fails after printing keeps the branch. Catches:
+# judging by the output alone (a dropped pipefail).
+rb_start rb13
+rbc "$WT" log.txt a l1 l2 l3 rb13-a
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb13
+rbc "$REPO" log.txt later l1 l2 l3 "rb13-a CHANGED"
+rb_built rb13
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='rev-list --no-merges' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" \
+  run "$REPO" wt-rm rb13
+[[ "$(sed -n 1p "$FLOG")" == *"rev-list --no-merges"* ]] \
+  && _pass "rb13 fixture: the first rev-list --no-merges call is in the patch-id pipeline" \
+  || _fail "rb13 fixture: the first rev-list --no-merges call is in the patch-id pipeline"
+rb_kept rb13 "rb13 failing patch-id pipeline"
+
+# rb14 (a commit hidden by submodule ignore configuration): .gitmodules sets ignore = all
+# for sub, so plumbing diff shows no change for the branch's gitlink-only commit unless it
+# is told otherwise. The branch's visible commit is copied, a later base commit edits the
+# same line, and the bump never reached the base. Pins that a commit hidden by submodule
+# ignore configuration still counts. Catches: patch ids computed without
+# --ignore-submodules=none, which skip the hidden commit and delete the branch.
+rb_seed_sub() {
+  print -rl -- '[submodule "sub"]' $'\tpath = sub' $'\turl = ./sub' $'\tignore = all' > "$REPO/.gitmodules"
+  rb_do mkdir "$REPO/sub"
+  rb_do git -C "$REPO" update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,sub
+  rb_do git -C "$REPO" add .gitmodules
+  rb_do git -C "$REPO" commit -q -m "submodule"
+}
+rb_start rb14 rb_seed_sub
+rbc "$WT" log.txt a l1 l2 l3 rb14-a
+rb_do git -C "$WT" update-index --cacheinfo 160000,2222222222222222222222222222222222222222,sub
+rb_do git -C "$WT" commit -q -m "bump sub"
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick rb14~1
+rbc "$REPO" log.txt later l1 l2 l3 "rb14-a CHANGED"
+rb_built rb14
+[[ "$(git -C "$REPO" rev-parse --verify -q main:sub)" == 1111111111111111111111111111111111111111 \
+   && "$(git -C "$REPO" rev-parse --verify -q rb14:sub)" == 2222222222222222222222222222222222222222 ]] \
+  && _pass "rb14 fixture: the base keeps the old gitlink and the branch bumps it" \
+  || _fail "rb14 fixture: the base keeps the old gitlink and the branch bumps it"
+run "$REPO" wt-rm rb14
+rb_kept rb14 "rb14 commit hidden by submodule ignore"
+
+# rb15 (a tag with the branch's name): the tag marks the branch's first commit, which the
+# base has a copy of, while the branch carries a second commit the base lacks. Pins that
+# the branch itself is judged, not a tag of the same name. Catches: revision arguments that
+# use the short name, which git resolves to the tag first, so the unmerged commit goes
+# unseen and `git branch -D` deletes the branch. The checkout is deleted by hand first and
+# wt-rm finishes the removal: with the tag in place a live checkout's `symbolic-ref --short
+# HEAD` reads `heads/rb15` and wt-rm refuses it before it reaches the branch.
+rb_start rb15
+rbc "$WT" a.txt a a1
+rbc "$WT" b.txt b b1
+rb_do git -C "$REPO" tag rb15 refs/heads/rb15~1
+rb_do command rm -rf "$WT"
+rbc "$REPO" other.txt "base moves" o1
+rb_do git -C "$REPO" cherry-pick refs/heads/rb15~1
+rbc "$REPO" a.txt later "a1 CHANGED"
+rb_built rb15
+[[ "$(git -C "$REPO" rev-parse refs/tags/rb15)" == "$(git -C "$REPO" rev-parse refs/heads/rb15~1)" ]] \
+  && _pass "rb15 fixture: the tag marks the branch's first commit" \
+  || _fail "rb15 fixture: the tag marks the branch's first commit"
+run "$REPO" wt-rm rb15
+rb_kept rb15 "rb15 tag with the branch's name"
 
 print -r -- ""
 print -r -- "W. wt-rm — the checkout's Codex sessions are released before check 4"
