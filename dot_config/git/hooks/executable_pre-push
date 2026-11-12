@@ -1,0 +1,45 @@
+#!/bin/bash
+# Global pre-push hook (core.hooksPath in ~/.config/git/config; spec
+# 2026-11-12-forge-push-protection-design.md, section 5): every push is scanned for secrets by
+# the secret-scan beside this file, then the repository's own pre-push hook runs, because
+# core.hooksPath replaces .git/hooks for every repository.
+#
+# git passes the remote's name and URL and writes one line per ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A delete has an all-zero local sha and sends nothing. A refusal is a non-zero exit.
+set -u
+
+saved=$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 1
+trap 'rm -f "$saved"' EXIT
+cat > "$saved"
+
+shas=()
+while IFS=' ' read -r lref lsha rref rsha || [ -n "$lref" ]; do
+  case $lsha in
+    '' | *[!0]*) ;;
+    *) continue ;;
+  esac
+  [ -n "$lsha" ] && shas+=("$lsha")
+done < "$saved"
+
+if [ "${#shas[@]}" -gt 0 ]; then
+  scan="$(dirname "$0")/secret-scan"
+  if [ ! -f "$scan" ]; then
+    echo "Push guard: the secret scan ($scan) is missing, so the push is refused. Restore it with chezmoi apply." >&2
+    exit 1
+  fi
+  root=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -z "$root" ]; then
+    echo "Push guard: cannot resolve the work tree this push runs in, so the push is refused. Push by hand." >&2
+    exit 1
+  fi
+  /usr/bin/python3 -I "$scan" --repo "$root" --remote "${1:-}" -- "${shas[@]}" || exit 1
+fi
+
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+own="$common/hooks/pre-push"
+if [ -n "$common" ] && [ -x "$own" ] && [ ! "$own" -ef "$0" ]; then
+  "$own" "$@" < "$saved"
+  exit $?
+fi
+exit 0

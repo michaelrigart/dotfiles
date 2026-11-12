@@ -79,13 +79,23 @@ fi
 git -C "$T/r" worktree add -q "$T/wt" -b b1 >/dev/null 2>&1
 check_ok "a linked worktree works" git -C "$T/wt" status --short
 
+# The source config sets core.hooksPath to ~/.config/git/hooks, which git expands from HOME. This
+# suite must never run the deployed hook, so the push runs with HOME=$T and a marker hook there:
+# the push is then also the proof that core.hooksPath wires the global pre-push hook.
+mkdir -p "$T/.config/git/hooks"
+printf '#!/bin/sh\ntouch "%s/hook-ran"\nexit 0\n' "$T" >"$T/.config/git/hooks/pre-push"
+chmod 755 "$T/.config/git/hooks/pre-push"
 bare_ok=1
 git -c init.templateDir= init -q --bare "$T/o.git" >/dev/null 2>&1 || bare_ok=0
-git -C "$T/r" push -q "$T/o.git" HEAD:refs/heads/main >/dev/null 2>&1 || bare_ok=0
+HOME="$T" git -C "$T/r" push -q "$T/o.git" HEAD:refs/heads/main >/dev/null 2>&1 || bare_ok=0
 git -c init.templateDir= clone -q "$T/o.git" "$T/c" >/dev/null 2>&1 || bare_ok=0
 git -C "$T/c" fetch -q >/dev/null 2>&1 || bare_ok=0
 git ls-remote "$T/o.git" >/dev/null 2>&1 || bare_ok=0
 if [ "$bare_ok" -eq 1 ]; then ok "a bare remote works"; else bad "a bare remote works"; fi
+if [ -e "$T/hook-ran" ]; then ok "core.hooksPath runs the global pre-push hook, found under HOME"
+else bad "core.hooksPath runs the global pre-push hook, found under HOME"; fi
+check_equal "$(git config --file "$CONFIG" --get core.hooksPath 2>/dev/null)" "~/.config/git/hooks" \
+  "core.hooksPath names the deployed hooks directory"
 
 git -C "$T/r" "${CID[@]}" commit -q --allow-empty -m subject -m "body line" >/dev/null 2>&1
 if git -C "$T/r" show -s HEAD 2>/dev/null | grep -q 'body line'; then

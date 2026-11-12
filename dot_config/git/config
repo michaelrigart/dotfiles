@@ -4,6 +4,7 @@
     signingkey = ~/.config/git/signing.pub
 [core]
     pager = delta
+    hooksPath = ~/.config/git/hooks
     excludesfile = ~/.config/git/gitignore_global
 [color "branch"]
     local = yellow
