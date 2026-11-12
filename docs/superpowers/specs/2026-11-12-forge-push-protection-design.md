@@ -327,8 +327,13 @@ branches (merged-branch deletes, dry runs, the test audit) changed the same code
   its regression rows move with it into the hook's suite; none is dropped. A secret added while
   committing a merge, in a file marked binary, or in a root commit is found as today.
 - The hook reads git's own lines on stdin (`<local ref> <local sha> <remote ref> <remote sha>`) and
-  hands the script each updated ref's local sha, excluding `--remotes=<remote>` as today. Git names
-  the commits, so only the guard's refspec-to-source arithmetic is deleted.
+  hands the script each updated ref's local sha, excluding `--remotes=<remote>` as today.
+- **A push that would ask is still scanned by rule 4 first**, with the same script and the sources
+  `evaluate` already resolves, and a leak, a missing gitleaks or a scan error is a silent deny, as
+  today. Otherwise the ask would come before the hook's scan, and a push now refused without a
+  prompt would cost Michael a click before it fails. Only this call remains in the helper; a push
+  that passes rule 4 silently is scanned by the hook alone, and an approved ask is scanned twice
+  (rare, and the second scan is the cheap one).
 - A leak, a missing gitleaks or a gitleaks error blocks the push, with the rule, file and commit,
   never the value. `.gitleaksignore` works as today.
 - It then runs the repository's own `pre-push` hook, if executable, with the same stdin and
@@ -341,8 +346,8 @@ Consequences Michael should know: his own pushes are scanned too, a second or so
 global `core.hooksPath` switches off the other hooks in a repository's `.git/hooks`. One inactive
 checkout has such hooks (ctags, last touched 2022). No repository uses a hook manager today.
 
-The helper's secret scan and its suite sections are removed in the same commit that lands the
-hook, so no push is scanned twice and none goes unscanned.
+The scan leaves the helper for the script in the same commit that lands the hook, so one apply
+swaps them and no push goes unscanned.
 
 ## 6. Order
 
@@ -367,7 +372,9 @@ names left out:
   `["creation","deletion","non_fast_forward","update"]` for both GitHub repositories, and
   `gh api repos/<owner>/<repo>/collaborators/<machine account>/permission --jq .permission`
   prints `write`;
-- `ssh -T git@github.com` from the agent session greets the machine account;
+- the session's own git transport greets the machine account: `$GIT_SSH_COMMAND -T
+  git@github.com`, the wrapper and configuration git uses, not a bare `ssh`, which reads
+  Michael's configuration and would greet him;
 - with the agent token, a GET of one project's protected branches succeeds (the check depends on
   it) and `glab api personal_access_tokens/self` lists no merge, approve, protect or project-update
   permission.
@@ -429,14 +436,17 @@ as waiting on him.
   verdict, the merge-commit, binary-attribute, root-commit, count-mismatch and timeout rows
   included. New rows: a new branch, a deleted ref, several refs in one push; the repository's own
   hook runs, its failure blocks, and it is found from a linked worktree.
+- `tests/git-forge-guard.test.sh` keeps, as permission outcomes through the whole hook: a force
+  push without a lease, and a delete beside a pushed branch, whose commits hold a secret are a
+  **deny**, not an ask; the same with gitleaks missing or failing.
 - `tests/git-forge-guard.test.sh`: the default-branch rows move from ask to deny; the sections
   listed in 4.3 are deleted, not skipped; one row per retired class pins that the guard is now
   **silent** on it (so a later change cannot bring a half-hunt back unnoticed); the plain-grammar,
   inert-text, merged-delete and fail-closed sections stay.
 - `tests/claude-settings.test.sh`: the two variables render when the items exist and are absent
   when they do not; the agent SSH configuration is readable in the sandbox.
-- `live-agent-auth` gains a probe, run sandboxed in a fresh session after apply: `ssh -T` to
-  `github.com` greets the machine account, and to `gitlab.com` Michael.
+- `live-agent-auth` gains a probe, run sandboxed in a fresh session after apply, through the
+  session's `GIT_SSH_COMMAND`: `github.com` greets the machine account, and `gitlab.com` Michael.
 
 ## After Michael's apply
 
