@@ -197,6 +197,14 @@ AZ_PUSH_URL = ("Pre-merge gate: origin's push URL ({1}) is not its fetch URL ({0
                "read the project from either, so the gate cannot tell where this PR goes. Run it "
                "from a checkout whose origin has one URL, or name --organization, --project and "
                "--repository all three.")
+AZ_UPDATE_HIDDEN = ("Pre-merge gate: az repos pr update carries {}, which the gate cannot read as "
+                    "written (a variable, a substitution, a brace or a glob), and it could be "
+                    "--status, --auto-complete or --bypass-policy: completing or changing the "
+                    "state of an Azure PR is Michael's, in the web UI. Write every word of the "
+                    "update literally.")
+AZ_REMOTES_UNREADABLE = ("Pre-merge gate: the remotes of {} cannot be listed (git remote failed, "
+                         "or lists none), so where az would detect the project from is unknown. "
+                         "Retry it, or name --organization, --project and --repository all three.")
 AZ_REMOTES = ("Pre-merge gate: this checkout has remotes besides origin ({}), and with no project "
               "named az reads the project from origin's push URL, or from another remote's when "
               "it cannot use origin's. Name --organization, --project and --repository all "
@@ -1033,17 +1041,21 @@ def gated_verb(words):
             return {"tool": "git", "kind": "merge-local", "args": rest}
         return None
     if tool == "az":
-        # An update is a gated verb only when it completes the PR or changes its state; any
-        # other update passes wherever it stands, in a pipe or a chain too.
+        # An update is a gated verb only when it completes the PR or changes its state, or
+        # carries a word the gate cannot read (a variable, a substitution, a brace, a glob),
+        # which could be such an option; any other update, fully literal, passes wherever it
+        # stands, in a pipe or a chain too. Words that reach az some other way - xargs az repos
+        # pr update (words from stdin), a function passing "$@" - are among the accepted
+        # limits (spec section 7: variables, eval, scripts and functions) and are not closed.
         head = [w.lower() for w in rest[:3]]
         if head[:2] == ["repos", "pr"] and head[2:3] and head[2] in AZ_VERBS:
             if rest[3:4] and rest[3] in HELP:
                 return None
-            if head[2] == "update" and az_completing(rest[3:]) is None:
+            if head[2] == "update" and az_update_harmless(rest[3:]):
                 return None
             return {"tool": "az", "kind": "az-" + head[2], "args": rest[3:]}
         found = az_reordered(rest)
-        if found == "update" and az_completing(rest) is None:
+        if found == "update" and az_update_harmless(rest):
             return None
         if found is not None:
             return {"tool": "az", "kind": "reordered", "args": rest, "verb": ("repos pr", found)}
@@ -1564,6 +1576,26 @@ def az_completing(args):
     return None
 
 
+def az_unreadable(args):
+    """The first word of an update's arguments that could turn into a completing option without
+    the gate seeing it, or None: a word with a variable or a substitution ($, backtick; a
+    command substitution leaves $ at the end of the argument list, cut at its parenthesis), or
+    one starting with -, { or * that holds a brace or a glob character. A word holding
+    whitespace is quoted prose, which az reads as a value, never as an option."""
+    for w in args:
+        if any(c in w for c in " \t\n"):
+            continue
+        if not literal(w) or (w[:1] in ("-", "{", "*") and any(c in w for c in "{}*?[")):
+            return w
+    return None
+
+
+def az_update_harmless(args):
+    """Is an az repos pr update with these arguments one the gate lets through anywhere: no
+    completing option, and every word readable?"""
+    return az_completing(args) is None and az_unreadable(args) is None
+
+
 def azure_project(url):
     """(organization, project, repository), lowercased and percent-decoded, of an Azure DevOps
     remote URL (ssh.dev.azure.com:v3/<org>/<project>/<repo>, dev.azure.com/<org>/<project>/_git/
@@ -1643,9 +1675,12 @@ def az_check_project(top, opts):
     where = "/".join(origin)
     named = [x for x in (org, project, repo) if x is not None]
     if not named:
-        remotes = (run(["git", "-C", top, "remote"]) or "").split()
+        listed = run(["git", "-C", top, "remote"])
+        remotes = (listed or "").split()
+        if not remotes:
+            raise Deny(AZ_REMOTES_UNREADABLE.format(top))
         if remotes != ["origin"]:
-            raise Deny(AZ_REMOTES.format(", ".join(r for r in remotes if r != "origin") or "none"))
+            raise Deny(AZ_REMOTES.format(", ".join(r for r in remotes if r != "origin")))
         fetch = run(["git", "-C", top, "remote", "get-url", "origin"])
         push = run(["git", "-C", top, "remote", "get-url", "--push", "--all", "origin"])
         if fetch is None or push is None:
@@ -1675,6 +1710,9 @@ def judge_az(shape, ledger):
         name = az_completing(shape["args"])
         if name is not None:
             raise Deny(AZ_UPDATE.format(name))
+        word = az_unreadable(shape["args"])
+        if word is not None:
+            raise Deny(AZ_UPDATE_HIDDEN.format(word))
         return
     for name, values in opts:
         if name not in AZ_CREATE_ALLOWED:

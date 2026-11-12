@@ -1381,8 +1381,8 @@ is "AZ-C3d a truncated payload with a mixed-case creation is denied" \
 git -C "$AZ" remote add other 'git@ssh.dev.azure.com:v3/other/Proj/Repo'
 is "AZ-R1 none named, a second remote on another Azure organization is denied" \
    "$(decision "$AZ" "$AZN")" deny
-is "AZ-R1b with the reason naming the remote and the all-three form" \
-   "$(reason "$AZ" "$AZN" | grep -c -F 'other')$(reason "$AZ" "$AZN" | grep -c -F 'all three')" 11
+is "AZ-R1b with the reason naming the remote as the message prints it, and the all-three form" \
+   "$(reason "$AZ" "$AZN" | grep -c -F '(other)')$(reason "$AZ" "$AZN" | grep -c -F 'all three')" 11
 is "AZ-R1c all three named stays allowed beside the second remote" "$(decision "$AZ" "$AZC")" allow
 git -C "$AZ" remote remove other
 is "AZ-R1d with origin alone again, none named is allowed" "$(decision "$AZ" "$AZN")" allow
@@ -1405,6 +1405,48 @@ is "AZ-H1 refs/heads/<name> branches are read as the names" \
    "$(decision "$AZ" 'az repos pr create --source-branch refs/heads/feat --target-branch refs/heads/develop')" allow
 is "AZ-H1b and the dispatch names the plain range" \
    "$(reason "$AZ" 'az repos pr create --source-branch refs/heads/feat --target-branch refs/heads/main' | grep -c -F 'origin/main...feat')" 1
+# Fix round 2. An update is a gated verb when it carries a completing option or a word the gate
+# cannot read (a variable, a substitution, a brace, a glob), which could be one: a literal harmless
+# update passes anywhere, one with such a word is denied in the plain form and in a compound.
+is "AZ-N1 an option from a variable, in a chain, is denied" \
+   "$(decision "$AZ" 'S=--status; az repos pr update --id 7 $S completed')" deny
+is "AZ-N1b an option from a command substitution" \
+   "$(decision "$AZ" 'az repos pr update --id 7 $(echo --status) completed')" deny
+is "AZ-N1c a substitution inside the option's name" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --$(echo status) completed')" deny
+is "AZ-N1d the reordered update with a variable" \
+   "$(decision "$AZ" 'az --debug repos pr update --id 7 $S completed')" deny
+is "AZ-N1e a variable in a pipe" \
+   "$(decision "$AZ" 'az repos pr update --id 7 $S completed | cat')" deny
+is "AZ-N2 a backtick substitution in the plain form" \
+   "$(decision "$AZ" 'az repos pr update --id 7 `echo --status` completed')" deny
+is "AZ-N2b a brace expansion in the plain form" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --{status,title} completed')" deny
+is "AZ-N2c a glob in the plain form" "$(decision "$AZ" 'az repos pr update --id 7 --stat* completed')" deny
+is "AZ-N2d a variable in the plain form, with a reason that says completing is Michael's" \
+   "$(denies "$AZ" 'az repos pr update --id 7 $S completed' "Michael's")" 1
+is "AZ-N2e a quoted variable as a word of its own" \
+   "$(decision "$AZ" 'az repos pr update --id 7 "$S" completed')" deny
+is "AZ-N3 a literal update with prose holding a dollar sign and brackets passes" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --title "[WIP] costs $5 now" --description "a $B c"')" allow
+is "AZ-N3b and one in a chain" \
+   "$(decision "$AZ" 'az repos pr show --id 7 && az repos pr update --id 7 --title "[WIP]"')" allow
+# The reason for a failed remote listing says so, and is a deny: git remote made to fail.
+is "AZ-R2 a remote listing that fails is denied as unreadable, not as no other remotes" \
+   "$(/usr/bin/python3 -I - "$HELPER" "$AZ" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+real = g.run
+g.run = lambda argv, *a, **k: None if argv[-1] == "remote" else real(argv, *a, **k)
+try:
+    g.az_check_project(sys.argv[2], [])
+    print("allowed")
+except g.Deny as d:
+    print("unreadable" if "cannot be listed" in str(d) and "(none)" not in str(d) else str(d))
+PY
+)" unreadable
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
