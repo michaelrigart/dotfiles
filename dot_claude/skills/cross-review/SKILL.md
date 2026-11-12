@@ -351,7 +351,7 @@ xreview apply --done      # closes it
 ```
 
 While open, a second guard denies Edit/Write outside the files the review actually saw.
-Test paths stay writable, because a fix ships with a test that fails without it. That bounds
+Test paths stay writable, because a real bug fix ships with a test that fails without it. That bounds
 where a mistake can land; whether that test fails without the fix is for the reviewer to
 check by revert, not for a guard.
 

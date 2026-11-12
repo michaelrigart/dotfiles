@@ -85,9 +85,9 @@ live, what is tracked and when each is committed never vary per repository.
 - Prefer an in-scope refactor over a workaround when it removes duplicated rules, invalid states or
   a design that makes the change hard; outside scope, propose it with its cost. No unrequested
   features, files, docs, notes or options.
-- Each test names the behaviour it pins and the bug it catches; reuse existing coverage; a fix ships
-  with a test that fails without it: revert the fix, watch the test fail, restore it. Never
-  special-case code to pass a test; report it.
+- Test behaviour, not wording; extend a case before adding one. A real bug fix ships with a test;
+  a review finding, only if its bug could plausibly return. Each test passes the revert check
+  (revert the fix, see it fail, restore it). Never special-case code to pass a test; report it.
 - Disagree when you have reason to (a mistaken request, a weak spec, a stale decision, a wrong
   review finding): say it once, with evidence, then follow Michael's call.
 
