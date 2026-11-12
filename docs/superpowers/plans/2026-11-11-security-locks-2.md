@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `fix/security-locks`; the dotfiles use no MR)
+**Status:** Implemented (branch `fix/security-locks`; the dotfiles use no MR). Completed 2026-11-12; do not run this plan again.
 
 **Goal:** Close the six repository-side gaps of the 2026-11-11 setup review: `op-edit` plaintext in Neovim state, world-readable Bundler tokens, an unsandboxed fallback, the Codex daemon pin wording, the unpinned ha-mcp, and the apply-window guard's wildcard matcher.
 
@@ -153,3 +153,5 @@ Commit (controller): `Name the private Bundler template and the Codex daemon pin
 - **`op-edit`'s test pins the backup flags too** (Task 3 review). The spec names `noundofile`; the same assertion now also requires `nobackup` and `nowritebackup`, which the function's comment promises.
 - **`AGENTS.md`'s list of zsh suites is completed** (final review) in the edit that adds `op-edit`.
 - **Not done, for Michael:** `op-edit`'s Neovim still yanks to the macOS clipboard (LazyVim restores `clipboard=unnamedplus` after `-c`). Closing that changes item 1, so it needs a spec change.
+- **Item 4 is measured on fenrir only** (close-out). The spec's "hercules too" is an after-apply step for Michael; the canary's stale R1 precondition is the driver's to raise, outside this line.
+- **The branch was rebased onto main `eb60a84`** (close-out) before the final suites and the pre-merge review; no conflicts.

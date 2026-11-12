@@ -1,9 +1,9 @@
 # Security locks 2: seven small locks from the 2026-11-11 setup review
 
-**Status:** In progress
+**Status:** Implemented (branch `fix/security-locks`; the dotfiles use no MR)
 **Date:** 2026-11-11
 **Branch:** `fix/security-locks`, in the `wt` checkout `~/.local/share/chezmoi-fix-security-locks`
-**Related:** `2026-11-01-security-locks-design.md` (first round; unchanged). Item 5 would supersede one
+**Related:** `2026-11-01-security-locks-design.md` (first round; unchanged). Item 5 supersedes one
 decision of `2026-10-23-ha-mcp-design.md` (D3).
 
 ## Why
@@ -89,6 +89,16 @@ undone by LazyVim, and item 4's settings switch is undocumented. Item 7 became a
   `codex app-server daemon version` shows equal CLI and running versions (its socket is denied to the
   sandbox, so Michael runs it), and after two scheduled cycles `current` still names the CLI's release.
   B would be tested in `codex-config.test.sh`, like `modify_private_hooks.json`.
+- **Measured (2026-11-12, fenrir).** Homebrew's `codex` was 0.167.2 by then, so the pin kept the daemon
+  at 0.167.2 and did not move it back to 0.167.0. Michael ran the pin at 12:05; `codex app-server daemon
+  version` showed `cliVersion`, `managedCodexVersion` and `appServerVersion` all 0.167.2. `current` moved
+  from `releases/0.167.2-aarch64-apple-darwin` to a `releases/local-<sha256>-aarch64-apple-darwin` copy
+  of the CLI's package, so it names that copy, not a version. The updater's pid file, its socket and
+  `auto-update-version` were gone. The pin ran in a Herdr pane, so the daemon needed `codex-daemon
+  restart` (12:23). At 14:26, two scheduled cycles later, `current` still named the `local-` release and
+  `daemon-updater.stderr.log` held nothing after 11:25, its last `scheduled` selection before the pin. A
+  holds; B is not needed. The canary gave 62/63: R1's precondition expects `node_repl` and `cua_repl`
+  helpers, which the Codex config disables since `7aab009`, so that failure is unrelated to the pin.
 - **After apply.** The pin, when no review is active ("may interrupt running work"); hercules too.
 
 ## 5. ha-mcp runs whatever PyPI serves, holding the Home Assistant token
