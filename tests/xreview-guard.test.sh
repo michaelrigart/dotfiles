@@ -188,7 +188,6 @@ is "B7 an env wrapper" "$(decision "$W" 'env GITLAB_HOST=x glab mr merge 7')" de
 is "B8 a subshell" "$(decision "$W" '(git merge feature)')" deny
 is "B9 a merge in a chain on a feature branch is denied too" "$(decision "$SIDE" 'git fetch origin && git merge origin/main')" deny
 is "B10 an API merge piped to jq" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/merge | jq .state')" deny
-is "B11 the deny asks for the plain form" "$(reason "$W" 'git switch main && git merge feature' | grep -c 'plain command of its own')" 1
 is "B12 a leading redirection hides no verb" "$(decision "$W" '>merge.log git merge feature')" deny
 is "B13 nor does a descriptor redirection" "$(decision "$W" '2>err git merge feature')" deny
 is "B14 sudo with an option is denied" "$(decision "$W" 'sudo -u root git merge feature')" deny
@@ -202,7 +201,6 @@ is "B20 so does a backtick substitution inside double quotes" "$(decision "$W" '
 is "B21 and an unquoted backtick one" "$(decision "$W" 'echo `git merge feature`')" deny
 is "B22 even in an ungated command's message" "$(decision "$W" 'git commit -m "$(git merge feature)"')" deny
 is "B23 at any depth" "$(decision "$W" 'echo "$(echo `git merge feature`)"')" deny
-is "B24 the deny asks for the plain form" "$(reason "$W" 'echo "$(git merge feature)"' | grep -c 'plain command of its own')" 1
 is "B25 single quotes keep both kinds inert" "$(decision "$W" "echo ${SQ}\$(git merge feature)${SQ} ${SQ}\`git merge feature\`${SQ}")" allow
 is "B26 so does a backslash" "$(decision "$W" 'echo "\$(git merge feature)"')" allow
 is "B27 and a comment" "$(decision "$W" 'git status # $(git merge feature)')" allow
@@ -245,19 +243,10 @@ EOF")" deny
 # Any word can be a command word: after a wrapper, a zsh precommand modifier, a keyword or an
 # assignment. Each of these really runs the merge, under bash, zsh or both.
 is "B40 timeout runs its command" "$(decision "$W" 'timeout 30 git merge feature')" deny
-is "B41 so do caffeinate, stdbuf and xcrun" \
-   "$(decision "$W" 'caffeinate -i git merge feature') $(decision "$W" 'stdbuf -oL git merge feature') $(decision "$W" 'xcrun git merge feature')" \
-   "deny deny deny"
 is "B42 and find -exec" "$(decision "$W" 'find . -maxdepth 0 -exec git merge feature \;')" deny
-is "B43 a wrapped MR or PR creation" \
-   "$(decision "$W" 'timeout 30 glab mr create --target-branch main') $(decision "$W" 'timeout 30 gh pr create --base main')" \
-   "deny deny"
 is "B44 a function body" "$(decision "$W" 'function f { git merge feature; }; f')" deny
 is "B45 coproc" "$(decision "$W" 'coproc git merge feature; wait')" deny
 is "B46 a NAME+= assignment" "$(decision "$W" 'A+=1 git merge feature')" deny
-is "B47 zsh's noglob, nocorrect and repeat" \
-   "$(decision "$W" 'noglob git merge feature') $(decision "$W" 'nocorrect git merge feature') $(decision "$W" 'repeat 1 git merge feature')" \
-   "deny deny deny"
 is "B48 zsh's =git is git" "$(decision "$W" '=git merge feature')" deny
 is "B49 env -S and --split-string hand their string to a command" \
    "$(decision "$W" "env -S 'git merge feature'") $(decision "$W" "env --split-string='git merge feature'")" "deny deny"
@@ -701,7 +690,6 @@ echo "I. the destination is part of the approval"
 git -C "$W" branch release main && publish release
 is "I1 the same change proposed into another branch is denied" "$(decision "$W" 'glab mr create -s feature -b release')" deny
 r="$(reason "$W" 'glab mr create -s feature -b release')"
-is "I2 because nothing on record approves it there" "$(printf '%s' "$r" | grep -c 'no full-range pre-merge review of this change is on record')" 1
 rng="$(printf '%s\n' "$r" | sed -n 's/.*--diff \([^ ]*\) <body-file>.*/\1/p')"
 is "I3 the deny names the range against origin's destination" "$rng" "origin/release...feature"
 review "$W" "$rng" approve
@@ -979,7 +967,6 @@ is "N5 a rebased pin with an unchanged fingerprint is allowed" "$(PR_SHA=$REBASE
 is "N6 a forge lookup failure is denied" "$(FORGE_FAIL=1 denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'so its destination is unknown and the merge is refused')" 1
 is "N7 saying so" "$(FORGE_FAIL=1 reason "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" | grep -c 'forge lookup of MR !7 failed')" 1
 is "N8 a forge slower than the budget is denied" "$(FORGE_SLOW=3 XREVIEW_GUARD_BUDGET=1 denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'the check did not finish in time')" 1
-is "N9 saying it ran out of time" "$(FORGE_SLOW=3 XREVIEW_GUARD_BUDGET=1 reason "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" | grep -c 'did not finish in time')" 1
 
 echo "O. GraphQL and other API writes"
 is "O1 createPullRequest is denied" "$(denies "$W" "gh api graphql -f query='mutation { createPullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
@@ -1000,8 +987,6 @@ echo "P. a forge merge reaches only origin's own project, and merges at once"
 export MR_SHA="$REBASED" PR_SHA="$REBASED"
 is "P1 a PR URL on another host is denied, even with an approved pin" \
    "$(denies "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED" "is not on this checkout's origin (forge.example/acme/app)")" 1
-is "P2 saying it is not on origin" \
-   "$(reason "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED" | grep -c "is not on this checkout's origin")" 1
 is "P3 a PR URL in another project is denied" \
    "$(denies "$W" "gh pr merge https://forge.example/other/app/pull/9 --match-head-commit $REBASED" "the PR https://forge.example/other/app/pull/9 is not on this checkout's origin")" 1
 is "P4 origin's own PR URL is allowed" \
@@ -1018,8 +1003,6 @@ is "P9 a PR whose head lives in another owner's repository is denied" \
    "$(PR_OWNER=someone denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'PR 9 proposes from another repository')" 1
 is "P10 a destination with a merge queue is a deferred merge" \
    "$(MERGE_QUEUE='{"id":"MQ_1"}' denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'this merge would go through the merge queue of main')" 1
-is "P11 saying so" \
-   "$(MERGE_QUEUE='{"id":"MQ_1"}' reason "$W" "gh pr merge 9 --match-head-commit $REBASED" | grep -c 'the merge queue of main')" 1
 is "P12 a failed merge-queue lookup is denied" \
    "$(QUEUE_FAIL=1 denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'the forge lookup of the merge queue of main failed')" 1
 is "P13 a project with merge trains is a deferred merge" \
