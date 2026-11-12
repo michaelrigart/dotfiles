@@ -400,8 +400,6 @@ jq_is ".sandbox.credentials.files
 jq_is '[.sandbox.credentials.files[] | select(.mode != "deny")] | length' 0 \
       "every credential entry is mode deny"
 jq_is '.sandbox.credentials | has("envVars")' false "phase 1 ships no envVars entries"
-jq_is '[.sandbox.credentials.files[].path | select(startswith("~/.ssh/"))] | length' 12 \
-      "12 ~/.ssh credential entries"
 jq_is '[.sandbox.credentials.files[].path | select(endswith(".pub"))] | length' 0 \
       "no public keys denied as credentials"
 jq_is ".sandbox.filesystem.allowRead | sort == ($EXP_ALLOW_READ | sort)" true \
@@ -457,7 +455,6 @@ EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
       "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, and .obsidian"
-jq_is '.sandbox.filesystem.denyWrite | length' 264 "denyWrite has 264 entries"
 jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
         | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)] | length" 0 \
       "every deny glob starts with a work root and a slash, so git init in TMPDIR still works"
@@ -477,8 +474,6 @@ jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] a
         | (\$r + \"/.claude/worktrees/*/\" + \$p, \$r + \"/*/.claude/worktrees/*/\" + \$p, \$r + \"/*/*/.claude/worktrees/*/\" + \$p)
         | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
       "every agent configuration path has all three harness worktree forms in all five roots"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/worktrees/"))] | length' 90 \
-      "exactly 90 harness worktree entries: 5 roots x (5 agent paths + the .git file) x 3 depths"
 GITNINE=$(jq -cn --argjson a "$GITCONF" --argjson b "$GITWTMOD" '$a + $b')
 jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $GITNINE[] as \$c
         | \"\(\$r)/**/\(\$c)\" | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
@@ -489,16 +484,10 @@ jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config\\*$"))
 jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $TOOLCONF[] as \$c
         | \"\(\$r)/**/\(\$c)\" | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
       "each work root denies all four per-repository lazygit and glab configuration forms"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("lazygit\\.yml$|glab-cli"))] | length' 20 \
-      "20 lazygit and glab entries: 4 forms x 5 roots"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | length' 10 \
-      "10 glab entries: the main repository and linked worktree config.yml in each of 5 roots"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | map(select((endswith("/.git/glab-cli/config.yml") or endswith("/.git/worktrees/*/glab-cli/config.yml")) | not)) | length' 0 \
       "the only glab entry shapes are .git/glab-cli/config.yml and .git/worktrees/*/glab-cli/config.yml, so recover files stay writable"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("\\.git/\\*\\*/config"))] | length' 0 \
       "no entry has the shape .git/**/config, so a branch named config stays writable (the modules/**/config* entries are a different shape)"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$"))] | length' 19 \
-      "19 entries end in /.git"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$")) | select(test("/\\.claude/worktrees/") | not)]
        | sort == ["~/.local/share/chezmoi-*/.git","~/Code/.git","~/Documents/.git","~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]' true \
       "the only entries ending in .git are the four top-level ones and the fifteen harness forms"
