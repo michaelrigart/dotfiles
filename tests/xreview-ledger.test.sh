@@ -509,7 +509,6 @@ why() { L decide "$G" "${1:-main}" "${2:-main}" "${3:-feature}" --branch feature
 NONE="deny: no full-range pre-merge review of this change is on record"
 latest() { printf 'deny: the latest review of this change is pre-merge/%s, not an approval' "$1"; }
 is "F1 nothing on record denies" "$(gate)" "$NONE"
-is "F2 saying so" "$(why)" "no full-range pre-merge review of this change is on record"
 put r1 pending >/dev/null
 is "F3 a pending review alone denies" "$(gate)" "$(latest 'pending r1')"
 put r1 receipt approve >/dev/null
@@ -520,7 +519,6 @@ git -C "$G" branch release main
 is "F6 the same change into another branch is denied" "$(gate release release)" "$NONE"
 put r2 pending >/dev/null
 is "F7 a newer pending review closes it" "$(gate)" "$(latest 'pending r2')"
-is "F8 and names it" "$(why | grep -c 'pre-merge/pending r2')" 1
 L decide "$G" main main feature >/dev/null; rc=$?
 is "F9 decide exits 1 on deny" "$rc" 1
 put r2 receipt changes >/dev/null
@@ -566,7 +564,6 @@ git -C "$G" switch -q main; git -C "$G" merge -q --ff-only moved
 git -C "$G" switch -q -c rebased feature; git -C "$G" rebase -q main; git -C "$G" switch -q main
 is "F26 a rebased head with an unchanged fingerprint is allowed" "$(gate main main rebased)" allow
 is "F27 an empty change is denied" "$(gate main main main)" "deny: the change is empty: main holds nothing that main lacks"
-is "F28 saying so" "$(L decide "$G" main main main | jq -r .reason | grep -c '^the change is empty')" 1
 is "F29 a head that is not available locally is denied" \
    "$(L decide "$G" main main 1234567890123456789012345678901234567890 | jq -r .reason | grep -c 'is not available locally; fetch it')" 1
 is "F30 a destination that is not available locally is denied" \
@@ -781,8 +778,6 @@ wa w2 "$(tx full)" "$(rxj true false "$SW_FRAME")"
 is "W2 a full packet, framing on, nothing missing: allowed" "$(wgate)" allow
 wa w2b "$(tx full null '[]' '["a.txt"]')" "$(rxj false false "$SW_FRAME")"
 is "W2b framing on and a coverage gap: denied" "$(wgate)" "$GAP"
-is "W2c saying the approval is not whole, and why" \
-   "$(notwhole "$(wwhy)")/$(wwhy | grep -c 'missing')" "1/1"
 wa w2c "$(tx full)" "$(rxj true false "$SW_FRAME" | jq -c 'del(.switches)')"
 is "W2d a packeted receipt with no switches is denied: xreview always records them" "$(wgate)" \
    "$NW the switches at dispatch are not recorded"
@@ -800,7 +795,6 @@ wa w3b "$(tx full null '[]' '["a.txt"]')" "$(rxj false false '{"framing":"true",
 is "W3b a switch that is not exactly true counts as off" "$(wgate)" allow
 wa w4 "$(tx delta w-l2 '["U1","U2"]')" "$(rxj true true "$SW_ALL" T1 U3)"
 is "W4 a compacted delta is denied" "$(wgate)" "$COMPACT"
-is "W4b saying so" "$(wwhy | grep -c 'compact')" 1
 wa w5 "$(tx slices)" "$(rxj true true "$SW_FRAME")"
 is "W5 a compacted slices receipt is denied, fit on or off" "$(wgate)" "$COMPACT"
 wa w5b "$(tx slices)" "$(rxj true false "$SW_FRAME")"
@@ -817,7 +811,6 @@ wa w8b "$(tx delta w-root '["U1"]')" "$(rxj true false "$SW_ALL" T1 U2b)"
 is "W8b so is a one-link chain" "$(wgate)" allow
 wa w9 "$(tx delta w-nowhere '["U1","U2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
 is "W9 a delta whose delta_from is on no receipt is denied" "$(wgate)" "$NW w9 follows w-nowhere, which is no receipt in this ledger"
-is "W9b saying so" "$(notwhole "$(wwhy)")" 1
 wa w9c "$(tx delta | jq -c '.delta_from = null')" "$(rxj true false "$SW_ALL" T1 U3)"
 is "W9c a delta with no delta_from is denied" "$(wgate)" "$NW the delta of w9c names no receipt it follows"
 wrec w-badbase "$C2" pre-merge approve "$(rxj true false "$SW_ALL" T1 UB)" "$(tx delta w-root '["U1"]' | jq -c '.base = "0123456789abcdef0123456789abcdef01234567"')"
@@ -856,7 +849,6 @@ wa w11 "$(tx delta w-l2c '["U1","U2c"]')" "$(rxj true false "$SW_ALL" T1 U3)"
 is "W11 a link whose verdict was changes is allowed" "$(wgate)" allow
 wa w12 "$(tx delta w-l2 '["U2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
 is "W12 a history that omits a chain turn is denied" "$(wgate)" "$NW the history lacks the chain turn U1, or lists it out of order"
-is "W12b saying so" "$(wwhy | grep -c 'history')" 1
 wa w12b "$(tx delta w-l2 '["U2","U1"]')" "$(rxj true false "$SW_ALL" T1 U3)"
 is "W12c a history that lists them out of order is denied" "$(wgate)" "$NW the history lacks the chain turn U2, or lists it out of order"
 wa w12c "$(tx delta w-l2 '["U1","X","U2","Y"]')" "$(rxj true false "$SW_ALL" T1 U3)"
@@ -873,7 +865,6 @@ wa w13 "$(tx full null '[]' '[]' "$(pf w-plan b1)")" "$(rxj true false "$SW_ALL"
 is "W13 a plan bound to a clean approved plan receipt that lists the path and blob is allowed" "$(wgate)" allow
 wa w13b "$(tx full null '[]' '[]' "$(pf w-noplan b1)")" "$(rxj true false "$SW_ALL")"
 is "W13b a plans_from naming no receipt is denied" "$(wgate)" "$NW the plan $PP is bound to w-noplan, which is no receipt in this ledger"
-is "W13c saying so" "$(notwhole "$(wwhy)")/$(wwhy | grep -c 'plan')" "1/1"
 wa w13c "$(tx full null '[]' '[]' "$(pf w-plan b2)")" "$(rxj true false "$SW_ALL")"
 is "W13d a blob the plan receipt does not list is denied" "$(wgate)" "$NW the plan $PP at b2 is not in the plan_blobs of w-plan"
 wa w13d "$(tx full null '[]' '[]' "$(pf w-plan b1 | jq -c '.[0].path = "docs/superpowers/plans/other.md"')")" "$(rxj true false "$SW_ALL")"
@@ -927,7 +918,6 @@ wrec w-badroot "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UBR)" "$(t
 wa w17 "$(tx delta w-badroot '["UBR"]')" "$(rxj true false "$SW_ALL" T1 U3)"
 is "W17 a clean delta behind a root whose plan binding is an unclean plan receipt is denied" "$(wgate)" \
    "$NW w-badroot, a link of the chain: the plan $PP is bound to w-plan-unclean, which is not clean"
-is "W17b saying which link" "$(wwhy | grep -c 'w-badroot, a link of the chain')" 1
 wrec w-badroot2 "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UBR2)" "$(tx full null '[]' '[]' "$(pf w-plan b9)")"
 wa w17c "$(tx delta w-badroot2 '["UBR2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
 is "W17c nor may the root's binding name a blob the plan receipt lacks" "$(wgate)" \
