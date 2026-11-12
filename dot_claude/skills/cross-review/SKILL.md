@@ -200,7 +200,7 @@ not be read, or it missed shown files), collect says so on stderr: `xreview: thi
 gate may stay closed, and a plan review that is not clean binds no plan. Act on
 its findings and dispatch the next round as usual; this is not an escalation trigger.
 
-**Exit 4: the answer does not match the findings schema.** No reviewer text is printed. The
+**Exit 4: the answer does not match the findings schema or breaks one of xreview's bounds.** No reviewer text is printed. The
 raw answer is kept in a file for Michael, named in the output, and that file is
 not to be read into this session. Report it; do not re-dispatch.
 
@@ -348,10 +348,10 @@ range never does, and neither does a newer pending review or a verdict of `chang
 the one part of this workflow prose cannot guarantee: a skipped review is otherwise
 indistinguishable from one that found nothing.
 
-`xreview collect` bounds what it prints of the reviewer's answer: `summary` to 300 characters,
-`failure_scenario` to 1,500, `file` to 200, `line` to 0..1,000,000, at most 100 findings and
-40,000 characters of findings text in all, with hidden characters shown and known secret
-formats redacted. The meaning of the text is not bounded: a finding can still mislead, so verify
+`xreview collect` bounds what it prints of the reviewer's answer: `summary` is cut to 300
+characters, `failure_scenario` to 1,500 and `file` to 200, with hidden characters shown and
+known secret formats redacted. A `line` outside 0..1,000,000, more than 100 findings, or more
+than 40,000 characters of findings text in all after cutting fails the review (exit 4). The meaning of the text is not bounded: a finding can still mislead, so verify
 it.
 
 Acting on findings runs inside an apply window:
