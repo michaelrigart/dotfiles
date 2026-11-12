@@ -15,10 +15,6 @@ HISTFILE="$XDG_STATE_HOME/zsh/zsh_history"
 if [[ ! -e "$HISTFILE" && -f "$XDG_CACHE_HOME/zsh/zsh_history" ]]; then
   mv -n "$XDG_CACHE_HOME/zsh/zsh_history" "$HISTFILE" 2>/dev/null
 fi
-setopt share_history
-setopt hist_expire_dups_first
-setopt hist_ignore_dups
-setopt hist_verify
 
 # Skip oh-my-zsh's compaudit pass on every start; this is a single-user machine.
 # Must be set before oh-my-zsh.sh is sourced.
