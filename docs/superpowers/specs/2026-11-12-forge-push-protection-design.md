@@ -498,7 +498,8 @@ unchanged; each correction is listed here for Michael, and the text above stands
    secret, or whose scan fails, is no longer denied by the guard but blocked by the hook. The plan
    lists every guard test row whose verdict moves.
 2. **The moved scan changes in three named ways**, not zero: it gets a command line; a push to a
-   URL excludes every remote-tracking ref; and it keeps the git configuration entries git hands a
+   URL excludes only the tracking refs of a configured remote with that URL, and nothing when
+   there is none; and it keeps the git configuration entries git hands a
    hook (`GIT_CONFIG_COUNT`, measured: four `safe.directory` entries in an agent session) and
    appends its pins after them, dropping `GIT_CONFIG_PARAMETERS`. Every safeguard and message
    text moves unchanged.

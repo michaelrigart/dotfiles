@@ -178,7 +178,9 @@ against them.
     excepted; e checkouts without origin skipped`.
   - The remote is `git -C <dir> remote get-url --push origin` (where pushes go).
 - GitHub target (§2.1), from `repos/<o>/<r>` (`.default_branch`),
-  `repos/<o>/<r>/rules/branches/<default, URL-encoded>?per_page=100` and, per distinct
+  `repos/<o>/<r>/rules/branches/<default, URL-encoded>?per_page=100` (every page: `gh_get` takes
+  `--paginate` here, merged with `jq -s add`; the suite has a case whose `update` rule sits on a
+  second page) and, per distinct
   `ruleset_id`, `repos/<o>/<r>/rulesets/<id>`:
   - a ruleset is *closed* when `enforcement == "active"` and either `bypass_actors` is present and
     empty, or absent with `current_user_can_bypass == "never"`;
