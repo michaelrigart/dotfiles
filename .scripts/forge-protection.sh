@@ -45,7 +45,7 @@ normalize_remote() {
       rest=${u#*://}
       auth=${rest%%/*}
       case "$rest" in */*) path=${rest#*/} ;; *) path= ;; esac
-      host=${auth#*@}; host=${host%%:*}
+      host=${auth##*@}; host=${host%%:*}
       ;;
     *)
       case "$u" in
@@ -140,7 +140,15 @@ row() {  # <ok|drift|unreadable|excepted> <remote> [detail]
   if [ -n "${3:-}" ]; then printf '%-10s %s  %s\n' "$1" "$2" "$3"; else printf '%-10s %s\n' "$1" "$2"; fi
 }
 remedy() { printf '    %s\n' "$1"; }
-note() { printf '    # %s\n' "$1"; }
+note() { printf '    # %s\n' "$(printf '%s' "$1" | tr -d '\000-\037\177')"; }
+# shq <text>: one shell word that reads back as exactly <text> (Bash 3.2 and POSIX sh), so a
+# forge-supplied branch or path pasted into a printed command cannot break out of its quotes.
+shq() {
+  case "$1" in
+    ''|*[!A-Za-z0-9_./:@%+=,-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 # The two rulesets of spec 2026-11-12 section 2.1, as compact JSON.
 body_protect_main() {  # <ref>
@@ -160,6 +168,7 @@ check_github() {  # <remote> <owner/repo>
   if ! gh_get "repos/$repo"; then row unreadable "$remote" "$(fc_reason)"; return; fi
   def=$(printf '%s' "$FC_OUT" | jq -r '.default_branch // empty' 2>/dev/null)
   if [ -z "$def" ]; then row unreadable "$remote" "no default branch in the answer"; return; fi
+  case "$def" in *[[:cntrl:]]*) row unreadable "$remote" "the default branch name holds control characters"; return ;; esac
   enc=$(jq -rn --arg b "$def" '$b | @uri')
   if ! gh_get --paginate "repos/$repo/rules/branches/$enc?per_page=100"; then
     row unreadable "$remote" "$(fc_reason)"; return
@@ -182,25 +191,31 @@ check_github() {  # <remote> <owner/repo>
       row unreadable "$remote" "ruleset $id shows neither bypass_actors nor current_user_can_bypass"; return
     fi
   done
+  # A rule pair is "carried" by a ruleset of any enforcement; the POST for a pair is printed only
+  # when no ruleset carries it, otherwise the carrier gets a UI note. A ruleset carrying both pairs
+  # (the rejected merged design) is never told to empty its bypass list: protect-main is posted
+  # beside it and its owner-only bypass is judged as the update/creation carrier.
   v=$(jq -nc --argjson r "$rules" --argjson st "$st" '
-    def carried($t; $k): any($r[]; .type == $t and $st[(.ruleset_id | tostring)][$k]);
     def types($id): [$r[] | select(.ruleset_id == $id) | .type];
     def pair($id; $a; $b): (types($id) | (index($a) != null and index($b) != null));
+    def pm($id): pair($id; "deletion"; "non_fast_forward");
+    def oo($id): pair($id; "update"; "creation");
+    def carried($t; $k): any($r[]; .type == $t and $st[(.ruleset_id | tostring)][$k]);
     ([$r[].ruleset_id | select(. != null)] | unique) as $ids
     | {ok: (carried("deletion"; "closed") and carried("non_fast_forward"; "closed") and carried("update"; "owner") and carried("creation"; "owner")),
-       protect_post: ([$ids[] | select(pair(.; "deletion"; "non_fast_forward") and $st[tostring].closed)] | length == 0),
-       owner_post: ([$ids[] | select(pair(.; "update"; "creation") and $st[tostring].owner)] | length == 0),
-       ui: ([$ids[] | select(pair(.; "deletion"; "non_fast_forward") and ($st[tostring].closed | not)) | {id: ., want: "none"}]
-          + [$ids[] | select(pair(.; "update"; "creation") and ($st[tostring].owner | not)) | {id: ., want: "Repository admin"}])}')
+       protect_post: ([$ids[] | select(pm(.) and (oo(.) | not))] | length == 0),
+       owner_post: ([$ids[] | select(oo(.))] | length == 0),
+       ui: ([$ids[] | select(pm(.) and (oo(.) | not) and ($st[tostring].closed | not)) | {id: ., want: "none"}]
+          + [$ids[] | select(oo(.) and ($st[tostring].owner | not)) | {id: ., want: "Repository admin"}])}')
   if [ "$(printf '%s' "$v" | jq -r '.ok')" = true ]; then
     row ok "$remote" "default branch $def"; return
   fi
   row drift "$remote" "default branch $def"
   if [ "$(printf '%s' "$v" | jq -r '.protect_post')" = true ]; then
-    remedy "gh api --method POST repos/$repo/rulesets --input <(printf '%s\\n' '$(body_protect_main "refs/heads/$def")')"
+    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_protect_main "refs/heads/$def")"))"
   fi
   if [ "$(printf '%s' "$v" | jq -r '.owner_post')" = true ]; then
-    remedy "gh api --method POST repos/$repo/rulesets --input <(printf '%s\\n' '$(body_main_owner_only)')"
+    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_main_owner_only)"))"
   fi
   n=$(printf '%s' "$v" | jq -r '.ui | length')
   while [ "$n" -gt 0 ]; do
