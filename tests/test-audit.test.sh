@@ -476,6 +476,7 @@ recs = [json.loads(l) for l in open(sys.argv[1] + "/runs-sample.jsonl")]
 print(" ".join(r["id"] for r in recs if r["verdict"] == "killed" and r["file"] == "bin/s.sh" and r["killers"] == ["s::greet says hello"]))
 PY
 )
+rc_is 1 "M7: a comparison with lost kills exits 1 after printing both lists"
 has "lost: 3" "M7: the three mutants only the removed check killed are lost" "$OUT"
 for id in $lostids; do has "- $id bin/s.sh" "M7: $id is listed as lost" "$OUT"; done
 has "not run: 0" "M7: nothing the first state killed is unrun on the selected files" "$OUT"
@@ -484,9 +485,11 @@ tids=$(python3 -c 'import json,sys
 print(" ".join(json.loads(l)["id"] for l in open(sys.argv[1])))' "$T/state/runs-targeted.jsonl")
 for id in $tids; do lacks "$id" "M7: targeted mutant $id is not in a code comparison" "$OUT"; done
 run --state "$T/state3" report --section kills --compare "$T/state" --kind code --only bin/s.sh bin/p.py
+rc_is 1 "M7: a comparison with unrun kills exits 1"
 has "not run: 6" "M7: --only adds bin/p.py, whose six kills were not run" "$OUT"
 eq "$(printf '%s\n' "$OUT" | grep -c 'bin/p.py')" 6 "M7: all six are listed"
 run --state "$T/state3" report --section kills --compare "$T/state" --kind targeted
+rc_is 0 "M7: a comparison with nothing lost or unrun exits 0"
 has "lost: 0" "M7: a targeted comparison selects no files here" "$OUT"
 run --state "$T/state3" report --section kills --compare "$T/state"
 rc_is 2 "M7: --compare without --kind exits 2"
@@ -536,6 +539,7 @@ rc_is 0 "M9: the killed mutants re-run on the unchanged commit"
 has "remaining: 0" "M9: nothing remains" "$OUT"
 eq "$(wc -l <"$T/state11/runs-sample.jsonl" | tr -d ' ')" 12 "M9: exactly the twelve killed mutants of both files ran"
 run --state "$T/state11" report --section kills --compare "$T/state" --kind code
+rc_is 0 "M9: a clean comparison exits 0"
 has "lost: 0" "M9: a mutant still killed after the commit is not lost" "$OUT"
 has "not run: 0" "M9: and none is unrun" "$OUT"
 
@@ -703,6 +707,7 @@ mkrec "$T/cmpB" b xxxxxxxxxxx1 f.sh baseline-red
 mkrec "$T/cmpB" b yyyyyyyyyyy1 g.sh survived
 run --state "$T/cmpB" report --section kills --compare "$T/cmpA" --kind code --only f.sh
 has "lost: 0" "Q1: a baseline-red record is not a lost kill" "$OUT"
+rc_is 1 "Q1: a comparison with an unrun kill exits 1"
 has "not run: 1" "Q1: it counts as not run" "$OUT"
 run --state "$T/cmpB" report --section kills --compare "$T/cmpA" --kind code
 has "not run: 0" "Q1: a baseline-red record does not add its file to the selection" "$OUT"
@@ -843,7 +848,82 @@ has "copy rebuilt after nocopy000001" "Q10: a vanished copy is rebuilt" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived', 'survived']" "Q10: the mutants after the damage run in a clean copy, none is stale"
 eq "$(python3 -c 'import json,sys
-print([r.get("rerun") for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[None, 'skipped', None]" "Q10: a survivor whose second run could not happen is marked rerun skipped"
+print([r.get("rerun") for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[None, None, None]" "Q10: a survivor whose copy was deleted still gets its second run, in a rebuilt copy"
+
+# Q11: a suite run under a mutant leaves a stray file in the copy; the next suite must not meet it
+mk Q11
+mkdir -p "$T/repo/bin"
+printf '#!/usr/bin/env bash\nres_on() { RES=on; }\nres_off() { RES=off; }\n' > "$T/repo/bin/res.sh"
+for n in a b; do
+  {
+    printf '#!/usr/bin/env bash\nset -u\nhere=$(cd "$(dirname "$0")" && pwd)\n. "$here/../bin/res.sh"\n'
+    printf 'pass=0; fail=0\nok(){ echo "  PASS: $1"; pass=$((pass+1)); }\nbad(){ echo "  FAIL: $1"; fail=$((fail+1)); }\n'
+    printf 'check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; fi; }\n'
+    if [ "$n" = a ]; then
+      printf 'res_on\ncheck "res is on" "$RES" on\n'
+    else
+      printf 'check "no stray file" "$([ -e "$here/../stray" ] && echo stray || echo none)" none\nres_off\ncheck "res is off" "$RES" off\n'
+    fi
+    printf 'echo "RESULT: $pass passed, $fail failed"\n[ "$fail" -eq 0 ]\n'
+  } > "$T/repo/tests/res-$n.test.sh"
+  chmod 755 "$T/repo/tests/res-$n.test.sh"
+done
+printf 'bin/res.sh\tbash\tres-a\tres-a,res-b\n' >> "$T/repo/subjects.tsv"
+"${GIT[@]}" -C "$T/repo" add -A
+"${GIT[@]}" -C "$T/repo" commit -q -m residue
+python3 - "$T/res.jsonl" <<'PY'
+import json, sys
+e = {"candidate": "res-a:1-1", "suite": "res-a", "labels": ["res is on"], "claim": "duplicate",
+     "duplicate_of": ["res-b::res is off"], "safety": False,
+     "mutants": [{"file": "bin/res.sh", "find": "RES=on", "replace": 'RES=on; touch "$here/../stray"'}]}
+open(sys.argv[1], "w").write(json.dumps(e) + "\n")
+PY
+run targeted "$T/res.jsonl"
+rc_is 0 "Q11: a mutant that makes its own suite write into the copy runs"
+has "copy rebuilt after" "Q11: the copy is rebuilt after the run that dirtied it" "$OUT"
+eq "$(python3 -c 'import json,sys
+print([r["suites"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-targeted.jsonl")" "[{'res-a': 'survived', 'res-b': 'survived'}]" "Q11: the next suite runs in a clean copy: it survives the mutant instead of failing on the stray file"
+clean Q11
+
+# Q12: a baseline that leaves a stray file in the copy does not reach the mutated run of its suite
+mk Q12
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" "$T/repo/tests/s.test.sh" <<'PY'
+import json, sys
+row = {"id": "base00000001", "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7,
+       "context": "  FLAG=on", "occurrence": 0, "col": 2, "before": "FLAG=on", "after": "FLAG=on; :",
+       "suite": "s", "valid": 1}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+t = open(sys.argv[2]).read()
+t = t.replace('bad "forced red"\n', 'bad "forced red"\n[ -e "$here/../stray" ] && bad "stray present at start"\n', 1)
+t = t.replace('echo "RESULT:', 'echo residue > "$here/../stray"\necho "RESULT:', 1)
+open(sys.argv[2], "w").write(t)
+PY
+"${GIT[@]}" -C "$T/repo" add -A
+"${GIT[@]}" -C "$T/repo" commit -q -m residue
+run sample --sample-from "$T/crafted"
+has "copy rebuilt after the baseline of s" "Q12: a copy a baseline wrote into is rebuilt" "$OUT"
+eq "$(python3 -c 'import json,sys
+print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived']" "Q12: the mutated run starts clean, so a behaviour-neutral mutant survives"
+
+# Q13: inventory runs every suite from a pristine copy: s leaves a stray file that would fail s2
+mk Q13
+python3 - "$T/repo/tests/s.test.sh" "$T/repo/tests/s2.test.sh" <<'PY'
+import sys
+s, s2 = sys.argv[1:]
+t = open(s).read()
+open(s, "w").write(t.replace('echo "RESULT:', 'echo residue > "$here/../stray"\necho "RESULT:', 1))
+t = open(s2).read()
+open(s2, "w").write(t.replace('\ncheck "add handles a one"', '\n[ -e "$here/../stray" ] && bad "stray present at start"\ncheck "add handles a one"', 1))
+PY
+"${GIT[@]}" -C "$T/repo" add -A
+"${GIT[@]}" -C "$T/repo" commit -q -m residue
+run inventory s s2
+rc_is 0 "Q13: inventory runs"
+has "copy rebuilt after the baseline of s" "Q13: the copy a suite wrote into is rebuilt" "$OUT"
+eq "$(python3 -c 'import json,sys
+print({r["suite"]: (r["rc"], r["failed"]) for r in map(json.loads, open(sys.argv[1]))})' "$T/state/inventory.jsonl")" "{'s': (0, 0), 's2': (0, 0)}" "Q13: the second suite is green, not failed by the first one's residue"
+clean Q13
 
 echo "R. rule mutants"
 mk R
@@ -876,15 +956,12 @@ run pins "$T/quoted.sh"
 eq "$OUT" "p2${TAB}.chezmoitemplates/agents/claude-code.md${TAB}x${TAB}?${TAB}-${TAB}y" "R1: the helper names in a quoted string or a comment are not calls"
 run pins "$T/repo/tests/pins.test.sh"
 eq "$OUT" "p$(grep -n '^need_in "\$R"' "$T/repo/tests/pins.test.sh" | cut -d: -f1)${TAB}docs/rules.md${TAB}Never push, delete or merge without asking.${TAB}?${TAB}-${TAB}the confirm rule asks first" "R1: the helper definitions are not calls"
-# The suite that was measured: Task 13 replaced the live file's pins with rule checks.
-if "${GIT[@]}" -C "$SRC" show 523a95d:tests/agent-instructions.test.sh > "$T/phase1-pins.test.sh" 2>/dev/null; then
-  run pins "$T/phase1-pins.test.sh"
-  rc_is 0 "R1: the phase 1 suite's pins all resolve"
-  eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "$(grep -cE '^(need|need_flat|need_in) ' "$T/phase1-pins.test.sh")" "R1: and none is dropped"
-else
-  _fail "R1: commit 523a95d (the measured phase 1 suite) is missing from $SRC"
-  _fail "R1: so its pins cannot be counted"
-fi
+# The suite that was measured: Task 13 replaced the live file's pins with rule checks. Its text at
+# 523a95d is the fixture pins/agent-instructions-523a95d.txt, so no git history is needed.
+PHASE1="$FIX/pins/agent-instructions-523a95d.txt"
+run pins "$PHASE1"
+rc_is 0 "R1: the phase 1 suite's pins all resolve"
+eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "$(grep -cE '^(need|need_flat|need_in) ' "$PHASE1")" "R1: and none is dropped"
 
 RU=$(python3 - "$SRC/.scripts/test-audit" <<'PY'
 import json, sys
@@ -1009,6 +1086,7 @@ eq "$(printf '%s\n' "$OUT" | grep -o 'drop-item:' | wc -l | tr -d ' ')" 3 "R3: a
 has "weaken:Never" "R3: and the weakening" "$OUT"
 has "delete-sentence:Never push, delete or merge without asking." "R3: and the deletion" "$OUT"
 run --state "$T/stateC" report --section rules --compare "$T/stateP" --kind rule
+rc_is 1 "R3: a rule comparison with lost kills exits 1"
 has "lost: 5" "R3: the checks state lost the five kills the pins made" "$OUT"
 run --state "$T/stateC" report --section rules --compare "$T/stateP" --kind rule --only docs/rules.md
 has "lost: 5" "R3: --only on the rule's file selects the same five" "$OUT"
@@ -1055,6 +1133,16 @@ printf 'G1\tdocs/gated.md\tNever x\tno\t-\tgated loader\n' > "$T/rules5.tsv"
 run --state "$T/stateG" rules "$T/rules5.tsv"
 rc_is 2 "R3: a rule whose only loader suite is gated exits 2"
 has "no runnable suite loads docs/gated.md" "R3: naming the file" "$ERR"
+
+# A rule whose anchor is found but whose block is only a label has no mutant: the gate fails closed.
+printf '\n- **Empty.**\n' >> "$T/repo/docs/rules.md"
+"${GIT[@]}" -C "$T/repo" add -A
+"${GIT[@]}" -C "$T/repo" commit -q -m empty-rule
+printf 'E1\tdocs/rules.md\tEmpty.\tno\t-\tonly a label\n' > "$T/rules6.tsv"
+run --state "$T/stateE" --ref HEAD rules "$T/rules6.tsv"
+rc_is 1 "R4: a rule whose anchor is found but yields no mutant exits 1"
+has "no-mutants: E1" "R4: naming it" "$OUT"
+lacks "missing: E1" "R4: it is not reported as missing" "$OUT"
 
 cat > "$T/check3.sh" <<'EOS'
 #!/usr/bin/env bash

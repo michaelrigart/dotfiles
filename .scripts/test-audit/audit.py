@@ -35,11 +35,12 @@ HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8, "process-
 KINDS = {"code": "sample", "targeted": "targeted", "rule": "rules"}
 CHECK_SUITE = "check"
 SAFETY_SUITES = {
-    "chezmoi-wrapper", "claude-settings", "codex-config", "deny-modes-probe", "git-forge-guard",
-    "git-signing-config", "ha-mcp", "hook-path", "install-claude-managed-settings",
-    "path-resolution-guard", "sdd-clean", "ssh-sandbox-proxy", "unifi-network-mcp",
-    "worktree-guard", "write-boundary-probe", "wt-functions", "wt-teardown", "xreview",
-    "xreview-apply-guard", "xreview-guard", "xreview-ledger", "xreview-skill",
+    "agent-text-scan", "chezmoi-wrapper", "claude-settings", "codex-config", "codex-launcher",
+    "deny-modes-probe", "git-config", "git-forge-guard", "git-signing-config", "ha-mcp",
+    "herdr-clear-pane", "hook-path", "install-claude-managed-settings", "path-resolution-guard",
+    "prompt-audit", "sdd-clean", "ssh-sandbox-proxy", "unifi-network-mcp", "worktree-guard",
+    "write-boundary-probe", "wt-functions", "wt-teardown", "xreview", "xreview-apply-guard",
+    "xreview-guard", "xreview-ledger", "xreview-rpc", "xreview-skill", "zshenv",
 }
 GIT_IDENT = ["-c", "user.name=test-audit", "-c", "user.email=test-audit@localhost",
              "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
@@ -472,11 +473,15 @@ def preflight(args, bind):
 
 
 def prepare(args, command, bind):
-    return build_copy(args.repo, preflight(args, bind), args.copy_root, command)
+    """The runner of one command, with its copy built: every suite run goes through it."""
+    runner = Runner(args, preflight(args, bind), command)
+    runner.ensure_copy()
+    return runner
 
 
 def cmd_inventory(args):
-    copy = prepare(args, "inventory", bind=True)
+    runner = prepare(args, "inventory", bind=True)
+    copy = runner.copy
     store_path = Path(args.state) / "inventory.jsonl"
     rows = {}
     if store_path.exists():
@@ -492,7 +497,7 @@ def cmd_inventory(args):
         row = suite_row(copy, suite)
         row.update(assertions=None, passed=None, failed=None, labels=[], rc=None, seconds=None)
         if row["requires"] in ("", "heavy"):
-            run = run_suite(copy, suite, BASELINE_TIMEOUT, args.lock)
+            run = runner.run(suite, BASELINE_TIMEOUT)
             row.update(assertions=len(run.passed) + len(run.failed), passed=len(run.passed),
                        failed=len(run.failed), labels=run.passed, rc=run.rc,
                        seconds=round(run.seconds, 3))
@@ -503,7 +508,9 @@ def cmd_inventory(args):
 
 
 def cmd_try(args):
-    copy = prepare(args, "try", bind=False)
+    runner = prepare(args, "try", bind=False)
+    runner.log = sys.stderr  # stdout is the result's JSON alone
+    copy = runner.copy
     target = inside_copy(copy, args.file)
     script = inside_copy(copy, Path("tests") / f"{args.suite}.test.sh")
     if not script.exists():
@@ -516,13 +523,14 @@ def cmd_try(args):
     found = text.count(args.find)
     if found != 1:
         die(f"{args.find!r} occurs {found} times in {args.file}, want exactly 1")
-    baseline = run_suite(copy, args.suite, BASELINE_TIMEOUT, args.lock)
+    baseline = runner.run(args.suite, BASELINE_TIMEOUT)
     if not baseline_ok(baseline):
         result = red_result(baseline)
     else:
-        SESSION.apply_text(target, text.replace(args.find, args.replace))
+        runner.mutation = ({"id": "the try mutation", "file": args.file},
+                           text.replace(args.find, args.replace))
         timeout = max(args.timeout_floor, 3 * baseline.seconds)
-        result = run_result(baseline, run_suite(copy, args.suite, timeout, args.lock))
+        result = run_result(baseline, runner.run(args.suite, timeout))
     print(json.dumps(result))
 
 
@@ -677,8 +685,6 @@ def combine(results):
             out[key] += qualified(suite, r[key])
         out["suites"][suite] = r["verdict"]
         out["flaky"] = out["flaky"] or bool(r.get("flaky"))
-        if r.get("rerun") == "skipped":
-            out["rerun"] = "skipped"
         out["attempts"] = max(out["attempts"], r.get("attempts", 1))
         out["seconds"] += r["seconds"]
     out["seconds"] = round(out["seconds"], 3)
@@ -699,22 +705,46 @@ def copy_state(copy):
 
 class Runner:
     """Runs mutants in this process's copy, one baseline per suite and session, and gives a
-    survivor a second run."""
+    survivor a second run. Every run starts from a pristine copy: the copy's state as built."""
 
     def __init__(self, args, sha, command, check_argv=None):
         self.args, self.sha, self.command = args, sha, command
         self.check_argv = check_argv
         self.check_silent = False
         self.copy = None
+        self.pristine = None
+        self.mutation = None
+        self.log = sys.stdout
         self.baselines = {}
+
+    def build(self):
+        self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
+        self.pristine = copy_state(self.copy)
 
     def ensure_copy(self):
         if self.copy is None:
-            self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
+            self.build()
         return self.copy
 
     def run(self, suite, timeout):
-        """One run of a suite, or, with a rule check command, of the pseudo-suite `check`."""
+        """One run of a suite, or, with a rule check command, of the pseudo-suite `check`. Every
+        run goes through here: under a mutation it is applied for this run alone, and a copy the
+        run left unlike its pristine state is rebuilt before the next one."""
+        self.ensure_copy()
+        if self.mutation is not None:
+            mutant, text = self.mutation
+            SESSION.apply_text(inside_copy(self.copy, mutant["file"]), text)
+        try:
+            run = self.execute(suite, timeout)
+        finally:
+            if self.mutation is not None:
+                SESSION.restore_files()
+        state = copy_state(self.copy)
+        if state is None or state != self.pristine:
+            self.rebuild(self.mutation[0]["id"] if self.mutation is not None else f"the baseline of {suite}")
+        return run
+
+    def execute(self, suite, timeout):
         if self.check_argv is not None and suite == CHECK_SUITE:
             run = run_check(self.copy, [a.replace("{copy}", str(self.copy)) for a in self.check_argv],
                             timeout, self.args.lock)
@@ -723,7 +753,6 @@ class Runner:
 
     def baseline(self, suite):
         if suite not in self.baselines:
-            self.ensure_copy()
             run = self.run(suite, BASELINE_TIMEOUT)
             if self.check_argv is not None and suite == CHECK_SUITE:
                 # Only a checker whose baseline printed no assertions gets an invented one.
@@ -738,9 +767,6 @@ class Runner:
         first = run_result(baseline, self.run(suite, timeout))
         first.update(attempts=1, flaky=False)
         if first["verdict"] != "survived":
-            return first
-        if not Path(self.copy).is_dir():
-            first.update(rerun="skipped")
             return first
         second = run_result(baseline, self.run(suite, timeout))
         total = round(first["seconds"] + second["seconds"], 3)
@@ -761,26 +787,21 @@ class Runner:
             return None
         base = {s: self.baseline(s) for s in suites}
         results = {s: red_result(b) for s, b in base.items() if not baseline_ok(b)}
-        live = [s for s in suites if s not in results]
-        if live:
-            before = copy_state(copy)
-            SESSION.apply_text(target, mutated)
-            try:
-                for suite in live:
+        self.mutation = (mutant, mutated)
+        try:
+            for suite in suites:
+                if suite not in results:
                     results[suite] = self.attempt(suite, base[suite])
-            finally:
-                SESSION.restore_files()
-            after = copy_state(copy)
-            if after is None or after != before:
-                self.rebuild(mutant["id"])
+        finally:
+            self.mutation = None
         return {s: results[s] for s in suites}
 
-    def rebuild(self, mutant_id):
-        """A mutant's run wrote or deleted something inside the copy: start the next one from a
-        fresh copy, which is identical to the original, so the session's baselines still hold."""
+    def rebuild(self, what):
+        """A run wrote or deleted something inside the copy: start the next one from a fresh
+        copy, which is identical to the original, so the session's baselines still hold."""
         SESSION.copies.remove(self.copy)
-        self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
-        print(f"copy rebuilt after {mutant_id}", flush=True)
+        self.build()
+        print(f"copy rebuilt after {what}", file=self.log, flush=True)
 
 
 def rec_key(rec):
@@ -1115,12 +1136,15 @@ def cmd_rules(args):
                   f"baseline-red {red})", flush=True)
     missing = [r["id"] for r in plan if r["missing"]]
     ambiguous = [r["id"] for r in plan if r["ambiguous"]]
+    empty = [r["id"] for r in plan if not r["missing"] and not r["ambiguous"] and not r["_full"]]
     for rid in missing:
         print(f"missing: {rid}")
     for rid in ambiguous:
         print(f"ambiguous: {rid}")
+    for rid in empty:
+        print(f"no-mutants: {rid}")
     print(f"remaining: {sum(1 for r in plan for m in r['_full'] if not is_final(done, (None, m['id'])))}")
-    if missing or ambiguous:
+    if missing or ambiguous or empty:
         sys.exit(1)
 
 
@@ -1264,6 +1288,7 @@ def report_compare(args):
         print(f"{title}: {len(recs)}")
         for rec in sorted(recs, key=lambda r: (r["file"], r["line"], r["id"])):
             print(f"- {rec['id']} {rec['file']}:{rec['line']} {rec['op']} {rec['before']} → {rec['after']}")
+    return len(lost) + len(not_run)
 
 
 def cmd_report(args):
@@ -1273,7 +1298,8 @@ def cmd_report(args):
      "targeted": report_targeted, "rules": report_rules}[args.section](args)
     if args.compare:
         print()
-        report_compare(args)
+        if report_compare(args):
+            sys.exit(1)
 
 
 CLASSIFICATION_COLUMNS = ["suite", "test", "labels", "kind", "duplicate_of", "verdict", "merge_with",
