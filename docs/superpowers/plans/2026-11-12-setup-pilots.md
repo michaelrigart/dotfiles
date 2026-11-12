@@ -197,7 +197,7 @@ finding is confirmed or contradicted by them.
 | 7, deny rules (`f7b9b5c`) | Opus | Approved | 0 | 0 | 1 | 9 | 41 s |
 | 7 | Sonnet | Approved | 0 | 0 | 1 | 7 | 66 s |
 | 1, render and escape (`f9ca4c7`) | Opus | Approved | 0 | 0 | 5 | 14 | 156 s |
-| 1 | Sonnet | Needs fixes | 0 | 1 | 5 | not read out | not read out |
+| 1 | Sonnet | Needs fixes | 0 | 1 | 5 | 12 | 97 s |
 
 Opus findings and whether Sonnet raised them:
 
