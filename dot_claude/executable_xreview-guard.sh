@@ -7,8 +7,9 @@
 # Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Gated: MR/PR creation and agent-run merges - glab mr create|new|merge|accept, gh pr
-# create|new|merge, their REST forms through glab api / gh api, and a local git merge into the
-# default branch. Each opens only when the latest full-range pre-merge review of that exact
+# create|new|merge, az repos pr create, their REST forms through glab api / gh api, and a local
+# git merge into the default branch; az repos pr update is denied when it completes the PR. Each
+# opens only when the latest full-range pre-merge review of that exact
 # change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
 # for and gh pr revert are denied outright. The change is named by a content fingerprint, so
 # any content change after the approval closes the gate again, while a clean rebase keeps it
@@ -17,10 +18,10 @@
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
 # names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
-# for, nor api together with a percent-escape such as m%65rge), or none of glab, gh or git,
-# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
-# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
-# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
+# for, nor api together with a percent-escape such as m%65rge, nor update together with az,
+# repos and pr), or none of glab, gh, git or az, costs no subprocess at all. It matches each
+# word as the raw JSON payload can spell it, with quotes, backslashes and line continuations
+# allowed between its letters: g''it, mer""ge and mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
 # spell any word with escapes, always goes on.
 # Everything else goes to xreview-guard.py beside this file, which owns the grammar and the
 # checks and fails closed on a gated shape.
@@ -58,8 +59,9 @@ spells() {
 case "$payload" in
   *"\$'"*) ;;
   *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } \
-       || { spells api && [[ $payload =~ $pct ]]; } || exit 0
-     spells glab gh git || exit 0 ;;
+       || { spells api && [[ $payload =~ $pct ]]; } \
+       || { spells update && spells az && spells repos && spells pr; } || exit 0
+     spells glab gh git az || exit 0 ;;
 esac
 
 py=/usr/bin/python3
@@ -74,14 +76,14 @@ fi
 [ "$rc" -eq 0 ] && exit 0
 
 # The helper could not run at all. FAIL DIRECTION IS CLOSED for a command that may propose or
-# merge: glab/gh with mr, pr or api, or git with merge, as whole words on one line - the
-# helper's own last resort (CRUDE). The text is read with quotes and backslashes dropped,
-# both with every backslash-newline joined and without, so neither a fused redirection
+# merge: glab/gh with mr, pr or api, git with merge, or az with repos and pr, as whole words
+# on one line - the helper's own last resort (CRUDE). The text is read with quotes and
+# backslashes dropped, both with every backslash-newline joined and without, so neither a fused redirection
 # (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the verb.
 # Anything else is allowed.
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
 case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
-crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
+crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b|\baz\b.*\brepos\b.*\bpr\b'
 if { printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
      printf '%s\n' "$cmd"; } | tr -d "'\"\\\\" | grep -Eq "$crude"; then
   reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."

@@ -1235,5 +1235,116 @@ treview t-hole "$GB3" approve '{"packet":"delta","missing":[],"delta_from":"t-li
 is "T4 a later approval whose history lacks a chain turn closes it again" \
    "$(decision "$W" 'glab mr create -s gatebr -b main')" deny
 
+echo "Z. Azure PRs: creation is gated, an update may not complete the PR"
+# AZ: a checkout whose origin is an Azure DevOps SSH URL, reached through insteadOf like W's.
+# develop is the destination, feat one change ahead; AZ stays on feat. Every az row names the
+# bug it catches: the first nine ids follow the spec's table (section 9), A1-A10.
+AZURL='git@ssh.dev.azure.com:v3/acme/Proj/Repo'
+AZORIGIN="$ROOT/remotes/az.git"; AZ="$ROOT/work/az"
+git init -q --bare "$AZORIGIN"
+mkdir -p "$AZ" && git -C "$AZ" init -q
+printf 'one\n' > "$AZ/a.txt"; git -C "$AZ" add a.txt && git -C "$AZ" commit -q -m init
+git -C "$AZ" remote add origin "$AZURL"
+git -C "$AZ" config "url.$AZORIGIN.insteadOf" "$AZURL"
+git -C "$AZ" branch develop && git -C "$AZ" switch -q -c feat
+printf 'two\n' >> "$AZ/a.txt"; git -C "$AZ" commit -q -am "edit a"
+for b in main develop feat; do git -C "$AZORIGIN" fetch -q "$AZ" "+refs/heads/$b:refs/heads/$b"; done
+git -C "$AZ" fetch -q origin
+AZC='az repos pr create --organization https://dev.azure.com/acme --project Proj --repository Repo --source-branch feat --target-branch develop --draft true --title T --description D'
+AZN='az repos pr create --source-branch feat --target-branch develop --draft true --title T --description D'
+is "AZ-A2 an unreviewed creation is denied" "$(decision "$AZ" "$AZC")" deny
+is "AZ-A2b and the reason gives the dispatch for the change az would propose" \
+   "$(reason "$AZ" "$AZC" | grep -c -F 'xreview dispatch --checkpoint pre-merge --diff origin/develop...feat')" 1
+review "$AZ" origin/develop...feat approve
+is "AZ-A1 an approved change in the observed form is allowed" "$(decision "$AZ" "$AZC")" allow
+is "AZ-A1b the same with --org" \
+   "$(decision "$AZ" "${AZC/--organization/--org}")" allow
+is "AZ-A1c the same naming none of the three" "$(decision "$AZ" "$AZN")" allow
+is "AZ-A1d the source defaults to the current branch, the multi-value options take several words" \
+   "$(decision "$AZ" 'az repos pr create --target-branch develop --title T --description line one line two --labels a b --work-items 1 2 --required-reviewers x@y.z')" allow
+is "AZ-A1e from another directory through cd <path> &&" "$(decision "$ROOT" "cd $AZ && $AZN")" allow
+is "AZ-A1f the organization as a visualstudio.com URL, the names in another case" \
+   "$(decision "$AZ" 'az repos pr create --organization https://acme.visualstudio.com --project proj --repository REPO --source-branch feat --target-branch develop')" allow
+is "AZ-A3 no --target-branch is denied, naming the flag" \
+   "$(reason "$AZ" 'az repos pr create --source-branch feat --title T' | grep -c -F -- '--target-branch')" 1
+is "AZ-A3b and it is a deny" "$(decision "$AZ" 'az repos pr create --source-branch feat --title T')" deny
+is "AZ-A4 --auto-complete on create is denied by name" \
+   "$(denies "$AZ" "$AZN --auto-complete true" '--auto-complete')" 1
+is "AZ-A4b so is --bypass-policy" "$(denies "$AZ" "$AZN --bypass-policy true" '--bypass-policy')" 1
+is "AZ-A4c update with --auto-complete is denied, saying completing is Michael's" \
+   "$(denies "$AZ" 'az repos pr update --id 7 --auto-complete true' "Michael's")" 1
+is "AZ-A4d update --status completed" "$(decision "$AZ" 'az repos pr update --id 7 --status completed')" deny
+is "AZ-A4e update --bypass-policy" "$(decision "$AZ" 'az repos pr update --id 7 --bypass-policy true')" deny
+is "AZ-A4f update --bypass-policy-reason" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --bypass-policy-reason why')" deny
+is "AZ-A4g the =value form" "$(decision "$AZ" 'az repos pr update --id 7 --status=completed')" deny
+is "AZ-A4h an abbreviation argparse could read as --status" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --stat completed')" deny
+is "AZ-A4i a description that only mentions the options is allowed" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --description "mentions --auto-complete and --status"')" allow
+is "AZ-A4j and so is a plain update, which needs no receipt" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --title T')" allow
+is "AZ-A5 another project with the other two right is denied" \
+   "$(decision "$AZ" "${AZC/--project Proj/--project Other}")" deny
+is "AZ-A5b with the reason telling to name all three or none" \
+   "$(reason "$AZ" "${AZC/--project Proj/--project Other}" | grep -c -F 'all three or none')" 1
+is "AZ-A5c only --organization named is denied" \
+   "$(decision "$AZ" 'az repos pr create --organization https://dev.azure.com/acme --source-branch feat --target-branch develop')" deny
+is "AZ-A5d another organization is denied" \
+   "$(decision "$AZ" "${AZC/dev.azure.com\/acme/dev.azure.com/other}")" deny
+is "AZ-A5e an organization on another host is denied" \
+   "$(decision "$AZ" "${AZC/https:\/\/dev.azure.com\/acme/https://tfs.example.com/acme}")" deny
+is "AZ-A6 an unknown option is denied by name" \
+   "$(denies "$AZ" "$AZN --subscription x" '--subscription')" 1
+is "AZ-A6b so is --detect false" "$(decision "$AZ" "$AZN --detect false")" deny
+is "AZ-A6c a value before any option" "$(decision "$AZ" 'az repos pr create develop --target-branch develop')" deny
+is "AZ-A6d two --target-branch" "$(decision "$AZ" "$AZN --target-branch main")" deny
+git -C "$AZ" config remote.origin.url 'git@github.com:acme/repo.git'
+is "AZ-A7 none named, an origin that is not Azure is denied" "$(decision "$AZ" "$AZN")" deny
+is "AZ-A7b saying so" "$(reason "$AZ" "$AZN" | grep -c -F 'is not an Azure DevOps URL')" 1
+git -C "$AZ" config remote.origin.url "$AZURL"
+git -C "$AZ" config remote.origin.pushurl 'git@ssh.dev.azure.com:v3/acme/Proj/Other'
+is "AZ-A7c a push URL that is not the fetch URL is denied" "$(decision "$AZ" "$AZN")" deny
+is "AZ-A7d with the reason naming the push URL" "$(reason "$AZ" "$AZN" | grep -c -F 'push URL')" 1
+git -C "$AZ" config --unset remote.origin.pushurl
+# The three URL forms az reads, with and without a scheme or user: none named finds the project.
+for u in 'ssh://git@ssh.dev.azure.com/v3/acme/Proj/Repo' 'ssh.dev.azure.com:v3/acme/Proj/Repo' \
+         'https://acme@dev.azure.com/acme/Proj/_git/Repo' 'dev.azure.com/acme/Proj/_git/Repo' \
+         'https://acme.visualstudio.com/Proj/_git/Repo'; do
+  git -C "$AZ" config "url.$AZORIGIN.insteadOf" "$u"
+  git -C "$AZ" config remote.origin.url "$u"
+  is "AZ-A7e none named reads origin $u" "$(decision "$AZ" "$AZN")" allow
+done
+git -C "$AZ" config remote.origin.url "$AZURL"
+git -C "$AZ" config "url.$AZORIGIN.insteadOf" "$AZURL"
+is "AZ-A8 az with an option before repos is denied as reordered" \
+   "$(decision "$AZ" "az --debug ${AZN#az }")" deny
+is "AZ-A8b the reason gives az's plain form" \
+   "$(reason "$AZ" "az --debug ${AZN#az }" | grep -c -F 'az repos pr create [options]')" 1
+is "AZ-A8c and names no -R" "$(reason "$AZ" "az --debug ${AZN#az }" | grep -c -F -- '-R')" 0
+is "AZ-A8d an option between pr and the verb, for update" \
+   "$(decision "$AZ" 'az repos pr --debug update --id 7 --title T')" deny
+is "AZ-A9 a quoted mention of the creation" "$(decision "$AZ" 'echo "az repos pr create"')" allow
+is "AZ-A9b and of the update" "$(decision "$AZ" "rg 'az repos pr update' docs")" allow
+is "AZ-A9c lazy create x: az inside another word" "$(decision "$AZ" 'lazy create x')" allow
+is "AZ-A9d azure beside git" "$(decision "$AZ" 'ls azure && git status')" allow
+is "AZ-A9e help is never gated" "$(decision "$AZ" 'az repos pr create --help')" allow
+is "AZ-A9f listing PRs is not creating one" "$(decision "$AZ" 'az repos pr list')" allow
+is "AZ-A9g an unquoted mention is a command word, as for glab and gh" \
+   "$(decision "$AZ" 'echo az repos pr create')" deny
+rm -f "$TRIP/xreview-guard.py.ran"
+for c in 'ls azure && git status' 'az repos pr list' 'az account show' 'git update-index --refresh'; do
+  payload /tmp "$c" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+done
+is "AZ-A9h none of those starts the helper: update counts only with az, repos and pr" "$(tripped)" idle
+payload /tmp 'az repos pr update --id 7 --title T' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "AZ-A9i an az update does" "$(tripped)" ran
+is "AZ-A10 with the helper unrunnable, the front denies an az creation" \
+   "$(fallback "$AZN")" deny
+is "AZ-A10b and an az update" "$(fallback 'az repos pr update --id 7 --status completed')" deny
+is "AZ-A10c while az account show stays allowed" "$(fallback 'az account show')" allow
+is "AZ-A10d a truncated payload holding an az creation is denied" \
+   "$(printf '%s' '{"tool_input":{"command":"az repos pr create --target-branch develop"},"cwd":"'"$AZ"'"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
