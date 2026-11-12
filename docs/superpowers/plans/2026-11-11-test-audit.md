@@ -483,7 +483,7 @@ Validation runs against one committed SHA, `<v>` (`git -C <checkout> rev-parse H
 **Depends on:** Task 15.
 
 - [ ] **Step 1: Whole-branch review.** An `sp-architect` reviews `main...chore/test-audit` against the spec and this plan. Fix its findings, repeating Task 15 for any fix to a suite.
-- [ ] **Step 2: Set the Status.** Set the spec's and this plan's Status to `Implemented (branch chore/test-audit; the dotfiles have no MR)`, mark this plan executed once, and commit.
+- [ ] **Step 2: Set the Status.** Set the Status of the spec, this plan and the findings to `Implemented (branch chore/test-audit; the dotfiles have no MR)`, mark this plan executed once, and commit.
 - [ ] **Step 3: Codex pre-merge review.**
   - Run `xreview -C <checkout> round --reset`.
   - Run `xreview -C <checkout> dispatch --checkpoint pre-merge --diff main...chore/test-audit <body-file>`, then collect.

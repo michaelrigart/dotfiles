@@ -1,9 +1,9 @@
-# Test audit findings (phase 1)
+# Test audit findings
 
-**Status:** In progress (phase 2: awaiting Michael's approval; nothing deleted)  
-**Measured at:** `523a95d` (main), harness commit on `chore/test-audit`  
+**Status:** In progress (phase 3: cuts made, validation recorded below)  
+**Measured at:** `523a95d` (main) for phase 1; the refresh at `eb60a84`; the phase 3 validation at `21563e5` and `0c14b64` (R37, R39)  
 **Spec:** `docs/superpowers/specs/2026-11-11-test-audit-design.md`  
-**Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R28)  
+**Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R39)  
 **Classification:** `docs/superpowers/plans/2026-11-11-test-audit-classification.tsv` (6517 tests, every in-scope suite)  
 **Targeted manifest:** `.scripts/test-audit/targeted.jsonl` (121 candidates)
 
@@ -37,6 +37,15 @@ The branch was rebased onto main `eb60a84`, which already holds the three merges
 - **Old pins on the proposal (R33 b):** only g-wt and cc-parallel, the two proposal blocks whose text main changed. These ran in `.superpowers/test-audit-refresh-pins`. cc-parallel was killed 2 of 2; g-wt 12 of 14. The 2 g-wt survivors drop "database" and "Redis" from the list of what worktrees share. The other 60 rows keep `pins-2`.
 - **Old pins against main (R33 c):** not re-run, so the old pins' before-numbers in section 4 stay at `523a95d`.
 - **Proposal on main's text (R25, R31):** g-wt follows main's widened `wt` rule and keeps the clause main now pins. `rule-check` passes 62/62 on the rebased checkout.
+
+## Rebase onto main `d349b01` (R37, 2026-11-13)
+
+Main moved again during Task 15. It merged security-locks 2, dotfiles hygiene and op-edit's clipboard fix. The branch was rebased onto `d349b01` without conflicts. The rebase changed only main's own 26 files: the cut lines in the four suites both sides touched are byte-identical, and so is every file that only the branch changed. Main's changes reach the audit in three suites only:
+- `claude-settings`: a new credential path, the apply guard's matcher and `failIfUnavailable`;
+- `git-config`: dropped defaults and new opt-ins;
+- `ha-mcp`: a version pin.
+
+Main changed no rule file, fragment or `agent-instructions` suite. Section 1.5 says which commit supplied each Task 15 number.
 
 ## 1. Before-numbers
 
@@ -688,6 +697,11 @@ Old pins on the proposal's mutants leave 72 survivors across 29 rules (20 safety
 
 62 rows, **31 safety** (marked `yes`). Each row: the block that holds the anchor must hold every term (`;` separates terms). A rule that no pin covered today is marked `unpinned today` in the note. `.scripts/test-audit/rule-check.sh .scripts/test-audit/proposed-rules.tsv <root>` runs it: passes 62/62, exit 0 on the checkout. Phase 3 data file: `tests/fixtures/agent-instructions/rules.tsv`.
 
+*This is the phase 2 proposal as Michael approved it. In phase 3, Task 13 moved it to `tests/fixtures/agent-instructions/rules.tsv`, and the `rule` helper in `tests/agent-instructions.test.sh` replaced `rule-check.sh`; both old files are gone. The live rows differ from this table in three places:*
+- *`g-wt` follows main's text (R31);*
+- *`g-testing` and `cr-fix-rule` follow the tightened testing rule (Task 14);*
+- *`g-records-trigger` gets back "creating" (R39).*
+
 | Id | File | Anchor | Safety | Terms | Covers |
 |---|---|---|---|---|---|
 | cc-sandbox-escape | `agents/claude-code.md` | **Sandbox escapes.** | **yes** | Leave the sandbox only after a command has failed with sandbox evidence. | leave the sandbox only after a sandbox failure |
@@ -755,18 +769,22 @@ Old pins on the proposal's mutants leave 72 survivors across 29 rules (20 safety
 
 ### 4.3 Safety rules, marked
 
-- Every `yes` pin (42 in `pinned-rules.tsv`) sits under a `yes` row, except `h2` (sp-reviewer `disallowedTools`) and `h3` (web-researcher `tools`). Those two stay as the whole-line `grep -qx` checks at `tests/agent-instructions.test.sh:327,331`, beside the rules loop (R20): `rule-check.sh` matches substrings, so an added tool or a commented-out key would pass a table row. So the proposal plus those two lines cover every safety rule.
+- Every `yes` pin (42 in `pinned-rules.tsv`) sits under a `yes` row, except `h2` (sp-reviewer `disallowedTools`) and `h3` (web-researcher `tools`). Those two stay as the whole-line `grep -qx` checks beside the rules loop (R20), at `tests/agent-instructions.test.sh:290,294` after Task 13: `rule-check.sh` matches substrings, so an added tool or a commented-out key would pass a table row. So the proposal plus those two lines cover every safety rule.
 - Safety rules no pin covered today, now in the set (11): `cc-works-sandboxed`, `cc-pushing`, `cc-guard-bypass`, `g-secrets`, `g-confirm-first`, `g-autonomy-approval`, `g-asking`, `g-fix-now`, `g-finishing`, `g-provenance`, `g-cross-review-request`. The old pins, run on their 49 mutants, let 37 survive: real gaps today, not only a rewording.
 - All safety rows: `cc-sandbox-escape`, `cc-escape-needs`, `cc-works-sandboxed`, `cc-excluded-tools`, `cc-excluded-lead`, `cc-excluded-bare`, `cc-path-guard`, `cc-cleanup`, `cc-pushing`, `cc-guard-bypass`, `g-wt`, `g-permanence`, `g-cross-repo`, `g-secrets`, `g-confirm-first`, `g-merge-requests`, `g-second-brain`, `g-autonomy-approval`, `g-asking`, `g-fix-now`, `g-sizing`, `g-cross-review`, `g-finishing`, `g-provenance`, `g-cross-review-request`, `x-role`, `x-priority`, `x-report`, `cr-plan-review`, `cr-show-plan`, `sb-never-store`.
 
 ### 4.4 Limits and Phase 3 notes
 
-- **List items not measured.** The parser leaves these lists unsplit, so they get no drop-item mutant: pins p201, p215, p216, p217, p228, p246, p274, p282, p349, hand row h1; proposal rows `cc-dispatch-wt`, `cc-guard-bypass`, `g-wt`, `g-records-trigger`, `g-confirm-first`, `g-merge-requests`, `g-finishing`, `g-provenance`, `g-dispatches`, `dr-frontmatter`, `dr-canonical`. Their items still have terms; in revision 1 a scratch simulator without the 4-per-rule cap killed every item.
+- **List items not measured.** The parser leaves these lists unsplit, so they get no drop-item mutant: pins p201, p215, p216, p217, p228, p246, p274, p282, p349, hand row h1; proposal rows `cc-dispatch-wt`, `cc-guard-bypass`, `g-wt`, `g-records-trigger`, `g-confirm-first`, `g-merge-requests`, `g-finishing`, `g-provenance`, `g-dispatches`, `dr-frontmatter`, `dr-canonical`. Their items still have terms, except one: `g-records-trigger` lacked "creating", which p216 held, until R39 restored it; in revision 1 a scratch simulator without the 4-per-rule cap killed every item.
 - **The harness has no insertion mutants.** An item added to a closed list (an extra exempt command, `op` among the excluded tools) is invisible to it. Task 8's review found three such insertions the first-revision checks missed (an exemption after `git branch -d`, `op` among the excluded tools, `status` in the needs-the-escape list); revisions 2 to 4 use one span term per closed list, starting at the list's label or opening bracket so that an item inserted before the first one fails too. I re-ran the three insertions on scratch copies of the fragments: each fails its row (`g-confirm-first`, `cc-excluded-tools`, `cc-escape-needs`). An appended sentence after a closed sentence still passes.
-- **Phase 3 moves two rows.** `g-testing` and `cr-fix-rule` anchor on the fix-rule sentence that the tightened testing rule rewrites; they follow the final text, and fail loudly ("anchor not found") until then.
+- **Phase 3 moves two rows.** `g-testing` and `cr-fix-rule` anchor on the fix-rule sentence that the tightened testing rule rewrites; they follow the final text, and fail loudly ("anchor not found") until then. *Done in Task 14.*
+- **Rule mutants cover only the anchor's sentences.** The harness mutates a whole block only when the anchor is the block's bold label; otherwise it mutates the sentences the anchor touches. A row's terms can reach further than its mutants.
+  - `g-testing` is the only row where this matters. Its anchor touches the first of the testing rule's four sentences.
+  - Task 14 covered the rest with 17 hand probes: clause deletions and strength changes. Each failed the row.
+  - Task 15 measured the other three sentences with their own anchors (`scratchpad/t15/gtesting-sentences.tsv`, R39): 5 mutants, all 5 killed.
 - **Safety rows pin whole sentences (R23); this is your call.** On the 31 safety rows each term is a whole sentence, verbatim, so every strength word keeps all its objects and every exception keeps its approver. A harmless rewording of a safety sentence fails its row, much like the old pins. That is the price of the 0-of-97 clause-deletion result; the 31 non-safety rows keep the shorter terms. Say if you want the safety terms shorter and the risk of a deletion slipping through accepted.
-- **`\;` is a literal semicolon in a term.** The harness's TSV reader splits terms on a bare `;` and ignores the escape; its verdicts never use the terms, so it stays as it is. `rule-check.sh` honours the escape, and Task 13's loop over `rules.tsv` must too (R24).
-- **Main has moved (R25).** eb60a84 changed the `wt` rule (the dotfiles now use `wt`), so `g-wt`, p260 and p280 fail on main's text. Task 11's fragment refresh re-bases `g-wt`, starting its first term at "with its own Herdr workspace", before Task 13 replaces the pins and before Task 15 compares against the final pair, `checks-4` with `pins-2` (R28). Whole-sentence terms also pin descriptive wording there and in `cc-pushing`'s invocation details; a rewording fails loudly and is not trimmed now.
+- **`\;` is a literal semicolon in a term.** The harness's TSV reader splits terms on a bare `;` and ignores the escape; its verdicts never use the terms, so it stays as it is. `rule-check.sh` honours the escape, and Task 13's loop over `rules.tsv` must too (R24). *Task 13's `rule` helper does. Since R39 it also fails a row closed: when awk fails, when the output is empty, or when the row has no term or only `-`. A self-test proves it can fail.*
+- **Main has moved (R25).** eb60a84 changed the `wt` rule (the dotfiles now use `wt`), so `g-wt`, p260 and p280 fail on main's text. Task 11's fragment refresh re-bases `g-wt`, starting its first term at "with its own Herdr workspace", before Task 13 replaces the pins and before Task 15 compares against the final pair, `checks-4` with `pins-2` (R28). Whole-sentence terms also pin descriptive wording there and in `cc-pushing`'s invocation details; a rewording fails loudly and is not trimmed now. *Done in Task 11 (R31).*
 - **Not rules, so not rows:** the negative wording pins, the marker, heading, structure and line-cap checks, and the web-researcher `name`, `model`, `effort` and `omitClaudeMd` values.
 
 ## 5. Gaps
@@ -921,7 +939,14 @@ A mutant is inconclusive when it timed out, printed fewer assertions than the ba
 
 ## 7. Method notes for the next audit
 
-**Reuse.** The harness (`.scripts/test-audit/audit.py`, `mutators.py`, `rules.py`) keeps resumable state bound to a SHA and takes the machine lock per suite run, so it can interleave with other lines. `subjects.tsv` (which suite loads which file), `targeted.jsonl` (121 candidates with their mutants), the classification TSV (6517 rows) and `accept` carry over; a new audit re-runs `accept` on a changed classification in seconds. `rule-check.sh` and `proposed-rules.tsv` become the phase 3 rules loop.
+**Reuse.** The harness (`.scripts/test-audit/audit.py`, `mutators.py`, `rules.py`) keeps resumable state bound to a SHA and takes the machine lock per suite run, so it can interleave with other lines. `subjects.tsv` (which suite loads which file), `targeted.jsonl` (121 candidates with their mutants), the classification TSV (6517 rows) and `accept` carry over; a new audit re-runs `accept` on a changed classification in seconds. `rule-check.sh` and `proposed-rules.tsv` became the `rule` helper in `tests/agent-instructions.test.sh` and `tests/fixtures/agent-instructions/rules.tsv` (Task 13).
+
+**Every suite run starts from a pristine copy (R39).** Before R39, all of one mutant's suites ran in one copy, and the copy was checked only after the last of them. A suite that left a file behind could then turn a later suite red, and that red would count as a false killer.
+- Every run now goes through one helper. That covers baselines, reruns, `inventory` and `try`.
+- The helper compares the copy against its as-built state: `git status --ignored`, refs, local config, worktrees, stash and empty directories. On any difference it rebuilds the copy.
+- The measurement before R39 never logged a mutant run that left residue. Section 1.5 gives the residue check for baselines.
+
+**The gate commands fail closed.** `report --compare` exits 1 when anything is `lost` or `not run`. `rules` exits 1 for a rule that yields no mutant. Before R39 both exited 0, and the validation had to read their output to see a failure.
 
 **What cost the most time.**
 
