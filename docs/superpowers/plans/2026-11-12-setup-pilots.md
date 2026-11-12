@@ -265,6 +265,59 @@ state before the change). One explanation in its report is wrong (it derives 31,
 
 Running total, 3 reviews: Sonnet raised 3 of Opus's 7 findings and missed 4.
 
+### Pilot C, interim: 9 reviews over Tasks 1, 2, 5, 6 and 7 (2026-11-13)
+
+Six more reviews, each on a clean export of its head commit; for a first review the report
+copy is cut before its "Fix round" section. Method note: these six briefs were handed to the
+shadow as a file to read, text unchanged apart from paths; the first three were pasted.
+
+| # | Review | Opus verdict | Sonnet verdict | Opus findings (C/I/M) | Sonnet raised | Opus tools, time | Sonnet tools, time |
+|---|---|---|---|---|---|---|---|
+| 1 | Task 7 | Approved | Approved | 0/0/1 | 0 | 9, 41 s | 7, 66 s |
+| 2 | Task 1 | Approved | Needs fixes | 0/0/5 | 3 | 14, 156 s | 12, 97 s |
+| 3 | Task 1 fix round | passed | passed | 0/0/1 | 0 | 9, 71 s | 9, 34 s |
+| 4 | Task 6 (`28139d1`) | Needs fixes | **Approved** | 1/2/3 | 1 | 33, 451 s | 27, 250 s |
+| 5 | Task 2 (`1e113a5`) | Needs fixes | Needs fixes | 2/0/4 | 3 | 27, 307 s | 25, 157 s |
+| 6 | Task 6 fix round (`1da9bac`) | findings open | **passed** | 1/1/1 | 1 | 35, 362 s | 42, 294 s |
+| 7 | Task 2 fix round (`c701084`) | findings open | **passed** | 0/1/0 | 1 | 24, 243 s | 22, 222 s |
+| 8 | Task 5 (`0eb6815`) | Approved | Approved | 0/0/2 | 2 | 12, 68 s | 15, 41 s |
+| 9 | Task 5 fix round (`6941b7a`) | passed | passed | 0/0/0 | 0 | 13, 48 s | 13, 35 s |
+| | **Total** | | same verdict 5 of 9 | 4/4/17 = 25 | 11 | 176, 1,747 s | 172, 1,196 s |
+
+Opus's Critical and Important findings, one by one:
+
+| # | Opus finding | Severity | Sonnet |
+|---|---|---|---|
+| 4 | mixed-case `az Repos PR CREATE` / `UPDATE` passes the create gate and the update deny | Critical | **missed**, and approved the task |
+| 4 | with none of the three named, az can create the PR on another remote | Important | **missed** |
+| 4 | a harmless update in a pipe or chain is denied | Important | **missed**; it probed that shape and flagged only the message's wording |
+| 5 | gitleaks skips binary-looking text, so the secret passes | Critical | raised as Critical, verified; start-of-text signatures only, not the ones at an offset |
+| 5 | a secret both literal and base64-encoded keeps its encoded copy | Critical | **missed** |
+| 6 | the fix lets a completing update through when the option arrives by variable, `$(…)`, `xargs` or `"$@"` | Critical | raised as **Minor**, round passed |
+| 6 | plain form: a completing option that is not a literal word is allowed | Important | mentioned as a known blind spot, not as a finding |
+| 7 | an empty field is rendered as a redacted secret, with a false count | Important | raised as **Minor**, round passed |
+
+By severity: Critical 2 of 4 raised (1 at Opus's severity), Important 1 of 4 (as Minor), Minor
+8 of 17. Where the verdicts differ, Sonnet was the looser one three times (reviews 4, 6, 7) and
+the stricter one once (review 2). All three looser verdicts are on safety-boundary tasks, and
+the host line acted on Opus's findings in reviews 4 and 5 (fix commits `1da9bac`, `c701084`).
+Reviews 6 and 7 left findings open at the time of writing; whether they are real waits for the
+host line's next rounds, its final review and Codex.
+
+Sonnet-only findings in reviews 4 to 9, hand-checked where a static read settles it:
+
+| # | Sonnet-only finding | Hand check |
+|---|---|---|
+| 4 | the non-plain deny message names no az form | true (`PLAIN`, `xreview-guard.py:68-72`) |
+| 4 | no row uses az's short options (`-s`, `-t`, …) | true |
+| 4 | over-long comment lines in the front | true, cosmetic |
+| 4 | a create value starting with `-` and holding a space is denied as an unknown option | not checked (needs the guard fixture) |
+| 6 | "remotes besides origin (none)" when `git remote` fails | not checked |
+| 7 | `communicate()` after the timeout kill has no timeout | true (`xreview-rpc:2160`) |
+| 7 | no row pins `CD001` at 32769 | true |
+
+None of the checked ones changes an allow or a deny.
+
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
 
