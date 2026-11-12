@@ -718,6 +718,35 @@ for bad in 'not json at all' '{"verdict":"maybe","findings":[]}' \
   is "I and the raw text is on stdout" "$out" "$bad"
 done
 
+# R11. With --raw a schema miss keeps the reviewer's text out of turn-wait's output: it goes to a
+# private new file, stdout is empty, and the problem list on stderr names schema paths only.
+# Catches a miss that still prints the text, a raw file readable by others, a file that is not
+# replaced when it exists, and a problem list that echoes a value or the name of an extra key.
+BAD="$(jq -nc '{verdict:"PWNED-VALUE",findings:[],"PWNED-KEY":1}')"
+scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$BAD")")" '{responses:{"thread/turns/list":$l}}')"
+rm -f "$T/raw"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --raw "$T/raw" 2>"$T/err")"; rc=$?
+is "R11 a schema miss with --raw exits 4 and prints nothing on stdout" "$rc/$out" "4/"
+is "R11 the raw file holds the reviewer's text" "$(cat "$T/raw")" "$BAD"
+is "R11 and is mode 600" "$(stat -f %Lp "$T/raw")" 600
+is "R11 stderr names neither the bad value nor the extra key" "$(grep -c -e PWNED-KEY -e PWNED-VALUE "$T/err")" 0
+is "R11 but still names the paths" \
+   "$(grep -c -F '$.verdict: not an allowed value' "$T/err")/$(grep -c -F '$: unexpected key' "$T/err")" 1/1
+printf 'old' > "$T/raw"; chmod 644 "$T/raw"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --raw "$T/raw" >/dev/null 2>&1
+is "R11 an existing file is replaced, and the new one is mode 600" "$(cat "$T/raw")/$(stat -f %Lp "$T/raw")" "$BAD/600"
+ln -sf "$T/elsewhere" "$T/rawlink"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --raw "$T/rawlink" >/dev/null 2>&1
+is "R11 a symlink at the path is replaced, not followed" "$([ -e "$T/elsewhere" ] && echo followed || echo no)/$([ -L "$T/rawlink" ] && echo link || echo file)" "no/file"
+scenario "$(jq -nc --argjson l "$(listing "$(turn completed 'not json at all')")" '{responses:{"thread/turns/list":$l}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --raw "$T/raw" 2>/dev/null)"; rc=$?
+is "R11 text that is not JSON is kept the same way" "$rc/$out/$(cat "$T/raw")" "4//not json at all"
+scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$ANSWER")")" '{responses:{"thread/turns/list":$l}}')"
+rm -f "$T/raw"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --raw "$T/raw")"; rc=$?
+is "R11 a matching answer with --raw prints as before and writes no file" \
+   "$rc/$(printf '%s' "$out" | jq -r .verdict)/$([ -e "$T/raw" ] && echo file || echo none)" "0/changes/none"
+
 echo "J. a dropped connection is resumed within the budget"
 scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$ANSWER")")" \
   '{runs:[{exit_after:2},{responses:{"thread/turns/list":$l}}]}')"
@@ -2318,6 +2347,14 @@ is "R8 notes is an empty list when nothing happened" "$(jq -c .notes <<<"$out")"
 is "R12a escape shows a zero-width space as <U+200B>" \
    "$(printf 'a\xe2\x80\x8bb' | rpc escape)" 'a<U+200B>b'
 is "R12a and leaves a tab and visible text alone" "$(printf 'a\tb é' | rpc escape)" "$(printf 'a\tb é')"
+# R12c. escape keeps line breaks, so a multi-line pane excerpt stays multi-line; render does not
+# (a newline inside a finding's text is <U+000A>, R9f). Catches an escape that turns \n into <U+000A>.
+printf 'a\nb\xe2\x80\x8bc\n' | rpc escape >"$T/rout"
+is "R12c escape keeps its input's line breaks, escaping within each line" \
+   "$(wc -l <"$T/rout" | tr -d ' ')/$(sed -n 1p "$T/rout")/$(sed -n 2p "$T/rout")" "2/a/b<U+200B>c"
+is "R12c and a carriage return is still shown as <U+000D>" "$(printf 'a\r\nb' | rpc escape)" "$(printf 'a<U+000D>\nb')"
+is "R12c and a blank line and a missing final newline survive" \
+   "$(printf 'a\n\nb' | rpc escape | od -An -c | tr -d ' ')" "$(printf 'a\n\nb' | od -An -c | tr -d ' ')"
 
 # R13. Without the text-scan module nothing is printed: a render that fell back to no escaping
 # would be the open door the module exists to close.
