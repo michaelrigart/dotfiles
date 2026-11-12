@@ -178,7 +178,12 @@ rule() { # rule <rules.tsv> <source root>
     case "$id" in '' | '#'*) continue ;; esac
     case "$safety" in yes | no) ;; *) echo "$tsv: line $line: safety must be yes or no" >&2; exit 2 ;; esac
     [ -n "$file" ] && [ -n "$anchor" ] || { echo "$tsv: line $line: file and anchor are required" >&2; exit 2; }
-    live=${terms//\\;/x}; live=${live//[[:space:];]/}
+    live=; rest=${terms//\\;/x}
+    while [ -n "$rest" ]; do # a `-` term is the harness's no-terms marker, as empty as no term
+      t=${rest%%;*}; t=${t//[[:space:]]/}
+      case $rest in *\;*) rest=${rest#*;} ;; *) rest= ;; esac
+      [ "$t" = - ] || live=$live$t
+    done
     [ -n "$live" ] || { echo "$tsv: line $line: at least one term is required" >&2; exit 2; }
     rows=$((rows + 1))
     if [ ! -f "$root/$file" ]; then
@@ -221,7 +226,7 @@ rule() { # rule <rules.tsv> <source root>
           if (hits > 1) { print "anchor in " hits " blocks: " anchor; exit }
           for (i = 1; i <= n; i++) {
             t = squash(terms[i])
-            if (t == "") continue
+            if (t == "" || t == "-") continue
             if (!index(held, t)) { print "missing from the block of \"" anchor "\": " t; exit }
           }
           print "ok"
@@ -250,6 +255,10 @@ got=$( pass=0; fail=0; awk() { return 0; }; rule "$T/self/rules.tsv" "$T/self" >
 printf 'r3\tdoc.md\t**Rule.**\tno\t;\tno terms\n' > "$T/self/empty.tsv"
 got=$( ( rule "$T/self/empty.tsv" "$T/self" ) > /dev/null 2>&1; echo "exit $?" )
 [ "$got" = "exit 2" ] && _pass "rule: a row with no term exits 2" || _fail "rule: a row with no term exits 2" "$got"
+printf 'r3\tdoc.md\t**Rule.**\tno\t-\tno terms, the harness spelling\n' > "$T/self/dash.tsv"
+got=$( ( rule "$T/self/dash.tsv" "$T/self" ) > /dev/null 2>&1; echo "exit $?" )
+[ "$got" = "exit 2" ] && _pass "rule: a row whose terms are only the no-terms marker - exits 2" \
+  || _fail "rule: a row whose terms are only the no-terms marker - exits 2" "$got"
 printf 'r4\tdoc.md\t**Rule.**\tno\t\talpha\n' > "$T/self/shift.tsv"
 got=$( ( rule "$T/self/shift.tsv" "$T/self" ) > /dev/null 2>&1; echo "exit $?" )
 [ "$got" = "exit 2" ] && _pass "rule: an empty terms field keeps its column, so the note is not read as terms" \

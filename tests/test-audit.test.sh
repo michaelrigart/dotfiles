@@ -848,7 +848,7 @@ has "copy rebuilt after nocopy000001" "Q10: a vanished copy is rebuilt" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived', 'survived']" "Q10: the mutants after the damage run in a clean copy, none is stale"
 eq "$(python3 -c 'import json,sys
-print([r.get("rerun") for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[None, None, None]" "Q10: a survivor whose copy was deleted still gets its second run, in a rebuilt copy"
+print([r["attempts"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[2, 2, 2]" "Q10: a survivor whose copy was deleted still gets its second run, in a rebuilt copy"
 
 # Q11: a suite run under a mutant leaves a stray file in the copy; the next suite must not meet it
 mk Q11
@@ -924,6 +924,23 @@ has "copy rebuilt after the baseline of s" "Q13: the copy a suite wrote into is 
 eq "$(python3 -c 'import json,sys
 print({r["suite"]: (r["rc"], r["failed"]) for r in map(json.loads, open(sys.argv[1]))})' "$T/state/inventory.jsonl")" "{'s': (0, 0), 's2': (0, 0)}" "Q13: the second suite is green, not failed by the first one's residue"
 clean Q13
+
+# Q14: what git status cannot see: a branch in the copy, and an empty directory
+mk Q14
+python3 - "$T/repo/tests/s.test.sh" "$T/repo/tests/s2.test.sh" <<'PY'
+import sys
+s, s2 = sys.argv[1:]
+t = open(s).read()
+open(s, "w").write(t.replace('echo "RESULT:', 'git -C "$here/.." branch residue\necho "RESULT:', 1))
+t = open(s2).read()
+open(s2, "w").write(t.replace('echo "RESULT:', 'mkdir "$here/../emptydir"\necho "RESULT:', 1))
+PY
+"${GIT[@]}" -C "$T/repo" add -A
+"${GIT[@]}" -C "$T/repo" commit -q -m residue
+run inventory s s2
+rc_is 0 "Q14: inventory runs"
+eq "$(printf '%s\n' "$OUT" | grep -cx 'copy rebuilt after the baseline of s')" 1 "Q14: a branch a suite created in the copy forces a rebuild"
+eq "$(printf '%s\n' "$OUT" | grep -cx 'copy rebuilt after the baseline of s2')" 1 "Q14: an empty directory a suite created forces a rebuild"
 
 echo "R. rule mutants"
 mk R

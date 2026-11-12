@@ -696,11 +696,41 @@ def stale_outcome():
             "suites": {}, "flaky": False, "attempts": 0, "seconds": 0.0}
 
 
+STATE_QUERIES = (["status", "--porcelain", "--branch", "--ignored"], ["rev-parse", "HEAD"],
+                 ["for-each-ref"], ["config", "--local", "--list"], ["worktree", "list", "--porcelain"],
+                 ["stash", "list"])
+
+
+def empty_dirs(copy):
+    """The copy's empty directories outside .git, which git status does not see. A directory that
+    cannot be read raises: that copy is dirty."""
+    def fail(err):
+        raise err
+    out = []
+    for path, dirs, files in os.walk(copy, onerror=fail):
+        if Path(path) == Path(copy):
+            dirs[:] = [d for d in dirs if d != ".git"]
+        if not dirs and not files:
+            out.append(os.path.relpath(path, copy))
+    return sorted(out)
+
+
 def copy_state(copy):
-    """The copy's `git status`, or None when git fails (no copy, no .git): that is dirty."""
-    out = subprocess.run(["git", "-C", str(copy), "status", "--porcelain", "--ignored"],
-                         capture_output=True, text=True)
-    return out.stdout if out.returncode == 0 else None
+    """What a suite can change in the copy: `git status`, the HEAD, refs, local config, worktrees and
+    stash, and the empty directories. None when git or the walk fails (no copy, no .git): that is
+    dirty. Nothing here is a timestamp or something `git status` rewrites (.git/index). A mode change
+    on a directory is not seen."""
+    parts = []
+    for query in STATE_QUERIES:
+        out = subprocess.run(["git", "-C", str(copy), *query], capture_output=True, text=True)
+        if out.returncode != 0:
+            return None
+        parts.append(out.stdout)
+    try:
+        parts.append("\n".join(empty_dirs(copy)))
+    except OSError:
+        return None
+    return "\0".join(parts)
 
 
 class Runner:
