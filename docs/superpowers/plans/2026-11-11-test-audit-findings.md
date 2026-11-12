@@ -27,6 +27,17 @@ Michael approved phase 2 through the driver on 2026-11-12, for findings commit `
 7. **§2.2d:** the safety classification stands as listed.
 8. **Gaps (§5):** reported only; none is fixed on this branch.
 
+## Refresh against main `eb60a84` (Task 11, 2026-11-12)
+
+The branch was rebased onto main `eb60a84`, which already holds the three merges this phase waited for, with no conflicts. Main changed 13 suites and 35 files under test since `523a95d`. The refresh measured them in `.superpowers/test-audit-refresh`, using `--ref eb60a84`, within the driver's budget ruling R33:
+
+- **Inventory:** the 13 changed suites, all green.
+- **Targeted:** 21 approved candidates in the changed suites, with 32 mutants. Five finds no longer matched main's text, so they were re-based to the same intent (R32). 16 candidates are `evidenced`. The other five are the `claude-settings` count assertions 454, 474-475, 486-487, 488-489 and 494-495. They read `mis-targeted` only because main relabeled them: a fifth root gives 264, 90, 20, 10 and 19 entries. Judged with main's labels, every one of their 9 mutant records has the candidate's own label among its killers, beside 3–8 other killers (R36). **No approved cut is dropped.**
+- **Sample:** the 8 changed files whose mutants were killed by suites with approved cuts (R33 a). They hold 112 records: 83 killed, 17 survived, 5 inconclusive, and 7 stale, which are mutants whose text main changed. These kills are the `--compare` side of Task 15 for those 8 files (R32).
+- **Old pins on the proposal (R33 b):** only g-wt and cc-parallel, the two proposal blocks whose text main changed. These ran in `.superpowers/test-audit-refresh-pins`. cc-parallel was killed 2 of 2; g-wt 12 of 14. The 2 g-wt survivors drop "database" and "Redis" from the list of what worktrees share. The other 60 rows keep `pins-2`.
+- **Old pins against main (R33 c):** not re-run, so the old pins' before-numbers in section 4 stay at `523a95d`.
+- **Proposal on main's text (R25, R31):** g-wt follows main's widened `wt` rule and keeps the clause main now pins. `rule-check` passes 62/62 on the rebased checkout.
+
 ## 1. Before-numbers
 
 *Read this for the baseline the phase 3 validation must match or beat. All numbers are at `523a95d`.*
