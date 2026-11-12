@@ -121,15 +121,21 @@ proxy_g() { # <extra env assignment or ''> -> prints ssh -G output
     "$HELPER" -G example.invalid 2>&1
 }
 
+# resolved <rc> <out>: ssh -G finished and printed the resolved configuration for the host,
+# so a "not used" row cannot pass on a proxy that merely failed.
+resolved() { [ "$1" -eq 0 ] && printf '%s\n' "$2" | grep -qx 'hostname example.invalid'; }
+
 mkdir -p "$T/home/.config/agent-identity" "$T/home/.ssh"
 printf 'User proxy-marker\n' > "$T/home/.config/agent-identity/ssh_config"
 
 echo "proxy selects the agent SSH configuration only when both files are readable"
 rm -f "$T/home/.ssh/github-agent.pub"
-out=$(proxy_g) || true
+out=$(proxy_g); rc=$?
 if printf '%s\n' "$out" | grep -qx 'user proxy-marker'; then
   _bad "no key file: the agent configuration must not be used" "$(printf '%s' "$out" | grep -i '^user ')"
-else _ok "no key file: the agent configuration is not used"; fi
+elif ! resolved "$rc" "$out"; then
+  _bad "no key file: ssh -G must still resolve the host (rc $rc)" "$(printf '%s' "$out" | head -c 200)"
+else _ok "no key file: the agent configuration is not used and the host resolves"; fi
 printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureFixtureFixtureFixtureFixtureFix0 fixture\n' \
   > "$T/home/.ssh/github-agent.pub"
 out=$(proxy_g) || true
@@ -146,17 +152,21 @@ if printf '%s\n' "$out" | grep -qx 'user proxy-marker' && printf '%s\n' "$out" |
   _ok "proxy branch, key file present: agent configuration and ncat ProxyCommand both applied"
 else _bad "proxy branch, key file present: agent configuration and ncat ProxyCommand both applied" "$(printf '%s' "$out" | grep -iE '^(user|proxycommand) ')"; fi
 rm -f "$T/home/.ssh/github-agent.pub"
-out=$(pout) || true
+out=$(pout); rc=$?
 if printf '%s\n' "$out" | grep -qx 'user proxy-marker'; then
   _bad "proxy branch, no key file: the agent configuration must not be used" "$(printf '%s' "$out" | grep -i '^user ')"
-else _ok "proxy branch, no key file: the agent configuration is not used"; fi
+elif ! resolved "$rc" "$out"; then
+  _bad "proxy branch, no key file: ssh -G must still resolve the host (rc $rc)" "$(printf '%s' "$out" | head -c 200)"
+else _ok "proxy branch, no key file: the agent configuration is not used and the host resolves"; fi
 rm -f "$T/home/.config/agent-identity/ssh_config"
 printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureFixtureFixtureFixtureFixtureFix0 fixture\n' \
   > "$T/home/.ssh/github-agent.pub"
-out=$(proxy_g) || true
+out=$(proxy_g); rc=$?
 if printf '%s\n' "$out" | grep -qx 'user proxy-marker'; then
   _bad "no agent configuration file: the argv must be today's" "$(printf '%s' "$out" | grep -i '^user ')"
-else _ok "no agent configuration file: the argv is today's"; fi
+elif ! resolved "$rc" "$out"; then
+  _bad "no agent configuration file: ssh -G must still resolve the host (rc $rc)" "$(printf '%s' "$out" | head -c 200)"
+else _ok "no agent configuration file: the argv is today's and the host resolves"; fi
 
 echo "the shipped agent configuration pins github.com and leaves every other host to ~/.ssh/config"
 inc=$(grep -c '^ *Include ~/\.ssh/config$' "$CFG_SRC")
