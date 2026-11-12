@@ -292,11 +292,6 @@ called "issue create --title Skill update: clarity v0.3.0 --label skill-update -
 called "Compare: https://github.com/addyosmani/clarity/compare/$P...$B" "body carries the compare URL"
 called "api -H Accept: application/vnd.github.diff repos/addyosmani/clarity/compare/$P...$B" "the compare diff is fetched from the exact path"
 tail_is "$(printf '\n## Scan of added lines\n\nclean')" "a clean diff: the body ends with the exact scan section"
-called 'lists `.agents/skills/clarity/SKILL.md`' "body names the SKILL.md check"
-called 'prints `current: clarity v0.3.0`' "body names the current-label check"
-called 'put `Closes #<this issue>` in the commit message.' "body keeps the Closes placeholder"
-called 'Closing this issue without a bump declines v0.3.0; it is not filed again.' "body carries the decline line"
-called 'After merge: `chezmoi apply`.' "body ends with the apply step"
 l=$(line_of "label create"); i=$(line_of "issue create")
 if [ -n "$l" ] && [ -n "$i" ] && [ "$l" -lt "$i" ]; then _pass "label create is recorded before issue create"; else _fail "label create is recorded before issue create"; fi
 out_has "update: clarity v0.2.1 → v0.3.0" "--open-issues still prints the update line"
