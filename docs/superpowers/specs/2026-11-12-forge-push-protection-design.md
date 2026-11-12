@@ -83,9 +83,10 @@ unless the agent has an identity of its own.
 | Visible to others | nothing | a bot authors MRs and sits in client groups | nothing on client forges |
 | Cost to Michael | the dotfiles' local merge and push of `main` becomes a PR merge | three accounts, keys and tokens; a seat in each client group | one GitHub account, one GitLab token |
 
-C was chosen because it changes no workflow Michael uses: he merges the dotfiles locally and pushes
-`main`, and he merges GitLab projects through merge requests. The published record on client forges
-stays his.
+C was chosen because it keeps the published record on client forges his and costs the least:
+GitLab projects already land through merge requests he merges, and on the dotfiles he keeps a
+direct push of `main`. It does change one thing he does today, the push of the dotfiles' `main`
+by an agent on his word; section 4.3 says what replaces it.
 
 ## 1. Agent identity
 
@@ -289,9 +290,28 @@ The plain grammar of the helper's header and everything `evaluate` decides for i
 
 - **A plain push that updates the default branch is a silent deny**, no longer an ask: "the default
   branch is Michael's; push the branch and open a merge request, or he pushes it himself with `!`".
-  This is the one prompt removed. It holds on every remote, the unprotected ones included.
+  This is the one prompt removed. It holds on every remote, the unprotected ones included, and on
+  the dotfiles (section 4.3). It lands with merge 2.
 
-### 4.3 Goes
+### 4.3 The dotfiles' `main`, and every other default branch
+
+Today an agent merges a finished dotfiles branch into `main` in the main checkout and pushes it
+when Michael approves the ask. After merge 2 no agent pushes a default branch, on his word or
+otherwise: rule 4 denies the plain form, and GitHub refuses the machine account.
+
+- The agent still does the local merge, through the merge gate as today, and its report ends with
+  the command for Michael: `! git -C ~/.local/share/chezmoi pom`. He types one command where he
+  clicks a prompt today; his shell pushes as him, and the ruleset lets the owner through.
+- Between merge 1 and merge 2 the ask still exists, but once the GitHub rules are set the push it
+  approves is refused by the forge, because the session pushes as the machine account. From that
+  moment the `!` command is the way, and the verification of section 6 notes it.
+- On GitLab and Azure nothing changes: agents never pushed those default branches.
+- The global instructions change with merge 2: in `global.md`, "pushing to the default branch"
+  leaves the list of actions an agent confirms first and becomes a thing an agent never does; the
+  finishing rule for the dotfiles names Michael's push. `tests/agent-instructions.test.sh` pins
+  the wording and the line limits still hold.
+
+### 4.4 Goes
 
 Everything spec 2026-10-29 added, in the helper, the shell fast path and the suite:
 
@@ -440,7 +460,7 @@ as waiting on him.
   push without a lease, and a delete beside a pushed branch, whose commits hold a secret are a
   **deny**, not an ask; the same with gitleaks missing or failing.
 - `tests/git-forge-guard.test.sh`: the default-branch rows move from ask to deny; the sections
-  listed in 4.3 are deleted, not skipped; one row per retired class pins that the guard is now
+  listed in 4.4 are deleted, not skipped; one row per retired class pins that the guard is now
   **silent** on it (so a later change cannot bring a half-hunt back unnoticed); the plain-grammar,
   inert-text, merged-delete and fail-closed sections stay.
 - `tests/claude-settings.test.sh`: the two variables render when the items exist and are absent
@@ -463,4 +483,4 @@ as waiting on him.
 - The rendering mechanism for the two tokens, and the exact agent SSH configuration.
 - The exact fine-grained permission names on GitLab, and the GitHub token type, each checked
   against the live forms.
-- The line and second counts of section 4.3.
+- The line and second counts of section 4.4.
