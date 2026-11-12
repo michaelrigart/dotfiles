@@ -58,6 +58,11 @@ main-session transcripts: 1,297 `sp-reviewer` dispatches, 52 of them with `model
 with `model: opus`, the rest on the definition. From the review note (hand sample): 3 real
 findings of 30 sampled.
 
+Human turns per dotfiles line (the script's `is_human`, per project directory, main sessions):
+21 lines in the window, median 3, range 0 to 42. Several of those lines are still running and
+are briefed by a driver session rather than by Michael, so the median understates a finished
+line.
+
 ## Pilot A: `/goal` on one plan run (item 21)
 
 - **Question.** Does a goal carry a plan run to its end with fewer human turns, without
@@ -71,19 +76,24 @@ findings of 30 sampled.
   ```
 
   The "waiting on a decision" clause is deliberate: without it the evaluator has no way to tell
-  a question from a stall. Off: `/goal clear`. Nothing is written to any settings file.
+  a question from a stall. A goal that ends on that clause has **not** completed the plan:
+  it is recorded as a decision wait, and Michael sets the same goal again with his answer. Each
+  re-arm is counted. Off: `/goal clear`. Nothing is written to any settings file.
 - **Counted.** From that session's transcript: human turns after the first, and for each one
   whether it answered a real question; goal evaluations by verdict; turns the goal started
   after a text-only turn end, each hand-labelled useful (work was left) or wrong (the session
-  was waiting on Michael, a background task or a review); turns used of the 40; how the goal
-  ended (met, impossible, cap, cleared, no-tool-use stop, check-in limit).
+  was waiting on Michael, a background task or a review); turns used of the 40, per arming; how each arming
+  ended (plan complete, decision wait, impossible, cap, cleared, no-tool-use stop, check-in
+  limit), each "met" hand-checked against the plan's task list; the number of re-arms.
 - **Baseline.** The script numbers above, plus the same counts from the last plan run in the
   dotfiles that ran without a goal (`fix/xreview-trust`).
 - **Stop.** Michael clears the goal at the first wrong re-prompt that costs him a turn, or when
   the session loops (two goal-started turns in a row with no new commit or dispatch).
-- **Recommend adopting** if the run ends "met" with no wrong re-prompt and fewer "continue"
-  turns from Michael than the baseline run. **Recommend dropping** on any wrong re-prompt while
-  waiting on Michael, a loop, or an end by cap with work left.
+- **Recommend adopting** if the last arming ends with the plan complete (all seven tasks, hand-
+  checked), there is no wrong re-prompt, every decision wait was a real question, and Michael's
+  turns, re-arms included, are fewer than in the baseline run. **Recommend dropping** on any
+  wrong re-prompt while waiting on Michael, a decision wait with no real question, a loop, or an
+  end by cap with work left.
 
 **Unattended-run block.** Source: "Prompting Claude Opus 5.5", section "Unattended agentic
 runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
@@ -131,8 +141,10 @@ runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
 - **Stop.** Michael restarts the session plain at the second streak-ended turn, or at once if a
   refused call is one the line cannot finish without (a push, a commit, a review dispatch).
 - **Recommend adopting** (for unattended lines only) if no turn ends on a streak, every refusal
-  is either rightly refused or worked around without Michael, and he takes no more turns than
-  the baseline median. **Recommend dropping** if a needed call is refused with no other route,
+  is either rightly refused or worked around without Michael, and no human turn in the line
+  was caused by a refusal (hand-labelled). The line's human-turn total is reported beside the
+  per-line baseline (median 3, range 0 to 42) but decides nothing: lines differ too much in
+  size for one run to be compared with that median. **Recommend dropping** if a needed call is refused with no other route,
   or a streak ends a turn twice.
 - **After the run.** If refusals are worth counting from then on, add their denial text to
   `DENIALS` in `measure-interventions.py` with a case in its suite; that is a proposal, not
@@ -155,13 +167,15 @@ runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
   Sonnet finding: also raised by the Opus per-task review, by the final whole-branch review or
   by Codex pre-merge; contradicted by one of them; or raised by none (hand-checked real or
   not). Per Opus finding: missed by Sonnet. Tokens and wall time per review, from the subagent
-  transcripts.
+  transcripts. A final-review or Codex finding counts for or against a shadow review only if
+  the defect is present in the commit that review saw and inside its brief; a defect that a
+  later commit or fix round introduced is recorded as out of scope.
 - **Baseline.** The Opus reviews of the same tasks are the paired control. The 52 earlier
   Sonnet dispatches are unpaired and stay out.
 - **Stop.** After the host line's pre-merge review, or after 8 shadow reviews.
-- **Recommend a real (non-shadow) pilot** if Sonnet misses no finding that Opus, the final
-  review or Codex showed to be real. **Recommend dropping** if it misses one on a
-  safety-boundary task. Anything between is reported as numbers only.
+- **Recommend a real (non-shadow) pilot** if Sonnet misses no in-scope finding that Opus, the
+  final review or Codex showed to be real. **Recommend dropping** if it misses an in-scope one
+  on a safety-boundary task. Anything between is reported as numbers only.
 
 ## Results
 
