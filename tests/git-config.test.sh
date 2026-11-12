@@ -97,6 +97,14 @@ else
   bad "plain git show -s prints a commit body (no global format.pretty)"
 fi
 
+# The rebase and commit defaults are opt-in in git: dropping one from the config silently
+# brings back hand-ordered fixups, stale stacked branches, re-resolved conflicts and a
+# commit editor without the diff.
+for key in rerere.enabled rebase.autoSquash rebase.updateRefs commit.verbose; do
+  check_equal "$(git config --file "$CONFIG" --type=bool --get "$key" 2>/dev/null)" true \
+    "$key is on"
+done
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

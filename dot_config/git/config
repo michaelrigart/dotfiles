@@ -49,6 +49,12 @@
 [commit]
     gpgsign = true
     template = ~/.config/git/templates/gitmessage
+    verbose = true
+[rebase]
+    autoSquash = true
+    updateRefs = true
+[rerere]
+    enabled = true
 [init]
 	templatedir = ~/.config/git/templates
 	defaultBranch = main
