@@ -1,6 +1,6 @@
 # Push protection moves to the forge
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-11-12
 **Branch:** `feat/forge-push-protection`
 
