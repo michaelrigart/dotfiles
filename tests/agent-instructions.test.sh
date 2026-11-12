@@ -168,13 +168,18 @@ done
 # A block is what the audit harness mutates: a bullet (an indented one too) with its
 # continuation lines, a paragraph, a heading or a table row. Whitespace runs collapse to one
 # space in the block, the anchor and the terms.
+# A row passes only on the awk program's positive verdict ("ok"): an awk that exits non-zero,
+# prints nothing or cannot read the file fails the row with that reason. The fields are split
+# on a non-whitespace separator (tabs become \037), so an empty field keeps its column.
 rule() { # rule <rules.tsv> <source root>
-  local tsv=$1 root=$2 id file anchor safety terms note why line=0 rows=0
-  while IFS=$'\t' read -r id file anchor safety terms note || [ -n "$id" ]; do
+  local tsv=$1 root=$2 id file anchor safety terms note why line=0 rows=0 live
+  while IFS=$'\037' read -r id file anchor safety terms note || [ -n "$id" ]; do
     line=$((line + 1))
     case "$id" in '' | '#'*) continue ;; esac
     case "$safety" in yes | no) ;; *) echo "$tsv: line $line: safety must be yes or no" >&2; exit 2 ;; esac
     [ -n "$file" ] && [ -n "$anchor" ] || { echo "$tsv: line $line: file and anchor are required" >&2; exit 2; }
+    live=${terms//\\;/x}; live=${live//[[:space:];]/}
+    [ -n "$live" ] || { echo "$tsv: line $line: at least one term is required" >&2; exit 2; }
     rows=$((rows + 1))
     if [ ! -f "$root/$file" ]; then
       why="missing file: $file"
@@ -219,12 +224,37 @@ rule() { # rule <rules.tsv> <source root>
             if (t == "") continue
             if (!index(held, t)) { print "missing from the block of \"" anchor "\": " t; exit }
           }
-        }' "$root/$file")
+          print "ok"
+        }' "$root/$file" 2>&1) || why="awk exited $?: ${why:-no output}"
     fi
-    if [ -z "$why" ]; then _pass "rule $id: $note"; else _fail "rule $id: $note" "$why"; fi
-  done < "$tsv"
+    if [ "$why" = ok ]; then _pass "rule $id: $note"; else _fail "rule $id: $note" "${why:-awk gave no verdict}"; fi
+  done < <(tr '\t' '\037' < "$tsv")
   [ "$rows" -gt 0 ] || { echo "no rules in $tsv" >&2; exit 2; }
 }
+
+# The helper must be able to fail: over a row that holds, a row whose term is absent and an awk
+# that is broken, each in a subshell with its own counters. A helper that always passes fails here.
+mkdir -p "$T/self"
+printf -- '- **Rule.** alpha beta gamma.\n' > "$T/self/doc.md"
+{ printf 'r1\tdoc.md\t**Rule.**\tno\talpha;beta\tholds\n'
+  printf 'r2\tdoc.md\t**Rule.**\tno\talpha;delta\tabsent\n'; } > "$T/self/rules.tsv"
+got=$( pass=0; fail=0; rule "$T/self/rules.tsv" "$T/self" > /dev/null; echo "$pass/$fail" )
+[ "$got" = 1/1 ] && _pass "rule: a row that holds passes and a row with an absent term fails" \
+  || _fail "rule: a row that holds passes and a row with an absent term fails" "pass/fail: $got"
+got=$( pass=0; fail=0; awk() { return 2; }; rule "$T/self/rules.tsv" "$T/self" > /dev/null; echo "$pass/$fail" )
+[ "$got" = 0/2 ] && _pass "rule: an awk that exits non-zero fails every row" \
+  || _fail "rule: an awk that exits non-zero fails every row" "pass/fail: $got"
+got=$( pass=0; fail=0; awk() { return 0; }; rule "$T/self/rules.tsv" "$T/self" > /dev/null; echo "$pass/$fail" )
+[ "$got" = 0/2 ] && _pass "rule: an awk that prints no verdict fails every row" \
+  || _fail "rule: an awk that prints no verdict fails every row" "pass/fail: $got"
+printf 'r3\tdoc.md\t**Rule.**\tno\t;\tno terms\n' > "$T/self/empty.tsv"
+got=$( ( rule "$T/self/empty.tsv" "$T/self" ) > /dev/null 2>&1; echo "exit $?" )
+[ "$got" = "exit 2" ] && _pass "rule: a row with no term exits 2" || _fail "rule: a row with no term exits 2" "$got"
+printf 'r4\tdoc.md\t**Rule.**\tno\t\talpha\n' > "$T/self/shift.tsv"
+got=$( ( rule "$T/self/shift.tsv" "$T/self" ) > /dev/null 2>&1; echo "exit $?" )
+[ "$got" = "exit 2" ] && _pass "rule: an empty terms field keeps its column, so the note is not read as terms" \
+  || _fail "rule: an empty terms field keeps its column, so the note is not read as terms" "$got"
+
 rule "$RULES" "$SRC"
 
 # Superseded wording a row cannot see, because a row checks what a rule says, not what it

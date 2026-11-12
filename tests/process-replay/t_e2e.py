@@ -313,14 +313,6 @@ def settle(command, limit=12, state=None, finals="AB"):
     raise AssertionError("{} did not settle".format(command))
 
 
-def jsons(root, skip=("scratch", "work", "views", "packs")):
-    out = set()
-    for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if not (d == root and x in skip) and x != "tree"]
-        out |= set(os.path.relpath(os.path.join(d, f), root) for f in files if f.endswith(".json"))
-    return out
-
-
 def tree_listing(root, ignore=("items.json", "items.lock", "alias")):
     return [x for x in helpers.listing(root) if os.path.basename(x[0]) not in ignore and not x[0].startswith("judges" + os.sep)]
 
