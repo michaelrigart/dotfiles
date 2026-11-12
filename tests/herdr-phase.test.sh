@@ -949,6 +949,23 @@ ci_check wG2 fail "the draft PR shows its CI too"
 ci_check wG3 none "a merged PR shows no CI"
 check "$(gh_calls)" "2" "CI costs no extra gh call"
 
+# A PR number is a number of 1 or more equal to its floor, printed without a fraction. jq cannot tell
+# 12, 12.0 and 12e0 apart once parsed, so 12.0 is the PR #12 (spec section 6, item 12), while 1.5, a
+# string, 0 and a negative are dropped and the space is left active. Bug caught: a number printed as
+# parsed ("12.0" in the badge and the table), or a fractional or string number let through.
+for n in 12.0 12e0; do
+  printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":%s,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' "$n" > "$GH_OPEN"
+  rm -rf "$T/cache/herdr-phase"; ghrun refresh --force --workspace wG1
+  phase_check wG1 review "$ICON_MR #12" "a PR number written $n badges #12"
+  check "$(grep -c "^feature/gh-ready	opened	12	0	" "$GH_TSV")" "1" "and the table row carries 12, not $n"
+done
+for n in 1.5 '"7"' 0 -3; do
+  printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":%s,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' "$n" > "$GH_OPEN"
+  rm -rf "$T/cache/herdr-phase"; ghrun refresh --force --workspace wG1
+  phase_check wG1 active "$ICON_BRANCH" "a PR number written $n is dropped: the space stays active"
+done
+roll "[$(cr COMPLETED SUCCESS)]" > "$GH_OPEN"
+
 # A failed lookup keeps the cached CI for 30 minutes, then clears it and keeps the phase.
 rm -rf "$T/cache/herdr-phase"; ghrun refresh
 echo fail > "$GHDIR/mode"
@@ -1504,6 +1521,7 @@ wait "$mpid" 2>/dev/null; mrc=$?
 check "$mrc" "143" "a run ended inside a cache write exits 143"
 check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the cut write"
 check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "1" "the cut write left its one temporary file"
+i=0; while [ "$(lock_busy)" != 0 ] && [ "$i" -lt 10 ]; do i=$((i + 1)); sleep 0.1; done
 check "$(lock_busy)" "0" "no lock outlives the cut write"
 
 # The worker sweeps the temporary files of runs killed mid-write: those older than a minute, and
@@ -1542,11 +1560,19 @@ PHASE_SAVE="$PHASE"; PHASE="$T/phase-notimeout.sh"; run refresh --force; PHASE="
 check "$RC" "2" "a script without /usr/bin/timeout exits 2"
 check "$(printf '%s\n' "$OUT" | grep -c .)" "1" "and says why in one line"
 check "$(herdr_calls)" "0" "and makes no herdr call"
+# The same for /usr/bin/jq, which parses every forge answer and the workspace list: without it a run
+# would find no space and badge nothing, silently. Bug caught: a missing jq that lets the run start.
+sed 's|/usr/bin/jq|/nonexistent/jq|g' "$PHASE" > "$T/phase-nojq.sh"; chmod 755 "$T/phase-nojq.sh"
+job_reset
+PHASE_SAVE="$PHASE"; PHASE="$T/phase-nojq.sh"; run refresh --force; PHASE="$PHASE_SAVE"
+check "$RC" "2" "a script without /usr/bin/jq exits 2"
+check "$(printf '%s\n' "$OUT" | grep -c .)" "1" "and says why in one line"
+check "$(herdr_calls)" "0" "and makes no herdr call"
 
 # The supervision is timeout's and the kernel's: none of it is written in the script. Comments are not
 # code, so only the lines that run are read.
 _code="$(grep -v '^[[:space:]]*#' "$PHASE")"
-for _p in 'set -m' 'trap ' 'command herdr' 'kill '; do
+for _p in 'set -m' 'trap ' 'command herdr' 'kill ' 'python'; do
   case "$_code" in *"$_p"*) _fail "the script has no '$_p'";; *) _pass "the script has no '$_p'";; esac
 done
 
@@ -1793,7 +1819,7 @@ else
     _fail "the refresh interval is between 30 and 60 seconds (got '${ival:-none}')"
   fi
   # The agent must run at normal scheduling priority. ProcessType=Background puts every one of
-  # the ~100 forks a refresh makes — git, python3, glab, herdr — in the lowest band, and
+  # the ~100 forks a refresh makes — git, jq, glab, herdr — in the lowest band, and
   # LowPriorityIO throttles them further. Measured 2026-09-11 on the live session, same script,
   # same arguments: 13 s at normal priority, and under `taskpolicy -b` still unfinished after
   # 4 minutes; a real `launchctl kickstart` of the agent took ~6 minutes. launchd never overlaps
@@ -1941,7 +1967,7 @@ echo "C. the pinned PATH"
 HOSTILE="$T/hostile"; HM="$T/hostile-marks"; mkdir -p "$HOSTILE" "$HM"
 printf '#!/bin/sh\necho "${0##*/}" >> "%s/marker"\nexit 0\n' "$HM" > "$HOSTILE/.marker"
 chmod 755 "$HOSTILE/.marker"
-for _t in git herdr bash zsh python3 jq glab gh awk cut tr sort stat date mktemp mv lockf timeout find; do ln -s .marker "$HOSTILE/$_t"; done
+for _t in git herdr bash zsh jq glab gh awk cut tr sort stat date mktemp mv lockf timeout find; do ln -s .marker "$HOSTILE/$_t"; done
 marked() { if [ -e "$HM/marker" ]; then tr '\n' ' ' < "$HM/marker"; else printf clean; fi; }
 cp "$PHASE" "$T/phase-pinned.sh"; chmod 755 "$T/phase-pinned.sh"
 
@@ -1955,7 +1981,7 @@ OUT=$(env -i HOME="$T" PATH="$HOSTILE:/usr/bin:/bin" "$T/phase-pinned.sh" --help
 check "$RC" "0" "--help runs with a hostile PATH and no PINNED_PATH"
 check "$(marked)" "clean" "a hostile PATH runs none of the hostile tools, bash included"
 
-# A whole refresh, through the status, the MR lookup, herdr and both Python calls, with the
+# A whole refresh, through the status, the MR lookup, herdr and the jq parses, with the
 # hostile directory first on the caller's PATH and the suite's stubs behind PINNED_PATH.
 rm -f "$M"/* "$HM/marker"; : > "$CALLS"
 OUT=$(env -i HOME="$T" PATH="$HOSTILE:$BIN:/usr/bin:/bin" \
@@ -1979,23 +2005,31 @@ check "$RC" "0" "a GitHub refresh exits 0 with a hostile directory first on the 
 phase_check wG1 review "$ICON_MR #21" "the GitHub refresh still reached the pinned gh and reported a phase"
 check "$(marked)" "clean" "a GitHub refresh runs none of the hostile tools, gh included"
 
-# The two Python calls run isolated: the current directory (a repository) is not on sys.path.
-# The fixture must bite first, or "no import" proves nothing.
-PYH="$T/pyhostile"; mkdir -p "$PYH"
-printf 'open("%s/imported", "a").close()\n' "$HM" > "$PYH/json.py"
-rm -f "$HM/imported"
-( cd "$PYH" && /usr/bin/python3 -c 'import json' >/dev/null 2>&1 )
-[ -e "$HM/imported" ] && _pass "fixture: a bare python3 imports a json.py from the current directory" \
-  || _fail "fixture: a bare python3 imports a json.py from the current directory"
-rm -f "$HM/imported" "$HM/marker"; rm -rf "$T/cache-hostile"; : > "$CALLS"
-( cd "$PYH" && env -i HOME="$T" PATH="$BIN:/usr/bin:/bin" PINNED_PATH="$BIN:/usr/bin:/bin" CALLS="$CALLS" \
-    WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
-    XDG_CACHE_HOME="$T/cache-hostile" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    "$T/phase-pinned.sh" refresh >/dev/null 2>&1 )
-[ -e "$HM/imported" ] && _fail "a module in the current directory is not imported" \
-  || _pass "a module in the current directory is not imported"
-case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the isolated Python calls still produce the report";;
-  *) _fail "the isolated Python calls still produce the report (got: $(report_for w20))";; esac
+# jq reads ~/.jq at start, and a sandboxed command can write it: a `def fromjson: error(...)` there
+# would replace the builtin every parse calls. The script runs jq with HOME=/var/empty, so the file is
+# never read. The fixture must bite first, or "still badged" proves nothing. Bug caught: a jq run with
+# the caller's HOME, which fails every parse (the MR and PR badges vanish) or runs whatever the file
+# defines.
+JH="$T/jqhome"; mkdir -p "$JH"
+printf 'def fromjson: error("hijacked");\n' > "$JH/.jq"
+[ "$(HOME="$JH" /usr/bin/jq -n '"1" | fromjson' 2>/dev/null || echo hijacked)" = "hijacked" ] \
+  && _pass "fixture: a bare jq loads ~/.jq, and its fromjson fails" \
+  || _fail "fixture: a bare jq loads ~/.jq, and its fromjson fails"
+rm -rf "$T/cache-jq" "$T/cache-jq-gh"; : > "$CALLS"
+OUT=$(env -i HOME="$JH" PATH="$BIN:/usr/bin:/bin" PINNED_PATH="$BIN:/usr/bin:/bin" CALLS="$CALLS" \
+      WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
+      XDG_CACHE_HOME="$T/cache-jq" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      "$T/phase-pinned.sh" refresh 2>&1); RC=$?
+check "$RC" "0" "a GitLab refresh exits 0 with a ~/.jq that hijacks fromjson"
+case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the GitLab MR badge is still reported beside a hostile ~/.jq";;
+  *) _fail "the GitLab MR badge is still reported beside a hostile ~/.jq (got: $(report_for w20); $OUT)";; esac
+: > "$CALLS"
+OUT=$(env -i HOME="$JH" PATH="$BIN:/usr/bin:/bin" PINNED_PATH="$BIN:/usr/bin:/bin" CALLS="$CALLS" \
+      WSJSON="$T/ws-gh.json" XDG_CACHE_HOME="$T/cache-jq-gh" \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      "$T/phase-pinned.sh" refresh 2>&1); RC=$?
+check "$RC" "0" "a GitHub refresh exits 0 with a ~/.jq that hijacks fromjson"
+phase_check wG1 review "$ICON_MR #21" "the GitHub PR badge is still reported beside a hostile ~/.jq"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"

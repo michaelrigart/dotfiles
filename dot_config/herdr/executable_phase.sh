@@ -18,24 +18,25 @@
 # Structure: `refresh` becomes `/usr/bin/timeout -s KILL $RUN_DEADLINE`, which runs the worker
 # (`_refresh`) in a process group of its own. The worker takes one run lock
 # ($CACHE_DIR/run.lock, fd 9, /usr/bin/lockf, LOCK_WAIT s, else it skips), sweeps stale +tmp.*
-# files, starts one background job per repository and waits. The shells inherit fd 9, so the lock
-# is free when the last exits. The deadline covers the lock wait, and a cache write is a rename of
-# a temporary file beside its target, so a KILL at any point leaves the previous file. Every glab,
-# gh and herdr call also runs under its own timeout from the run's start, in a process group of its
-# own and without fd 9: forge calls are cut CALL_MARGIN s before the deadline (a hung one falls back
-# to the cache and the job reports), herdr calls at the deadline. The outer KILL or a forwarded TERM
-# does not reach a call; its own bound ends it.
+# files, starts one background job per repository and waits. Everything but the bounded calls
+# inherits fd 9, so the lock is free when the last such process exits. The deadline covers the lock
+# wait, and a cache write is a rename of a temporary file beside its target, so a KILL at any point
+# leaves the previous file. Every glab, gh and herdr call also runs under its own timeout from the
+# run's start, in a process group of its own and without fd 9: forge calls are cut CALL_MARGIN s
+# before the deadline (a hung one falls back to the cache and the job reports), herdr calls at the
+# deadline. The outer KILL or a forwarded TERM does not reach a call; its own bound ends it.
 #
 # Accepted failure modes (each costs stale badges until its cause ends):
 #   - INT (a person at a terminal; launchd sends TERM): bash ignores INT in `&` jobs when job control
 #     is off, so it ends timeout and the worker but not the jobs, which hold the lock until their
 #     calls are cut, about the run's deadline at most (whole seconds can add one). The same holds
-#     for a KILL of `timeout` and a job whose shell died. TERM and HUP end timeout, the worker and
-#     the jobs and free the lock at once; a call in flight lives on, in its own group and without
-#     the lock, until its bound.
-#   - A hung local git or file operation outlasts every bound, until an intact run's outer deadline.
-#     A process a call leaves behind (the CLI exited, so its timeout cut nothing) that keeps the
-#     call's stdout open blocks its job, and in an orphaned job the lock, until it exits.
+#     for a KILL of `timeout`, and for any job that outlives the worker. TERM and HUP end timeout,
+#     the worker and the jobs and free the lock at once; a call in flight lives on, in its own group
+#     and without the lock, until its bound.
+#   - A hung local git or file operation outlasts every bound: an intact run's outer deadline ends
+#     it, but in an orphaned job it holds the lock until it ends. A process a call leaves behind
+#     (the CLI exited, so its timeout cut nothing) that keeps the call's stdout open blocks its
+#     job, and in an orphaned job the lock, until it exits.
 #   - A job cut at the deadline leaves some spaces on their previous badge (a report is one call).
 #   - The caller's environment reaches the script (overrides, BASH_ENV, exported functions, glab's
 #     variables), unlike gh, which runs under `env -i`.
@@ -77,10 +78,9 @@ CI_OK=$(printf '\xee\xaa\xb2')         # U+EAB2 cod-check
 CI_FAIL=$(printf '\xee\xa9\xb6')       # U+EA76 cod-close
 CI_RUN=$(printf '\xee\xa9\xb7')        # U+EA77 cod-sync
 
-# Run with -I below: isolated mode keeps the current directory (a repository) off sys.path and
-# ignores PYTHON* variables, so a module a sandboxed command wrote there cannot be imported.
-PY=/usr/bin/python3
-[ -x "$PY" ] || PY="$(command -v python3 2>/dev/null || true)"
+# jq reads ~/.jq at start, and a sandboxed command can write it: a `def fromjson: ...` there would
+# replace the builtin every parse below calls. It runs with HOME=/var/empty, so nothing is read.
+jqi() { HOME=/var/empty /usr/bin/jq "$@"; }
 
 # This runs unsandboxed (launchd, herdr's hooks) in worktrees whose repository configuration is
 # writable from the sandbox. A partial clone's lazy fetch would run remote.<name>.uploadpack,
@@ -148,14 +148,15 @@ require_deadline() {
 
 # Every external call (glab, gh, herdr) runs under its own timeout, measured from the run's start, so
 # an orphaned job (an INT ends timeout and the worker but not the jobs) cannot hold the run lock
-# beyond the deadline. The call gets a process group of its own (timeout without --foreground) and
-# the KILL at its bound, which cannot be ignored, takes the whole group: what gh or glab start (a
-# credential helper, git) dies with it. It has no fd 9, so nothing a call starts can hold the run
-# lock, and no stdin, so a call in a background group cannot stop on the terminal. The call is
-# thereby out of reach of the run's outer KILL or a forwarded TERM: its own bound ends it. A cut
-# call is a failed call, and the failed-lookup paths handle it. Forge calls end at CALL_END,
-# CALL_MARGIN before the run deadline; herdr calls at RUN_END, the deadline itself, so a job whose
-# forge call was cut still reports.
+# beyond the deadline through a call, the two escapes the header names aside (a hung local git or
+# file operation; a process a call leaves behind with its stdout open). The call gets a process
+# group of its own (timeout without --foreground) and the KILL at its bound, which cannot be
+# ignored, takes the whole group: what gh or glab start (a credential helper, git) dies with it. It
+# has no fd 9, so nothing a call starts can hold the run lock, and no stdin, so a call in a
+# background group cannot stop on the terminal. The call is thereby out of reach of the run's outer
+# KILL or a forwarded TERM: its own bound ends it. A cut call is a failed call, and the
+# failed-lookup paths handle it. Forge calls end at CALL_END, CALL_MARGIN before the run deadline;
+# herdr calls at RUN_END, the deadline itself, so a job whose forge call was cut still reports.
 bounded() { # bounded <end: epoch seconds> <command...>
   local left=$(( $1 - $(date +%s) ))
   shift
@@ -302,33 +303,31 @@ gitlab_rows() { # gitlab_rows <slug> -> table rows; 0 full, 3 open rows only, el
   merged_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
-  printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
-import json, sys
-# Two concatenated JSON documents rather than one, so read them off the stream in turn.
-dec, data, i, rows = json.JSONDecoder(), sys.stdin.read(), 0, []
-while i < len(data):
-    while i < len(data) and data[i].isspace():
-        i += 1
-    if i >= len(data):
-        break
-    try:
-        obj, i = dec.raw_decode(data, i)
-    except Exception:
-        sys.exit(1)
-    if isinstance(obj, list):
-        rows.extend(obj)
-seen = {}
-for m in rows:
-    b = m.get("source_branch")
-    if not b:
-        continue
-    # An open MR is the live one for a branch; anything else only fills a gap, so a branch
-    # reused after a merge still reports the MR that is actually open on it.
-    if b not in seen or m.get("state") == "opened":
-        seen[b] = m
-for b, m in seen.items():
-    print("\t".join([b, m.get("state") or "", str(m.get("iid") or ""),
-                     "1" if m.get("draft") else "0"]))
+  # Each answer is its own argument, parsed on its own: one that does not parse fails the lookup (exit
+  # 1), a document that is not a list adds no rows, a row that is not an object fails it too, and a
+  # row without a source_branch is skipped. An open MR is the live one for a branch; anything else
+  # only fills a gap, so a branch reused after a merge still reports the MR that is actually open on
+  # it. Rows keep the order in which their branch was first seen.
+  jqi -nr --arg open "$open_json" --arg merged "$merged_json" '
+def bad: "" | halt_error(1);
+def falsy: . == null or . == false or . == 0 or . == "" or . == [] or . == {};
+def text: if type == "string" then . else bad end;
+def answer: try (fromjson | [.]) catch null;
+($open | answer) as $a | ($merged | answer) as $b
+| if $a == null or $b == null then bad else . end
+| reduce (($a[0], $b[0]) | arrays[]) as $m ({pos: {}, out: []};
+    if ($m | type) != "object" then bad
+    elif ($m.source_branch | falsy) then .
+    else ($m.source_branch | text) as $k
+      | if .pos[$k] == null then .pos[$k] = (.out | length) | .out += [$m]
+        elif $m.state == "opened" then .out[.pos[$k]] = $m
+        else . end
+    end)
+| .out[]
+| [.source_branch, (.state | if falsy then "" else text end),
+   (.iid | if falsy then "" elif type == "string" then . else tostring end),
+   (if (.draft | falsy) then "0" else "1" end)]
+| join("\t")
 ' 2>/dev/null || return 1
   [ "$cacheable" = "1" ] || return 3
 }
@@ -352,65 +351,47 @@ github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, el
   # Exit 1: the open answer is not a list. Exit 3: the rows are the open ones alone, because the
   # merged answer is not a list. A row is dropped unless it is a PR of this repository (a fork's
   # branch name is not this checkout's branch) with a branch name that holds no tab or newline and
-  # an integer number. OPEN is "opened", MERGED is "merged", CLOSED has no badge, and an open PR
+  # whole number. OPEN is "opened", MERGED is "merged", CLOSED has no badge, and an open PR
   # beats a merged one on the same branch.
-  # The two answers are separated by a line no JSON document can hold and each is parsed on its
-  # own, so an empty answer can never let the other one take its place.
+  # Each answer is its own argument, parsed on its own, so an empty answer can never let the other
+  # one take its place. jq cannot tell 12, 12.0 and 12e0 apart, so a number written 12.0 is #12.
+  # gh lists the newest first, so the first PR of a state is the one that counts.
   # An open PR's CI comes from its rollup, in gh pr checks' buckets: a CheckRun's state is its
   # conclusion once COMPLETED and its status before; a StatusContext's is its state. Fail beats
   # pending, pending beats success, and a state in no bucket (STALE, say) gives no badge.
-  printf '%s\n@@\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
-import json, sys
-FAIL = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
-PEND = {"QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"}
-GOOD = {"SUCCESS", "SKIPPED", "NEUTRAL"}
-def ci(roll):
-    if not isinstance(roll, list) or not roll:
-        return ""
-    states = set()
-    for c in roll:
-        st = None
-        if isinstance(c, dict):
-            if "state" in c:
-                st = c["state"]
-            elif c.get("status") == "COMPLETED":
-                st = c.get("conclusion")
-            else:
-                st = c.get("status")
-        states.add(st if isinstance(st, str) else "")
-    if states & FAIL:
-        return "fail"
-    if states & PEND:
-        return "run"
-    return "ok" if states <= GOOD else ""
-def load(text):
-    try:
-        v = json.loads(text)
-    except Exception:
-        return None
-    return v if isinstance(v, list) else None
-a, _, b = sys.stdin.read().partition("\n@@\n")
-opened, merged = load(a), load(b)
-if opened is None:
-    sys.exit(1)
-rows = {"OPEN": {}, "MERGED": {}}
-for pr in opened + (merged or []):
-    if not isinstance(pr, dict) or pr.get("state") not in rows or pr.get("isCrossRepository") is not False:
-        continue
-    b, n = pr.get("headRefName"), pr.get("number")
-    if not isinstance(b, str) or not b or "\t" in b or "\n" in b:
-        continue
-    if type(n) is not int or n < 1:
-        continue
-    # gh lists the newest first, so the first PR of a state is the one that counts.
-    rows[pr["state"]].setdefault(b, (n, "1" if pr.get("isDraft") is True else "0",
-                                          ci(pr.get("statusCheckRollup")) if pr["state"] == "OPEN" else ""))
-for b, (n, d, c) in rows["OPEN"].items():
-    print("\t".join([b, "opened", str(n), d, c]))
-for b, (n, d, c) in rows["MERGED"].items():
-    if b not in rows["OPEN"]:
-        print("\t".join([b, "merged", str(n), d, ""]))
-sys.exit(0 if merged is not None else 3)
+  jqi -nr --arg open "$open_json" --arg merged "$merged_json" '
+def fail: ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
+def pend: ["QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"];
+def good: ["SUCCESS", "SKIPPED", "NEUTRAL"];
+def state: if type != "object" then null
+  elif has("state") then .state
+  elif .status == "COMPLETED" then .conclusion
+  else .status end;
+def ci: if type != "array" or length == 0 then ""
+  else [.[] | state | if type == "string" then . else "" end] as $s
+    | if any($s[]; IN(fail[])) then "fail"
+      elif any($s[]; IN(pend[])) then "run"
+      elif all($s[]; IN(good[])) then "ok"
+      else "" end
+  end;
+def answer: (try fromjson catch null) | if type == "array" then . else null end;
+def firsts: reduce .[] as $r ({seen: {}, out: []};
+    if .seen[$r.b] then . else .seen[$r.b] = true | .out += [$r] end) | .out;
+($open | answer) as $a | ($merged | answer) as $b
+| if $a == null then "" | halt_error(1) else . end
+| [($a[], ($b // [])[])
+    | select(type == "object" and (.state == "OPEN" or .state == "MERGED") and .isCrossRepository == false)
+    | select(.headRefName | type == "string" and length > 0 and (contains("\t") or contains("\n") | not))
+    | select(.number | type == "number" and . >= 1 and . == floor)
+    | {s: .state, b: .headRefName, n: (.number | floor | tostring),
+       d: (if .isDraft == true then "1" else "0" end),
+       c: (if .state == "OPEN" then (.statusCheckRollup | ci) else "" end)}] as $prs
+| ($prs | map(select(.s == "OPEN")) | firsts) as $open_rows
+| (reduce $open_rows[] as $r ({}; .[$r.b] = true)) as $taken
+| (($prs | map(select(.s == "MERGED")) | firsts | map(select($taken[.b] | not))) as $merged_rows
+  | ($open_rows | map(. + {s: "opened"})) + ($merged_rows | map(. + {s: "merged"}))
+  | .[] | [.b, .s, .n, .d, .c] | join("\t")),
+  (if $b == null then "" | halt_error(3) else empty end)
 ' 2>/dev/null
   rc=$?
   case "$rc" in 0|3) return "$rc" ;; *) return 1 ;; esac
@@ -440,18 +421,13 @@ pipeline_class() { # pipeline_class <slug> <iid> <mode: ttl|force|cached>
       json="$(bounded "$CALL_END" glab api --hostname "$GITLAB_HOST_NAME" \
         "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
       if [ -n "$json" ]; then
-        status="$(printf '%s' "$json" | "$PY" -I -c '
-import json, re, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-if not isinstance(d, dict) or str(d.get("iid")) != sys.argv[1]:
-    sys.exit(1)
-p = d.get("head_pipeline")
-s = p.get("status") if isinstance(p, dict) else None
-print(s if isinstance(s, str) and re.fullmatch(r"[a-z_]{1,40}", s) else "none")
-' "$iid" 2>/dev/null)" || status=""
+        # \A and \z, not ^ and $: those match at a line break, so "ok<newline>x" would pass.
+        status="$(jqi -nr --arg json "$json" --arg iid "$iid" '
+(try ($json | fromjson) catch null) as $d
+| if ($d | type) != "object" or ($d.iid | if type == "number" and . == floor then floor | tostring else tostring end) != $iid then "" | halt_error(1) else . end
+| ($d.head_pipeline | if type == "object" then .status else null end) as $s
+| if ($s | type) == "string" and ($s | test("\\A[a-z_]{1,40}\\z")) then $s else "none" end
+' 2>/dev/null)" || status=""
       fi
       [ -z "$status" ] || write_cache "$cache" "$status"
     fi
@@ -559,19 +535,12 @@ report() { # report <workspace_id> <phase> <value> <ci: ok|fail|run|"">
 # Sorted by repo_root because Herdr does not return the list grouped and the worker starts one
 # job per run of equal roots. The sort is stable, so Herdr order holds within a repo.
 spaces() {
-  bounded "$RUN_END" herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -I -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for w in d.get("result", {}).get("workspaces", []):
-    wt = w.get("worktree") or {}
-    if not wt.get("is_linked_worktree"):
-        continue
-    path, root = wt.get("checkout_path"), wt.get("repo_root")
-    if path and root:
-        print("\t".join([w["workspace_id"], path, root]))
+  bounded "$RUN_END" herdr $HERDR_ARGS workspace list 2>/dev/null | jqi -rRs '
+(try fromjson catch empty) | .result.workspaces[]?
+| (.worktree // {}) as $wt
+| select($wt.is_linked_worktree == true and (.workspace_id | type == "string")
+    and ($wt.checkout_path | type == "string" and length > 0) and ($wt.repo_root | type == "string" and length > 0))
+| [.workspace_id, $wt.checkout_path, $wt.repo_root] | join("\t")
 ' 2>/dev/null | LC_ALL=C sort -t"$(printf '\t')" -k3,3 -s
 }
 
@@ -621,7 +590,7 @@ refresh_repo() { # refresh_repo <root> <run: ttl|force|fresh> <spaces: ws<TAB>pa
   return 0
 }
 
-# `refresh` checks its arguments and the two system tools, then becomes timeout: at the deadline
+# `refresh` checks its arguments and the system tools, then becomes timeout: at the deadline
 # timeout sends KILL to the process group of the worker it runs (the worker's shells; each call has
 # a group of its own), and a TERM, HUP or INT to the run is forwarded to that group. The worker is
 # this script again (the suite runs it as /bin/bash <path>, so $0 is that path).
@@ -636,7 +605,7 @@ cmd_refresh() {
     esac
   done
   require_deadline
-  [ -x /usr/bin/timeout ] && [ -x /usr/bin/lockf ] || die "/usr/bin/timeout and /usr/bin/lockf are required"
+  [ -x /usr/bin/timeout ] && [ -x /usr/bin/lockf ] && [ -x /usr/bin/jq ] || die "/usr/bin/timeout, /usr/bin/lockf and /usr/bin/jq are required"
   # The script has done `cd /`, so a relative $0 would no longer name it.
   case "$0" in /*) ;; *) die "run phase.sh by its absolute path" ;; esac
   exec /usr/bin/timeout -s KILL "$RUN_DEADLINE" /bin/bash "$0" _refresh "$run" "$only"

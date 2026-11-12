@@ -189,7 +189,8 @@ via `chezmoi execute-template --with-stdin --file` — without `--with-stdin` ev
 on "map has no entry for key stdin", and its empty-input fixture is `''`, not `'{}'`,
 because that file is TOML. `herdr-phase` stubs `herdr`, `glab` and `gh` on `PATH`; the script it
 tests is not runnable sandboxed, since `phase.sh` wraps `herdr` and fails silently when the
-socket is denied.
+socket is denied. The script itself needs `/usr/bin/jq` and `/usr/bin/timeout` (and
+`/usr/bin/lockf`); the stubs do not replace them, and `refresh` exits 2 without any.
 
 While chezmoi's external cache is cold (after adding or bumping an external, before the
 warm-up), `codex-config`, `claude-settings` and `live-feedback-skill` exit 2 with an
