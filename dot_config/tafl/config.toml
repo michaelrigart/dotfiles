@@ -1,0 +1,77 @@
+# Tafl configuration.
+#
+# Every setting is shown at its default, commented out. Remove the leading "# " from a
+# line to change it. Tafl never edits this file, and applies a saved change within a second.
+
+# How repeating a shortcut cycles: "displays", "sizes" or "none".
+# repeat = "displays"
+
+# Points between windows and to the display edges (0 to 100).
+# gap = 0
+
+# Points that larger and smaller change a window by (1 to 500).
+# step = 30
+
+# Show the icon in the menu bar. Opening Tafl again opens Settings.
+# menu-bar-icon = true
+
+# Start Tafl when you log in.
+# launch-at-login = true
+
+# Shortcuts, written as the characters on your keyboard's keys. Use "none" to unbind an action.
+# Remove the leading "# " from any line below to change that one shortcut.
+[shortcuts]
+# left-half = "ctrl+opt+left"
+# right-half = "ctrl+opt+right"
+# top-half = "ctrl+opt+up"
+# bottom-half = "ctrl+opt+down"
+# top-left = "ctrl+opt+u"
+# top-right = "ctrl+opt+i"
+# bottom-left = "ctrl+opt+j"
+# bottom-right = "ctrl+opt+k"
+# first-third = "ctrl+opt+d"
+# center-third = "ctrl+opt+f"
+# last-third = "ctrl+opt+g"
+# first-two-thirds = "ctrl+opt+e"
+# center-two-thirds = "ctrl+opt+r"
+# last-two-thirds = "ctrl+opt+t"
+# maximize = "ctrl+opt+return"
+# maximize-height = "ctrl+opt+shift+up"
+# center = "ctrl+opt+c"
+# restore = "ctrl+opt+delete"
+# larger = "ctrl+opt+-"
+# smaller = "ctrl+opt+)"
+# display-left = "ctrl+opt+cmd+left"
+# display-right = "ctrl+opt+cmd+right"
+# display-up = "ctrl+opt+cmd+up"
+# display-down = "ctrl+opt+cmd+down"
+# display-under-pointer = "ctrl+opt+cmd+,"
+
+# An example layout. Layouts apply when exactly their displays are connected,
+# or from their shortcut. Find display names in Settings.
+# [[layouts]]
+# name = "Desk"
+# displays = ["Studio Display"]   # applies automatically when exactly these are connected
+# shortcut = "ctrl+opt+cmd+&"     # optional
+#
+#   [[layouts.windows]]
+#   app = "com.apple.Terminal"
+#   place = "first-third"
+#
+#   [[layouts.windows]]
+#   app = "com.apple.Safari"
+#   title = "*Docs*"              # optional glob on the window title
+#   place = "last-two-thirds"
+#   display = "Studio Display"    # required when the layout names more than one display
+
+[[layouts]]
+name = "Test"
+shortcut = "ctrl+option+command+&"
+
+  [[layouts.windows]]
+  app = "com.mitchellh.ghostty"
+  place = "first-third"
+
+  [[layouts.windows]]
+  app = "app.zen-browser.zen"
+  place = "last-two-thirds"
