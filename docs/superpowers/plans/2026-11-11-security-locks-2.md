@@ -152,6 +152,6 @@ Commit (controller): `Name the private Bundler template and the Codex daemon pin
 - **The stale "every tool call" comment in the guard script is fixed** (Task 1 review), though the spec's "nothing else" list missed it: it restates the changed fact.
 - **`op-edit`'s test pins the backup flags too** (Task 3 review). The spec names `noundofile`; the same assertion now also requires `nobackup` and `nowritebackup`, which the function's comment promises.
 - **`AGENTS.md`'s list of zsh suites is completed** (final review) in the edit that adds `op-edit`.
-- **Not done, for Michael:** `op-edit`'s Neovim still yanks to the macOS clipboard (LazyVim restores `clipboard=unnamedplus` after `-c`). Closing that changes item 1, so it needs a spec change.
+- **Not done, for Michael:** `op-edit`'s Neovim still yanks to the macOS clipboard (LazyVim restores `clipboard=unnamedplus` after `-c`). Closing that changes item 1, so it needs a spec change. *(2026-11-12: closed on `fix/op-edit-clipboard`; see the spec's item 1 amendment.)*
 - **Item 4 is measured on fenrir only** (close-out). The spec's "hercules too" is an after-apply step for Michael; the canary's stale R1 precondition is the driver's to raise, outside this line.
 - **The branch was rebased onto main `eb60a84`** (close-out) before the final suites and the pre-merge review; no conflicts.

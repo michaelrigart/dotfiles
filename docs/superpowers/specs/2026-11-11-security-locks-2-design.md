@@ -32,6 +32,28 @@ undone by LazyVim, and item 4's settings switch is undocumented. Item 7 became a
 - **After apply.** `rm ~/.local/state/nvim/undo/*op-edit.*`, optionally also `…/nvim/shada/main.shada`
   (may hold yanked note text; costs nvim history). After one edit, `ls …/nvim/undo | grep -c op-edit` is 0.
 
+> **2026-11-12 — amended at Michael's request** (branch `fix/op-edit-clipboard`; the dotfiles use no MR).
+> The Change above left one leak, recorded in the plan's rulings: LazyVim sets `clipboard=unnamedplus`,
+> clears it during startup and restores it on `User VeryLazy` (its `config/init.lua:193-194`, `:340-341`),
+> after `-c` has run, so every yank and delete in the note went to the macOS clipboard.
+>
+> - **Change.** The call gains `--cmd 'let g:loaded_clipboard_provider = 0'`. That variable is the load
+>   guard of Neovim's `autoload/provider/clipboard.vim`: set before any config, the provider never loads,
+>   whatever `clipboard` later holds. It does not depend on LazyVim's timing.
+> - **Measured** on fenrir, Neovim 0.12.6 with the real LazyVim config, a UI attached over `--embed`, a
+>   stub `pbcopy` first on `PATH`, after `VeryLazy`: without the flag `yy` calls `pbcopy` once; with it,
+>   `has('clipboard')` is 0 and neither `yy` nor `"+yy` calls it. Also tried: `-c 'autocmd User VeryLazy
+>   set clipboard='` stops `yy` but not `"+yy`, and rests on LazyVim's event order; `-c 'autocmd OptionSet
+>   clipboard set clipboard='` does not fire.
+> - **Cost.** Nothing leaves an `op-edit` buffer through a register, `"+y` included, and `"+p` is dead too;
+>   the terminal's own paste and selection still work. The first yank prints `clipboard: No provider` once.
+>   No escape hatch is built.
+> - **Test.** `tests/op-edit.test.sh` replays the recorded flags into the real Neovim (`--headless
+>   --clean`, then `set clipboard=unnamedplus`, then `yy`) with a stub `pbcopy`, and asserts no call. A
+>   control without the `--cmd` pair must call it. The suite exits 2 when no `nvim` is on `PATH`.
+> - **After apply.** In `op-edit "<a note>"`, `:echo has('clipboard')` prints 0, and after `yy` the
+>   clipboard still holds what it held before.
+
 ## 2. Bundler's forge tokens are readable by everyone
 
 - **Problem.** `dot_config/bundler/config.tmpl:2-3` renders a GitHub and a GitLab token without `private_`;
