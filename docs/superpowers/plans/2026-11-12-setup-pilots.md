@@ -158,7 +158,10 @@ runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
   This session re-runs each per-task review with the brief that line's controller sent, copied
   from its transcript, on the same commit, as `Agent(subagent_type: "sp-reviewer",
   model: "sonnet")`. Nothing changes in the host line's session, and no decision rests on a
-  Sonnet review.
+  Sonnet review. Amended 2026-11-12 after the first Task 1 shadow: each shadow reads a plain
+  export of the reviewed commit (`git archive`) with the brief, report and diff copied beside
+  it, and the brief's paths point there. The host checkout by then holds the uncommitted fixes
+  for the Opus findings, and a shadow that reads it sees what Opus found.
 - **Host run (proposed).** `fix/xreview-trust`, plan `2026-11-12-xreview-trust.md`, Tasks 1-8:
   code tasks with real per-task reviews, executing now. `feat/review-loop` is the weaker host:
   its tasks are instruction text and its spec narrows per-task review, so it yields few reviews.
@@ -179,4 +182,59 @@ runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
 
 ## Results
 
-None yet.
+Michael approved all three pairings on 2026-11-12: A on `feat/review-loop`, B on the suite-speed
+line (items 30, 29, 33) once `chore/test-audit` is on main, C as the shadow review of
+`fix/xreview-trust`.
+
+### Pilot C, interim: 2 of 8 tasks (2026-11-12)
+
+Opus is the host line's own per-task review; Sonnet is the shadow on the same brief. Task 1's
+Sonnet column is the clean-export run. Final review and Codex pre-merge have not run yet, so no
+finding is confirmed or contradicted by them.
+
+| Task | Reviewer | Verdict | Critical | Important | Minor | Tool calls | Wall time |
+|---|---|---|---|---|---|---|---|
+| 7, deny rules (`f7b9b5c`) | Opus | Approved | 0 | 0 | 1 | 9 | 41 s |
+| 7 | Sonnet | Approved | 0 | 0 | 1 | 7 | 66 s |
+| 1, render and escape (`f9ca4c7`) | Opus | Approved | 0 | 0 | 5 | 14 | 156 s |
+| 1 | Sonnet | Needs fixes | 0 | 1 | 5 | not read out | not read out |
+
+Opus findings and whether Sonnet raised them:
+
+| Task | Opus finding | Sonnet | Host line |
+|---|---|---|---|
+| 7 | no behavioural match case for the two new rules (optional) | missed | not acted on yet |
+| 1 | quadratic left-out count | raised, as Important, measured | fixed, uncommitted |
+| 1 | `reviewed_files` matching diverges from coverage's predicate | **missed** | fixed, uncommitted |
+| 1 | no row separates a total counted before cutting from after | raised | open |
+| 1 | shown labels reach Claude unescaped (a path with U+202E) | **missed** | fixed, uncommitted |
+| 1 | text-scan module loaded twice per render | raised | open |
+
+Sonnet-only findings, none yet checked against the code by hand: Task 7, the implementer's
+report says "uncommitted" for committed work; Task 1, no rows for the enum and type checks, the
+`line` boundaries or the exact notes sentences; a `line` over 4,300 digits takes the
+"not readable JSON" path; deeply nested JSON raises an uncaught `RecursionError` (exit 1, not
+4); the default sibling module lookup has no test.
+
+Sonnet raised 3 of Opus's 6 findings and missed 3. Two of the misses are on Task 1, which is a
+safety-boundary task, and the host line fixed both; one of them (unescaped labels) is the
+property the task exists for. That meets this protocol's drop condition as far as two tasks
+can, pending the final review and Codex. The verdicts disagree on Task 1 in the other
+direction: Sonnet asked for fixes where Opus approved.
+
+A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
+and reported three of Opus's findings from them (see the amended design above).
+
+### Pilot B safety check (2026-11-12, 2.1.322, `claude -p`, Haiku, throwaway directory)
+
+One `touch probe.txt` under an `ask` rule for `Bash(touch:*)`, passed with `--settings`.
+
+| Run | Outcome | File created | Tool result starts |
+|---|---|---|---|
+| key on (twice) | denied | no | `Permission for this tool use was denied. It requires approval, and this session has no approval surface` |
+| key off (control) | denied | no | `Claude requested permissions to use Bash, but you haven't granted it yet.` |
+
+The key never allowed the call. A `-p` run denies an `ask` either way, so this check shows the
+key's own denial text and that it adds no allow; it does not show the interactive behaviour. The
+first refusal in the real line confirms whether an interactive session prints the same text,
+which is the string to count.
