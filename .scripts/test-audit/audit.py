@@ -819,6 +819,12 @@ class Budget:
 
 
 def cmd_sample(args):
+    killed = None
+    if args.killed_in:
+        before = final_records(Store(args.killed_in), "sample")
+        if not before:
+            die(f"{args.killed_in} has no sample runs for --killed-in")
+        killed = {k[1] for k, r in before.items() if is_final(before, k) and r["verdict"] == "killed"}
     sha = preflight(args, bind=True)
     source = Path(args.sample_from or args.state) / "sample.jsonl"
     if not source.exists():
@@ -830,11 +836,7 @@ def cmd_sample(args):
             if f not in files:
                 die(f"{f} is not in the sample")
         files = [f for f in files if f in args.only]
-    if args.killed_in:
-        before = final_records(Store(args.killed_in), "sample")
-        if not before:
-            die(f"{args.killed_in} has no sample runs for --killed-in")
-        killed = {k[1] for k, r in before.items() if is_final(before, k) and r["verdict"] == "killed"}
+    if killed is not None:
         rows = [r for r in rows if r["id"] in killed]
     hold_state(args.state, "sample")
     store = Store(args.state)

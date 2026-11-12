@@ -493,30 +493,36 @@ rc_is 2 "M7: --compare without --kind exits 2"
 
 # M9: --killed-in re-runs only what the before state killed (R33 d). $first is the commit that
 # state measured; $second dropped the greet check.
-mkdir -p "$T/stateK"; cp "$T/state/meta.json" "$T/state/sample.jsonl" "$T/state/runs-sample.jsonl" "$T/stateK/"
+# stateK disagrees with $T/state, the sample source, on two mutants of bin/s.sh: one it killed is
+# inconclusive here, and one it left alive is killed here. The selection must follow stateK.
+mkdir -p "$T/stateK"; cp "$T/state/runs-sample.jsonl" "$T/stateK/"
 python3 - "$T/stateK/runs-sample.jsonl" <<'PY'
 import json, sys
 p = sys.argv[1]
 recs = [json.loads(l) for l in open(p)]
 s = [r for r in recs if r["file"] == "bin/s.sh"]
 next(r for r in s if r["verdict"] == "killed")["verdict"] = "inconclusive"
+g = next(r for r in s if r["verdict"] == "survived")
+g["verdict"], g["killers"] = "killed", ["s::x"]
 open(p, "w").write("".join(json.dumps(r) + "\n" for r in recs))
 PY
-run --state "$T/state9" --ref "$first" sample --sample-from "$T/stateK" --killed-in "$T/stateK" --only bin/s.sh
+run --state "$T/state9" --ref "$first" sample --sample-from "$T/state" --killed-in "$T/stateK" --only bin/s.sh
 rc_is 0 "M9: sample --killed-in succeeds"
-has "[sample] bin/s.sh: 5/5 (killed 5, survived 0, inconclusive 0, baseline-red 0)" "M9: only the five still-killed bin/s.sh mutants ran" "$OUT"
+has "[sample] bin/s.sh: 6/6 (killed 5, survived 1, inconclusive 0, baseline-red 0)" "M9: the six bin/s.sh mutants stateK killed ran, one of them no longer dies" "$OUT"
 has "remaining: 0" "M9: remaining counts only the selected mutants" "$OUT"
 eq "$(python3 - "$T/stateK" "$T/state9" <<'PY'
 import json, sys
-before = {}
+k = {}
 for l in open(sys.argv[1] + "/runs-sample.jsonl"):
-    r = json.loads(l); before[r["id"]] = r["verdict"]
+    r = json.loads(l); k[r["id"]] = r
 ran = [json.loads(l)["id"] for l in open(sys.argv[2] + "/runs-sample.jsonl")]
-print(len(ran), sorted({before[i] for i in ran}))
+want = sorted(i for i, r in k.items() if r["verdict"] == "killed" and r["file"] == "bin/s.sh")
+print(sorted(ran) == want, len(ran))
 PY
-)" "5 ['killed']" "M9: the survived and the inconclusive mutants are neither run nor recorded, nor is bin/p.py"
-run --state "$T/state9" --ref "$first" sample --sample-from "$T/stateK" --killed-in "$T/stateK" --only bin/s.sh
+)" "True 6" "M9: the selection follows --killed-in, not --sample-from; survived, inconclusive and bin/p.py mutants are neither run nor recorded"
+run --state "$T/state9" --ref "$first" sample --sample-from "$T/state" --killed-in "$T/stateK" --only bin/s.sh
 has "remaining: 0" "M9: a second run has nothing remaining" "$OUT"
+eq "$(wc -l <"$T/state9/runs-sample.jsonl" | tr -d ' ')" 6 "M9: and adds no record"
 
 run --state "$T/state10" --ref "$second" sample --sample-from "$T/state" --killed-in "$T/state" --only bin/s.sh
 rc_is 0 "M9: the killed mutants re-run on the commit that dropped the greet check"
@@ -536,7 +542,7 @@ has "not run: 0" "M9: and none is unrun" "$OUT"
 run --state "$T/state12" --ref "$first" sample --sample-from "$T/state" --killed-in "$T/state0"
 rc_is 2 "M9: --killed-in on a state without sample runs exits 2"
 has "$T/state0 has no sample runs" "M9: the refusal names the state" "$ERR"
-[ ! -e "$T/state12/runs-sample.jsonl" ] && _pass "M9: and records nothing" || _fail "M9: and records nothing"
+[ ! -e "$T/state12/runs-sample.jsonl" ] && [ ! -e "$T/state12/meta.json" ] && _pass "M9: and writes nothing, not even meta.json" || _fail "M9: and writes nothing, not even meta.json"
 
 # M8: the targeted records of the M6 run, with a hand-written inventory that fixes the ranking.
 mkdir -p "$T/state8"; cp "$T/state/meta.json" "$T/state/runs-targeted.jsonl" "$T/state8/"
@@ -596,6 +602,8 @@ eq "$(python3 -c 'import json,sys
 r=json.loads(open(sys.argv[1]).read().strip()); print(r["verdict"], r["flaky"], r["attempts"])' "$T/state/runs-sample.jsonl")" "killed True 2" "N: it is recorded killed, flaky, after two attempts"
 run report --section kills
 has "| bin/s.sh | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 100.0% |" "N: the kills report counts it under flaky as well" "$OUT"
+run --state "$T/stateN2" sample --sample-from "$T/crafted" --killed-in "$T/state"
+has "[sample] bin/s.sh: 1/1 (killed 1, survived 0, inconclusive 0, baseline-red 0)" "N: --killed-in selects a flaky kill" "$OUT"
 clean N
 
 mk O
