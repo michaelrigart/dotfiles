@@ -1010,6 +1010,41 @@ check "$RC" "0" "refresh survives gh failing with a cold cache"
 phase_check wG1 active "$ICON_BRANCH" "a cold cache plus a failed lookup invents no PR state"
 rm -f "$GHDIR/mode"
 
+# An answer about 1.5 MB (one PR's title padded) is parsed like any other: the answers reach jq as
+# files, not as arguments, and the argument list is about 1 MB. Bug caught: an answer passed with
+# --arg, which makes the exec fail, so a repository with a large rollup is never looked up again.
+printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":21,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[],"title":"%s"}]\n' \
+  "$(head -c 1500000 /dev/zero | tr '\0' a)" > "$GH_OPEN"
+check "$(wc -c < "$GH_OPEN" | tr -d ' ' | awk '$1 > 1400000 {print "big"}')" "big" "PRECONDITION: the open answer is over 1.4 MB"
+rm -rf "$T/cache/herdr-phase"; ghrun refresh --force --workspace wG1
+phase_check wG1 review "$ICON_MR #21" "a 1.5 MB open answer still badges its space"
+cp "$GH_OPEN.orig" "$GH_OPEN"
+
+# jq exits 3 on a program that does not compile (2 and 5 for usage and runtime errors), the status
+# the GitHub parser uses for "open rows only"; the parsers signal that with 10, which jq never uses.
+# A copy of the script has one parser broken (a syntax error sed puts into its first definition): the
+# lookup counts as failed, so the cached table stands and nothing new is cached. Bug caught: a jq
+# status read as a parser's own, which on GitHub made a compile error an empty table that replaced
+# every badge (the GitLab parser failed on any non-zero status already, so its case guards a change).
+brokenjq_case() { # brokenjq_case <forge> <runner> <marker> <broken> <table> <ws> <badge>
+  local f="$T/phase-brokenjq.sh" m1
+  sed "s|^$3|$4|" "$PHASE" > "$f"; chmod 755 "$f"
+  check "$(grep -c -F "$4" "$f")" "1" "PRECONDITION: the $1 parser is broken in the copy"
+  rm -rf "$T/cache/herdr-phase"; "$2" refresh
+  cp "$5" "$T/tsv.before"
+  expire
+  m1="$(stat -f %m "$5")"
+  PHASE_SAVE="$PHASE"; PHASE="$f"; "$2" refresh; PHASE="$PHASE_SAVE"
+  check "$RC" "0" "$1: a refresh survives a parser that does not compile"
+  phase_check "$6" review "$7" "$1: a parser that does not compile keeps the cached badge"
+  check "$(cmp -s "$5" "$T/tsv.before" && echo same || echo changed)" "same" "$1: the cached table is byte for byte what it was"
+  check "$(stat -f %m "$5")" "$m1" "$1: nothing new is cached"
+}
+brokenjq_case GitHub ghrun 'def pend:' 'def pend ?:' "$GH_TSV" wG1 "$ICON_MR #21"
+glab_stub
+brokenjq_case GitLab run 'def falsy:' 'def falsy ?:' "$T/cache/herdr-phase/test%2Fproj.tsv" w4 "$ICON_MR !10"
+rm -rf "$T/cache/herdr-phase"
+
 # A valid empty answer is an answer: a closed PR's badge must go, not linger from the cache.
 rm -rf "$T/cache/herdr-phase"; ghrun refresh
 phase_check wG1 review "$ICON_MR #21" "PRECONDITION: the cache warms"

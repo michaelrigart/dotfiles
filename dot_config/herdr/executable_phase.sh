@@ -303,12 +303,13 @@ gitlab_rows() { # gitlab_rows <slug> -> table rows; 0 full, 3 open rows only, el
   merged_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
-  # Each answer is its own argument, parsed on its own: one that does not parse fails the lookup (exit
-  # 1), a document that is not a list adds no rows, a row that is not an object fails it too, and a
-  # row without a source_branch is skipped. An open MR is the live one for a branch; anything else
-  # only fills a gap, so a branch reused after a merge still reports the MR that is actually open on
-  # it. Rows keep the order in which their branch was first seen.
-  jqi -nr --arg open "$open_json" --arg merged "$merged_json" '
+  # Each answer reaches jq as a file of its own (a pipe from printf, never an argument: an answer can
+  # outgrow the argument list), parsed on its own: one that does not parse fails the lookup, a
+  # document that is not a list adds no rows, a row that is not an object fails it too, and a row
+  # without a source_branch is skipped. Any non-zero status fails the lookup. An open MR is the live
+  # one for a branch; anything else only fills a gap, so a branch reused after a merge still reports
+  # the MR that is actually open on it. Rows keep the order in which their branch was first seen.
+  jqi -nr --rawfile open <(printf '%s' "$open_json") --rawfile merged <(printf '%s' "$merged_json") '
 def bad: "" | halt_error(1);
 def falsy: . == null or . == false or . == 0 or . == "" or . == [] or . == {};
 def text: if type == "string" then . else bad end;
@@ -348,18 +349,21 @@ github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, el
   merged_json="$(bounded "$CALL_END" env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state merged --limit 100 \
     --json headRefName,state,number,isDraft,isCrossRepository 2>/dev/null)" || merged_json="null"
 
-  # Exit 1: the open answer is not a list. Exit 3: the rows are the open ones alone, because the
-  # merged answer is not a list. A row is dropped unless it is a PR of this repository (a fork's
-  # branch name is not this checkout's branch) with a branch name that holds no tab or newline and
-  # whole number. OPEN is "opened", MERGED is "merged", CLOSED has no badge, and an open PR
-  # beats a merged one on the same branch.
-  # Each answer is its own argument, parsed on its own, so an empty answer can never let the other
-  # one take its place. jq cannot tell 12, 12.0 and 12e0 apart, so a number written 12.0 is #12.
+  # jq exits 10 when the rows are the open ones alone, because the merged answer is not a list, and
+  # that maps to 3; 0 maps to 0 and every other status is a failed lookup, the open answer not being
+  # a list among them. 10 is a status jq never uses itself (it exits 2, 3 and 5 for usage, compile
+  # and runtime errors), so a broken program cannot pass for a partial answer. A row is dropped
+  # unless it is a PR of this repository (a fork's branch name is not this checkout's branch) with a
+  # branch name that holds no tab or newline and a whole number. OPEN is "opened", MERGED is
+  # "merged", CLOSED has no badge, and an open PR beats a merged one on the same branch.
+  # Each answer reaches jq as a file of its own (see gitlab_rows), parsed on its own, so an empty
+  # answer can never let the other one take its place. jq cannot tell 12, 12.0 and 12e0 apart, so a
+  # number written 12.0 is #12.
   # gh lists the newest first, so the first PR of a state is the one that counts.
   # An open PR's CI comes from its rollup, in gh pr checks' buckets: a CheckRun's state is its
   # conclusion once COMPLETED and its status before; a StatusContext's is its state. Fail beats
   # pending, pending beats success, and a state in no bucket (STALE, say) gives no badge.
-  jqi -nr --arg open "$open_json" --arg merged "$merged_json" '
+  jqi -nr --rawfile open <(printf '%s' "$open_json") --rawfile merged <(printf '%s' "$merged_json") '
 def fail: ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
 def pend: ["QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"];
 def good: ["SUCCESS", "SKIPPED", "NEUTRAL"];
@@ -391,10 +395,10 @@ def firsts: reduce .[] as $r ({seen: {}, out: []};
 | (($prs | map(select(.s == "MERGED")) | firsts | map(select($taken[.b] | not))) as $merged_rows
   | ($open_rows | map(. + {s: "opened"})) + ($merged_rows | map(. + {s: "merged"}))
   | .[] | [.b, .s, .n, .d, .c] | join("\t")),
-  (if $b == null then "" | halt_error(3) else empty end)
+  (if $b == null then "" | halt_error(10) else empty end)
 ' 2>/dev/null
   rc=$?
-  case "$rc" in 0|3) return "$rc" ;; *) return 1 ;; esac
+  case "$rc" in 0) return 0 ;; 10) return 3 ;; *) return 1 ;; esac
 }
 
 # The list endpoint carries no head_pipeline, so the status costs one call per open MR. It is
@@ -422,7 +426,7 @@ pipeline_class() { # pipeline_class <slug> <iid> <mode: ttl|force|cached>
         "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
       if [ -n "$json" ]; then
         # \A and \z, not ^ and $: those match at a line break, so "ok<newline>x" would pass.
-        status="$(jqi -nr --arg json "$json" --arg iid "$iid" '
+        status="$(jqi -nr --rawfile json <(printf '%s' "$json") --arg iid "$iid" '
 (try ($json | fromjson) catch null) as $d
 | if ($d | type) != "object" or ($d.iid | if type == "number" and . == floor then floor | tostring else tostring end) != $iid then "" | halt_error(1) else . end
 | ($d.head_pipeline | if type == "object" then .status else null end) as $s
