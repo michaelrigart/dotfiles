@@ -79,14 +79,17 @@ dropping GitHub or CI badges, the freshness modes, or hardening. This spec does 
 
 ```
 phase.sh refresh [--force | --fresh] [--workspace ID]
-  parse and check the arguments
-  open the run lock on fd 9; wait up to LOCK_WAIT for it, else say so on stderr and exit 0
+  parse and check the arguments and RUN_DEADLINE
   exec /usr/bin/timeout -s KILL "$RUN_DEADLINE" "$0" _refresh <run> <workspace>
 
 phase.sh _refresh <run> <workspace>        (internal; not in the usage text)
+  open the run lock on fd 9; wait up to LOCK_WAIT for it, else say so on stderr and exit 0
   sweep stale temporary files
   spaces  ->  one plain background subshell per repository (`&`)  ->  wait
 ```
+
+- The lock is taken inside the deadline, so waiting for it counts against the 40 s: a run never
+  lasts longer than `RUN_DEADLINE`, whatever it waited for.
 
 - Jobs are plain `&` subshells and one bare `wait`. No `set -m`: every descendant stays in the
   process group `timeout` makes for the worker.
@@ -97,8 +100,12 @@ phase.sh _refresh <run> <workspace>        (internal; not in the usage text)
   at any point safe.
 - fd 9 is inherited by every descendant, so the kernel frees the lock when the last one exits,
   as it does today. Nothing reclaims or breaks a lock.
-- `_refresh` run directly (not through `refresh`) has no lock and no deadline. It is not
+- `_refresh` run directly (not through `refresh`) takes the lock but has no deadline. It is not
   documented and nothing calls it; the suite may, to test the worker alone.
+- `RUN_DEADLINE` must be a positive whole number of seconds with no leading zero (one `case`
+  with the digits listed, as `slug_chars_ok` lists its characters); anything else exits 2 with a
+  message before `timeout` runs. Apple's `timeout` reads 0 as "no limit", and a run must never
+  be unbounded.
 
 ### 2. What was measured (fenrir, macOS 27.2.1, `/bin/bash` 3.2.57, 2026-11-12)
 
@@ -112,6 +119,8 @@ With a worker that starts one ordinary grandchild and one that ignores TERM:
 | a second run, wait 10 | gets the lock when the first ends, then runs |
 | TERM to the run (which is `timeout`) | forwarded to the group; the ordinary grandchild dies, the TERM-proof one survives |
 | KILL of `timeout` itself | both grandchildren live on and hold the lock until they end |
+| `timeout` with a duration of 0 | no limit at all (its documented meaning) |
+| the command exits while a grandchild lives on | `timeout` exits with it and signals nothing; the grandchild survives |
 | lock file mode 0200, fd form (`exec 9>>file; lockf -s -t N 9`) | works |
 | the same file opened for reading, or `lockf file cmd` | permission denied |
 
@@ -131,6 +140,7 @@ With a worker that starts one ordinary grandchild and one that ignores TERM:
   outside the sandbox's write list) and, at mode 0200, cannot open it for reading; it cannot
   `chmod` it either. The plan verifies this from a sandboxed shell after deployment
   (section 7); if it does not hold, the item goes back to Michael as it stands today.
+- With the lock inside the deadline, a run that waited 10 s has 30 s left for its lookups.
 - The stamp (`<key>.lookup`), the table and the pipeline files keep their names and formats, so
   a deployed cache keeps working.
 
@@ -145,7 +155,9 @@ dependency that can be a stub, and about 70 lines.
   cannot load `~/.jq`, and with no `-L` or `import`.
 - Every edge the suite pins in section M and K carries over: a non-list answer is a failed
   lookup; a cross-repository PR, a branch name with a tab or newline, or a non-integer number
-  drops the row; an open PR beats a merged one; the CI buckets and their order (fail, then
+  drops the row (`jq` cannot tell `1e0` or `1.0` from `1`, so "integer" becomes "a number of 1
+  or more that equals its floor", printed as an integer; section 6); an open PR beats a merged
+  one; the CI buckets and their order (fail, then
   pending, then success, else nothing); a pipeline status outside `[a-z_]{1,40}` reads `none`;
   the answer's `iid` must be the one asked for.
 - The two answers of a forge go to `jq` as two arguments (`--arg` or `--slurpfile` from a
@@ -156,8 +168,8 @@ dependency that can be a stub, and about 70 lines.
 Removed with the supervisor: `spawn_job`, `live_jobs`, `live_groups`, `end_jobs`, `abort_run`,
 `job_key`, `clock`, `wait_jobs`, the traps, fd 8, `KILL_GRACE`, `whole_seconds` (no override
 reaches shell arithmetic any more: the deadline and the lock wait are arguments to `timeout` and
-`lockf`, and the TTL is compared with `[ -lt ]`, which evaluates nothing), the per-repository
-lock and the `.tmp/<key>` staging directories.
+`lockf`; the deadline keeps the one check of section 1), the per-repository lock and the
+`.tmp/<key>` staging directories.
 
 - **Temporary files** are made by `mktemp` in the cache directory itself, beside their target,
   with a fixed prefix (`.tmp.`), then renamed. The worker deletes those older than one minute
@@ -167,7 +179,8 @@ lock and the `.tmp/<key>` staging directories.
   and `HERDR_PHASE_TTL` go: the suite sets `XDG_CACHE_HOME` and ages files with `touch`. They
   are honoured in production as today, and that is accepted: whoever sets the environment of an
   unsandboxed process already runs unsandboxed (`BASH_ENV` reaches bash before line 1). A bad
-  number now fails in `timeout` or `lockf` with their own message and no badge update.
+  `HERDR_PHASE_LOCK_WAIT` fails in `lockf` with its message and no badge update; 0 skips a held
+  lock at once, as today.
 - **The header** shrinks to what the code cannot say: what drives the script, the three
   freshness modes, the structure of section 1 and the accepted limits below. The history lives
   in the two specs.
@@ -192,14 +205,21 @@ lock and the `.tmp/<key>` staging directories.
 6. **A hung forge call ends the run for every repository** still working at 40 s, not only its
    own. Jobs that finished have reported. The next run starts 50 s after this one began, as
    today.
-7. **No validation of the numeric overrides** (section 5).
+7. **Numeric overrides.** `HERDR_PHASE_RUN_DEADLINE=0` is refused (exit 2); today it ends every
+   job at once and exits 0. `HERDR_PHASE_LOCK_WAIT` is no longer validated by the script
+   (section 5).
 8. **`HERDR_PHASE_CACHE_DIR` and `HERDR_PHASE_TTL` are gone.**
 9. **Python is no longer used;** `/usr/bin/jq` and `/usr/bin/timeout` are required. If either is
    missing the script exits 2 with a message, before any work. Both machines
    (`.chezmoidata/machines.toml`: fenrir, hercules) need a macOS that ships them; fenrir does,
    **hercules is unverified** (`ls /usr/bin/timeout /usr/bin/jq` there).
 10. **The deadline no longer guards against clock steps** by hand; `timeout` owns the timer.
-11. **Old cache debris** (`<key>.lock` files and `.tmp/` directories) is not cleaned by the
+11. **A job whose shell dies while its forge call lives on is no longer cleaned up.** Today the
+    run ends that job's whole process group; now the call runs on and holds the lock until it
+    ends (section 7).
+12. **A PR number written as `1e0` or `1.0` is accepted** as 1; today only a JSON integer is.
+    `gh` prints integers.
+13. **Old cache debris** (`<key>.lock` files and `.tmp/` directories) is not cleaned by the
     script. The final report gives Michael the one-off command.
 
 ### 7. Accepted failure modes
@@ -215,6 +235,11 @@ A badge is redrawn every 50 s; each of these costs at most stale badges until th
   TERM, and under launchd its own group kill follows the main process's exit.
 - **A descendant that leaves the process group** escapes the deadline. Nothing the script runs
   does.
+- **A descendant that outlives the worker.** `timeout` signals the group only at the deadline or
+  on a forwarded signal. If a job's shell dies on its own (killed by hand, or a failed fork)
+  while its forge call runs, the worker's `wait` returns without it, the worker and `timeout`
+  exit, and the call lives on with fd 9: every later run skips until it ends. Bounded by the
+  forge call, like the KILL case, and found the same way.
 - **A job cut by the deadline between two reports** leaves some of its repository's spaces on
   their previous badge until the next run. Each report is one `herdr` call that sets one token
   per group and clears the rest, so no space is left half-painted.
@@ -242,6 +267,8 @@ it catches:
 - a cache write is a rename of a temporary file in the cache directory (the logging `mv`);
 - the lock file's mode is 0200;
 - a missing `timeout` or `jq` exits 2 before any `herdr` call;
+- a run deadline of 0, empty, `08` or `1.5` exits 2 before any `herdr` call;
+- a run that waited for the lock still ends at the deadline counted from its start;
 - structural pins: the script contains no `set -m`, no `trap`, no `python`, and no bare
   `command herdr` (AGENTS.md).
 
