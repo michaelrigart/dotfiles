@@ -2110,11 +2110,21 @@ class GitleaksFailed(Exception):
 GITLEAKS_TIMEOUT = 10.0
 
 
-def gitleaks_findings(texts):
-    """[(index of the text, Secret, RuleID)] from one gitleaks run over all the texts, run as the
-    push guard runs it (default rules only; a config file, a GITLEAKS_* variable and a
-    gitleaks:allow comment cannot suppress a match). Raises GitleaksFailed for a missing binary,
-    a timeout, an exit status other than 0 or a report that cannot be read."""
+UNSCANNED = "unscanned"
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+SCANNED_BYTES = re.compile(r"\bscanned ~(\d+) bytes\b")
+
+
+def gitleaks_scan(texts):
+    """([(index of the text, Secret, RuleID, decoded)], the set of indexes gitleaks did not scan)
+    from one gitleaks run over all the texts, run as the push guard runs it (default rules only; a
+    config file, a GITLEAKS_* variable and a gitleaks:allow comment cannot suppress a match).
+    gitleaks skips a file that looks like a binary format (magic bytes at the start or at an
+    offset), saying so only in its debug log, so the run is made at debug level: a file named in a
+    "skip" line is unscanned, and the bytes gitleaks says it scanned must equal the size of the
+    files that are not, so a skip it did not name cannot pass either. Raises GitleaksFailed for a
+    missing binary, a timeout, an exit status other than 0, a report or a log that cannot be
+    read, or a scan that did not cover the files."""
     exe = os.environ.get("XREVIEW_GITLEAKS") or "gitleaks"
     timeout = env_secs("XREVIEW_GITLEAKS_TIMEOUT", GITLEAKS_TIMEOUT)    # the knob is for the suites
     env = {k: v for k, v in os.environ.items() if not k.startswith("GITLEAKS_")}
@@ -2127,28 +2137,40 @@ def gitleaks_findings(texts):
         fd, report = tempfile.mkstemp(prefix="xreview-rpc-report-", suffix=".json")
         os.close(fd)
         made.append(report)
+        sizes = []
         for i, text in enumerate(texts):
-            with open(os.path.join(scan_dir, str(i)), "w", encoding="utf-8", errors="replace",
-                      newline="") as fh:
+            path = os.path.join(scan_dir, str(i))
+            with open(path, "w", encoding="utf-8", errors="replace", newline="") as fh:
                 fh.write(text)
-        cmd = [exe, "dir", scan_dir, "--no-banner", "--ignore-gitleaks-allow",
-               "--gitleaks-ignore-path", empty, "--report-format", "json",
-               "--report-path", report, "--exit-code", "0"]
+            sizes.append(os.path.getsize(path))
+        cmd = [exe, "dir", scan_dir, "--no-banner", "--no-color", "--log-level", "debug",
+               "--ignore-gitleaks-allow", "--gitleaks-ignore-path", empty,
+               "--report-format", "json", "--report-path", report, "--exit-code", "0"]
         # Its own process group, so a timeout takes gitleaks and anything it started down together.
         p = subprocess.Popen(cmd, cwd=empty, env=env, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                              start_new_session=True)
         try:
-            code = p.wait(timeout=timeout)
+            log = p.communicate(timeout=timeout)[1]
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(p.pid, signal.SIGKILL)
             except OSError:
                 p.kill()
-            p.wait()
+            p.communicate()
             raise GitleaksFailed(f"timed out after {timeout:g} s")
-        if code != 0:
-            raise GitleaksFailed(f"exit status {code}")
+        if p.returncode != 0:
+            raise GitleaksFailed(f"exit status {p.returncode}")
+        unscanned, scanned = set(), None
+        here = re.escape(os.path.basename(scan_dir)) + r"/(\d+)"
+        for line in ANSI.sub("", log.decode("utf-8", errors="replace")).splitlines():
+            if "skip" in line.lower():
+                unscanned.update(int(m) for m in re.findall(here, line) if int(m) < len(texts))
+            m = SCANNED_BYTES.search(line)
+            if m:
+                scanned = int(m.group(1))
+        if scanned is None or scanned != sum(n for i, n in enumerate(sizes) if i not in unscanned):
+            raise GitleaksFailed("it did not report scanning every file")
         try:
             with open(report, encoding="utf-8") as fh:
                 found = json.load(fh)
@@ -2161,12 +2183,15 @@ def gitleaks_findings(texts):
             try:
                 index = int(os.path.basename(f["File"]))
                 secret, rule = f.get("Secret") or "", f["RuleID"]
+                tags = f.get("Tags") or []
             except (KeyError, TypeError, ValueError, AttributeError):
                 raise GitleaksFailed("its report could not be read")
-            if not isinstance(secret, str) or not isinstance(rule, str) or not 0 <= index < len(texts):
+            if (not isinstance(secret, str) or not isinstance(rule, str) or not isinstance(tags, list)
+                    or not 0 <= index < len(texts)):
                 raise GitleaksFailed("its report could not be read")
-            out.append((index, secret, rule))
-        return out
+            out.append((index, secret, rule,
+                        any(isinstance(t, str) and t.startswith("decoded:") for t in tags)))
+        return out, unscanned
     except OSError as e:
         raise GitleaksFailed(f"{exe}: {e.strerror or e}")
     finally:
@@ -2182,19 +2207,27 @@ def gitleaks_findings(texts):
 
 def redact_secrets(texts):
     """(texts with every secret gitleaks finds in them replaced by "[secret redacted: <rule>]",
-    how many replacements were made). Where a finding's Secret is empty or is not in its text (a
-    decoded match), the whole text is replaced. Raises GitleaksFailed."""
+    how many replacements were made). The whole text is replaced where a finding's Secret is empty
+    or is not in its text, and always for a decoded match (the encoded copy stays in the text
+    beside a literal one), and by "[secret redacted: unscanned]" where gitleaks did not scan the
+    text at all. Raises GitleaksFailed."""
+    found, unscanned = gitleaks_scan(texts)
     out, count = list(texts), 0
     whole, redacted = set(), {}
+    for i in sorted(unscanned):
+        out[i] = f"[secret redacted: {UNSCANNED}]"
+        whole.add(i)
+        count += 1
     # Longest secret first, so one inside another is gone with it.
-    for i, secret, rule in sorted(gitleaks_findings(texts), key=lambda f: (f[0], -len(f[1]))):
+    for i, secret, rule, decoded in sorted(found, key=lambda f: (f[0], -len(f[1]))):
         if i in whole:
             continue
         marker = f"[secret redacted: {rule}]"
-        if secret and secret in out[i]:
+        if secret and not decoded and secret in out[i]:
             out[i] = out[i].replace(secret, marker)
             redacted.setdefault(i, []).append(secret)
-        elif secret and secret in texts[i] and any(secret in r for r in redacted.get(i, [])):
+        elif (secret and not decoded and secret in texts[i]
+              and any(secret in r for r in redacted.get(i, []))):
             continue    # already gone: a duplicate finding, or part of a longer secret
         else:
             out[i] = marker

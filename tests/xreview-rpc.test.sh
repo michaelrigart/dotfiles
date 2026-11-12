@@ -2367,7 +2367,9 @@ is "R9b a gitleaks:allow comment: both are still redacted" \
 # text) replaces the whole field. Catches a render that leaves such a field as it was. The stub stands
 # in for gitleaks: it reports a Secret that is in no field, in the summary's file.
 mkdir -p "$T/stubs"
-printf '#!/bin/sh\nd="$2"\nwhile [ $# -gt 0 ]; do [ "$1" = --report-path ] && rp="$2"; shift; done\nprintf %s "$d" > "$rp"\n' \
+# Every stub that gets as far as a scan says what gitleaks says on stderr: how many bytes it scanned.
+STUB_SCANNED='printf "INF scanned ~%s bytes (x) in 1ms\n" "$(cat "$2"/* | wc -c | tr -d " ")" >&2'
+printf '#!/bin/sh\nd="$2"\n%s\nwhile [ $# -gt 0 ]; do [ "$1" = --report-path ] && rp="$2"; shift; done\nprintf %s "$d" > "$rp"\n' "$STUB_SCANNED" \
   "'[{\"RuleID\":\"stub-rule\",\"Secret\":\"decoded-value\",\"File\":\"%s/1\"}]'" > "$T/stubs/locate"
 chmod 755 "$T/stubs/locate"
 XREVIEW_GITLEAKS="$T/stubs/locate" render_case "$(sec_ans "plain words" "more words")"
@@ -2376,15 +2378,46 @@ is "R9c an unlocated match replaces the whole field, and only that field" \
    "0/a.sh|[secret redacted: stub-rule]|more words"
 is "R9c and the note counts it" "$(jq -c .notes <<<"$out")" '["1 secrets were redacted."]'
 
+# R9d. gitleaks skips a file whose first bytes, or bytes at a known offset, look like a binary format
+# (it only logs "skipping binary file"). A reviewer-controlled prefix must not exempt a text from the
+# scan: such a field is replaced whole. Catches a render that treats "no finding" as "clean".
+ZZ="[secret redacted: unscanned]"
+for sig in "MZ |MZ" "%PDF-1.4 |pdf" "$(xs 128)DICM |dicom at byte 128" "$(xs 257)ustar |ustar at byte 257"; do
+  pre="${sig%|*}"; name="${sig##*|}"
+  render_case "$(sec_ans "fine" "${pre}token $TOKEN here")"
+  is "R9d render: a scenario that starts as $name has no token in the output" \
+     "$rc/$(grep -c -F "$TOKEN" <<<"$out")/$(jq -r '.findings[0].failure_scenario' <<<"$out")" "0/0/$ZZ"
+  is "R9d render: and the note counts it" "$(jq -c .notes <<<"$out")" '["1 secrets were redacted."]'
+  is "R9d escape: a text that starts as $name has no token in the output" \
+     "$(printf '%s' "${pre}token $TOKEN here" | rpc escape)" "$ZZ"
+done
+# R9e. A secret present both as written and encoded: gitleaks reports a literal and a decoded finding
+# with the same Secret, and the decoded copy cannot be located in the text, so the field is replaced
+# whole. Catches an "already redacted" skip that lets the encoded copy through.
+B64="$(printf 'token=%s' "$TOKEN" | base64)"
+render_case "$(sec_ans "s" "plain $TOKEN and encoded $B64 end")"
+is "R9e render: neither the literal token nor its base64 copy reaches the output" \
+   "$rc/$(grep -c -F -e "$TOKEN" -e "$B64" <<<"$out")" "0/0"
+is "R9e escape: neither the literal token nor its base64 copy reaches the output" \
+   "$(printf 'plain %s and encoded %s end' "$TOKEN" "$B64" | rpc escape | grep -c -F -e "$TOKEN" -e "$B64")" 0
+# R9f. Texts of every shape scan to the byte count gitleaks reports (the check that no file went
+# unscanned without being named): empty, multi-line, multi-byte, long.
+render_case "$(sec_ans "" "$(printf 'one\ntwo\r\nthree é→')")"
+is "R9f an empty field and a multi-line multi-byte one are scanned and rendered" "$rc" 0
+render_case "$(sec_ans "$(xs 5000)" "$(xs 5000)")"
+is "R9f long fields are scanned and rendered" "$rc" 0
+
 # R10. Fail closed: when gitleaks cannot scan, nothing is printed and nothing is recorded. Catches a
 # render that prints the text unscanned. Each stub is one way gitleaks can fail.
-msg="could not scan the reviewer's text ("
+# refusal_line <stderr text>: yes only for the whole one-line message, not for half of it.
+refusal_line() {
+  [[ "$1" == "xreview-rpc: gitleaks could not scan the reviewer's text ("*"); collect again once gitleaks runs" && "$1" != *$'\n'* ]] && echo yes || echo no
+}
 XREVIEW_GITLEAKS=/nonexistent render_case "$(sec_ans s f)"
 is "R10 a missing gitleaks is exit 1 with nothing on stdout" "$rc/$out" "1/"
-is "R10 and stderr says to collect again once gitleaks runs" \
-   "$(grep -c -F -e "xreview-rpc: gitleaks $msg" -e "); collect again once gitleaks runs" <<<"$errtext")" 1
+is "R10 and stderr is the whole message: could not scan, and collect again once gitleaks runs" "$(refusal_line "$errtext")" yes
 printf '#!/bin/sh\nexit 2\n' > "$T/stubs/fails"
-printf '#!/bin/sh\nexit 0\n' > "$T/stubs/noreport"
+printf '#!/bin/sh\n%s\nexit 0\n' "$STUB_SCANNED" > "$T/stubs/noreport"
 printf '#!/bin/sh\nsleep 30\n' > "$T/stubs/slow"
 chmod 755 "$T/stubs/fails" "$T/stubs/noreport" "$T/stubs/slow"
 XREVIEW_GITLEAKS="$T/stubs/fails" render_case "$(sec_ans s f)"
@@ -2392,6 +2425,16 @@ is "R10 a gitleaks that exits 2 is exit 1 with nothing on stdout" "$rc/$out/$(gr
 XREVIEW_GITLEAKS="$T/stubs/noreport" render_case "$(sec_ans s f)"
 is "R10 a gitleaks that leaves no readable report is exit 1 with nothing on stdout" \
    "$rc/$out/$(grep -c -F 'report' <<<"$errtext")" "1//1"
+# A gitleaks that exits 0 with a clean report but does not say it scanned every byte (a skip it did not
+# name, or a log format that changed) is as good as no scan.
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --report-path ] && printf "[]" > "$2"; shift; done\n' > "$T/stubs/silent"
+printf '#!/bin/sh\nprintf "INF scanned ~1 bytes (x) in 1ms\n" >&2\nwhile [ $# -gt 0 ]; do [ "$1" = --report-path ] && printf "[]" > "$2"; shift; done\n' > "$T/stubs/short"
+chmod 755 "$T/stubs/silent" "$T/stubs/short"
+for stub in silent short; do
+  XREVIEW_GITLEAKS="$T/stubs/$stub" render_case "$(sec_ans s f)"
+  is "R10 a clean exit 0 that does not account for every scanned byte ($stub) is exit 1, nothing on stdout" \
+     "$rc/$out/$(refusal_line "$errtext")" "1//yes"
+done
 start=$SECONDS
 XREVIEW_GITLEAKS="$T/stubs/slow" XREVIEW_GITLEAKS_TIMEOUT=1 render_case "$(sec_ans s f)"
 is "R10 a gitleaks that outlasts its timeout is killed: exit 1, nothing on stdout, well under its 30 s" \
@@ -2400,7 +2443,10 @@ is "R10 a gitleaks that outlasts its timeout is killed: exit 1, nothing on stdou
 mkdir -p "$T/tmpd"
 TMPDIR="$T/tmpd" render_case "$(sec_ans "$KEY" "the token $TOKEN was read")"
 TMPDIR="$T/tmpd" XREVIEW_GITLEAKS="$T/stubs/fails" render_case "$(sec_ans s f)"
-is "R10b after a success and a failure nothing is left in the temporary directory" "$(ls -A "$T/tmpd" | wc -l | tr -d ' ')" 0
+TMPDIR="$T/tmpd" XREVIEW_GITLEAKS="$T/stubs/slow" XREVIEW_GITLEAKS_TIMEOUT=1 render_case "$(sec_ans s f)"
+TMPDIR="$T/tmpd" XREVIEW_GITLEAKS=/nonexistent render_case "$(sec_ans s f)"
+is "R10b after a success, a failure, a timeout and a missing binary nothing is left in the temporary directory" \
+   "$(ls -A "$T/tmpd" | wc -l | tr -d ' ')" 0
 
 # R12b. escape redacts the same way, before it escapes, and fails closed the same way.
 is "R12b escape replaces a token with its marker" \
@@ -2408,8 +2454,7 @@ is "R12b escape replaces a token with its marker" \
 is "R12b and the token is nowhere in what it printed" "$(printf '%s' "$TOKEN" | rpc escape | grep -c -F "$TOKEN")" 0
 printf 'line %s here' "$TOKEN" | XREVIEW_GITLEAKS=/nonexistent rpc escape >"$T/rout" 2>"$T/rerr"; rc=$?
 is "R12b escape without gitleaks is exit 1 with nothing on stdout" "$rc/$(cat "$T/rout")" "1/"
-is "R12b and stderr says to collect again once gitleaks runs" \
-   "$(grep -c -F "); collect again once gitleaks runs" "$T/rerr")" 1
+is "R12b and stderr is the whole message" "$(refusal_line "$(cat "$T/rerr")")" yes
 
 echo "P. a hostile PATH is never consulted (xreview-rpc runs outside the sandbox)"
 # The stdio transport's command runs through a shell on the script's own PATH, so a hostile
