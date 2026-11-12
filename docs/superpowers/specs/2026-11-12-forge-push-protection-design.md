@@ -488,6 +488,37 @@ as waiting on him.
    and Michael as commit author with a valid signature.
 4. `git push origin main` from an agent session is a silent deny; no prompt appears.
 
+## Corrections from planning (2026-11-12, after sign-off)
+
+Planning merge 1 against the code found wording in this spec that does not hold. The design is
+unchanged; each correction is listed here for Michael, and the text above stands as signed.
+
+1. **"Merge 1 changes no verdict of rule 4" means its judgement of the push target.** Section 5
+   already moves the scan: a plain push that rule 4 passes silently and whose commits hold a
+   secret, or whose scan fails, is no longer denied by the guard but blocked by the hook. The plan
+   lists every guard test row whose verdict moves.
+2. **The moved scan changes in three named ways**, not zero: it gets a command line; a push to a
+   URL excludes every remote-tracking ref; and it keeps the git configuration entries git hands a
+   hook (`GIT_CONFIG_COUNT`, measured: four `safe.directory` entries in an agent session) and
+   appends its pins after them, dropping `GIT_CONFIG_PARAMETERS`. Every safeguard and message
+   text moves unchanged.
+3. **"Every existing row keeps its verdict" holds per behaviour, not per command.** Through the
+   hook some rows need another command (an amend needs a lease to reach the hook; a source that is
+   not a ref is refused by git first), the hook also scans dry runs, and the `--tags` "push the
+   refs by name" reason cannot occur there. The plan's table says where each row goes.
+4. **Section 1.2: the GitLab token also reads merge requests.** The pre-merge gate reads projects
+   and merge requests with `glab`, in the same environment.
+5. **Section 1.4, "nothing prints them":** the tokens sit in the `env` block of
+   `~/.claude/settings.json`, so a full render or diff of that file shows them. `AGENTS.md` gains
+   the rule to preview it through `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`. This is a residual.
+6. **Section 3, the write-verb pin:** a write verb is an HTTP method or a CLI write subcommand;
+   the GitHub rule type `update`, which the check must read, is data.
+7. **Section 6, "the deployed check":** `.scripts/` is not deployed; Michael runs the check from
+   the main checkout after merge 1.
+8. **Section 2.1:** `bypass_actors` is returned to repository admins only. Run in an agent session
+   the check proves that the agent cannot bypass; that `protect-main` binds Michael too shows
+   only when he runs it, which his steps include.
+
 ## Left to the plan
 
 - The rendering mechanism for the two tokens, and the exact agent SSH configuration.
