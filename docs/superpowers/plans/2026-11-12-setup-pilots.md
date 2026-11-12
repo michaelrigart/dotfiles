@@ -210,11 +210,18 @@ Opus findings and whether Sonnet raised them:
 | 1 | shown labels reach Claude unescaped (a path with U+202E) | **missed** | fixed, uncommitted |
 | 1 | text-scan module loaded twice per render | raised | open |
 
-Sonnet-only findings, none yet checked against the code by hand: Task 7, the implementer's
-report says "uncommitted" for committed work; Task 1, no rows for the enum and type checks, the
-`line` boundaries or the exact notes sentences; a `line` over 4,300 digits takes the
-"not readable JSON" path; deeply nested JSON raises an uncaught `RecursionError` (exit 1, not
-4); the default sibling module lookup has no test.
+Sonnet-only findings, hand-checked on the export of each commit:
+
+| Task | Sonnet-only finding | Hand check |
+|---|---|---|
+| 7 | the implementer's report says "uncommitted" for committed work | not a defect: in a parallel batch the implementer does not commit, the controller does |
+| 1 | no rows for the enum and type checks, the `line` boundaries or the exact notes sentences | true: the render section has none |
+| 1 | a `line` over 4,300 digits takes the "not readable JSON" path | true: exit 4, `$: not readable JSON`, no value printed |
+| 1 | deeply nested JSON raises an uncaught `RecursionError` | true: exit 1 with empty stdout, the code for a missing module; the answer is schema-checked upstream |
+| 1 | the default sibling module lookup has no test | true: the suite exports `XREVIEW_TEXT_SCAN` for every row |
+
+Four of Sonnet's five own findings are true and Opus raised none of them; all four are minor,
+and none breaks the task's brief. One is not a defect.
 
 Sonnet raised 3 of Opus's 6 findings and missed 3. Two of the misses are on Task 1, which is a
 safety-boundary task, and the host line fixed both; one of them (unescaped labels) is the
