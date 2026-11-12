@@ -74,7 +74,10 @@ numbers below refer to it. The earlier design is
 - [ ] **Step 1:** In the suite, change every invocation to pass `XDG_CACHE_HOME` instead of
   `HERDR_PHASE_CACHE_DIR`, drop `HERDR_PHASE_TTL`, and point every cache path at the new
   directory. Replace each case that sets `TTL=` with ageing the cache file by `touch -t` (older
-  than 120 s to expire it; the default mtime to keep it fresh). Add a pin:
+  than 120 s to expire it; the default mtime to keep it fresh). In section N's loop over the
+  numeric overrides, delete the `TTL` cases (an invalid `HERDR_PHASE_TTL` exiting 2): the
+  override they validate is gone. The `LOCK_WAIT` and `RUN_DEADLINE` cases stay until Task 2.
+  Add a pin:
   `grep -c 'HERDR_PHASE_CACHE_DIR\|HERDR_PHASE_TTL' "$PHASE"` is 0.
 - [ ] **Step 2:** Run `./tests/herdr-phase.test.sh`. Expected: the new pin and the moved cache
   paths FAIL.
@@ -102,11 +105,13 @@ numbers below refer to it. The earlier design is
     executable (else `die`), then
     `exec /usr/bin/timeout -s KILL "$RUN_DEADLINE" /bin/bash "$0" _refresh "$run" "$only"`.
   - `phase.sh _refresh <run: ttl|force|fresh> <workspace id or "">`: the worker. Not in `usage`.
-  - `RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE:-40}"`: must match a positive whole number with no
+  - `RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE-40}"` (the default applies only when the variable
+    is unset, so an empty value is refused; the suite's `run()` likewise passes
+    `"${DEADLINE-40}"` and `"${LOCK_WAIT-10}"`): must match a positive whole number with no
     leading zero; the check is one `case` with the ten digits listed (as `slug_chars_ok` lists
     its characters). Otherwise:
     `phase.sh: HERDR_PHASE_RUN_DEADLINE is not a positive whole number of seconds`, exit 2.
-  - `LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-10}"`, passed to `lockf` unvalidated.
+  - `LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT-10}"`, passed to `lockf` unvalidated.
   - Lock: `$CACHE_DIR/run.lock`, created mode 0200 (a subshell with `umask 577`, append-open),
     then `exec 9>>` and `/usr/bin/lockf -s -t "$LOCK_WAIT" 9`. Status 75: print
     `phase.sh: skipped: another refresh holds the lock` on stderr, exit 0. Any other non-zero
@@ -131,7 +136,7 @@ line each. The inline hardening comments (`repo_status`, `repo_slug`, the forge 
   `.lock` names in the cache listing of section K, the `.tmp/<key>` paths in sections N and O,
   the `LOCK_WAIT`/`RUN_DEADLINE` default greps, the `whole_seconds` cases, the `clock` cases,
   the `KILLJOB_*` hooks in the `herdr` stub if nothing uses them any more). `run()` passes
-  `HERDR_PHASE_LOCK_WAIT="${LOCK_WAIT:-10}"`. Keep the helpers that still serve (`waitfor`, the
+  `HERDR_PHASE_LOCK_WAIT="${LOCK_WAIT-10}"` and `HERDR_PHASE_RUN_DEADLINE="${DEADLINE-40}"`. Keep the helpers that still serve (`waitfor`, the
   logging `mv`, the slow/hanging forge stubs); replace `now_s`'s Python with
   `/usr/bin/perl -MTime::HiRes=time` as the `herdr` stub already does. The new section N, one
   case each:
@@ -252,12 +257,13 @@ line each. The inline hardening comments (`repo_status`, `repo_slug`, the forge 
   baseline time on the new `main`, and run `./tests/herdr-phase.test.sh`.
 - [ ] **Step 5:** A cold whole-branch review (`sp-architect`) of `main...refactor/phase-sh`
   against the spec; fix its findings.
-- [ ] **Step 6:** `./tests/run.sh`, then `./tests/run.sh xreview git-forge-guard wt-functions`,
-  on the final commit. Report passed/total per suite.
-- [ ] **Step 7:** Codex pre-merge review (`xreview dispatch --checkpoint pre-merge`), fix
-  rounds until it approves; re-run step 6 if anything changed.
-- [ ] **Step 8:** Set `**Status:** Implemented` in the spec and this plan (and mark the plan
-  completed), commit, push `refactor/phase-sh`.
+- [ ] **Step 6:** Set `**Status:** Implemented` in the spec and this plan (and mark the plan
+  completed), and commit. This is the last planned commit.
+- [ ] **Step 7:** `./tests/run.sh`, then `./tests/run.sh xreview git-forge-guard wt-functions`,
+  on that commit. Report passed/total per suite.
+- [ ] **Step 8:** Codex pre-merge review (`xreview dispatch --checkpoint pre-merge`) of that
+  commit. Every fix round commits, repeats step 7 and is reviewed again; the head that is pushed
+  is one the suites passed on and the review approved. Then push `refactor/phase-sh`.
 - [ ] **Step 9:** Final report to the driver session: lines and suite time before and after,
   the dropped behaviour (spec section 6), passed/total, the Codex receipts, and for Michael the
   after-apply commands: reload the LaunchAgent, remove the old cache debris
