@@ -1,12 +1,15 @@
 # Push protection moves to the forge
 
-**Status:** In progress (spec review; the dotfiles have no MR)
+**Status:** Approved
 **Date:** 2026-11-12
 **Branch:** `feat/forge-push-protection`
 
-Item 35 of the 2026-11-11 setup review, decided by Michael on 2026-11-12. He chose the split
-identity (approach C below) and the retirement of the spelling hunt on every remote on the same
-day. It replaces the threat model of
+Item 35 of the 2026-11-11 setup review, decided by Michael on 2026-11-12. Signed off by Michael
+on 2026-11-12 in the line's own session, in two answers to stated recommendations, each "I follow
+your recommendation(s)": first for the split identity (approach C below) and the retirement of
+the spelling hunt on every remote, then for pushing the dotfiles' `main` himself (section 4.3).
+The handoff of section 4.3 was corrected after his second answer, from a `!` command to his own
+terminal, and he was told. Codex approved the spec in review round 5 (`xr-1794522145-9b1396e4`). It replaces the threat model of
 [spec 2026-10-29](2026-10-29-push-guard-escaped-spellings-design.md), section 7, and changes rule 4
 of [spec 2026-09-30](2026-09-30-safe-autonomy-design.md), section 1.1.
 
