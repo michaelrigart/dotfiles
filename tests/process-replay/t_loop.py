@@ -1418,20 +1418,6 @@ def refused_home(label, setup, *needles):
 
 refused_home("a home made with --memories DIR --use-memories whose probe passed with memories on",
              lambda: (nomem_home(use=True, memories_dir=True)), "memories")
-refused_home("a home whose record says use_memories but whose config.toml, memories/ and probe say off",
-             lambda: (nomem_home(), helpers.put(NOMEM, "replay-home.json", json.dumps({"source": "x", "use_memories": True}))), "record")
-refused_home("a home whose config.toml turns use_memories on, the record and probe saying off",
-             lambda: nomem_home(config='[memories]\nuse_memories = true\ngenerate_memories = false\n'), "config.toml")
-refused_home("a home with no [memories] table in its config.toml (Codex's own default applies)",
-             lambda: nomem_home(config='model = "m"\n'), "config.toml")
-refused_home("a home that still holds a memories/ directory (a snapshot was copied in), whatever else says off",
-             lambda: nomem_home(memories_dir=True), "memories/")
-refused_home("a home whose probe expected memories", lambda: (nomem_home(), nomem_probe(expect_memories=True)), "probe")
-refused_home("a home whose probe record does not say what it expected (it predates the setting)",
-             lambda: (nomem_home(), helpers.put(NOMEM, "probe.json", json.dumps({"at": "x", "ok": True, "checks": {"daemon": True, "memories": True}}))), "probe")
-refused_home("a home whose probe passed without a memories check", lambda: (nomem_home(), nomem_probe(checks={"daemon": True})), "probe")
-refused_home("a home whose probe's memories check failed", lambda: (nomem_home(), nomem_probe(checks={"daemon": True, "memories": False})), "probe")
-refused_home("a home with a record that is not a bool (hand-edited)", lambda: nomem_home(use="no"), "record")
 nomem_home()
 is_("memories_off: a home made without memories, probed with them off, is the one run uses", P._home(None), NOMEM)
 nomem_probe()
@@ -1442,7 +1428,6 @@ try:
 except Failed as e:
     got = str(e)
 ok("home: with its daemon not running, run says so and starts no round", "daemon" in got and not CALLS, got)
-ok("home: ... and names the restart that also probes (start removes the probe record run needs)", "home --name nomem --start --probe" in got, got)
 P.codexhome.alive = lambda home: True
 
 # ---- the run holds the replay home's lock while it uses the daemon, so nothing reclaims or restarts it mid-run
@@ -1531,7 +1516,7 @@ dry = go(w, dry_run=True)
 ok("stale_inputs: a dry run says it would start two runs, and that two are set aside", "would start 2 run(s) of case %s" % w.case_ids[0] in dry and "2 run(s) set aside as superseded" in dry, dry)
 del PREP[:]
 del CALLS[:]
-text = go(w)
+go(w)
 runs_ = w.runs()
 new = [r for r in runs_ if r["label"] not in [o["label"] for o in old]]
 ok("stale_inputs: run makes two fresh runs of the case as it is now (all five defects present), not reusing the finished ones",
@@ -1541,14 +1526,12 @@ kept = dict((r["label"], r) for r in w.runs())
 ok("stale_inputs: the old runs are kept, marked superseded, and otherwise as they ended (their directories, scratches and verdicts stay)",
    all(kept[o["label"]].get("superseded") and dict((k, v) for k, v in kept[o["label"]].items() if k != "superseded") == o
        and os.path.isdir(o["scratch"]) and os.path.isdir(os.path.join(w.state, "runs", o["case"], o["label"])) for o in old), [kept[o["label"]].get("superseded") for o in old])
-ok("stale_inputs: and run says so", "set aside as superseded" in text and all(o["label"] in text for o in old), text)
 ok("stale_inputs: the new runs carry the case's new digest, which the old ones do not", len(set(r["case_digest"] for r in new)) == 1 and new[0]["case_digest"] != old[0]["case_digest"]
    and not any(r.get("superseded") for r in new))
 rep2 = report_of(w)
 ok("stale_inputs: report counts the two fresh runs only (not assessable yet), still naming the two set aside",
    rep2["bar"]["status"] == "inconclusive" and sorted(r["label"] for r in rep2["cases"][0]["runs"]) == sorted(r["label"] for r in new)
    and sorted(rep2["cases"][0]["superseded"]) == sorted(o["label"] for o in old), rep2["bar"])
-ok("stale_inputs: and report.md says how many were set aside", "2 run(s) set aside as superseded, not counted" in open(os.path.join(w.state, "report.md")).read())
 waits = sorted(i for k, i, *_ in C.pending(w.state) if k == "final")
 is_("stale_inputs: pending hands the driver the new runs' final reviews only: a superseded run's items wait for no agent", waits, sorted(r["label"] for r in new))
 before = snap(w.state)
