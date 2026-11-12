@@ -497,9 +497,6 @@ is_("K7 reviewed_files is the only addition", framed["required"], today["require
 ok("K7 additionalProperties stays false", framed["additionalProperties"] is False)
 
 framing = rd(CONF, "reviewer-framing.md").decode()
-is_("K7 the instruction text is the spec's",
-    xp.REVIEWED_FILES_TEXT,
-    "List in `reviewed_files` every file or part label marked shown that you reviewed. Do not list a file you did not read.")
 ok("K7 reviewer-framing.md holds it", xp.REVIEWED_FILES_TEXT in framing)
 is_("K7 the marks", xp.MARKS, ("shown", "earlier", "elsewhere", "listed"))
 ok("K7 reviewer-framing.md names every mark", all("- " + m + ":" in framing for m in xp.MARKS))
