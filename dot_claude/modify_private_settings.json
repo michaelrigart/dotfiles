@@ -133,6 +133,8 @@ printf '%s' "$input" | jq \
           "Read(~/.config/ha-mcp/**)",   "Edit(~/.config/ha-mcp/**)",
           # UniFi controller login, rendered by chezmoi
           "Read(~/.config/unifi-network/**)", "Edit(~/.config/unifi-network/**)",
+          # Forge tokens for Bundler, rendered by chezmoi
+          "Read(~/.config/bundler/**)",  "Edit(~/.config/bundler/**)",
           "Read(**/secrets.*.yml)",      "Edit(**/secrets.*.yml)",
           "Read(**/.env.production*)",   "Edit(**/.env.production*)",
           "Read(**/*.key)",              "Edit(**/*.key)",
@@ -310,8 +312,8 @@ printf '%s' "$input" | jq \
         # approving pre-merge Codex review of it is on record for; a skipped review looks
         # identical to a clean one. It reads origin and the forge, and gives up at 40 s inside
         # an explicit 60 s limit, so a slow forge is a deny rather than a fall-through.
-        # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
-        # inspects Edit/Write rather than Bash; it is inert unless xreview apply has
+        # Fourth entry: the apply-window guard. Its matcher is the tool set the script inspects
+        # (Edit, Write, NotebookEdit) rather than Bash; it is inert unless xreview apply has
         # opened a window.
         # Fifth entry: the path-resolution guard. Denies the two command shapes that
         # always cost an interactive prompt — a compound command starting with cd, and
@@ -322,8 +324,8 @@ printf '%s' "$input" | jq \
         # The forge, worktree and cross-review guards set onFailure "block": a guard that cannot
         # start, crashes, times out or emits unparseable output blocks the tool call instead of
         # letting it through. The apply-window and path-resolution guards stay fail-open: their
-        # failure costs a prompt or nothing, and the apply guard matches every tool by wildcard
-        # and would block them all.
+        # failure costs a prompt or nothing, and any Bash write bypasses the apply guard, so
+        # failing closed would protect nothing.
         "PreToolUse": [
           {
             "matcher": "Bash",
@@ -344,7 +346,7 @@ printf '%s' "$input" | jq \
             ]
           },
           {
-            "matcher": "*",
+            "matcher": "Edit|Write|NotebookEdit",
             "hooks": [
               { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/xreview-apply-guard.sh" }
             ]
@@ -370,6 +372,9 @@ printf '%s' "$input" | jq \
       },
       "sandbox": {
         "enabled": true,
+        # Without this a sandbox that cannot start only warns, and commands run unsandboxed.
+        # Never remove the key to get going again.
+        "failIfUnavailable": true,
         # On: a sandboxed command skips the allow rules, and auto mode sends it to the
         # classifier, so every sandboxed command keeps the classifier. Off was chosen and then
         # reversed on 2026-10-29, before it shipped: Bash rm and file writes in the working
@@ -395,7 +400,8 @@ printf '%s' "$input" | jq \
             { "path": "~/.config/op/config",                   "mode": "deny" },
             { "path": "~/.config/ha-mcp/env",                  "mode": "deny" },
             { "path": "~/.config/ha-mcp/env-remote",           "mode": "deny" },
-            { "path": "~/.config/unifi-network/env",           "mode": "deny" }
+            { "path": "~/.config/unifi-network/env",           "mode": "deny" },
+            { "path": "~/.config/bundler/config",              "mode": "deny" }
           ]
         },
         # docker is here because it talks to its own socket. basecamp (macOS Keychain),

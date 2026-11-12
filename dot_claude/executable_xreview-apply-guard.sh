@@ -40,7 +40,7 @@ payload=$(cat)
 command -v jq >/dev/null 2>&1 || allow
 
 # No window open anywhere: allow before parsing anything or starting a process, since this
-# runs on every tool call. Globbing is on for this test alone.
+# runs on every Edit, Write and NotebookEdit call. Globbing is on for this test alone.
 open=
 set +f
 for m in "${XDG_STATE_HOME:-$HOME/.local/state}"/xreview/*/applying; do

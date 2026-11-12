@@ -6,8 +6,11 @@
 # from 1Password, so no secret sits in either app's config or in the launcher's environment.
 # The settings-UI sidecar is disabled, as it would inherit the token.
 # Specs: docs/superpowers/specs/2026-10-23-ha-mcp-design.md and 2026-11-10-ha-mcp-remote-design.md
+# To bump version: read the release's changes, edit version= and the two test lines, apply, restart the apps.
 set -eu
 unset HOMEASSISTANT_URL HOMEASSISTANT_TOKEN
+
+version=9.1.2
 
 env_file="$HOME/.config/ha-mcp/env"
 if [ ! -r "$env_file" ]; then
@@ -39,4 +42,4 @@ python=$(mise which python) || {
   echo "ha-mcp: mise has no Python for $HOME — run mise install" >&2
   exit 1
 }
-exec mise exec uv -- uvx --python "$python" ha-mcp@latest
+exec mise exec uv -- uvx --python "$python" "ha-mcp==$version"
