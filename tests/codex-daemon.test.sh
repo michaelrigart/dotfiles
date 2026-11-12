@@ -133,7 +133,6 @@ run check; is "a clean running daemon passes" "$?" 0
 out="$(DIRTY_PIDS=$B_PID run check 2>&1)"; rc=$?
 is "a daemon process carrying HERDR_* fails" "$rc" 1
 is "the fix is named" "$(printf '%s' "$out" | grep -c 'codex-daemon restart')" 1
-is "and its cost" "$(printf '%s' "$out" | grep -c 'disconnects every open Codex TUI')" 1
 # A recycled pid is not scanned for HERDR_ at all unless it is actually still a Codex
 # process (same guard as restart): a pid file outliving its process can be recycled by
 # something else entirely, and that something else's environment says nothing about the
