@@ -29,10 +29,10 @@ agent-instructions	180-181	claude-code.md deletes a finished plan workspace with
 agent-instructions	186-187	global.md's Momentum rule asks for size and ETA on a long run	wording	-	delete	-	class	no	Momentum ETA wording; non-safety, class evidence
 agent-instructions	188-189	global.md exempts a merged branch's pinned delete from confirm-first	wording	-	keep	-	-	yes	merged-branch pinned delete exempt from confirm-first (deletion); replace, never drop
 agent-instructions	195-195	global.md carries the Engineering judgement section	wording	-	delete	-	class	no	a heading pin; the section content has its own pins
-agent-instructions	196-197	global.md carries the Sizing rule	wording	-	keep	-	-	no	Sizing rule; non-safety but substantive, candidate for the replacement set
-agent-instructions	198-198	the Sizing rule treats an unsure or outgrown change as not small	wording	-	delete	-	class	no	second pin of the Sizing rule; one anchor suffices
+agent-instructions	196-197	global.md carries the Sizing rule	wording	-	keep	-	-	yes	Sizing rule; substantive, candidate for the replacement set
+agent-instructions	198-198	the Sizing rule treats an unsure or outgrown change as not small	wording	-	delete	-	class	yes	second pin of the Sizing rule; one anchor suffices
 agent-instructions	199-200	global.md carries the Convergence rule	wording	-	keep	-	-	no	Convergence rule; non-safety but substantive, candidate for the replacement set
-agent-instructions	201-202	global.md keeps the no-attribution rule in full	wording	-	keep	-	-	no	no-attribution rule in full; published-record policy, keep until the rule check covers it
+agent-instructions	201-202	global.md keeps the no-attribution rule in full	wording	-	keep	-	-	yes	no-attribution rule in full; published-record policy, keep until the rule check covers it
 agent-instructions	203-203	global.md keeps the vault rule: write a note only when asked	wording	-	keep	-	-	yes	write a note only when asked (approval gate); replace, never drop
 agent-instructions	204-205	second-brain holds every never-store category for the vault	wording	-	keep	-	-	yes	second-brain never-store list names secrets and credentials (credential); replace, never drop
 agent-instructions	207-208	global.md states the fix rule as a revert check	wording	-	keep	-	-	no	fix rule as revert check; Phase 3 rewrites this pin with the tightened testing rule
@@ -50,18 +50,18 @@ agent-instructions	231-231	global.md points at the backup runbook	wording	-	dele
 agent-instructions	232-232	global.md keeps what an AGENTS.md may add	wording	-	delete	-	class	no	what an AGENTS.md may add; non-safety
 agent-instructions	233-233	global.md keeps what never varies per repository	wording	-	delete	-	class	no	second pin of the same design-records sentence as the previous row
 agent-instructions	234-234	global.md keeps lessons out of raw run files	wording	-	delete	-	class	no	lessons-out-of-run-files wording; non-safety
-agent-instructions	236-236	global.md keeps the cross-review trigger	wording	-	keep	-	-	no	cross-review trigger; non-safety but substantive, candidate for the replacement set
-agent-instructions	237-237	global.md keeps the review-after-last-commit rule	wording	-	keep	-	-	no	review-after-last-commit rule; gate before reporting done, keep until replaced
+agent-instructions	236-236	global.md keeps the cross-review trigger	wording	-	keep	-	-	yes	cross-review trigger; substantive, candidate for the replacement set
+agent-instructions	237-237	global.md keeps the review-after-last-commit rule	wording	-	keep	-	-	yes	review-after-last-commit rule; gate before reporting done, keep until replaced
 agent-instructions	238-238	claude-code.md names the cross-review skill	wording	-	delete	-	class	no	pointer pin naming a skill
 agent-instructions	240-241	global.md keeps the Merge requests pointer the forge guard cites, and names issues	wording	-	keep	-	-	yes	Merge requests bullet the forge guard cites (guard, merge); replace, never drop
 agent-instructions	246-247	global.md makes wt the only way to start a branch in a ~/Code repository	wording	-	keep	-	-	yes	wt is the only way to start a branch (guard-enforced workflow); replace, never drop
 agent-instructions	248-249	global.md opens the checkout before the line's first file, names it, and stops rather than fall back when wt fails	wording	-	keep	-	-	yes	driver stops and tells Michael when wt fails (approval boundary); replace, never drop
 agent-instructions	250-252	global.md no longer makes a wt checkout optional	wording	-	keep	-	-	yes	negative pin on the wt rule above; kept with it, replace, never drop
 agent-instructions	253-254	global.md keeps teardown Michael's and has a final report hand him the wt-rm command, a dropped line's too	wording	-	keep	-	-	yes	wt-rm is Michael's, never run by agents (deletion); replace, never drop
-agent-instructions	255-256	global.md says the wt workspace starts a Claude Code session	wording	-	delete	-	class	no	descriptive sentence about the wt workspace
-agent-instructions	258-259	global.md commits the spec in the wt checkout before hand-off and keeps the driver to coordination	wording	-	keep	-	-	no	driver keeps to coordination, spec committed in the checkout; process rule, candidate for the replacement set
-agent-instructions	260-260	global.md keeps wt out of the dotfiles	wording	-	delete	-	class	no	the dotfiles never use wt; short descriptive rule, also in the repo AGENTS.md
-agent-instructions	261-261	global.md leaves harness worktrees to their tool	wording	-	delete	-	class	no	harness worktree lifecycle sentence
+agent-instructions	255-256	global.md says the wt workspace starts a Claude Code session	wording	-	delete	-	class	yes	descriptive sentence about the wt workspace
+agent-instructions	258-259	global.md commits the spec in the wt checkout before hand-off and keeps the driver to coordination	wording	-	keep	-	-	yes	driver keeps to coordination, spec committed in the checkout; process rule, candidate for the replacement set
+agent-instructions	260-260	global.md keeps wt out of the dotfiles	wording	-	delete	-	class	yes	the dotfiles never use wt; short descriptive rule, also in the repo AGENTS.md
+agent-instructions	261-261	global.md leaves harness worktrees to their tool	wording	-	delete	-	class	yes	harness worktree lifecycle sentence
 agent-instructions	263-264	global.md says the Brewfile is chezmoi-managed	wording	-	keep	-	-	no	Brewfile is chezmoi-managed; pins a real past trim regression
 agent-instructions	266-267	global.md keeps the relay-reply rule whole	wording	-	delete	-	class	no	last-sentence regression pin; the ends-on-a-sentence check (row 28) catches truncation
 agent-instructions	268-270	global.md no longer bans creating a wt worktree	wording	-	delete	-	class	no	negative pin on superseded wording
@@ -74,15 +74,15 @@ agent-instructions	280-281	claude-code.md runs a plan in its line's checkout, an
 agent-instructions	282-283	claude-code.md briefs a wt line with its spec, since hand-off comes at spec sign-off	wording	-	delete	-	class	no	brief contents wording; non-safety
 agent-instructions	285-291	global.md no longer carries: **Skills don't change roles.** | global.md no longer carries: On Codex's side	wording	-	delete	-	class	no	negative pins on text that moved to codex.md
 agent-instructions	293-294	codex.md keeps Codex a reviewer unless Michael asks	wording	-	keep	-	-	yes	Codex never implements, commits, pushes or opens MRs unless asked (push/merge); replace, never drop
-agent-instructions	295-295	codex.md forbids taking over the workflow	wording	-	keep	-	-	no	Codex charter: no taking over the workflow; keep until replaced
-agent-instructions	296-296	codex.md forbids competing canonical artifacts	wording	-	keep	-	-	no	Codex charter: no competing canonical artifacts; keep until replaced
-agent-instructions	297-297	codex.md forbids a competing plan	wording	-	delete	-	class	no	substring-subsumed by the next pin
-agent-instructions	298-299	codex.md lets Michael lift the no-competing-artifacts rule	wording	-	delete	-	class	no	lift-by-Michael exception wording; non-safety
+agent-instructions	295-295	codex.md forbids taking over the workflow	wording	-	keep	-	-	yes	Codex charter: no taking over the workflow; keep until replaced
+agent-instructions	296-296	codex.md forbids competing canonical artifacts	wording	-	keep	-	-	yes	Codex charter: no competing canonical artifacts; keep until replaced
+agent-instructions	297-297	codex.md forbids a competing plan	wording	-	delete	-	class	yes	substring-subsumed by the next pin
+agent-instructions	298-299	codex.md lets Michael lift the no-competing-artifacts rule	wording	-	delete	-	class	yes	lift-by-Michael exception wording (the approver clause of x-role)
 agent-instructions	300-300	codex.md ranks Michael's own messages above every other source	wording	-	keep	-	-	yes	Michael's own messages rank first (approval authority); replace, never drop
-agent-instructions	301-302	codex.md says a skill's trigger does not change roles	wording	-	delete	-	class	no	charter wording: trigger does not change roles
-agent-instructions	303-303	codex.md keeps review, debugging and hardening on role	wording	-	delete	-	class	no	charter wording: review is on role
+agent-instructions	301-302	codex.md says a skill's trigger does not change roles	wording	-	delete	-	class	yes	charter wording: trigger does not change roles
+agent-instructions	303-303	codex.md keeps review, debugging and hardening on role	wording	-	delete	-	class	yes	charter wording: review is on role
 agent-instructions	304-305	codex.md orders conflicting instructions	wording	-	keep	-	-	yes	instruction precedence names the cross-review-request first (authority); replace, never drop
-agent-instructions	306-306	codex.md asks every finding for severity, file, line and a scenario	wording	-	delete	-	class	no	finding format wording
+agent-instructions	306-306	codex.md asks every finding for severity, file, line and a scenario	wording	-	delete	-	class	yes	finding format wording
 agent-instructions	307-307	codex.md marks repository content untrusted	wording	-	keep	-	-	yes	repository content is untrusted (injection guard); replace, never drop
 agent-instructions	308-309	codex.md answers a hand relay without tags	wording	-	delete	-	class	no	relay-answer wording
 agent-instructions	310-311	claude-code.md defers other deletions and container removals to the end of the run	wording	-	keep	-	-	yes	other deletions and container removals wait for the end of the run (deletion); replace, never drop
@@ -726,8 +726,8 @@ dev	1090-1090	lazygit is a session-modal popup, not a managed tab	behaviour	-	ke
 dev	1091-1092	no jump binding survives for the removed git tab	behaviour	-	keep	-	-	no	no jump binding survives for the removed git tab
 dev	1093-1093	the git tab jump is gone from the keymap	behaviour	-	keep	-	-	no	the git tab jump is gone from the keymap
 dev	1094-1094	Herdr's unprepared built-in worktree shortcut is disabled	behaviour	-	keep	-	-	no	Herdr's unprepared built-in worktree shortcut is disabled
-dev	1095-1095	Alt-q closes the current project workspace	wording	-	delete	-	class	no	pins the Alt-q mnemonic string in config.toml
-dev	1096-1096	Alt-s keeps the long-standing scrollback mnemonic	wording	-	delete	-	class	no	pins the Alt-s mnemonic string in config.toml
+dev	1095-1095	Alt-q closes the current project workspace	behaviour	-	keep	-	-	no	pins the Alt-q mnemonic string in config.toml; R27: configuration data, a change detector; the cut is Michael's call
+dev	1096-1096	Alt-s keeps the long-standing scrollback mnemonic	behaviour	-	keep	-	-	no	pins the Alt-s mnemonic string in config.toml; R27: configuration data, a change detector; the cut is Michael's call
 dev	1097-1097	workspace close keeps Herdr's confirmation guard explicit	behaviour	-	keep	-	-	no	workspace close keeps Herdr's confirmation guard explicit
 dev	1098-1107	alt+e creates the editor tab on demand	behaviour	-	keep	-	-	no	alt+e creates the editor tab on demand
 dev	1108-1108	the editor jump stays a detached shell command	behaviour	-	keep	-	-	no	the editor jump stays a detached shell command
@@ -1769,9 +1769,9 @@ ha-mcp	171-175	probes the first URL only	behaviour	-	keep	-	-	yes	two URL lines:
 ha-mcp	176-176	L: token never printed | L: curl never sees the token or remote address	duplicate	ha-mcp:175	delete	-	targeted	yes	curl log is pinned exactly on line 175; token check repeats B's
 ha-mcp	178-184	uses env #4 | curl never ran #4 | M: token never printed | M: curl never sees the token or remote address	duplicate	ha-mcp:152	delete	-	targeted	yes	an empty URL and a missing URL line both leave home_url empty, one guard; J pins the same behaviour
 herdr-agent-rows	27-27	manifest id	wording	-	keep	-	-	no	manifest id; the plugin's unlink handle
-herdr-agent-rows	28-28	manifest name	wording	-	delete	-	class	no	pins the display name string; nothing depends on it
-herdr-agent-rows	29-29	manifest version	wording	-	delete	-	class	no	pins the version string; breaks on every bump and catches nothing
-herdr-agent-rows	30-30	manifest min_herdr_version	wording	-	delete	-	class	no	pins min_herdr_version; a bump is a deliberate edit, not a regression
+herdr-agent-rows	28-28	manifest name	behaviour	-	keep	-	-	no	pins the display name string; nothing depends on it; R27: configuration data, a change detector; the cut is Michael's call
+herdr-agent-rows	29-29	manifest version	behaviour	-	keep	-	-	no	pins the version string; breaks on every bump and catches nothing; R27: configuration data, a change detector; the cut is Michael's call
+herdr-agent-rows	30-30	manifest min_herdr_version	behaviour	-	keep	-	-	no	pins min_herdr_version; a bump is a deliberate edit, not a regression; R27: configuration data, a change detector; the cut is Michael's call
 herdr-agent-rows	31-31	manifest platforms	wording	-	keep	-	-	no	platforms line; ties the plugin to macOS
 herdr-agent-rows	32-32	manifest has one startup hook	behaviour	-	keep	-	-	no	exactly one startup hook
 herdr-agent-rows	33-34	manifest startup command	behaviour	-	keep	-	-	no	startup command launches the worker under isolated python
@@ -1819,7 +1819,7 @@ herdr-clear-pane	103-105	the script pins its PATH as its first command	wording	-
 herdr-clear-pane	108-111	a hostile PATH and no PINNED_PATH: the script still runs | a hostile PATH and no PINNED_PATH: none of the hostile tools run, zsh included	behaviour	-	keep	-	-	yes	hostile PATH without PINNED_PATH: runs and executes no hostile tool
 herdr-clear-pane	115-123	a hostile directory first on the caller's PATH: the idle zsh still gets one SIGURG | a hostile directory first on the caller's PATH: none of the hostile tools run	behaviour	-	keep	-	-	yes	hostile directory first on PATH: signal still sent, no hostile tool run
 herdr-clear-pane	125-141	config.toml binds alt+k only to clear-pane.sh	behaviour	-	keep	-	-	no	alt+k bound only to clear-pane.sh
-herdr-codex-pane-map	67-69	it exits 0	behaviour	-	keep	-	-	no	reconcile exits 0 (the suite's one rc pin for a normal reconcile)
+herdr-codex-pane-map	70-70	it exits 0	behaviour	-	keep	-	-	no	reconcile exits 0 (the suite's one rc pin for a normal reconcile)
 herdr-codex-pane-map	71-79	two panes disagreed, two reports | a pane with no session gets its title's id, resolved | a pane showing another pane's id is corrected, resolved | a matching pane is left alone, no resolve needed | a title without an id prefix is never guessed from | a non-Codex pane is ignored | both reports from the same listing share one --seq | --reconcile resolves both prefixes through the stub	behaviour	-	keep	-	-	no	reconcile repairs disagreeing panes, never guesses, shares one seq
 herdr-codex-pane-map	84-84	it exits 0 #2	duplicate	herdr-codex-pane-map:70	delete	-	targeted	no	rc pin of a normal run; the same exit-0 line is pinned by A, C, E and F
 herdr-codex-pane-map	85-87	the starting session's pane carries its start source | hook mode confirms the shortcut through the resolver before trusting it	behaviour	-	keep	-	-	no	hook mode: start source and resolver confirmation
@@ -1857,7 +1857,7 @@ herdr-codex-pane-map	295-300	X2 the hook exits 0 | X2 an XDG_CONFIG_HOME already
 herdr-codex-pane-map	301-306	X3 the hook exits 0 | X3 a HERDR_SOCKET_PATH set adds nothing | X3 in the report call too	behaviour	-	keep	-	-	no	X3 HERDR_SOCKET_PATH adds nothing
 herdr-config	51-55	herdr config check exits 0 | herdr config check prints config: ok	behaviour	-	keep	-	-	no	herdr config check accepts the file
 herdr-config	57-61	a copy with an unknown key under the existing [ui] fails the check | the failure names the unknown key, not a parse error	behaviour	-	keep	-	-	no	proves the check rejects a broken copy, so a green check means something
-herdr-config	63-73	accent is set once | accent = #7aa2f7 | panel_bg is set once | panel_bg = reset | sidebar_bg is set once | sidebar_bg = #16161e | active_row_bg is set once | active_row_bg = #292e42 | selection_bg is set once | selection_bg = #283457 | surface0 is set once | surface0 = #292e42 | surface1 is set once | surface1 = #3b4261 | surface_dim is set once | surface_dim = #3b4261 | overlay0 is set once | overlay0 = #565f89 | overlay1 is set once | overlay1 = #737aa2 | text is set once | text = #c0caf5 | subtext0 is set once | subtext0 = #a9b1d6 | mauve is set once | mauve = #bb9af7 | green is set once | green = #9ece6a | yellow is set once | yellow = #e0af68 | red is set once | red = #f7768e | blue is set once | blue = #7aa2f7 | teal is set once | teal = #73daca | peach is set once | peach = #ff9e64	wording	-	delete	-	class	no	palette hex values pinned one by one (19 keys x set-once and value); herdr config check already rejects unknown keys; breaks on any re-theme
+herdr-config	63-73	accent is set once | accent = #7aa2f7 | panel_bg is set once | panel_bg = reset | sidebar_bg is set once | sidebar_bg = #16161e | active_row_bg is set once | active_row_bg = #292e42 | selection_bg is set once | selection_bg = #283457 | surface0 is set once | surface0 = #292e42 | surface1 is set once | surface1 = #3b4261 | surface_dim is set once | surface_dim = #3b4261 | overlay0 is set once | overlay0 = #565f89 | overlay1 is set once | overlay1 = #737aa2 | text is set once | text = #c0caf5 | subtext0 is set once | subtext0 = #a9b1d6 | mauve is set once | mauve = #bb9af7 | green is set once | green = #9ece6a | yellow is set once | yellow = #e0af68 | red is set once | red = #f7768e | blue is set once | blue = #7aa2f7 | teal is set once | teal = #73daca | peach is set once | peach = #ff9e64	behaviour	-	keep	-	-	no	palette hex values pinned one by one (19 keys x set-once and value); herdr config check already rejects unknown keys; breaks on any re-theme; R27: configuration data, a change detector; the cut is Michael's call
 herdr-config	75-79	pane borders carry the agent label | window title names workspace and tab | tab bar right separator	wording	-	keep	-	-	no	exact [ui] lines; kept: each is a deliberate chrome choice, no functional test elsewhere
 herdr-config	80-83	tab_bar_right lists zoom, then the usage command last (its trailing blank insets the bar)	behaviour	-	keep	-	-	no	tab_bar_right order
 herdr-config	84-89	the usage entry closes tab_bar_right (no entry after it)	behaviour	-	keep	-	-	no	usage entry last, its trailing blank insets the bar
@@ -1942,8 +1942,8 @@ herdr-phase	698-700	a startup hook replays the phases	behaviour	-	keep	-	-	no	st
 herdr-phase	701-704	subscribes to workspace.focused | subscribes to worktree.created | subscribes to worktree.removed	wording	-	keep	-	-	no	event subscriptions (one loop); not duplicated elsewhere
 herdr-phase	706-709	the focus hook refreshes only the focused space	behaviour	-	keep	-	-	no	focus hook refreshes only the focused space
 herdr-phase	711-715	sidebar renders $active | sidebar renders $review | sidebar renders $merged	duplicate	herdr-config:117	delete	-	targeted	no	herdr-config's in_order check already requires $active, $review and $merged in the spaces row
-herdr-phase	716-717	the sidebar no longer renders $parked	wording	-	delete	-	class	no	absence pin for a retired token; no behaviour behind it
-herdr-phase	718-719	the plugin no longer offers pin actions	wording	-	delete	-	class	no	absence pin for retired pin actions; line 279 covers the subcommand
+herdr-phase	716-717	the sidebar no longer renders $parked	behaviour	-	keep	-	-	no	absence pin for a retired token; no behaviour behind it; R27: configuration-data absence pin (a retired value in the shipped config or manifest), a change detector; the cut is Michael's call
+herdr-phase	718-719	the plugin no longer offers pin actions	behaviour	-	keep	-	-	no	absence pin for retired pin actions; line 279 covers the subcommand; R27: configuration-data absence pin (a retired value in the shipped config or manifest), a change detector; the cut is Michael's call
 herdr-phase	720-721	a keybinding forces a refresh	behaviour	-	keep	-	-	no	a keybinding forces a refresh
 herdr-phase	729-733	a LaunchAgent refreshes the badges on a timer	behaviour	-	keep	-	-	no	a LaunchAgent plist exists
 herdr-phase	734-735	the plist Label matches its filename	wording	-	keep	-	-	no	plist Label matches its filename
@@ -1989,7 +1989,7 @@ herdr-usage	244-248	a file older than 7 days gives no Codex segment | a file old
 herdr-usage	249-252	a file 6 days old is read (aged 6d) | a file 6 days old is traced	behaviour	-	keep	-	-	no	a 6-day-old file is read
 herdr-usage	254-256	rollouts without any token_count: no Codex segment	behaviour	-	keep	-	-	no	rollouts without token_count give no segment
 herdr-usage	257-258	no rollouts at all: empty line	behaviour	-	keep	-	-	no	no rollouts give an empty line
-herdr-usage	260-276	far token_count: the fixture is about 1 MB	stub	-	delete	-	class	no	asserts the size of the test's own generated fixture; the chunk-count check at line 280 already fails if the file is small
+herdr-usage	260-276	far token_count: the fixture is about 1 MB	stub	-	delete	-	class	no	asserts the size of the test's own generated fixture; the chunk-count check at line 280 already fails if the file is small. Only the assertion (line 276 with its size= line) goes: the 1 MB fixture generation (261-274) stays, because 277-281 read it
 herdr-usage	277-281	far token_count: found in a file's first KiB past a line longer than a chunk | far token_count: the 1 MB file is read in at least 16 chunks | far token_count: no single read exceeds 64 KiB (a whole-file read would)	behaviour	-	keep	-	-	no	a far token_count is found in bounded chunks
 herdr-usage	283-296	a token_count line straddling a chunk boundary is read whole (pad 65236) | a token_count line straddling a chunk boundary is read whole (pad 65336) | a token_count line straddling a chunk boundary is read whole (pad 65436) | a token_count line straddling a chunk boundary is read whole (pad 65535) | a token_count line straddling a chunk boundary is read whole (pad 65536) | a token_count line straddling a chunk boundary is read whole (pad 65700) | a token_count line straddling a chunk boundary is read whole (pad 131072)	behaviour	-	keep	-	-	no	chunk-boundary table (7 pad sizes around 64 KiB)
 herdr-usage	298-308	window_minutes 10080 is wk | window_minutes 300 is 5h | window_minutes 1440 is 1d | window_minutes 120 is 2h | window_minutes 45 is 45m	behaviour	-	keep	-	-	no	window labels
@@ -5992,7 +5992,7 @@ xreview-ledger	1026-1034	W15 flipping packets.conf changes no decision on record
 xreview-ledger	1035-1041	W15b nor one recorded with the switches off (allowed stays allowed)	behaviour	-	keep	-	-	yes	W15b nor one recorded with the switches off (allowed stays allowed)
 xreview-packet	90-121	K1 the golden diffs end in a newline, so the strip is exercised | K1 the nl body ends in a newline | K1 none diff(s), nl body: byte-identical | K1 one diff(s), nl body: byte-identical | K1 two diff(s), nl body: byte-identical | K1 the nonl body does not end in a newline | K1 none diff(s), nonl body: byte-identical | K1 one diff(s), nonl body: byte-identical | K1 two diff(s), nonl body: byte-identical | K1 trailing newlines of a diff are stripped as $(...) strips them | K1 but interior blank lines stay	behaviour	-	keep	-	-	no	K1 today_packet equals the golden packets
 xreview-packet	122-137	K2 a missing file forces all off | K2 an unreadable path (a directory) forces all off | K2 an empty file is all off | K2 all four on | K2 fit=yes is off, the rest as written | K2 framing off forces the other three off | K2 framing missing forces the others off | K2 framing=yes forces the others off | K2 comments, blanks, spaces and unknown keys are tolerated | K2 the last line for a key wins | K2 case matters: ON is not on	behaviour	-	keep	-	-	no	K2 switch parsing
-xreview-packet	138-139	K2 the shipped packets.conf turns on what passed the replay (spec 9), fit by Michael's ruling, and the cap he ruled	wording	-	delete	-	class	no	byte-exact pin of the shipped packets.conf; the parsed values (framing, fit, delta, omit_plans, cap) are pinned by the next two cases
+xreview-packet	138-139	K2 the shipped packets.conf turns on what passed the replay (spec 9), fit by Michael's ruling, and the cap he ruled	behaviour	-	keep	-	-	no	byte-exact pin of the shipped packets.conf; the parsed values (framing, fit, delta, omit_plans, cap) are pinned by the next two cases; R27: configuration data, a change detector; the cut is Michael's call
 xreview-packet	149-151	K2 read_plan gives the cap= line as written, the last one winning, beside the switches | K2 and None without a cap= line	behaviour	-	keep	-	-	no	K2 read_plan cap line
 xreview-packet	152-155	K2 the shipped file's plan carries its cap | K2 and parses to it	behaviour	-	keep	-	-	no	K2 shipped plan and switches
 xreview-packet	156-161	K2 the switches framing off ignored are reported | K2 none are reported with framing on	behaviour	-	keep	-	-	no	K2 ignored switches reported
@@ -6008,7 +6008,7 @@ xreview-packet	365-401	K5c the line is about 2 MB | K5c added: every part is at 
 xreview-packet	402-416	K5c at every budget from 80 to 140 a 4-byte character is never cut in two	behaviour	-	keep	-	-	no	K5c 4-byte character never cut
 xreview-packet	417-437	K5c a budget under 4 bytes is a ValueError, never a cut inside a character	behaviour	-	keep	-	-	no	K5c budget under 4 bytes is a ValueError
 xreview-packet	438-456	K5d hunks, line ranges and byte ranges mix, every part within max_bytes | K5d plus and minus add up | K5d a max_bytes too small to hold even a few bytes is a ValueError	behaviour	-	keep	-	-	no	K5d mixed hunks, lines, bytes
-xreview-packet	457-457	K6 the constants are the spec's	wording	-	delete	-	class	no	pin of the three constants' literals; the fits() edge cases (3.5 bytes per token, 0.9, 60000) break on any of them
+xreview-packet	457-457	K6 the constants are the spec's	behaviour	-	keep	-	-	no	pin of the three constants' literals; the fits() edge cases (3.5 bytes per token, 0.9, 60000) break on any of them; R27: configuration data, a change detector; the cut is Michael's call
 xreview-packet	458-462	K6 estimate_tokens(0) | K6 estimate_tokens(7) is exactly 2 | K6 estimate_tokens(8) rounds up to 3 | K6 estimate_tokens(1) is 1 | K6 estimate_tokens(3500000) is 1000000	behaviour	-	keep	-	-	no	K6 estimate_tokens
 xreview-packet	463-475	K6 the edge is a whole number of tokens | K6 true at equality | K6 false one byte over | K6 true one byte under | K6 context one token higher moves the edge | K6 a window one token short fails at the same size | K6 an odd window is exact too (0.9 x 258400 = 232560)	behaviour	-	keep	-	-	no	K6 fits at the exact boundary
 xreview-packet	476-499	K7 a full answer validates | K7 an empty reviewed_files validates | K7 reviewed_files is required | K7 reviewed_files must be an array | K7 and of strings | K7 the old schema rejects reviewed_files | K7 and accepts the answer without it | K7 otherwise the framed schema is today's schema | K7 reviewed_files is the only addition | K7 additionalProperties stays false	behaviour	-	keep	-	-	no	K7 framed schema
