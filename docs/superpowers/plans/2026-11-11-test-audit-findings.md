@@ -14,6 +14,19 @@
 3. **Michael's calls (section 2.2):** nine pin deletes on safety rules are replaced, not deleted (2.2a); two groups kept for lack of any possible evidence (2.2b); one design call on a 48 s test (2.2c); Task 8's safety close calls (2.2d); 10 configuration-data pins kept, the biggest being the herdr palette (2.2e); one range in `herdr-usage` where only the assertion goes (2.2f).
 4. **Which gaps to close (section 5).** Reported, not fixed.
 
+## Approved (2026-11-12)
+
+Michael approved phase 2 through the driver on 2026-11-12, for findings commit `d57fbfe` (ruling R29):
+
+1. **Cut list:** the 177 cuts that `audit.py accept` accepts. For `herdr-usage` 260-276, only the assertion at 276 and its `size=` line go; the fixture stays (§2.2f).
+2. **Replacement checks:** the 62 proposed rules. The 9 pins on safety rules are replaced together with them (R22), not cut on class evidence.
+3. **The 25 cuts without evidence (R17/R18):** they stay, and are not run.
+4. **§2.2b:** the `xreview` H absence pins and `dev`'s diagnostic pins stay.
+5. **§2.2c, process-replay seeds:** cut from 6 to 3 only if measured to lose nothing within about 30 minutes of the test lock; otherwise keep 6. Kept at 6 without measuring (ruling R30).
+6. **§2.2e:** all 10 configuration-data pins stay, the `herdr-config` palette loop included.
+7. **§2.2d:** the safety classification stands as listed.
+8. **Gaps (§5):** reported only; none is fixed on this branch.
+
 ## 1. Before-numbers
 
 *Read this for the baseline the phase 3 validation must match or beat. All numbers are at `523a95d`.*
