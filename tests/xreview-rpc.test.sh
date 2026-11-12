@@ -2181,6 +2181,9 @@ ac_clean
 unset XDG_STATE_HOME
 
 echo "RN. render and escape (the reviewer's answer reaches Claude only through them)"
+# Every render and escape runs gitleaks over the text first (spec 4.3), so none of the rows below
+# can run without it.
+command -v gitleaks >/dev/null 2>&1 || { echo "INCONCLUSIVE: gitleaks is not on PATH"; exit 2; }
 # fnd <summary> <failure_scenario>: one finding. ans <findings-json-array>: an answer around them.
 fnd() { jq -nc --arg s "$1" --arg f "$2" '{severity:"P1",file:"a.sh",line:3,summary:$s,failure_scenario:$f}'; }
 ans() { jq -nc --argjson f "$1" '{verdict:"changes",findings:$f}'; }
@@ -2282,7 +2285,7 @@ printf '["x.sh"]' > "$T/shown-x.json"
 render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: ["a/x.sh"]}')" --shown "$T/shown-x.json"
 is "R7b shown x.sh against listed a/x.sh: kept, nothing left out" \
    "$(jq -c '[.reviewed_files, .notes]' <<<"$out")" '[["x.sh"],[]]'
-# A larger round gives the same answer (the left-out count is a set lookup, not a rescan).
+# A larger round gives the same answer: this row checks correctness at scale only, not speed.
 jq -nc '[range(2000) | "f\(.).sh"]' > "$T/shown-big.json"
 render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: ([range(2000) | "./f\(.).sh"] + ["nope1", "nope2"])}')" --shown "$T/shown-big.json"
 is "R7b 2000 shown and 2002 listed: 2000 kept, the 2 unshown counted" \
@@ -2323,6 +2326,90 @@ is "R13 render without the module is exit 1 with nothing on stdout" "$rc/$(cat "
 is "R13 and stderr names the module path" "$(grep -c /nonexistent "$T/rerr")" 1
 XREVIEW_TEXT_SCAN=/nonexistent rpc escape <<<"a" >"$T/rout" 2>"$T/rerr"; rc=$?
 is "R13 escape without the module is exit 1 with nothing on stdout" "$rc/$(cat "$T/rout")" "1/"
+
+# Secrets are built at run time: this file holds no secret-shaped text.
+TOKEN="ghp_$(printf 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8')"
+ssh-keygen -t ed25519 -N '' -f "$T/k" -q
+KEY="$(cat "$T/k")"; KEYLINE="$(sed -n 2p "$T/k")"
+# sec_ans <summary> <failure_scenario>: one finding holding them.
+sec_ans() { jq -nc --arg s "$1" --arg f "$2" '{verdict:"changes",findings:[{severity:"P1",file:"a.sh",line:3,summary:$s,failure_scenario:$f}]}'; }
+# sec_check <label>: what every R9 variant must show in $out.
+sec_check() {
+  is "$1: neither the token nor the key reaches the output" "$(grep -c -F -e "$TOKEN" -e "$KEYLINE" <<<"$out")" 0
+  is "$1: each is a marker naming its rule" \
+     "$(jq -r '[.findings[0].summary, .findings[0].failure_scenario] | join("|")' <<<"$out")" \
+     "[secret redacted: private-key]|the token [secret redacted: github-pat] was read"
+  is "$1: the note counts two redactions" \
+     "$(jq -r '.notes | map(select(contains("2 secrets were redacted"))) | length' <<<"$out")" 1
+}
+
+# R9. A credential the reviewer read must not reach Claude: a token in a scenario and a private key in
+# a summary are both replaced. Catches a render that skips gitleaks, or one that redacts only a field.
+render_case "$(sec_ans "$KEY" "the token $TOKEN was read")"
+is "R9 render succeeds" "$rc" 0
+sec_check "R9"
+# R9b. Neither a config file in the current directory, nor GITLEAKS_CONFIG, nor a gitleaks:allow comment
+# may suppress a match (spec 4.3): the reviewer controls the text and any file it can plant.
+mkdir -p "$T/cfgdir"
+printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''" > "$T/cfgdir/.gitleaks.toml"
+( cd "$T/cfgdir" && sec_ans "$KEY" "the token $TOKEN was read" | rpc render --nonce N1 >"$T/rout" 2>"$T/rerr" ); rc=$?
+out="$(cat "$T/rout")"
+is "R9b render in a directory with an allow-everything .gitleaks.toml succeeds" "$rc" 0
+sec_check "R9b .gitleaks.toml in the current directory"
+GITLEAKS_CONFIG="$T/cfgdir/.gitleaks.toml" GITLEAKS_CONFIG_TOML="$(cat "$T/cfgdir/.gitleaks.toml")" \
+  render_case "$(sec_ans "$KEY" "the token $TOKEN was read")"
+sec_check "R9b GITLEAKS_CONFIG and GITLEAKS_CONFIG_TOML"
+render_case "$(sec_ans "$KEY # gitleaks:allow" "the token $TOKEN # gitleaks:allow was read")"
+is "R9b a gitleaks:allow comment: both are still redacted" \
+   "$(grep -c -F -e "$TOKEN" -e "$KEYLINE" <<<"$out")/$(grep -o -F '[secret redacted: ' <<<"$out" | wc -l | tr -d ' ')" "0/2"
+
+# R9c. A match gitleaks cannot place in its field (a decoded one reports a Secret that is not in the
+# text) replaces the whole field. Catches a render that leaves such a field as it was. The stub stands
+# in for gitleaks: it reports a Secret that is in no field, in the summary's file.
+mkdir -p "$T/stubs"
+printf '#!/bin/sh\nd="$2"\nwhile [ $# -gt 0 ]; do [ "$1" = --report-path ] && rp="$2"; shift; done\nprintf %s "$d" > "$rp"\n' \
+  "'[{\"RuleID\":\"stub-rule\",\"Secret\":\"decoded-value\",\"File\":\"%s/1\"}]'" > "$T/stubs/locate"
+chmod 755 "$T/stubs/locate"
+XREVIEW_GITLEAKS="$T/stubs/locate" render_case "$(sec_ans "plain words" "more words")"
+is "R9c an unlocated match replaces the whole field, and only that field" \
+   "$rc/$(jq -r '[.findings[0].file, .findings[0].summary, .findings[0].failure_scenario] | join("|")' <<<"$out")" \
+   "0/a.sh|[secret redacted: stub-rule]|more words"
+is "R9c and the note counts it" "$(jq -c .notes <<<"$out")" '["1 secrets were redacted."]'
+
+# R10. Fail closed: when gitleaks cannot scan, nothing is printed and nothing is recorded. Catches a
+# render that prints the text unscanned. Each stub is one way gitleaks can fail.
+msg="could not scan the reviewer's text ("
+XREVIEW_GITLEAKS=/nonexistent render_case "$(sec_ans s f)"
+is "R10 a missing gitleaks is exit 1 with nothing on stdout" "$rc/$out" "1/"
+is "R10 and stderr says to collect again once gitleaks runs" \
+   "$(grep -c -F -e "xreview-rpc: gitleaks $msg" -e "); collect again once gitleaks runs" <<<"$errtext")" 1
+printf '#!/bin/sh\nexit 2\n' > "$T/stubs/fails"
+printf '#!/bin/sh\nexit 0\n' > "$T/stubs/noreport"
+printf '#!/bin/sh\nsleep 30\n' > "$T/stubs/slow"
+chmod 755 "$T/stubs/fails" "$T/stubs/noreport" "$T/stubs/slow"
+XREVIEW_GITLEAKS="$T/stubs/fails" render_case "$(sec_ans s f)"
+is "R10 a gitleaks that exits 2 is exit 1 with nothing on stdout" "$rc/$out/$(grep -c -F 'exit status 2' <<<"$errtext")" "1//1"
+XREVIEW_GITLEAKS="$T/stubs/noreport" render_case "$(sec_ans s f)"
+is "R10 a gitleaks that leaves no readable report is exit 1 with nothing on stdout" \
+   "$rc/$out/$(grep -c -F 'report' <<<"$errtext")" "1//1"
+start=$SECONDS
+XREVIEW_GITLEAKS="$T/stubs/slow" XREVIEW_GITLEAKS_TIMEOUT=1 render_case "$(sec_ans s f)"
+is "R10 a gitleaks that outlasts its timeout is killed: exit 1, nothing on stdout, well under its 30 s" \
+   "$rc/$out/$(grep -c -F 'timed out' <<<"$errtext")/$((SECONDS - start < 10))" "1//1/1"
+# R10b. Whatever happened, no temporary directory or report is left behind.
+mkdir -p "$T/tmpd"
+TMPDIR="$T/tmpd" render_case "$(sec_ans "$KEY" "the token $TOKEN was read")"
+TMPDIR="$T/tmpd" XREVIEW_GITLEAKS="$T/stubs/fails" render_case "$(sec_ans s f)"
+is "R10b after a success and a failure nothing is left in the temporary directory" "$(ls -A "$T/tmpd" | wc -l | tr -d ' ')" 0
+
+# R12b. escape redacts the same way, before it escapes, and fails closed the same way.
+is "R12b escape replaces a token with its marker" \
+   "$(printf 'line %s here' "$TOKEN" | rpc escape)" "line [secret redacted: github-pat] here"
+is "R12b and the token is nowhere in what it printed" "$(printf '%s' "$TOKEN" | rpc escape | grep -c -F "$TOKEN")" 0
+printf 'line %s here' "$TOKEN" | XREVIEW_GITLEAKS=/nonexistent rpc escape >"$T/rout" 2>"$T/rerr"; rc=$?
+is "R12b escape without gitleaks is exit 1 with nothing on stdout" "$rc/$(cat "$T/rout")" "1/"
+is "R12b and stderr says to collect again once gitleaks runs" \
+   "$(grep -c -F "); collect again once gitleaks runs" "$T/rerr")" 1
 
 echo "P. a hostile PATH is never consulted (xreview-rpc runs outside the sandbox)"
 # The stdio transport's command runs through a shell on the script's own PATH, so a hostile

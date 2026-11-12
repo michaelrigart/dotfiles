@@ -40,9 +40,12 @@ tests' fake daemon cannot listen on one.
                   ones it will not select; with --archive, archives the selected ones for good.
 
   render          --nonce NONCE [--shown FILE] [--kept PATH]   stdin: one validated answer; stdout: its rendering for Claude
-                  (escaped, cut, within bounds); exit 4 over a bound, exit 1 without the text-scan module
-  escape                                                     stdin to stdout, every hidden character as <U+XXXX>
-                  Neither connects to the daemon. Spec: docs/superpowers/specs/2026-11-12-xreview-trust-design.md, section 4.1
+                  (secrets redacted, escaped, cut, within bounds); exit 4 over a bound, exit 1 without the
+                  text-scan module or when gitleaks cannot scan
+  escape                                                     stdin to stdout, secrets redacted, every hidden character as <U+XXXX>;
+                  exit 1, printing nothing, when gitleaks cannot scan
+                  Neither connects to the daemon. gitleaks is $XREVIEW_GITLEAKS, else gitleaks on PATH.
+                  Spec: docs/superpowers/specs/2026-11-12-xreview-trust-design.md, sections 4.1, 4.3, 4.4
 
 Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
 4 answer does not match the schema (raw text on stdout), 5 daemon unreachable,
@@ -63,10 +66,13 @@ import os
 import re
 import select
 import shlex
+import shutil
+import signal
 import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 # Runs outside the sandbox (called by xreview), so it resolves no mise shim (spec
@@ -2097,8 +2103,104 @@ def render_answer(doc, nonce, shown, kept, redact):
     return out, []
 
 
-def identity_redact(texts):
-    return texts, 0
+class GitleaksFailed(Exception):
+    """gitleaks could not scan: the message is the reason."""
+
+
+GITLEAKS_TIMEOUT = 10.0
+
+
+def gitleaks_findings(texts):
+    """[(index of the text, Secret, RuleID)] from one gitleaks run over all the texts, run as the
+    push guard runs it (default rules only; a config file, a GITLEAKS_* variable and a
+    gitleaks:allow comment cannot suppress a match). Raises GitleaksFailed for a missing binary,
+    a timeout, an exit status other than 0 or a report that cannot be read."""
+    exe = os.environ.get("XREVIEW_GITLEAKS") or "gitleaks"
+    timeout = env_secs("XREVIEW_GITLEAKS_TIMEOUT", GITLEAKS_TIMEOUT)    # the knob is for the suites
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GITLEAKS_")}
+    made = []
+    try:
+        scan_dir = tempfile.mkdtemp(prefix="xreview-rpc-scan-")
+        made.append(scan_dir)
+        empty = tempfile.mkdtemp(prefix="xreview-rpc-empty-")
+        made.append(empty)
+        fd, report = tempfile.mkstemp(prefix="xreview-rpc-report-", suffix=".json")
+        os.close(fd)
+        made.append(report)
+        for i, text in enumerate(texts):
+            with open(os.path.join(scan_dir, str(i)), "w", encoding="utf-8", errors="replace",
+                      newline="") as fh:
+                fh.write(text)
+        cmd = [exe, "dir", scan_dir, "--no-banner", "--ignore-gitleaks-allow",
+               "--gitleaks-ignore-path", empty, "--report-format", "json",
+               "--report-path", report, "--exit-code", "0"]
+        # Its own process group, so a timeout takes gitleaks and anything it started down together.
+        p = subprocess.Popen(cmd, cwd=empty, env=env, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        try:
+            code = p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                p.kill()
+            p.wait()
+            raise GitleaksFailed(f"timed out after {timeout:g} s")
+        if code != 0:
+            raise GitleaksFailed(f"exit status {code}")
+        try:
+            with open(report, encoding="utf-8") as fh:
+                found = json.load(fh)
+        except (OSError, ValueError):
+            raise GitleaksFailed("its report could not be read")
+        if not isinstance(found, list):
+            raise GitleaksFailed("its report could not be read")
+        out = []
+        for f in found:
+            try:
+                index = int(os.path.basename(f["File"]))
+                secret, rule = f.get("Secret") or "", f["RuleID"]
+            except (KeyError, TypeError, ValueError, AttributeError):
+                raise GitleaksFailed("its report could not be read")
+            if not isinstance(secret, str) or not isinstance(rule, str) or not 0 <= index < len(texts):
+                raise GitleaksFailed("its report could not be read")
+            out.append((index, secret, rule))
+        return out
+    except OSError as e:
+        raise GitleaksFailed(f"{exe}: {e.strerror or e}")
+    finally:
+        for path in made:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def redact_secrets(texts):
+    """(texts with every secret gitleaks finds in them replaced by "[secret redacted: <rule>]",
+    how many replacements were made). Where a finding's Secret is empty or is not in its text (a
+    decoded match), the whole text is replaced. Raises GitleaksFailed."""
+    out, count = list(texts), 0
+    whole, redacted = set(), {}
+    # Longest secret first, so one inside another is gone with it.
+    for i, secret, rule in sorted(gitleaks_findings(texts), key=lambda f: (f[0], -len(f[1]))):
+        if i in whole:
+            continue
+        marker = f"[secret redacted: {rule}]"
+        if secret and secret in out[i]:
+            out[i] = out[i].replace(secret, marker)
+            redacted.setdefault(i, []).append(secret)
+        elif secret and secret in texts[i] and any(secret in r for r in redacted.get(i, [])):
+            continue    # already gone: a duplicate finding, or part of a longer secret
+        else:
+            out[i] = marker
+            whole.add(i)
+        count += 1
+    return out, count
 
 
 def read_shown(path):
@@ -2116,6 +2218,11 @@ def write_out(text):
     sys.stdout.buffer.flush()
 
 
+def gitleaks_refusal(e):
+    err(f"gitleaks could not scan the reviewer's text ({e}); collect again once gitleaks runs")
+    return 1
+
+
 def cmd_render(a):
     try:
         load_text_scan()
@@ -2129,7 +2236,10 @@ def cmd_render(a):
         problems = ["$: not readable JSON"]
     else:
         shown = read_shown(a.shown) if a.shown else None
-        rendering, problems = render_answer(doc, a.nonce, shown, a.kept, identity_redact)
+        try:
+            rendering, problems = render_answer(doc, a.nonce, shown, a.kept, redact_secrets)
+        except GitleaksFailed as e:
+            return gitleaks_refusal(e)
     if problems:
         err(f"the answer exceeds xreview's bounds ({len(problems)} problems; first: {problems[0]})")
         return 4
@@ -2143,8 +2253,12 @@ def cmd_escape(a):
     except TextScanMissing as e:
         err(str(e))
         return 1
-    text, _ = escape_with(hidden_check(scan), sys.stdin.buffer.read().decode("utf-8", errors="replace"))
-    write_out(text)
+    text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    try:
+        text = redact_secrets([text])[0][0]
+    except GitleaksFailed as e:
+        return gitleaks_refusal(e)
+    write_out(escape_with(hidden_check(scan), text)[0])
     return 0
 
 
