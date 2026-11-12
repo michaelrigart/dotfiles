@@ -69,11 +69,26 @@ REALGIT=$(command -v git)
 # block is a non-zero exit with the hook's reason on stderr (every reason starts "Push guard:",
 # but UNSUPPORTED), so a push git itself rejects is no block. Its stderr stays in LAST_ERR for needle.
 # GOPTS holds options for git itself (-c ...); PUSH_CWD is the directory the push is run from.
+# PUSH_BOUND=<seconds> runs the push under bounded.py, which kills its whole process group at the
+# limit: a row about a hook that could recurse must fail in seconds, never fork without end.
 LAST_ERR=""; GOPTS=()
+cat > "$TMP/bounded.py" <<'PY'
+import os, signal, subprocess, sys
+p = subprocess.Popen(sys.argv[2:], start_new_session=True)
+try:
+    sys.exit(p.wait(timeout=float(sys.argv[1])))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    p.wait()
+    sys.stderr.write("bounded: killed after %ss\n" % sys.argv[1])
+    sys.exit(124)
+PY
 expect_push() {
-  local want=$1 label=$2 repo=$3 rc got; shift 3
-  LAST_ERR=$( cd "${PUSH_CWD:-$TMP}" && git ${GOPTS[@]+"${GOPTS[@]}"} -C "$repo" push --dry-run "$@" 2>&1 >/dev/null ); rc=$?
+  local want=$1 label=$2 repo=$3 rc got bound=(); shift 3
+  [ -n "${PUSH_BOUND:-}" ] && bound=(/usr/bin/python3 -I "$TMP/bounded.py" "$PUSH_BOUND")
+  LAST_ERR=$( cd "${PUSH_CWD:-$TMP}" && ${bound[@]+"${bound[@]}"} git ${GOPTS[@]+"${GOPTS[@]}"} -C "$repo" push --dry-run "$@" 2>&1 >/dev/null ); rc=$?
   if [ "$rc" -eq 0 ]; then got=pass
+  elif [ "$rc" -eq 124 ] && printf '%s' "$LAST_ERR" | grep -q '^bounded: killed'; then got="killed at the bound (the hook did not return)"
   elif [ "$want" = refused ]; then got=refused         # any refusal: a hook of the repository's own
   elif printf '%s' "$LAST_ERR" | grep -qE 'Push guard:|^unsupported push configuration'; then got=block
   else got="exit $rc without a reason from the hook"; fi
@@ -187,6 +202,7 @@ else
   # The directory the push is run from is not the repository that is scanned: the same push, two
   # repositories.
   PUSH_CWD=$CLEAN expect_push block "git -C <leaky repo> is scanned there" "$LEAKY" origin feat
+  needle "and it is the leaky repository's rule that is named" "$NEEDLE_RULE"
   PUSH_CWD=$LEAKY expect_push pass "git -C <clean repo> is scanned there" "$CLEAN" origin feat
   case "$got" in
     *"$part_b"*) bad "the deny never shows the secret" ;;
@@ -196,6 +212,7 @@ else
   printf '%s # gitleaks:allow\n' "$SECRET_LINE" > "$INLINE/creds.txt"
   git -C "$INLINE" add creds.txt && git -C "$INLINE" commit -q -m "add creds inline-allowed"
   expect_push block "an inline gitleaks:allow is not an exception" "$INLINE" origin feat
+  needle "and the secret is found, not merely refused" "$NEEDLE_RULE"
   # The reviewed way through: the finding's fingerprint in the tracked .gitleaksignore.
   fp=$(printf '%s\n' "$got" | sed -n 's/.*(fingerprint \([^)]*\)).*/\1/p' | head -1)
   printf '%s\n' "$fp" > "$LEAKY/.gitleaksignore"
@@ -211,7 +228,9 @@ else
   seed_push "$TWO" backup elsewhere
   expect_push block "a secret reachable only from another remote is still scanned" "$TWO" origin elsewhere
   needle "and it is found, not merely refused" "$NEEDLE_RULE"
-  expect_push pass "the destination remote's own history is excluded" "$TWO" backup elsewhere
+  # A new ref name: backup already holds elsewhere, so pushing that ref sends the hook no line at
+  # all and would pass with or without the exclusion.
+  expect_push pass "the destination remote's own history is excluded" "$TWO" backup elsewhere:copy
 
   # leaky_clone <name> -> a clone of a branch that adds the secret. fingerprint_of <repo> reads
   # the fingerprint the block reports (it is commit-bound, so it differs per clone).
@@ -282,6 +301,7 @@ else
   printf '%s\n' "$SECRET_LINE" > "$EVIL/creds.txt"; git -C "$EVIL" add creds.txt
   git -C "$EVIL" commit -q -m "merge side"
   expect_push block "a secret introduced while committing a merge" "$EVIL" origin feat
+  needle "and it is found, not merely refused" "$NEEDLE_RULE"
   # Ways git can be made to show no added text while the secret is there. The scan pins them for
   # its own git log, and never skips gitleaks on an expected count of zero.
   echo "== rule 4: a secret git is told not to show =="
@@ -478,8 +498,10 @@ else
   CFGLEAK=$(leaky_clone config-leak)
   printf '%s\n' "$ALLOW_ALL" > "$CFGLEAK/.gitleaks.toml"
   expect_push block "an untracked .gitleaks.toml that allows everything" "$CFGLEAK" origin feat
+  needle "and the deny names the file" "the gitleaks config file .gitleaks.toml in the working tree"
   git -C "$CFGLEAK" add .gitleaks.toml
   expect_push block "a staged, uncommitted .gitleaks.toml" "$CFGLEAK" origin feat
+  needle "and the deny names the file" "the gitleaks config file .gitleaks.toml in the working tree"
   git -C "$CFGLEAK" commit -q -m "a gitleaks config"
   expect_push block "a committed .gitleaks.toml" "$CFGLEAK" origin feat
   needle "and the deny names the file" "the gitleaks config file .gitleaks.toml in the working tree"
@@ -503,6 +525,8 @@ else
     "the gitleaks config file .GitLeaks.Toml committed on $CFGSHA"
   git -C "$TREEONLY" tag cfgtag withcfg
   expect_push block "a config in a tagged tree, pushed with --tags" "$TREEONLY" origin --tags
+  needle "and the deny names the file and the tagged commit" \
+    "the gitleaks config file .GitLeaks.Toml committed on $CFGSHA"
   # Only what is pushed counts: a config on a branch that stays home is not in play.
   printf 'hello\n' > "$TREEONLY/notes.txt"
   git -C "$TREEONLY" add notes.txt && git -C "$TREEONLY" commit -q -m "a clean change on feat"
@@ -594,7 +618,8 @@ else
   # to backup's path (which already holds it) is not.
   expect_push block "a secret-bearing branch that only backup holds, pushed to origin's path, is blocked" "$TWO" "$REMOTES/origin.git" elsewhere
   needle "and the block names the rule" "$NEEDLE_RULE"
-  expect_push pass "pushed to backup's path it passes: that destination already holds it" "$TWO" "$REMOTES/backup.git" elsewhere
+  # A new ref name again: backup holds elsewhere, so a push of that ref has no line to scan.
+  expect_push pass "pushed to backup's path it passes: that destination already holds it" "$TWO" "$REMOTES/backup.git" elsewhere:copy
   git init -q --bare "$REMOTES/third.git"
   expect_push block "a URL that matches no configured remote, with a secret in old history, is blocked" "$TWO" "$REMOTES/third.git" elsewhere
   needle "and the block names the rule" "$NEEDLE_RULE"
@@ -613,6 +638,17 @@ else
   expect_push block "a secret fetched from A and pushed to B's path as a URL is blocked (a pushurl attributes nothing)" "$DIST" "$REMOTES/dist-b.git" sec
   needle "and the block names the rule" "$NEEDLE_RULE"
   expect_push pass "the same branch pushed to A's path passes: A already holds it" "$DIST" "$REMOTES/dist-a.git" sec
+  # A pushInsteadOf rewrite: git hands the hook the URL as typed (A) and sends to the rewritten
+  # one (B). origin fetches from A, so its tracking ref says what A holds, not what B holds.
+  git init -q --bare "$REMOTES/pio-a.git"; git init -q --bare "$REMOTES/pio-b.git"
+  PIO=$(leaky_clone pio-rewrite); git -C "$PIO" remote set-url origin "$REMOTES/pio-a.git"
+  seed_push "$PIO" origin feat:held
+  cp -R "$PIO" "$TMP/pio-control"; PIOCTL="$TMP/pio-control"
+  git -C "$PIO" config "url.$REMOTES/pio-b.git.pushInsteadOf" "$REMOTES/pio-a.git"
+  expect_push pass "without the rewrite, a push to A's path passes: A already holds the commit" "$PIOCTL" "$REMOTES/pio-a.git" feat:fresh
+  expect_push block "a pushInsteadOf rewrite to B never attributes A's history: the secret A holds is scanned" "$PIO" "$REMOTES/pio-a.git" feat:fresh
+  needle "and the block names the rule" "$NEEDLE_RULE"
+  needle "and says the push is rewritten to B" "rewritten from $REMOTES/pio-a.git"
 
   echo "== the repository's own hook =="
   OWN=$(clone own-hook); OWNLOG="$TMP/own.log"
@@ -642,9 +678,35 @@ else
   expect_push pass "a clean push from a linked worktree passes" "$TMP/own-wt" origin own-wt
   if [ "$(sed -n 1p "$OWNLOG")" = "origin $REMOTES/origin.git" ]; then ok "and the common directory's hook runs"
   else bad "and the common directory's hook runs ($(sed -n 1p "$OWNLOG"))"; fi
+  # The link must meet a push that sends a commit: with nothing outgoing the hook gets no line and
+  # a re-entry would end quietly. Here it would run the scan and the link again, without end, so
+  # the row is bounded.
   OWNLINK=$(clone own-hook-link)
   mkdir -p "$OWNLINK/.git/hooks"; ln -sf "$HOOKS/pre-push" "$OWNLINK/.git/hooks/pre-push"
-  expect_push pass "a repository hook that is a link to the global hook is not re-entered" "$OWNLINK" origin feat
+  printf 'again\n' > "$OWNLINK/notes2.txt"
+  git -C "$OWNLINK" add notes2.txt && git -C "$OWNLINK" commit -q -m "a clean change on feat"
+  PUSH_BOUND=10 expect_push pass "a repository hook that is a link to the global hook is not re-entered (a commit is outgoing)" "$OWNLINK" origin feat
+  # Re-entered through a link to the hook file alone, the global hook meets a hooks directory with
+  # no scan beside it and refuses, so that row ends without help. A link to the whole hooks
+  # directory is the shape that would recurse for as long as it is allowed to.
+  OWNDIR=$(clone own-hook-dirlink)
+  rm -rf "$OWNDIR/.git/hooks"; ln -s "$HOOKS" "$OWNDIR/.git/hooks"
+  printf 'again\n' > "$OWNDIR/notes2.txt"
+  git -C "$OWNDIR" add notes2.txt && git -C "$OWNDIR" commit -q -m "a clean change on feat"
+  PUSH_BOUND=10 expect_push pass "a hooks directory that is a link to the global one is not re-entered (a commit is outgoing)" "$OWNDIR" origin feat
+  # If git cannot say where the repository's hooks live, its own hook cannot be run, and a push
+  # that skips it silently is a push the repository's rules never saw: refuse, scan or no scan.
+  NOCOMMON="$TMP/nocommon"; mkdir -p "$NOCOMMON"
+  printf '#!/bin/sh\ncase " $* " in\n  *" --git-common-dir "*) exit 1 ;;\nesac\nexec "%s" "$@"\n' "$REALGIT" > "$NOCOMMON/git"
+  chmod 755 "$NOCOMMON/git"
+  : > "$OWNLOG"; chmod 755 "$OWN/.git/hooks/pre-push"
+  GIT_CONFIG_GLOBAL=$GITCONFIG_WRAP HOOK_EXTRA_PATH=$NOCOMMON \
+    expect_push block "a git that cannot name the common directory blocks a push the scan passed" "$OWN" origin feat other
+  needle "and says why" "cannot find the repository's own hooks"
+  GIT_CONFIG_GLOBAL=$GITCONFIG_WRAP HOOK_EXTRA_PATH=$NOCOMMON \
+    expect_push block "and so does a delete-only push" "$CLEAN" origin :old
+  needle "and says why" "cannot find the repository's own hooks"
+  if [ ! -s "$OWNLOG" ]; then ok "and the repository's hook was not run behind its back"; else bad "and the repository's hook was not run behind its back"; fi
 
   echo "== the command line of secret-scan =="
   rc=0; out=$(/usr/bin/python3 -I "$HOOKS/secret-scan" --repo "$CLEAN" --remote origin 2>&1) || rc=$?
@@ -682,14 +744,17 @@ for spec in "zero|0 commits scanned.|" "noline||" \
   PATH="$STUB2:$REALPATH"
   case $name in
     zero)  expect_push block "a gitleaks that scanned 0 of 1 commits is a deny" "$CLEAN" origin feat
-           needle "and the deny says how many it scanned" "scanned 0 commit(s)"
+           needle "and the deny says how many it scanned" "scanned 0 commit(s) but this push carries 1"
            # A commit that only removes lines is still one gitleaks must cover.
-           expect_push block "a gitleaks that skipped a removal-only commit is a deny" "$TRIM" origin trim ;;
-    noline) expect_push block "a gitleaks that reports no count is a deny" "$CLEAN" origin feat ;;
-    err)   expect_push block "a gitleaks that logs an ERR line is a deny" "$CLEAN" origin feat ;;
-    many)  expect_push block "a count that differs from the outgoing one is a deny" "$CLEAN" origin feat ;;
+           expect_push block "a gitleaks that skipped a removal-only commit is a deny" "$TRIM" origin trim
+           needle "and the deny says how many it scanned" "scanned 0 commit(s) but this push carries 1" ;;
+    noline) expect_push block "a gitleaks that reports no count is a deny" "$CLEAN" origin feat
+            needle "and the deny says the count was unknown" "scanned an unknown number of commit(s)" ;;
+    err)   expect_push block "a gitleaks that logs an ERR line is a deny" "$CLEAN" origin feat
+           needle "and the deny says gitleaks logged an error" "gitleaks logged an error while scanning" ;;
+    many)  expect_push block "a count that differs from the outgoing one is a deny" "$CLEAN" origin feat
+           needle "and the deny gives both counts" "scanned 2 commit(s) but this push carries 1" ;;
   esac
-  needle "and the block says why" "gitleaks"
 done
 OKGL="$TMP/cov-ok"; mkdir -p "$OKGL"
 printf '#!/bin/sh\necho "6:00PM INF 1 commits scanned." >&2\nexit 0\n' > "$OKGL/gitleaks"; chmod 755 "$OKGL/gitleaks"

@@ -2847,8 +2847,12 @@ def run_scan(root, remote, sources):
     """secret-scan over the commits a push that would ask sends. Returns on a clean scan and
     raises Deny otherwise, with the scan's own reason: a scan that cannot run is a deny, never
     a pass. The scan gets what is left of the budget less a second, so its own timeout reason
-    comes first; it runs in its own process group, which is killed at the budget, so a hung
-    gitleaks and the git it spawned cannot keep this helper (and the hook) waiting."""
+    comes first. The scan runs in its own session, and at the budget its process group is
+    killed: the scan itself and the git calls it makes. That kill does not reach gitleaks:
+    secret-scan starts gitleaks in a session of its own, so a gitleaks the scan has not yet
+    reaped can outlive this kill. In normal operation it never comes to that: the scan's own
+    budget is a second shorter, so the scan ends first and kills its gitleaks itself. A
+    survivor holds none of this helper's pipes, so it cannot keep this helper waiting."""
     remaining = BUDGET - (time.monotonic() - START)
     if remaining <= 0:
         raise Deny(TIMED_OUT)

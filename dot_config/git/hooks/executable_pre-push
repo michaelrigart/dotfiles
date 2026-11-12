@@ -33,12 +33,23 @@ if [ "${#shas[@]}" -gt 0 ]; then
     echo "Push guard: cannot resolve the work tree this push runs in, so the push is refused. Push by hand." >&2
     exit 1
   fi
-  /usr/bin/python3 -I "$scan" --repo "$root" --remote "${1:-}" -- "${shas[@]}" || exit 1
+  # $1 is the remote's name, or the URL as typed; $2 is where git sends (a pushurl, or a
+  # pushInsteadOf rewrite of the URL). Only a name, or a URL git did not rewrite, says what the
+  # destination holds; a rewritten URL is scanned in full, under the address git really uses.
+  dest="${1:-}"
+  if [ "$dest" != "${2:-}" ] && ! git remote 2>/dev/null | grep -Fxq -- "$dest"; then
+    dest="${2:-} (rewritten from $dest)"
+  fi
+  /usr/bin/python3 -I "$scan" --repo "$root" --remote "$dest" -- "${shas[@]}" || exit 1
 fi
 
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [ -z "$common" ]; then
+  echo "Push guard: cannot find the repository's own hooks directory, so the push is refused (its own pre-push hook cannot run). Push by hand." >&2
+  exit 1
+fi
 own="$common/hooks/pre-push"
-if [ -n "$common" ] && [ -x "$own" ] && [ ! "$own" -ef "$0" ]; then
+if [ -x "$own" ] && [ ! "$own" -ef "$0" ]; then
   "$own" "$@" < "$saved"
   exit $?
 fi
