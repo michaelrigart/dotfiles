@@ -2112,6 +2112,7 @@ GITLEAKS_TIMEOUT = 10.0
 
 UNSCANNED = "unscanned"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+LOG_SKIP = re.compile(r"^\S+\s+(?:DBG|INF|WRN|ERR)\s+(skip.*)$", re.IGNORECASE)
 SCANNED_BYTES = re.compile(r"\bscanned ~(\d+) bytes\b")
 
 
@@ -2121,7 +2122,7 @@ def gitleaks_scan(texts):
     config file, a GITLEAKS_* variable and a gitleaks:allow comment cannot suppress a match).
     gitleaks skips a file that looks like a binary format (magic bytes at the start or at an
     offset), saying so only in its debug log, so the run is made at debug level: a file named in a
-    "skip" line is unscanned, and the bytes gitleaks says it scanned must equal the size of the
+    log line that starts "skip" is unscanned (but for an empty file, which holds nothing), and the bytes gitleaks says it scanned must equal the size of the
     files that are not, so a skip it did not name cannot pass either. Raises GitleaksFailed for a
     missing binary, a timeout, an exit status other than 0, a report or a log that cannot be
     read, or a scan that did not cover the files."""
@@ -2164,8 +2165,14 @@ def gitleaks_scan(texts):
         unscanned, scanned = set(), None
         here = re.escape(os.path.basename(scan_dir)) + r"/(\d+)"
         for line in ANSI.sub("", log.decode("utf-8", errors="replace")).splitlines():
-            if "skip" in line.lower():
-                unscanned.update(int(m) for m in re.findall(here, line) if int(m) < len(texts))
+            skip = LOG_SKIP.match(line)
+            if skip:
+                # A skipped empty file holds no secret (decided from the text, not the log); any
+                # other skip, a kind this does not know included, leaves the file unscanned.
+                known_empty = skip.group(1).startswith("skipping empty file")
+                for m in re.findall(here, line):
+                    if int(m) < len(texts) and not (known_empty and sizes[int(m)] == 0):
+                        unscanned.add(int(m))
             m = SCANNED_BYTES.search(line)
             if m:
                 scanned = int(m.group(1))

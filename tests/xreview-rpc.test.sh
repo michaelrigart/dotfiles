@@ -2382,7 +2382,7 @@ is "R9c and the note counts it" "$(jq -c .notes <<<"$out")" '["1 secrets were re
 # (it only logs "skipping binary file"). A reviewer-controlled prefix must not exempt a text from the
 # scan: such a field is replaced whole. Catches a render that treats "no finding" as "clean".
 ZZ="[secret redacted: unscanned]"
-for sig in "MZ |MZ" "%PDF-1.4 |pdf" "$(xs 128)DICM |dicom at byte 128" "$(xs 257)ustar |ustar at byte 257"; do
+for sig in "MZ |MZ" "%PDF-1.4 |pdf" "{\\rtf1 |rtf" "$(xs 128)DICM |dicom at byte 128" "$(xs 257)ustar |ustar at byte 257" "$(xs 32769)CD001 |CD001 at byte 32769"; do
   pre="${sig%|*}"; name="${sig##*|}"
   render_case "$(sec_ans "fine" "${pre}token $TOKEN here")"
   is "R9d render: a scenario that starts as $name has no token in the output" \
@@ -2402,10 +2402,23 @@ is "R9e escape: neither the literal token nor its base64 copy reaches the output
    "$(printf 'plain %s and encoded %s end' "$TOKEN" "$B64" | rpc escape | grep -c -F -e "$TOKEN" -e "$B64")" 0
 # R9f. Texts of every shape scan to the byte count gitleaks reports (the check that no file went
 # unscanned without being named): empty, multi-line, multi-byte, long.
-render_case "$(sec_ans "" "$(printf 'one\ntwo\r\nthree é→')")"
-is "R9f an empty field and a multi-line multi-byte one are scanned and rendered" "$rc" 0
+# An empty field holds no secret: gitleaks logs "skipping empty file" for it, which is no reason to
+# redact it. Catches an empty field rendered as the unscanned marker and counted as a redaction.
+render_case "$(sec_ans "" "$(printf 'one\ntwo\r\nthree é→')")" --kept /x/y.answer
+is "R9f an empty field renders as empty with no redaction note; a multi-line multi-byte one is scanned and kept" \
+   "$rc/$(jq -c '[.findings[0].summary, .notes]' <<<"$out")/$(jq -r '.findings[0].failure_scenario' <<<"$out")" \
+   '0/["",["3 hidden characters are shown as <U+XXXX>."]]/one<U+000A>two<U+000D><U+000A>three é→'
+is "R9f escape of empty input prints nothing and exits 0" "$(printf '' | rpc escape; echo "rc=$?")" "rc=0"
 render_case "$(sec_ans "$(xs 5000)" "$(xs 5000)")"
 is "R9f long fields are scanned and rendered" "$rc" 0
+
+# R9g. A skip of a kind this code does not know, naming a scan file, still leaves that text unscanned
+# (replaced whole) and is not ignored. Catches a skip handler that only recognises the two known kinds.
+printf '#!/bin/sh\nd="$2"\nprintf "12:00AM DBG skipping a kind nobody has heard of path=%%s/0\\n" "$d" >&2\nprintf "12:00AM INF scanned ~%%s bytes (x) in 1ms\\n" "$(cat "$d"/1 "$d"/2 | wc -c | tr -d " ")" >&2\nwhile [ $# -gt 0 ]; do [ "$1" = --report-path ] && printf "[]" > "$2"; shift; done\n' > "$T/stubs/weird"
+chmod 755 "$T/stubs/weird"
+XREVIEW_GITLEAKS="$T/stubs/weird" render_case "$(sec_ans "plain words" "more words")"
+is "R9g an unknown kind of skip leaves the file it names unscanned: that field only is replaced" \
+   "$rc/$(jq -r '[.findings[0].file, .findings[0].summary] | join("|")' <<<"$out")" "0/$ZZ|plain words"
 
 # R10. Fail closed: when gitleaks cannot scan, nothing is printed and nothing is recorded. Catches a
 # render that prints the text unscanned. Each stub is one way gitleaks can fail.
