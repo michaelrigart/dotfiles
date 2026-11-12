@@ -505,7 +505,6 @@ put() {
 # gate [dest] [dest-rev] [tip]: allow, or deny and why, for tip landing on dest (default feature
 # on main).
 gate() { verdict "$G" "${1:-main}" "${2:-main}" "${3:-feature}"; }
-why() { L decide "$G" "${1:-main}" "${2:-main}" "${3:-feature}" --branch feature | jq -r .reason; }
 NONE="deny: no full-range pre-merge review of this change is on record"
 latest() { printf 'deny: the latest review of this change is pre-merge/%s, not an approval' "$1"; }
 is "F1 nothing on record denies" "$(gate)" "$NONE"
@@ -761,8 +760,6 @@ wrec() {
 # "not whole: <why>", so every deny case pins the rule that denied it.
 short() { sed 's/^deny: the latest approval is not whole: /deny: not whole: /'; }
 wgate() { verdict "$WH" main main feat | short; }
-wwhy() { L decide "$WH" main main feat | jq -r .reason; }
-notwhole() { printf '%s' "$1" | grep -c '^the latest approval is not whole: '; }
 NW="deny: not whole:"
 GAP="$NW reviewed_files left out files of the packet (missing is not empty)"
 COMPACT="$NW the review thread may have compacted during the turn (compacted is not false)"

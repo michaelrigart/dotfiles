@@ -80,7 +80,7 @@ is "--reconcile resolves both prefixes through the stub" "$(rpc_calls)" 2
 
 echo "B. as a SessionStart hook"
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
-printf '{"hook_event_name":"SessionStart","session_id":"%s","source":"startup"}' "$U1" | hook; rc=$?
+printf '{"hook_event_name":"SessionStart","session_id":"%s","source":"startup"}' "$U1" | hook
 is "the starting session's pane carries its start source" \
    "$(grep -c "^w1:p2 .*--agent-session-id $U1 .*--session-start-source startup$" "$CALLS")" 1
 is "hook mode confirms the shortcut through the resolver before trusting it" "$(rpc_calls)" 1
@@ -101,20 +101,20 @@ is "one report despite several retry passes" "$(reports)" 1
 
 echo "D2. a pane whose session already starts with the title prefix is left alone"
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "$U1")"
-hook --reconcile; rc=$?
+hook --reconcile
 is "no report" "$(reports)" 0
 is "and the resolver is never called" "$(rpc_calls)" 0
 
 echo "D3. a resolver that cannot resolve a prefix reports nothing, never a prefix"
 U5=55555555-5555-4555-8555-555555555555   # never on the stub's known-id list
 fixture "$(pane w7:p2 codex "$(trunc "$U5") | t | d" "")"
-hook --reconcile; rc=$?
+hook --reconcile
 is "and reports nothing for the unresolved pane" "$(reports)" 0
 is "the resolver was tried" "$(rpc_calls)" 1
 
 echo "D4. a missing xreview-rpc binary reports nothing rather than guessing"
 fixture "$(pane w8:p2 codex "$(trunc "$U1") | t | d" "")"
-XREVIEW_RPC_BIN="$T/nonexistent-rpc" hook --reconcile; rc=$?
+XREVIEW_RPC_BIN="$T/nonexistent-rpc" hook --reconcile
 is "and reports nothing when the resolver cannot run" "$(reports)" 0
 
 echo "F. the whole run stays inside its deadline"
@@ -154,7 +154,7 @@ is "an empty retry budget exits 0"         "$rc" 0
 
 echo "H. the raw-title fallback strips leading spinner glyphs and whitespace"
 fixture "$(pane_raw w1:p2 codex "$(trunc "$U1") | t | d" "")"
-hook --reconcile; rc=$?
+hook --reconcile
 is "the id under the spinner glyphs is still resolved" \
    "$(grep -c "^w1:p2 --source herdr:codex --agent codex --agent-session-id $U1 --seq [0-9]*$" "$CALLS")" 1
 
@@ -171,7 +171,7 @@ is "M3 the pane with a string agent_session is skipped, never reported" \
 
 echo "I2. with two panes in hook mode, --session-start-source goes only to the starting pane"
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")","$(pane w2:p2 codex "$(trunc "$U3") | t | d" "")"
-printf '{"session_id":"%s","source":"startup"}' "$U1" | hook; rc=$?
+printf '{"session_id":"%s","source":"startup"}' "$U1" | hook
 is "the starting session's pane carries the start source"        \
    "$(grep -c "^w1:p2 .*--session-start-source startup$" "$CALLS")" 1
 is "the other, resolved pane is reported too"                     "$(grep -c '^w2:p2' "$CALLS")" 1
@@ -193,14 +193,14 @@ H
 chmod +x "$T/slowreport"
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t" "")","$(pane w2:p2 codex "$(trunc "$U2") | t" "")"
 printf '{"session_id":"%s","source":"startup"}' "$U2" \
-  | HERDR_BIN="$T/slowreport" PANE_MAP_DEADLINE_SECS=3 PANE_MAP_RETRY_SECS=0 hook; rc=$?
+  | HERDR_BIN="$T/slowreport" PANE_MAP_DEADLINE_SECS=3 PANE_MAP_RETRY_SECS=0 hook
 is "the session's own pane is reported"                    "$(grep -c '^w2:p2' "$CALLS")" 1
 is "the deadline leaves no room for the other pane"        "$(grep -c '^w1:p2' "$CALLS")" 0
 
 echo "K. a resolver that keeps failing is called at most once per prefix per run"
 U6=66666666-6666-4666-8666-666666666666   # never on the stub's known-id list
 fixture "$(pane w12:p2 codex "$(trunc "$U6") | t" "")"
-printf '{"session_id":"%s"}' "$U1" | PANE_MAP_RETRY_SECS=1 hook; rc=$?
+printf '{"session_id":"%s"}' "$U1" | PANE_MAP_RETRY_SECS=1 hook
 is "the resolver is asked about the failing prefix only once, despite several retry passes" \
    "$(rpc_calls)" 1
 
@@ -216,7 +216,7 @@ R
 chmod +x "$T/failrpc"
 fixture "$(pane w20:p2 codex "$(trunc "$U1") | t | d" "")","$(pane w21:p2 codex "$(trunc "$U1") | t | d" "")"
 printf '{"session_id":"%s","source":"startup"}' "$U1" \
-  | XREVIEW_RPC_BIN="$T/failrpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
+  | XREVIEW_RPC_BIN="$T/failrpc" PANE_MAP_RETRY_SECS=0 hook
 is "neither ambiguous pane is reported"                          "$(reports)" 0
 is "the resolver is asked once, for the shared prefix, and refuses" "$(rpc_calls)" 1
 
