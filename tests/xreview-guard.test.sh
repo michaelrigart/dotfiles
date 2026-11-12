@@ -1322,8 +1322,8 @@ is "AZ-A8 az with an option before repos is denied as reordered" \
 is "AZ-A8b the reason gives az's plain form" \
    "$(reason "$AZ" "az --debug ${AZN#az }" | grep -c -F 'az repos pr create [options]')" 1
 is "AZ-A8c and names no -R" "$(reason "$AZ" "az --debug ${AZN#az }" | grep -c -F -- '-R')" 0
-is "AZ-A8d an option between pr and the verb, for update" \
-   "$(decision "$AZ" 'az repos pr --debug update --id 7 --title T')" deny
+is "AZ-A8d an option between pr and the verb, for a completing update" \
+   "$(decision "$AZ" 'az repos pr --debug update --id 7 --status completed')" deny
 is "AZ-A9 a quoted mention of the creation" "$(decision "$AZ" 'echo "az repos pr create"')" allow
 is "AZ-A9b and of the update" "$(decision "$AZ" "rg 'az repos pr update' docs")" allow
 is "AZ-A9c lazy create x: az inside another word" "$(decision "$AZ" 'lazy create x')" allow
@@ -1345,6 +1345,66 @@ is "AZ-A10b and an az update" "$(fallback 'az repos pr update --id 7 --status co
 is "AZ-A10c while az account show stays allowed" "$(fallback 'az account show')" allow
 is "AZ-A10d a truncated payload holding an az creation is denied" \
    "$(printf '%s' '{"tool_input":{"command":"az repos pr create --target-branch develop"},"cwd":"'"$AZ"'"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
+# Fix round 1. az resolves its command words case-insensitively (az Repos PR CREATE reaches the
+# handler), and the tool's own name too on a case-insensitive filesystem (AZ).
+is "AZ-C1 mixed-case command words are read: an unreviewed creation is denied" \
+   "$(decision "$AZ" 'az Repos PR Create --source-branch feat --target-branch main')" deny
+is "AZ-C1b with the dispatch for the change" \
+   "$(reason "$AZ" 'az Repos PR Create --source-branch feat --target-branch main' | grep -c -F 'origin/main...feat')" 1
+is "AZ-C1c the verb in capitals" \
+   "$(decision "$AZ" 'az repos pr CREATE --source-branch feat --target-branch main')" deny
+is "AZ-C1d the tool's name in capitals" \
+   "$(decision "$AZ" 'AZ repos pr create --source-branch feat --target-branch main')" deny
+is "AZ-C1e a completing update in mixed case" \
+   "$(decision "$AZ" 'az repos pr UPDATE --id 7 --status completed')" deny
+is "AZ-C1f an option before mixed-case words is reordered" \
+   "$(decision "$AZ" 'az --debug Repos PR create --target-branch develop')" deny
+is "AZ-C1g a harmless update in mixed case passes" \
+   "$(decision "$AZ" 'az Repos pr UPDATE --id 7 --title T')" allow
+is "AZ-C1h option names stay case-sensitive: --Auto-Complete is not az's option, a plain update" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --Auto-Complete true')" allow
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp 'az Repos PR CREATE --target-branch develop' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "AZ-C2 the fast path starts the helper for a mixed-case creation" "$(tripped)" ran
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp 'AZ repos pr UPDATE --id 7 --status completed' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "AZ-C2b and for a mixed-case update" "$(tripped)" ran
+is "AZ-C3 with the helper unrunnable, a mixed-case creation is denied" \
+   "$(fallback 'az Repos PR CREATE --target-branch develop')" deny
+is "AZ-C3b and a mixed-case update" "$(fallback 'AZ repos pr UPDATE --id 7 --status completed')" deny
+is "AZ-C3c while a mixed-case mention of another az command stays allowed" \
+   "$(fallback 'az ACCOUNT show')" allow
+is "AZ-C3d a truncated payload with a mixed-case creation is denied" \
+   "$(printf '%s' '{"tool_input":{"command":"az Repos PR Create --target-branch develop"},"cwd":"'"$AZ"'"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
+# With none of the three named, az detects the project from origin's push URL, and from another
+# remote's when its parser rejects that one: origin must then be the only remote.
+git -C "$AZ" remote add other 'git@ssh.dev.azure.com:v3/other/Proj/Repo'
+is "AZ-R1 none named, a second remote on another Azure organization is denied" \
+   "$(decision "$AZ" "$AZN")" deny
+is "AZ-R1b with the reason naming the remote and the all-three form" \
+   "$(reason "$AZ" "$AZN" | grep -c -F 'other')$(reason "$AZ" "$AZN" | grep -c -F 'all three')" 11
+is "AZ-R1c all three named stays allowed beside the second remote" "$(decision "$AZ" "$AZC")" allow
+git -C "$AZ" remote remove other
+is "AZ-R1d with origin alone again, none named is allowed" "$(decision "$AZ" "$AZN")" allow
+# Only an update that completes the PR is a gated verb, so a harmless one is allowed in a pipe,
+# a chain or a substitution; a completing one is denied there too.
+is "AZ-U1 a harmless update piped on" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --title T -o json | jq .status')" allow
+is "AZ-U1b a harmless update after a chain" \
+   "$(decision "$AZ" 'az repos pr show --id 7 && az repos pr update --id 7 --title T')" allow
+is "AZ-U1c a harmless reordered update" \
+   "$(decision "$AZ" 'az --debug repos pr update --id 7 --title T')" allow
+is "AZ-U1d a completing update in a pipe is denied" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --status completed | cat')" deny
+is "AZ-U1e a completing update in a chain is denied" \
+   "$(decision "$AZ" 'az repos pr show --id 7 && az repos pr update --id 7 --auto-complete true')" deny
+is "AZ-U1f and one in a substitution" \
+   "$(decision "$AZ" 'echo $(az repos pr update --id 7 --status abandoned)')" deny
+# az takes a branch as refs/heads/<name> too.
+is "AZ-H1 refs/heads/<name> branches are read as the names" \
+   "$(decision "$AZ" 'az repos pr create --source-branch refs/heads/feat --target-branch refs/heads/develop')" allow
+is "AZ-H1b and the dispatch names the plain range" \
+   "$(reason "$AZ" 'az repos pr create --source-branch refs/heads/feat --target-branch refs/heads/main' | grep -c -F 'origin/main...feat')" 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

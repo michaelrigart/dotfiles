@@ -197,6 +197,10 @@ AZ_PUSH_URL = ("Pre-merge gate: origin's push URL ({1}) is not its fetch URL ({0
                "read the project from either, so the gate cannot tell where this PR goes. Run it "
                "from a checkout whose origin has one URL, or name --organization, --project and "
                "--repository all three.")
+AZ_REMOTES = ("Pre-merge gate: this checkout has remotes besides origin ({}), and with no project "
+              "named az reads the project from origin's push URL, or from another remote's when "
+              "it cannot use origin's. Name --organization, --project and --repository all "
+              "three, or run it from a checkout whose only remote is origin.")
 AZ_PROJECT = ("Pre-merge gate: {} The gate checks the project az acts on only when the command "
               "names none of --organization, --project and --repository (origin is then the "
               "project), or all three, equal to origin's ({}). Run it from that project's "
@@ -654,6 +658,13 @@ def command_name(word):
     return os.path.basename(word[1:] if word.startswith("=") else word)
 
 
+def tool_name(word):
+    """The forge or git program a word names. AZ runs az on a case-insensitive filesystem, so az
+    is matched lowercased."""
+    name = command_name(word)
+    return "az" if name.lower() == "az" else name
+
+
 def candidates(tokens):
     """Each word naming git, glab or gh, with the words after it in its simple command. Any
     word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
@@ -664,7 +675,7 @@ def candidates(tokens):
     for k in range(len(tokens) - 1, -1, -1):
         if is_operator(tokens[k]):
             end = k
-        elif command_name(tokens[k]) in TOOLS:
+        elif tool_name(tokens[k]) in TOOLS:
             out.append(tokens[k:end])
     return out[::-1]
 
@@ -983,31 +994,34 @@ def az_reordered(rest):
     order - repos, pr and the verb in that order with options (and their values) before,
     between or after them - or None. knack's parser takes global options before the group
     names, and which options take a value cannot be read from the text, so every word after
-    options alone may be the group, and so on, as reordered does for glab and gh."""
+    options alone may be the group, and so on, as reordered does for glab and gh. az reads
+    its command words case-insensitively (az Repos PR CREATE), so the words are compared
+    lowercased and the verb is returned lowercased; option names stay case-sensitive."""
     for k, word in enumerate(rest):
-        if word != "repos" or not only_options(rest[:k]):
+        if word.lower() != "repos" or not only_options(rest[:k]):
             continue
         for j in range(k + 1, len(rest)):
-            if rest[j] != "pr" or not only_options(rest[k + 1:j]):
+            if rest[j].lower() != "pr" or not only_options(rest[k + 1:j]):
                 continue
             for m in range(j + 1, len(rest)):
-                if rest[m] in AZ_VERBS and only_options(rest[j + 1:m]):
-                    return rest[m]
+                if rest[m].lower() in AZ_VERBS and only_options(rest[j + 1:m]):
+                    return rest[m].lower()
     return None
 
 
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
     args}, or None. kind is merge-local (git merge), create, forge-made, merge or api (az
-    repos pr: az-create or az-update); args are the words after the verb, with an option written before the noun (glab -R x mr ...,
-    glab -R x api ...) kept in front.
+    repos pr: az-create, or az-update when it completes the PR); args are the words after the
+    verb, with an option written before the noun (glab -R x mr ..., glab -R x api ...) kept in
+    front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
     --continue only as its sole argument: anywhere else either may be an option's value. The
     gate checks glab and gh only in its own order - [-R <project>] noun verb, or api right
     after the tool; a gated verb cobra could find in another order is kind reordered."""
     if not words:
         return None
-    tool, rest = command_name(words[0]), words[1:]
+    tool, rest = tool_name(words[0]), words[1:]
     if tool not in TOOLS:
         return None
     if tool == "git":
@@ -1019,11 +1033,18 @@ def gated_verb(words):
             return {"tool": "git", "kind": "merge-local", "args": rest}
         return None
     if tool == "az":
-        if rest[:2] == ["repos", "pr"] and rest[2:3] and rest[2] in AZ_VERBS:
+        # An update is a gated verb only when it completes the PR or changes its state; any
+        # other update passes wherever it stands, in a pipe or a chain too.
+        head = [w.lower() for w in rest[:3]]
+        if head[:2] == ["repos", "pr"] and head[2:3] and head[2] in AZ_VERBS:
             if rest[3:4] and rest[3] in HELP:
                 return None
-            return {"tool": "az", "kind": "az-" + rest[2], "args": rest[3:]}
+            if head[2] == "update" and az_completing(rest[3:]) is None:
+                return None
+            return {"tool": "az", "kind": "az-" + head[2], "args": rest[3:]}
         found = az_reordered(rest)
+        if found == "update" and az_completing(rest) is None:
+            return None
         if found is not None:
             return {"tool": "az", "kind": "reordered", "args": rest, "verb": ("repos pr", found)}
         return None
@@ -1533,6 +1554,16 @@ AZ_HTTPS = re.compile(r"(?:https?://)?(?:[^/@]+@)?dev\.azure\.com/([^/]+)/([^/]+
 AZ_VS = re.compile(r"(?:https?://)?(?:[^/@]+@)?([^/.@]+)\.visualstudio\.com/([^/]+)/_git/([^/]+)", re.I)
 
 
+def az_completing(args):
+    """The first option of an az repos pr update's arguments that completes the PR or changes its
+    state (AZ_COMPLETING), as written, or None. argparse reads any unambiguous prefix as the
+    option, so --stat counts. Option names are case-sensitive."""
+    for name, _ in az_options(args, False):
+        if name.startswith("--") and len(name) > 2 and any(c.startswith(name) for c in AZ_COMPLETING):
+            return name
+    return None
+
+
 def azure_project(url):
     """(organization, project, repository), lowercased and percent-decoded, of an Azure DevOps
     remote URL (ssh.dev.azure.com:v3/<org>/<project>/<repo>, dev.azure.com/<org>/<project>/_git/
@@ -1592,6 +1623,11 @@ def az_one(opts, names, label):
     return values[0]
 
 
+def az_branch(name):
+    """A branch as az reads it: refs/heads/<name> is <name>."""
+    return name[len("refs/heads/"):] if name.startswith("refs/heads/") else name
+
+
 def az_check_project(top, opts):
     """Either none of --organization, --project and --repository is named, and origin is an Azure
     DevOps URL with one fetch and push URL; or all three are named and equal origin's."""
@@ -1607,6 +1643,9 @@ def az_check_project(top, opts):
     where = "/".join(origin)
     named = [x for x in (org, project, repo) if x is not None]
     if not named:
+        remotes = (run(["git", "-C", top, "remote"]) or "").split()
+        if remotes != ["origin"]:
+            raise Deny(AZ_REMOTES.format(", ".join(r for r in remotes if r != "origin") or "none"))
         fetch = run(["git", "-C", top, "remote", "get-url", "origin"])
         push = run(["git", "-C", top, "remote", "get-url", "--push", "--all", "origin"])
         if fetch is None or push is None:
@@ -1633,9 +1672,9 @@ def judge_az(shape, ledger):
     creating = shape["kind"] == "az-create"
     opts = az_options(shape["args"], creating)
     if not creating:
-        for name, _ in opts:
-            if name.startswith("--") and len(name) > 2 and any(c.startswith(name) for c in AZ_COMPLETING):
-                raise Deny(AZ_UPDATE.format(name))
+        name = az_completing(shape["args"])
+        if name is not None:
+            raise Deny(AZ_UPDATE.format(name))
         return
     for name, values in opts:
         if name not in AZ_CREATE_ALLOWED:
@@ -1647,9 +1686,11 @@ def judge_az(shape, ledger):
     dest = az_one(opts, ("-t", "--target-branch"), "--target-branch")
     if dest is None:
         raise Deny(AZ_NEED_DEST)
+    dest = az_branch(dest)
     source = az_one(opts, ("-s", "--source-branch"), "--source-branch")
     if source is None:
         source = current_source(ledger, top, "--source-branch")
+    source = az_branch(source)
     head = remote_head(top, source)
     check(ledger, top, source, dest, "refs/remotes/origin/" + dest, head,
           "origin/{}...{}".format(dest, source), None)
@@ -2200,7 +2241,7 @@ def judge(shape, ledger):
 
 # ------------------------------------------------------------------ main
 CRUDE = re.compile(r"\b(glab|gh)\b[^\n]*\b(mr|pr|api)\b|\bgit\b[^\n]*\bmerge\b"
-                   r"|\baz\b[^\n]*\brepos\b[^\n]*\bpr\b")
+                   r"|(?i:\baz\b[^\n]*\brepos\b[^\n]*\bpr\b)")
 
 
 def crude(text):

@@ -56,12 +56,23 @@ spells() {
   done
   return 1
 }
+# az reads its command words case-insensitively (az Repos PR CREATE), and on a case-insensitive
+# filesystem the tool's name too (AZ), so its words are matched without regard to case. az is
+# matched as a substring on purpose, like gh and git: a word such as lazy beside create costs a
+# helper start, never a deny.
+spells_i() {
+  local r
+  shopt -s nocasematch
+  spells "$@"; r=$?
+  shopt -u nocasematch
+  return $r
+}
 case "$payload" in
   *"\$'"*) ;;
   *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } \
        || { spells api && [[ $payload =~ $pct ]]; } \
-       || { spells update && spells az && spells repos && spells pr; } || exit 0
-     spells glab gh git az || exit 0 ;;
+       || { spells_i az && spells_i repos && spells_i pr && spells_i create update; } || exit 0
+     spells glab gh git || spells_i az || exit 0 ;;
 esac
 
 py=/usr/bin/python3
@@ -78,14 +89,16 @@ fi
 # The helper could not run at all. FAIL DIRECTION IS CLOSED for a command that may propose or
 # merge: glab/gh with mr, pr or api, git with merge, or az with repos and pr, as whole words
 # on one line - the helper's own last resort (CRUDE). The text is read with quotes and
-# backslashes dropped, both with every backslash-newline joined and without, so neither a fused redirection
-# (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the verb.
-# Anything else is allowed.
+# backslashes dropped, both with every backslash-newline joined and without, so neither a fused
+# redirection (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the
+# verb. The az words are read without regard to case. Anything else is allowed.
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
 case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
-crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b|\baz\b.*\brepos\b.*\bpr\b'
-if { printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
-     printf '%s\n' "$cmd"; } | tr -d "'\"\\\\" | grep -Eq "$crude"; then
+crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
+crude_az='\baz\b.*\brepos\b.*\bpr\b'
+text=$({ printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
+         printf '%s\n' "$cmd"; } | tr -d "'\"\\\\")
+if printf '%s\n' "$text" | grep -Eq "$crude" || printf '%s\n' "$text" | grep -Eiq "$crude_az"; then
   reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."
   printf '%s' "$reason" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' 2>/dev/null \
