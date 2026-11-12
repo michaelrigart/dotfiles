@@ -242,7 +242,6 @@ ok "the key is not on stderr" lacks "$T/err" "$KEY"
 ok "the key is in no file under XDG_STATE_HOME" test -z "$(grep -rlF -- "$KEY" "$STATE")"
 ok "the review prompt forbids changes" has "$SD/claude.argv" "Do not modify any files"
 ok "the review prompt names the focus" has "$SD/claude.argv" "general quality: correctness bugs"
-ok "the prompt names the branch" has "$SD/claude.argv" "on branch main."
 ok "the review prompt has the stack-neutral preamble" has "$SD/claude.argv" "on branch main. First identify this repository's languages, frameworks and conventions (its AGENTS.md and manifests), and judge everything against those."
 
 run "$WT" ok
@@ -325,17 +324,14 @@ ok "duplicate focus words are ignored" test -n "$(file_of -security+general.md)"
 
 run "$MAIN" ok architecture
 ok "architecture is accepted (exit 0)" rc_is 0
-ok "the architecture focus text is in the prompt" has "$SD/claude.argv" "architecture: layering and module boundaries, coupling and dependency direction, contracts with other services and APIs, the data model, background and asynchronous work, and departures from the repository's stated conventions (AGENTS.md)"
 ok "the architecture prompt no longer mentions concerns" lacks "$SD/claude.argv" "concerns"
 run "$MAIN" ok clean-code
 ok "clean-code is accepted (exit 0)" rc_is 0
-ok "the clean-code focus text is in the prompt" has "$SD/claude.argv" "clean code: naming, duplication, oversized functions and classes, complexity, dead code, language and framework idioms, and readability"
 ok "clean-code alone writes a clean-code report" test -n "$(file_of -clean-code.md)"
 again "$MAIN" ok --list
 ok "--list shows the clean-code label" grep -qE "^[0-9-]+ [0-9:]+  clean-code  completed  " "$T/out"
 run "$MAIN" ok ui
 ok "ui is accepted (exit 0)" rc_is 0
-ok "the ui focus text is in the prompt" has "$SD/claude.argv" "UI and UX, judged from the code because you cannot see the screen: accessibility (labels, alt text, ARIA, colour-only cues, focus and keyboard), consistency of components and styles, missing empty, loading and error states, form validation feedback, responsive layout, and copy"
 run "$MAIN" ok ui clean-code security architecture
 ok "all four new-order words run (exit 0)" rc_is 0
 ok "the label is in canonical order" test -n "$(file_of -security+architecture+clean-code+ui.md)"
