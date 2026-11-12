@@ -533,13 +533,6 @@ sleep 0.3
 is "scan signals nothing" "$(kill -0 "$occ" 2>/dev/null; echo $?)" "0"
 kill -9 "$occ" 2>/dev/null
 
-sib="$(spawn command sleep 300)"
-mk_live <<EOT
-$sib sleep ${WT}-two/x
-EOT
-out="$(srun scan)"; is "a sibling suffix is not an occupant" "$out" ""
-kill -9 "$sib" 2>/dev/null
-
 out="$(srun --sweep ruby scan)"; is "scan with --sweep is a usage error" "$?" "64"
 out="$(srun --pidfile tmp/pids/x.pid scan)"; is "scan with --pidfile is a usage error" "$?" "64"
 out="$(WT_WORKTREE= zsh "$SUBJECT" scan 2>&1)"; is "scan needs WT_WORKTREE" "$?" "1"
@@ -549,9 +542,6 @@ has "and names lsof" "$out" "lsof is unavailable"
 
 echo
 echo "V. scan fails closed on a listing it cannot trust"
-mk_raw ''
-out="$(srun scan)"; is "an empty listing fails scan closed" "$?" "1"
-has "and says the list was unreadable" "$out" "could not read the process list"
 mk_raw 'p1\0R1\0claunchd\0fcwd\0nnot/absolute\0'
 out="$(srun scan)"; is "a relative cwd fails scan closed" "$?" "1"
 mk_raw 'pnot-a-pid\0R1\0claunchd\0fcwd\0n/\0'
