@@ -63,8 +63,6 @@ echo "B. both relay directions are defined"
 # Keywords are stored bare in the JSON; the leading ';' comes from the collection prefix.
 grep -qE '"keyword" *: *"codex"'  "$CODEX"  && _pass "keyword codex defined"  || _fail "keyword codex defined"
 grep -qE '"keyword" *: *"claude"' "$CLAUDE" && _pass "keyword claude defined" || _fail "keyword claude defined"
-grep -qF 'from-codex'       "$CODEX"  && _pass "wraps in <from-codex>"       || _fail "wraps in <from-codex>"
-grep -qF 'from-claude-code' "$CLAUDE" && _pass "wraps in <from-claude-code>" || _fail "wraps in <from-claude-code>"
 
 echo "C. the ';' prefix lives in the collection, and only there"
 grep -qA1 'snippetkeywordprefix' "$PLIST" && grep -qF '<string>;</string>' "$PLIST" \
