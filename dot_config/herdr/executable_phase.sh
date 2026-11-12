@@ -77,8 +77,7 @@
 #     past 9223372036854775807; one that wraps it to a large positive cap waits as usual.
 #   - The sweep's `rm -rf <cache dir>/.tmp/<key>` follows a symlinked .tmp and deletes <key>
 #     wherever it points. That needs a cache directory a sandboxed command can write, which only a
-#     caller environment can name: HERDR_PHASE_CACHE_DIR (meant for the suite, but honoured
-#     everywhere, as PINNED_PATH is) or XDG_CACHE_HOME. The default ~/.cache/herdr-phase is not
+#     caller environment can name: XDG_CACHE_HOME. The default ~/.cache/herdr-phase is not
 #     sandbox-writable.
 #   - A sandboxed command can hold a repository's lock, because flock needs only read access to the
 #     lock file: that repository's badges freeze and each run pays LOCK_WAIT (bounded by the run
@@ -117,13 +116,13 @@ set -u
 cd / || exit 2
 
 SOURCE_ID="herdr-phase"
-CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase"
 
 # phase.sh runs inside a pane, where HERDR_SOCKET_PATH outranks HERDR_SESSION, so thread
 # --session rather than let the pane's socket pick the session (see AGENTS.md).
 HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
-TTL="${HERDR_PHASE_TTL:-120}"
+TTL=120
 STALE_PIPELINE=1800   # seconds a cached pipeline status may stand in for a failed lookup
 FRESH_GAP=10          # seconds a --fresh refresh trusts the cache after a lookup of the repository began
 LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"   # seconds a refresh waits for a repository's lock; the suite lowers it
@@ -798,11 +797,10 @@ cmd_refresh() {
   local run="ttl" only=""
   # wait_jobs does arithmetic with RUN_DEADLINE, which runs a value such as PATH[$(cmd)] and ends the
   # shell, its jobs orphaned and its stderr on /dev/null, on one such as 1.5 or 08. So each numeric
-  # override is checked before a job starts. 0 is allowed for all three: a deadline that ends every
-  # job at once, a TTL that always looks up, and a wait that skips a held repository at once.
+  # override is checked before a job starts. 0 is allowed for both: a deadline that ends every
+  # job at once, and a wait that skips a held repository at once.
   whole_seconds RUN_DEADLINE "$RUN_DEADLINE"
   whole_seconds LOCK_WAIT "$LOCK_WAIT"
-  whole_seconds TTL "$TTL"
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) run="force"; shift ;;
