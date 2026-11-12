@@ -425,7 +425,8 @@ if [ "$v1" = 1 ]; then
 fi
 
 # release --dir (spec 2026-10-15, C4/C5/C9): archive unloads a thread with saved history at
-# once and its helpers exit; unarchive restores it; the archived listing tells the two apart.
+# once and its helpers, if it has any, exit; unarchive restores it; the archived listing tells
+# the two apart.
 echo "R1: release --dir unloads a scratch thread at once and restores it"
 rel_archived() { python3 - "$RPCF" "$1" "$2" <<'PY'
 import importlib.machinery, importlib.util, sys
@@ -446,12 +447,17 @@ is "R1 the scratch thread is loaded before the release" \
 # recorded, which the archived listing (C9) needs as its key.
 rel_cwd="$(thread_cwd "$rel_thread")"
 is "R1 thread/read reports the scratch directory as the thread's cwd" "$rel_cwd" "$RELD"
-# Same scan as below: helpers must exist before the release, or "none left" proves nothing.
+# Same scan as below. Whether a loaded thread has helpers in its cwd (C1) depends on which MCP
+# servers are enabled: none are since node_repl and cua_repl went off (2026-10-24), so "none
+# left" below is only a real observation of C4 when this reads present. The unload itself is
+# pinned by loaded/notLoaded either way; what must hold here is that the scan answers at all.
 scan="$(lsof -a -d cwd -Fn 2>/dev/null)"
 if [ -z "$scan" ]; then before=unknown
 elif grep -qxF "n$RELD" <<< "$scan"; then before=present
 else before=absent; fi
-is "R1 helpers run in the scratch directory before the release (C1)" "$before" present
+if [ "$before" = unknown ]; then _fail "R1 the cwd scan answers before the release" "$before"
+else _pass "R1 the cwd scan answers before the release"; fi
+echo "  note: helpers in the scratch directory before the release (C1): $before"
 out="$(XDG_STATE_HOME="$T/rel/state" rpc release --dir "$RELD")"; rc=$?
 is "R1 release exits 0" "$rc" 0
 is "R1 release names the thread" "$out" "released $rel_thread"
