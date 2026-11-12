@@ -1,6 +1,7 @@
 # Security locks 2: seven small locks from the 2026-11-11 setup review
 
 **Status:** Implemented (branch `fix/security-locks`; the dotfiles use no MR)
+Amended 2026-11-12 (item 1: `op-edit`'s Neovim starts without a clipboard provider) on branch `fix/op-edit-clipboard`, at Michael's request.
 **Date:** 2026-11-11
 **Branch:** `fix/security-locks`, in the `wt` checkout `~/.local/share/chezmoi-fix-security-locks`
 **Related:** `2026-11-01-security-locks-design.md` (first round; unchanged). Item 5 supersedes one
@@ -46,11 +47,12 @@ undone by LazyVim, and item 4's settings switch is undocumented. Item 7 became a
 >   set clipboard='` stops `yy` but not `"+yy`, and rests on LazyVim's event order; `-c 'autocmd OptionSet
 >   clipboard set clipboard='` does not fire.
 > - **Cost.** Nothing leaves an `op-edit` buffer through a register, `"+y` included, and `"+p` is dead too;
->   the terminal's own paste and selection still work. The first yank prints `clipboard: No provider` once.
->   No escape hatch is built.
+>   the terminal's own paste and selection still work. The first implicit yank warns `clipboard: No
+>   provider` once; each explicit `"+` use warns again. No escape hatch is built.
 > - **Test.** `tests/op-edit.test.sh` replays the recorded flags into the real Neovim (`--headless
->   --clean`, then `set clipboard=unnamedplus`, then `yy`) with a stub `pbcopy`, and asserts no call. A
->   control without the `--cmd` pair must call it. The suite exits 2 when no `nvim` is on `PATH`.
+>   --clean`, then `set clipboard=unnamedplus`, then `yy`) with a stub `pbcopy`, and asserts no call, and
+>   that Neovim exited 0 and wrote the yanked line out. A control without the `--cmd` pairs must call it.
+>   The suite exits 2 when no `nvim` is on `PATH`.
 > - **After apply.** In `op-edit "<a note>"`, `:echo has('clipboard')` prints 0, and after `yy` the
 >   clipboard still holds what it held before.
 

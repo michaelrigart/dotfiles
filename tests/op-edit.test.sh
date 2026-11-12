@@ -13,7 +13,7 @@ unsetopt extended_glob
 SRC=${0:A:h:h}
 FUNCS=$SRC/dot_config/zsh/functions
 [[ -f $FUNCS ]] || { print -u2 "missing file under test: $FUNCS"; exit 2 }
-REAL_NVIM=$(whence -p nvim) || { print -u2 "INCONCLUSIVE: no nvim on PATH; the clipboard case needs the real one"; exit 2 }
+REAL_NVIM=$(whence -p nvim) || REAL_NVIM=
 integer pass=0 fail=0
 _pass() { print "  PASS: $1"; (( ++pass )); return 0 }
 _fail() { print "  FAIL: $1\n    | got: $2"; (( ++fail )); return 0 }
@@ -68,7 +68,8 @@ done
 
 # The clipboard, against the real Neovim: the recorded flags, then a config that turns
 # clipboard=unnamedplus on after them (as LazyVim does), then a yank. pbcopy is a stub that records
-# its call. The control drops the --cmd pair and must reach pbcopy, or the harness measures nothing.
+# its call, and Neovim writes the yanked register out, so a run that never yanked is not a pass.
+# The control drops every --cmd pair and must reach pbcopy, or the harness measures nothing.
 cat > $T/bin/pbcopy <<'STUB'
 #!/bin/sh
 cat > /dev/null
@@ -76,24 +77,41 @@ echo called >> "$T/pbcopy"
 STUB
 chmod 755 $T/bin/pbcopy
 print "note body" > $T/note
+# 0: yanked, pbcopy called. 1: yanked, pbcopy not called. 2: Neovim failed or did not yank.
 _yank() {
-  rm -f $T/pbcopy
+  rm -f $T/pbcopy $T/yanked
   XDG_STATE_HOME=$T/state NVIM_LOG_FILE=$T/nvim.log $REAL_NVIM --headless --clean "$@" \
-    -c 'set clipboard=unnamedplus' -c 'normal! yy' -c 'sleep 500m' -c 'qa!' -- $T/note >/dev/null 2>&1
+    -c 'set clipboard=unnamedplus' -c 'normal! yy' -c 'call writefile(getreg("\"", 1, 1), $T . "/yanked")' \
+    -c 'qa!' -- $T/note >/dev/null 2>&1 || return 2
+  [[ -f $T/yanked && "$(<$T/yanked)" == "note body" ]] || return 2
   [[ -e $T/pbcopy ]]
 }
+name="a yank in op-edit's Neovim does not reach the clipboard"
 flags=("${(@)args[2,-3]}")
-i=${flags[(i)--cmd]}
-control=("${(@)flags[1,i-1]}" "${(@)flags[i+2,-1]}")
-if (( i > ${#flags} )); then
-  _fail "a yank in op-edit's Neovim does not reach the clipboard" "no --cmd in: ${flags[*]}"
-elif ! _yank $control; then
-  _fail "control: without the --cmd pair a yank reaches pbcopy" "pbcopy was not called"
-elif _yank $flags; then
-  _fail "a yank in op-edit's Neovim does not reach the clipboard" "pbcopy was called"
+control=()
+for (( j = 1; j <= ${#flags}; j++ )); do
+  [[ ${flags[j]} == --cmd ]] && { (( j++ )); continue }
+  control+=("${flags[j]}")
+done
+inconclusive=
+if [[ -z $REAL_NVIM ]]; then
+  inconclusive="no nvim on PATH; the clipboard case needs the real one"
+elif (( ${#control} == ${#flags} )); then
+  _fail "$name" "no --cmd in: ${flags[*]}"
 else
-  _pass "a yank in op-edit's Neovim does not reach the clipboard (control: without --cmd it does)"
+  _yank "${control[@]}"; c=$?
+  _yank "${flags[@]}"; g=$?
+  if (( c != 0 )); then
+    _fail "control: without the --cmd pairs a yank reaches pbcopy" "_yank returned $c (1: pbcopy not called, 2: no yank)"
+  elif (( g == 2 )); then
+    _fail "$name" "Neovim failed or did not yank with: ${flags[*]}"
+  elif (( g == 0 )); then
+    _fail "$name" "pbcopy was called"
+  else
+    _pass "$name (control: without --cmd it does)"
+  fi
 fi
 
 print "\npassed: $pass  failed: $fail"
+[[ -z $inconclusive ]] || { print -u2 "INCONCLUSIVE: $inconclusive"; exit 2 }
 (( fail == 0 ))
