@@ -821,9 +821,15 @@ run pins "$T/quoted.sh"
 eq "$OUT" "p2${TAB}.chezmoitemplates/agents/claude-code.md${TAB}x${TAB}?${TAB}-${TAB}y" "R1: the helper names in a quoted string or a comment are not calls"
 run pins "$T/repo/tests/pins.test.sh"
 eq "$OUT" "p$(grep -n '^need_in "\$R"' "$T/repo/tests/pins.test.sh" | cut -d: -f1)${TAB}docs/rules.md${TAB}Never push, delete or merge without asking.${TAB}?${TAB}-${TAB}the confirm rule asks first" "R1: the helper definitions are not calls"
-run pins "$SRC/tests/agent-instructions.test.sh"
-rc_is 0 "R1: the real suite's pins all resolve"
-eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "$(grep -cE '^(need|need_flat|need_in) ' "$SRC/tests/agent-instructions.test.sh")" "R1: and none is dropped"
+# The suite that was measured: Task 13 replaced the live file's pins with rule checks.
+if "${GIT[@]}" -C "$SRC" show 523a95d:tests/agent-instructions.test.sh > "$T/phase1-pins.test.sh" 2>/dev/null; then
+  run pins "$T/phase1-pins.test.sh"
+  rc_is 0 "R1: the phase 1 suite's pins all resolve"
+  eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "$(grep -cE '^(need|need_flat|need_in) ' "$T/phase1-pins.test.sh")" "R1: and none is dropped"
+else
+  _fail "R1: commit 523a95d (the measured phase 1 suite) is missing from $SRC"
+  _fail "R1: so its pins cannot be counted"
+fi
 
 RU=$(python3 - "$SRC/.scripts/test-audit" <<'PY'
 import json, sys
