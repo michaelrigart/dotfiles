@@ -2068,10 +2068,19 @@ def render_answer(doc, nonce, shown, kept, redact):
            "findings": out_findings}
     left_out = 0
     if shown is not None:
-        wanted = {shown_key(x) for x in listed if isinstance(x, str)}
-        out["reviewed_files"] = [s for s in shown if shown_key(s) in wanted]
+        # xreview's coverage predicate: a label and an entry match when either, or either one
+        # with its leading a/, b/ or ./ stripped, equals the other (xreview's _collect_record).
+        entry_forms = {f for x in listed if isinstance(x, str) for f in (x, shown_key(x))}
+        label_forms = {f for s in shown for f in (s, shown_key(s))}
+        kept_labels = [s for s in shown if s in entry_forms or shown_key(s) in entry_forms]
         left_out = sum(1 for x in listed
-                       if not isinstance(x, str) or shown_key(x) not in {shown_key(s) for s in shown})
+                       if not isinstance(x, str)
+                       or (x not in label_forms and shown_key(x) not in label_forms))
+        out["reviewed_files"] = []
+        for label in kept_labels:
+            text, n = escape_with(is_hidden, label)
+            hidden += n
+            out["reviewed_files"].append(text)
     notes = []
     if hidden:
         notes.append(f"{hidden} hidden characters are shown as <U+XXXX>.")

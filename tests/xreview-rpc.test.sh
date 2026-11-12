@@ -2223,6 +2223,14 @@ render_case "$(ans "[$(fnd s "$(xs 1500)")]")" --kept /x/y.answer
 is "R3 a field at its limit is not cut, and names no kept file" \
    "$(jq -r '(.findings[0].failure_scenario | length), (.notes | length)' <<<"$out" | tr '\n' ' ')" "1500 0 "
 
+# R3b. The limit counts the escaped field, so the cut comes after the escape: a field of 1500 raw
+# characters whose last is U+200B is 1507 escaped. Catches a cut made before the escape.
+render_case "$(ans "[$(fnd s "$(xs 1499)$(printf '\xe2\x80\x8b')")]")"
+is "R3b the escaped field is what is cut, and the marker counts the escaped characters" \
+   "$(jq -r '.findings[0].failure_scenario' <<<"$out")" "$(xs 1499)< [cut: 7 more characters]"
+is "R3b and the notes count the hidden character and the cut" \
+   "$(jq -c .notes <<<"$out")" '["1 hidden characters are shown as <U+XXXX>.","1 fields were cut at xreview'"'"'s limits."]'
+
 # R4. An unbounded integer is a covert channel of its own: the problem names the path, never
 # the value. A bool is not an integer.
 render_case '{"verdict":"approve","findings":[{"severity":"P1","file":"a","line":1000000000000000000000000000000,"summary":"s","failure_scenario":"f"}]}'
@@ -2242,6 +2250,12 @@ is "R5 and say so in fixed words" \
 render_case "$(ans "$(jq -nc --argjson f "$(fnd s "$(xs 1500)")" '[range(26) | $f]')")"
 is "R5 26 findings of 1500 characters (39,000 in all) are rendered" "$rc/$(jq '.findings | length' <<<"$out")" "0/26"
 
+# R5b. The 40,000 limit is on the text after cutting: 21 findings of 2000-character scenarios are
+# 42,105 before and 31,605 after. Catches a total taken before the cut.
+render_case "$(ans "$(jq -nc --argjson f "$(fnd s "$(xs 2000)")" '[range(21) | $f]')")"
+is "R5b 21 findings of 2000 characters (31,605 after cutting) are rendered" \
+   "$rc/$(jq '.findings | length' <<<"$out")" "0/21"
+
 # R6. Only what render places is copied: an unknown key, at the top or in a finding, is gone.
 render_case "$(jq -nc --argjson f "$(fnd s f | jq -c '. + {zz_find: "q"}')" '{verdict:"approve",findings:[$f],zz_top:"q"}')"
 is "R6 unknown keys are dropped, not a problem" "$rc/$(grep -c -e zz_top -e zz_find <<<"$out")" "0/0"
@@ -2258,6 +2272,29 @@ is "R7 without --shown the key is absent" "$(jq 'has("reviewed_files")' <<<"$out
 render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: "a.sh"}')" --shown "$T/shown.json"
 is "R7 a reviewed_files that is not a list lists nothing, and is no failure" \
    "$rc/$(jq -c .reviewed_files <<<"$out")" '0/[]'
+# R7b. Coverage's predicate, in full: a label and an entry match when either, or either one stripped
+# of one a/, b/ or ./, equals the other. Catches a label coverage calls covered reported as left out.
+printf '["a/x.sh"]' > "$T/shown-ab.json"
+render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: ["b/a/x.sh"]}')" --shown "$T/shown-ab.json"
+is "R7b shown a/x.sh against listed b/a/x.sh: the label is kept and nothing is left out" \
+   "$(jq -c '[.reviewed_files, .notes]' <<<"$out")" '[["a/x.sh"],[]]'
+printf '["x.sh"]' > "$T/shown-x.json"
+render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: ["a/x.sh"]}')" --shown "$T/shown-x.json"
+is "R7b shown x.sh against listed a/x.sh: kept, nothing left out" \
+   "$(jq -c '[.reviewed_files, .notes]' <<<"$out")" '[["x.sh"],[]]'
+# A larger round gives the same answer (the left-out count is a set lookup, not a rescan).
+jq -nc '[range(2000) | "f\(.).sh"]' > "$T/shown-big.json"
+render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: ([range(2000) | "./f\(.).sh"] + ["nope1", "nope2"])}')" --shown "$T/shown-big.json"
+is "R7b 2000 shown and 2002 listed: 2000 kept, the 2 unshown counted" \
+   "$(jq -r '(.reviewed_files | length), (.notes | length), .notes[0]' <<<"$out" | tr '\n' ' ')" \
+   "2000 1 2 reviewed_files entries that were not shown were left out. "
+# R7c. A shown label is printed as xreview's own text, but it is a path from a diff: it is escaped.
+printf '["a\xe2\x80\xaeb.sh"]' > "$T/shown-bidi.json"
+render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: ["a\u202eb.sh"]}')" --shown "$T/shown-bidi.json"
+is "R7c a shown label holding U+202E is printed as <U+202E> and counted" \
+   "$(jq -c '[.reviewed_files, .notes]' <<<"$out")" '[["a<U+202E>b.sh"],["1 hidden characters are shown as <U+XXXX>."]]'
+is "R7c and none of it is raw" "$(has_raw '\xe2\x80\xae')" 0
+
 printf '{"a":1}' > "$T/shown-bad.json"
 render_case "$(ans "[$(fnd s f)]" | jq -c '. + {reviewed_files: ["a.sh"]}')" --shown "$T/shown-bad.json"
 is "R7 a --shown file that is not a list of labels leaves the key out" "$(jq 'has("reviewed_files")' <<<"$out")" false
