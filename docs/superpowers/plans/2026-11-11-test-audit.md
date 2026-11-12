@@ -555,3 +555,19 @@ Rulings made during the run are recorded here, because the dotfiles have no MR. 
 
   Cost if wrong: one more targeted pass at `f638c9e` for the suites left at `21563e5`, about 2.5 h of lock.
 - **R38.** Task 16 Step 1 (the `sp-architect` whole-branch review) starts while Task 15 runs, not after it. The code under review is fixed at `f638c9e`; later commits change only documents. A review finding that changes a suite repeats Task 15 for that suite, as Step 1 already says. Cost: if Task 15 forces a fix, the reviewer's verdict covers a tree one fix older, and the fix gets its own scoped re-review.
+- **R39 (pre-merge fix round 1).** The Codex pre-merge round 1 and the whole-branch review are fixed in `21ed09c` and `0c14b64`:
+  - The harness gives every suite run a pristine copy, gates included: baselines, mutated runs, reruns, `inventory` and `try`.
+  - `report --compare` exits 1 on `lost` or `not run`. `rules` exits 1 on a rule with no mutants.
+  - `SAFETY_SUITES` follows R15.
+  - R1 reads the phase 1 suite from a fixture.
+  - The `rule` helper fails closed: it fails on an awk failure or an empty term, and it shifts no column. It carries a self-test.
+  - `g-records-trigger` gets back "creating".
+  - `t_e2e.py`'s orphaned `jsons()` goes under R34.
+
+  Task 15 restarts at `0c14b64` on the fixed harness. The targeted suites at `21563e5` keep their 65 old-harness records. Each old-harness record is exposed to residue only where a mutant run left the copy changed, which the harness logs as `copy rebuilt after <id>`. No log of any measurement holds that line. No new term is added beyond "creating". The other clause gaps the fix round's scan named are in non-safety rows (`cc-dispatch-wt`'s ListAgents and tell-Michael clause, and `dr-records`' "a spec and a plan"). §4.4's design keeps non-safety rows to short terms, so they stay as approved. The testing rule's three unmutated sentences get their own `rules` run in Task 15, using `scratchpad/t15/gtesting-sentences.tsv`.
+
+  Left for Michael:
+  - the orphaned control at `t_e2e.py:470` with `rid_of` and `CASE_D`. It is a labelled assertion, so it is outside R34;
+  - whether to gate `test-audit.test.sh` behind a `test-requires` tag.
+
+  Cost: none beyond the fix round.
