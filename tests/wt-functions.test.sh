@@ -2068,7 +2068,7 @@ WRAPDIR="$(cd "${0:h}/.." && pwd)/dot_local/bin"
 
 # Source mode is NOT asserted: chezmoi derives the deployed 0755 from the
 # `executable_` prefix, and the tracked modes in this repo are inconsistent
-# (executable_git-forge-guard.sh is 100644, executable_app-cleaner is 100755).
+# (executable_git-forge-guard.sh is 100644, executable_wt-teardown is 100755).
 # Step 6 verifies the mode that actually matters, on the deployed file.
 for w in wt-rm wt-prepare; do
   [[ -f "$WRAPDIR/executable_$w" && -r "$WRAPDIR/executable_$w" ]] \

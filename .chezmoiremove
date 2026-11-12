@@ -37,3 +37,6 @@
 # in a scratch directory. Both patterns match test fixtures only.
 .local/state/herdr-layout/*dev-live.*
 .local/state/herdr-layout/*scratchpad-probe*
+
+# app-cleaner, retired 2026-11-12: an unused third-party uninstall helper.
+.local/bin/app-cleaner
