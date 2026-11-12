@@ -289,7 +289,7 @@ The plain grammar of the helper's header and everything `evaluate` decides for i
 ### 4.2 Changes
 
 - **A plain push that updates the default branch is a silent deny**, no longer an ask: "the default
-  branch is Michael's; push the branch and open a merge request, or he pushes it himself with `!`".
+  branch is Michael's; push the branch and open a merge request, or he pushes it from his own terminal".
   This is the one prompt removed. It holds on every remote, the unprotected ones included, and on
   the dotfiles (section 4.3). It lands with merge 2.
 
@@ -300,11 +300,16 @@ when Michael approves the ask. After merge 2 no agent pushes a default branch, o
 otherwise: rule 4 denies the plain form, and GitHub refuses the machine account.
 
 - The agent still does the local merge, through the merge gate as today, and its report ends with
-  the command for Michael: `! git -C ~/.local/share/chezmoi pom`. He types one command where he
-  clicks a prompt today; his shell pushes as him, and the ruleset lets the owner through.
+  the command for Michael: `git -C ~/.local/share/chezmoi pom`, **run in a terminal of his own,
+  not with `!` in the session**. A `!` command runs in the session's shell with the session's
+  environment, so it would push as the machine account and be refused. His own shell has neither
+  the session's `GIT_SSH_COMMAND` nor its tokens (section 1.1), pushes as him, and the ruleset
+  lets the owner through. He types one command where he clicks a prompt today.
 - Between merge 1 and merge 2 the ask still exists, but once the GitHub rules are set the push it
   approves is refused by the forge, because the session pushes as the machine account. From that
-  moment the `!` command is the way, and the verification of section 6 notes it.
+  moment his own terminal is the way. The verification of section 6 includes this handoff:
+  from his own terminal `ssh -T git@github.com` greets Michael, while the session's transport
+  greets the machine account.
 - On GitLab and Azure nothing changes: agents never pushed those default branches.
 - The global instructions change with merge 2: in `global.md`, "pushing to the default branch"
   leaves the list of actions an agent confirms first and becomes a thing an agent never does; the
@@ -392,6 +397,8 @@ names left out:
   `["creation","deletion","non_fast_forward","update"]` for both GitHub repositories, and
   `gh api repos/<owner>/<repo>/collaborators/<machine account>/permission --jq .permission`
   prints `write`;
+- from Michael's own terminal `ssh -T git@github.com` greets Michael (the handoff of section
+  4.3 depends on it);
 - the session's own git transport greets the machine account: `$GIT_SSH_COMMAND -T
   git@github.com`, the wrapper and configuration git uses, not a bare `ssh`, which reads
   Michael's configuration and would greet him;
