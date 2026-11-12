@@ -139,6 +139,36 @@ out_hasnt 'in the UI' "github one merged ruleset: no UI note, the protect-main P
 out_has '"include":["refs/heads/main"]' "github one merged ruleset: protect-main includes the default branch"
 rc_is 1 "github one merged ruleset: exit 1"
 
+# update without creation is a main-owner-only carrier, never a protect-main one: no "bypass list none" note
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
+gh_repo "$R"; gh_rules "$R" '[{"type":"deletion","ruleset_id":4},{"type":"non_fast_forward","ruleset_id":4},{"type":"update","ruleset_id":4}]'
+gh_rs "$R" 4 "{\"id\":4,\"enforcement\":\"active\",\"bypass_actors\":[$BYADMIN],\"current_user_can_bypass\":\"always\"}"
+run check
+row_is drift "github.com/$R" "github one ruleset with deletion, non_fast_forward and update, admin bypass: drift row"
+out_has '"name":"main-owner-only"' "github deletion+non_fast_forward+update ruleset: the main-owner-only POST is printed"
+out_has '"name":"protect-main"' "github deletion+non_fast_forward+update ruleset: the protect-main POST is printed (its deletion is not closed)"
+out_hasnt 'bypass list none' "github deletion+non_fast_forward+update ruleset: never told to empty its bypass list"
+out_hasnt 'in the UI' "github deletion+non_fast_forward+update ruleset: no UI note, its admin bypass is the owner-only one"
+rc_is 1 "github deletion+non_fast_forward+update ruleset: exit 1"
+
+# an empty bypass list is closed, not owner-only: Michael could no longer push the default branch
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
+gh_repo "$R"; gh_rules "$R" "$ALL_RULES"
+gh_rs "$R" 3 '{"id":3,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+run check
+row_is drift "github.com/$R" "github one merged ruleset with an empty bypass list: drift (Michael is locked out), never ok"
+out_has "# in the UI: https://github.com/$R/rules/3: Enforcement Active, bypass list Repository admin" "github merged ruleset, empty bypass: the UI note names Repository admin"
+out_hasnt 'bypass list none' "github merged ruleset, empty bypass: never told to keep its bypass list empty"
+rc_is 1 "github merged ruleset, empty bypass: exit 1"
+
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rs "$R" 2 '{"id":2,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+run check
+row_is drift "github.com/$R" "github main-owner-only with an empty bypass list: drift (Michael is locked out), never ok"
+out_has "# in the UI: https://github.com/$R/rules/2: Enforcement Active, bypass list Repository admin" "github main-owner-only, empty bypass: the UI note names Repository admin"
+out_hasnt 'bypass list none' "github main-owner-only, empty bypass: never told to keep its bypass list empty"
+rc_is 1 "github main-owner-only, empty bypass: exit 1"
+
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
 gh_rs "$R" 2 "{\"id\":2,\"enforcement\":\"active\",\"bypass_actors\":[$BYADMIN,{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}],\"current_user_can_bypass\":\"always\"}"
 run check
@@ -213,11 +243,11 @@ rc_is 1 "github bypass not readable: exit 1"
 eval_remedy() {  # <fixed string selecting the line> -> sets BODY, EXTRA (1 if the injected file appeared)
   local line
   line=$(printf '%s\n' "$OUT" | grep -F -- "$1" | head -n 1)
-  rm -f "$T/pwned" "$T/body"
+  rm -f "$T/pwned" "$T/evaldir/pwned" "$T/body"
   ( mkdir -p "$T/evaldir" && cd "$T/evaldir" &&
     gh() { cat "${@: -1}" > "$T/body"; }
     eval "$line" ) >/dev/null 2>&1
-  BODY=$(cat "$T/body" 2>/dev/null); EXTRA=0; [ ! -e "$T/pwned" ] || EXTRA=1
+  BODY=$(cat "$T/body" 2>/dev/null); EXTRA=0; [ ! -e "$T/pwned" ] && [ ! -e "$T/evaldir/pwned" ] || EXTRA=1
 }
 HOSTILE="x';touch $T/pwned;echo '"
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
@@ -234,6 +264,17 @@ eval_remedy '"name":"main-owner-only"'
 if [ "$EXTRA" -eq 0 ] && [ "$(printf '%s' "$BODY" | jq -r '.name' 2>/dev/null)" = main-owner-only ]; then
   _pass "the owner-only line pastes back to its own body"
 else _fail "the owner-only line pastes back to its own body"; fi
+
+# the repo path comes from the origin URL: the printed remedy must quote it
+HR='o/r$(touch pwned)'
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$HR"
+gh_repo "$HR"; gh_rules "$HR" "$PM_RULES"
+gh_rs "$HR" 1 '{"id":1,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+run check
+row_is drift 'github.com/o/r' "hostile repo path: drift row"
+out_has "repos/'o/r\$(touch pwned)'/rulesets" "hostile repo path: the printed remedy quotes the repo path"
+eval_remedy '"name":"main-owner-only"'
+if [ "$EXTRA" -eq 0 ]; then _pass "hostile repo path: pasting the remedy line runs nothing extra"; else _fail "hostile repo path: pasting the remedy line runs nothing extra"; fi
 
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
 ans gh "api repos/$R" '{"default_branch":"a\nb"}'
@@ -296,6 +337,7 @@ echo "D. normalize_remote"
 norm() { (. /dev/stdin <<<"$(sed -n '/^normalize_remote()/,/^}/p' "$SCRIPT")"; normalize_remote "$1"); }
 for pair in \
   "git@github.com:Example-Owner/Example-Repo.git|github.com/example-owner/example-repo" \
+  "git@x@github.com:Example-Owner/Example-Repo.git|github.com/example-owner/example-repo" \
   "https://user@github.com:443/example-owner/example-repo/|github.com/example-owner/example-repo" \
   "https://user:p@ss@github.com/example-owner/example-repo.git|github.com/example-owner/example-repo" \
   "ssh://git@gitlab.com/example-group/example-sub/example-repo.git|gitlab.com/example-group/example-sub/example-repo" \

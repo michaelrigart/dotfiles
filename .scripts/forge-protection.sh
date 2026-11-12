@@ -52,7 +52,7 @@ normalize_remote() {
         *:*) host=${u%%:*}; path=${u#*:} ;;
         *) host=$u; path= ;;
       esac
-      host=${host#*@}
+      host=${host##*@}
       ;;
   esac
   while :; do
@@ -186,27 +186,29 @@ check_github() {  # <remote> <owner/repo>
         | if $b == null and $c == null then error("no bypass information")
           else $st + {($id): {
             closed: (.enforcement == "active" and (($b != null and ($b | length) == 0) or ($b == null and $c == "never"))),
-            owner: (.enforcement == "active" and (($b != null and ($b | all(.actor_type == "RepositoryRole" and .actor_id == 5))) or ($b == null and $c == "never")))
+            owner: (.enforcement == "active" and (($b != null and ($b | length) > 0 and ($b | all(.actor_type == "RepositoryRole" and .actor_id == 5))) or ($b == null and $c == "never")))
           }} end' 2>/dev/null); then
       row unreadable "$remote" "ruleset $id shows neither bypass_actors nor current_user_can_bypass"; return
     fi
   done
   # A rule pair is "carried" by a ruleset of any enforcement; the POST for a pair is printed only
-  # when no ruleset carries it, otherwise the carrier gets a UI note. A ruleset carrying both pairs
-  # (the rejected merged design) is never told to empty its bypass list: protect-main is posted
-  # beside it and its owner-only bypass is judged as the update/creation carrier.
+  # when no ruleset carries it, otherwise the carrier gets a UI note. A ruleset holding update or
+  # creation (the rejected merged design included) is judged as the owner-only carrier and is never
+  # told to empty its bypass list: protect-main is posted beside it. An empty bypass list is not
+  # owner-only, since Michael could then no longer push the default branch.
   v=$(jq -nc --argjson r "$rules" --argjson st "$st" '
     def types($id): [$r[] | select(.ruleset_id == $id) | .type];
     def pair($id; $a; $b): (types($id) | (index($a) != null and index($b) != null));
     def pm($id): pair($id; "deletion"; "non_fast_forward");
     def oo($id): pair($id; "update"; "creation");
+    def uc($id): (types($id) | (index("update") != null or index("creation") != null));
     def carried($t; $k): any($r[]; .type == $t and $st[(.ruleset_id | tostring)][$k]);
     ([$r[].ruleset_id | select(. != null)] | unique) as $ids
     | {ok: (carried("deletion"; "closed") and carried("non_fast_forward"; "closed") and carried("update"; "owner") and carried("creation"; "owner")),
-       protect_post: ([$ids[] | select(pm(.) and (oo(.) | not))] | length == 0),
+       protect_post: ([$ids[] | select(pm(.) and (uc(.) | not))] | length == 0),
        owner_post: ([$ids[] | select(oo(.))] | length == 0),
-       ui: ([$ids[] | select(pm(.) and (oo(.) | not) and ($st[tostring].closed | not)) | {id: ., want: "none"}]
-          + [$ids[] | select(oo(.) and ($st[tostring].owner | not)) | {id: ., want: "Repository admin"}])}')
+       ui: ([$ids[] | select(pm(.) and (uc(.) | not) and ($st[tostring].closed | not)) | {id: ., want: "none"}]
+          + [$ids[] | select(uc(.) and ($st[tostring].owner | not)) | {id: ., want: "Repository admin"}])}')
   if [ "$(printf '%s' "$v" | jq -r '.ok')" = true ]; then
     row ok "$remote" "default branch $def"; return
   fi
