@@ -558,6 +558,18 @@ unchanged; each correction is listed here for Michael, and the text above stands
     GitHub's own; a trailing-dot host name, an IP literal, an SSH host alias and an HTTPS remote
     stay outside the pin as accepted limits. Recorded for Michael to overrule.
 
+### Decisions on corrections 10 to 12 (Michael, 2026-11-13, relayed by the driver session)
+
+- **Correction 10, decided as recommended.** `GH_TOKEN` is a fine-grained token of Michael's own
+  account without Contents write, so pull requests, issues and comments stay his; the machine
+  account pushes, and is a collaborator only on repositories agents work in. Still unverified until
+  he checks the permission names and that a merge is refused; his steps keep that check.
+- **Correction 11, decided as recommended.** The GitLab target is applied only on projects where
+  he alone pushes the default branch; every other project goes into his exceptions file or stays
+  as it is.
+- **Correction 12, accepted as built.** The guard keeps scanning the pushes it cannot show the
+  hook will see.
+
 ## Left to the plan
 
 - The rendering mechanism for the two tokens, and the exact agent SSH configuration.

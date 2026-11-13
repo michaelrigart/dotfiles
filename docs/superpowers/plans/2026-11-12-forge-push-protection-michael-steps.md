@@ -63,6 +63,10 @@ Rollbacks: sections "Rollback, group A", B, D, E, F, G and H (group C changes no
 
 ## Three decisions first
 
+**Decided on 2026-11-13 (Michael, relayed by the driver session): a and b as recommended, c
+accepted as built.** The steps below already follow them; the check in a that the token cannot
+merge is still yours to make.
+
 Read these before step 1. The steps below follow the recommendations; each decision says what
 changes in them if you decide otherwise. None needs a code change in merge 1 unless it says so.
 
