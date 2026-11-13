@@ -116,7 +116,7 @@ specs and merges; in between, the driver proceeds on its own.
   mostly find problems in the last round's fixes, or a goal that can never be finished, mean it does
   not: stop and bring Michael the round count, what recurs and a structural option.
 - **Finishing.** Push the feature branch and open a Draft MR where the repository uses MRs. For the
-  dotfiles, the pushed branch is the end. Show no finishing menus, and never merge.
+  dotfiles, open the PR ready for review; Michael merges. Show no finishing menus, and never merge.
 - **Reporting.** Final reports end on one state line: pushed, review receipt, open items, next step.
 - **Fresh sessions.** When asking for spec sign-off and in a final report, end with one line
   suggesting `/clear` plus a paste-ready prompt (checkout, branch, artifact paths, next step).

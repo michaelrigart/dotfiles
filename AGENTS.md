@@ -56,6 +56,11 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   only with its Edit/Write tools and git commands that touch only the repository (`add`,
   `commit`). Check `git branch --show-current` before each commit, since a session can sit
   in the wrong checkout.
+- A line ends with its branch pushed and a pull request against `main`, opened with
+  `gh pr create` after the pre-merge review, ready for review and assigned to Michael. No agent
+  merges it or pushes `main`: Michael merges from his own terminal with
+  `gh pr merge <number> --merge --match-head-commit <sha>`, then
+  `git -C ~/.local/share/chezmoi pull --ff-only`, then `chezmoi apply`.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`, `reconcile-agents.sh`,
   `preflight-ssh-agent.sh`), deliberately not `run_once_` scripts: they change system settings
   and need interaction. `install-claude-managed-settings.sh` installs
