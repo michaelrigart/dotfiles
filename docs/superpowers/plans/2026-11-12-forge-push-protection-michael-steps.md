@@ -22,6 +22,45 @@ lines it prints), `dot_claude/modify_private_settings.json`, `private_dot_ssh/pr
 `dot_config/agent-identity/ssh_config` and `tests/live-agent-auth.test.sh`. Where this file and
 the plan differ, this file follows the code.
 
+## Checklist
+
+Three decisions come first: GitHub identity reach and authorship, GitLab on shared projects, secret scan stays in guard ([Three decisions first](#three-decisions-first)). Then, in order, do and verify; the long form below is the reference.
+
+1. Create the GitHub machine account at github.com/signup, two-factor on ([Step 1](#step-1)).
+   Verify: `https://github.com/settings/security` shows two-factor authentication enabled.
+2. 1Password SSH Key item `GitHub Agent SSH Key`, then `op read "op://Private/GitHub Agent SSH Key/public key" | pbcopy` and paste it at Settings > SSH and GPG keys ([Step 2](#step-2)).
+   Verify: `op read "op://Private/GitHub Agent SSH Key/public key" | ssh-keygen -lf -` prints `256 SHA256:… (ED25519)`, the fingerprint on `https://github.com/settings/keys`.
+3. Fine-grained token of your own account (Settings > Developer settings > Personal access tokens), item `GitHub Agent Token`, field `token`; details: [Step 3](#step-3) below.
+   Verify: `GH_TOKEN="$(op read 'op://Private/GitHub Agent Token/token')" gh api user --jq .login` prints `<owner>`.
+4. GitLab: Edit profile > Access tokens > Add new token (fine-grained), item `GitLab Agent Token`, field `token`; details: [Step 4](#step-4) below.
+   Verify: `GITLAB_TOKEN="$(op read 'op://Private/GitLab Agent Token/token')" glab api --hostname gitlab.com personal_access_tokens/self | jq 'del(.token)'` lists no merge, approve, protect or project-update permission.
+5. `git -C ~/.local/share/chezmoi merge --ff-only feat/forge-push-protection`, then `git -C ~/.local/share/chezmoi pom` ([Step 5](#step-5)).
+   Verify: `git -C ~/.local/share/chezmoi status --short --branch` prints `## main...origin/main` with no `ahead`.
+6. `~/.local/share/chezmoi/.scripts/forge-protection.sh check > ~/.local/state/forge-protection/check.txt` (after `mkdir -p ~/.local/state/forge-protection`) ([Step 6](#step-6)).
+   Verify: `tail -n 1 ~/.local/state/forge-protection/check.txt` prints `forge-protection: N repositories: a ok, b drift, c unreadable, d excepted; e checkouts without origin skipped`.
+7. Filter the check's GitHub remedy lines for the repositories you chose, read them, then `bash ~/.local/state/forge-protection/github-remedies.sh`; dotfiles first; details: [Step 7](#step-7) below.
+   Verify: `gh api repos/<owner>/<repo>/rules/branches/<branch> --jq '[.[].type] | sort'` prints `["creation","deletion","non_fast_forward","update"]`.
+8. `for r in <repo-a> <repo-b>; do gh api --method PUT repos/<owner>/$r/collaborators/<agent-account> -f permission=push; done`, then accept each invitation as the machine account ([Step 8](#step-8)).
+   Verify: `for r in <repo-a> <repo-b>; do gh api repos/<owner>/$r/collaborators/<agent-account>/permission --jq .permission; done` prints `write` for each.
+9. `command -v gitleaks` (must print a path), then `chezmoi apply`, plain, never `chezmoi diff` ([Step 9](#step-9)).
+   Verify: `git config --global --get core.hooksPath` prints `~/.config/git/hooks`; the other checks: [Step 9](#step-9) below.
+10. One GitLab project first: record its rules with `glab api --hostname gitlab.com 'projects/<project-id>/protected_branches?per_page=100' > ~/.local/state/forge-protection/before-<project-id>.json`, then paste the check's printed line for it; details: [Step 10](#step-10) below.
+    Verify: `glab api --hostname gitlab.com projects/<project-id>/protected_branches/<rule-name-uri-encoded> | jq '{id, push: [.push_access_levels[].access_level], merge: [.merge_access_levels[].access_level], force: .allow_force_push}'` shows push `[0]`, merge `[40]` (or `[0]`), force `false`, the same `id`.
+11. Record every chosen project's rules first, then `bash ~/.local/state/forge-protection/gitlab-remedies.sh`; details: [Step 11](#step-11) below.
+    Verify: re-run Step 6's command into a new file; every GitLab row you chose reads `ok`.
+12. Azure, per repository: save the policy list and permissions first, then paste the check's printed `az repos policy approver-count create …` line; details: [Step 12](#step-12) below.
+    Verify: `az repos policy list --org <org-url> --project <project> --repository-id <repo-id> --branch <branch> --query "[?isEnabled && isBlocking].type.id" --output json` includes `"fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"`.
+13. Exceptions file: `git -C <checkout> remote get-url --push origin >> ~/.config/forge-protection/exceptions` for one repository; the `awk` form for many is in [Step 13](#step-13) below.
+    Verify: `~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"` prints `exit 0`, and `d excepted` equals the file's line count.
+14. From your own terminal: `~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"` ([Step 14](#step-14)).
+    Verify: `exit 0`, every row `ok` or `excepted`; `ssh -T git@github.com` greets `Hi <owner>!`; the other commands: [Step 14](#step-14) below.
+15. In a new agent session started after step 9, ask it to run, sandboxed, `./tests/run.sh live-agent-auth`; never with `!` ([Step 15](#step-15)).
+    Verify: `AUTH=READY`, `GITHUB_SSH=AGENT`, `GITLAB_SSH=READY`, exit 0; the other commands: [Step 15](#step-15) below.
+16. Tell the line the results by the template in [Step 16](#step-16), with no repository names; no command.
+    Verify: the line has the results and puts them in the spec's Implementation notes.
+
+Rollbacks: sections "Rollback, group A", B, D, E, F, G and H (group C changes nothing). Accepted limits: section "Accepted limits and rulings".
+
 ## Three decisions first
 
 Read these before step 1. The steps below follow the recommendations; each decision says what
@@ -146,7 +185,7 @@ step 9 means there is no moment when a repository you chose has the machine acco
 These can come before or after step 5, but step 9 needs steps 1 to 4 done: an item that does not
 exist yet leaves its part inert, and a second `chezmoi apply` after creating it renders it.
 
-### Step 1. Create the GitHub machine account
+### Step 1. Create the GitHub machine account <a id="step-1"></a>
 
 Create a second GitHub account for the agent (github.com/signup; GitHub's terms allow one free
 machine account beside a personal one). Use an email address you control that no other GitHub
@@ -159,7 +198,7 @@ authentication enabled.
 
 If it fails: enable it there before going on; the account must not exist without it.
 
-### Step 2. Its SSH key (needs step 1)
+### Step 2. Its SSH key (needs step 1) <a id="step-2"></a>
 
 In 1Password: New Item > SSH Key > Add Private Key > Generate New Key, type Ed25519, vault
 **Private**, title exactly `GitHub Agent SSH Key`. Then, signed in as the machine account,
@@ -182,7 +221,7 @@ If it fails: `op read` says the item or field is not found: the title or the vau
 key's public field is not labelled `public key` (rename it). If `op` cannot connect, 1Password's
 Settings > Developer > CLI integration must be on, then `eval $(op signin)`.
 
-### Step 3. Its token (decision a; the recommended form needs no step before it)
+### Step 3. Its token (decision a; the recommended form needs no step before it) <a id="step-3"></a>
 
 **As recommended (decision a(ii)): a fine-grained token of your own account.** Signed in as
 yourself, not as the machine account: Settings > Developer settings > Personal access tokens >
@@ -243,7 +282,7 @@ GH_TOKEN="$(op read 'op://Private/GitHub Agent Token/token')" gh api -i user | r
 
 Expected: `X-Oauth-Scopes: public_repo`. An extra scope means regenerate it narrower.
 
-### Step 4. The GitLab token (your own GitLab account, no second account)
+### Step 4. The GitLab token (your own GitLab account, no second account) <a id="step-4"></a>
 
 On your own account: Edit profile > Access tokens > Add new token, fine-grained. Give it only what
 agents do: read projects, repositories, branches and their protection (the check needs
@@ -280,7 +319,7 @@ are the inert state.
 
 ## Group B: merge
 
-### Step 5. Merge 1 and push `main` from your own terminal
+### Step 5. Merge 1 and push `main` from your own terminal <a id="step-5"></a>
 
 Needs the line's final report: pre-merge review receipt, and the heavy suites green. In a terminal
 of your own, not the session:
@@ -325,7 +364,7 @@ the rollback of group E).
 
 ## Group C: the baseline check
 
-### Step 6. Run the check (needs step 5; no apply)
+### Step 6. Run the check (needs step 5; no apply) <a id="step-6"></a>
 
 The script is in the main checkout once step 5 has merged; the check runs as you, so the apply
 (step 9) is not needed. Keep the output in a file outside this repository, because steps 7 and 11
@@ -351,8 +390,10 @@ tail -n 1 ~/.local/state/forge-protection/check.txt
 
 Expected: `forge-protection: N repositories: a ok, b drift, c unreadable, d excepted; e checkouts
 without origin skipped`. The first line of the file is `# This output names repositories: …`, then
-one row per remote: `ok`, `drift` (with the lines to paste), `unreadable` (with a reason) or
-`excepted`. On 2026-11-13 the check read 86 repositories: GitHub 43 of your own `drift` and 14 of
+one row per push address of a checkout's `origin` (a checkout whose `origin` has several push
+addresses gets a row for each): `ok`, `drift` (with the lines to paste), `unreadable` (with a
+reason) or `excepted`. The counts here and in the summary line are approximate: rows are per push
+address, not per checkout. Earlier, on 2026-11-13, the check read 86 repositories: GitHub 43 of your own `drift` and 14 of
 other owners `unreadable` (HTTP 403); `gitlab.com` 22 `drift` and 3 `unreadable`; Azure DevOps 3
 `unreadable` (read from an agent session, where `az` hangs); and 1 repository on a self-hosted
 host the check does not know, `unreadable`. That is 65 `drift` and 21 `unreadable`, none `ok`. Your
@@ -375,7 +416,7 @@ No rollback: it changes nothing.
 
 ## Group D: GitHub
 
-### Step 7. The rulesets (needs step 6)
+### Step 7. The rulesets (needs step 6) <a id="step-7"></a>
 
 Choose the repositories agents actually work in (decision a(i)); call them `<repo-a>`, `<repo-b>`,
 and so on. For each, the rulesets are the `gh api --method POST …/rulesets` lines the check printed
@@ -466,7 +507,7 @@ If it fails:
 - If the first push of `main` after this is refused for you: delete `main-owner-only` (rollback
   below) and tell the line; the role id is wrong.
 
-### Step 8. The collaborator (needs steps 2 and 7 for those repositories)
+### Step 8. The collaborator (needs steps 2 and 7 for those repositories) <a id="step-8"></a>
 
 Only after the rulesets: until then the machine account would have write on an unprotected `main`.
 This is spec section 2.1's command, not a line the check prints, so it is a loop over the chosen
@@ -542,7 +583,7 @@ Revoke the token (group A rollback). The forge rules stay if you only roll back 
 
 ## Group E: apply
 
-### Step 9. Apply (needs steps 1 to 4, and steps 7 and 8 for the repositories you chose)
+### Step 9. Apply (needs steps 1 to 4, and steps 7 and 8 for the repositories you chose) <a id="step-9"></a>
 
 From this apply on, agent sessions carry the machine account's SSH key for `github.com` and the
 token of the `GitHub Agent Token` item, and every push of yours runs the hook (see the window in
@@ -674,7 +715,7 @@ Changes are made **in place**. Never unprotect a branch and protect it again: be
 calls, or for good if the second fails, the branch would accept a force push its old rule refused.
 The check never prints a DELETE.
 
-### Step 10. One project first (needs step 6)
+### Step 10. One project first (needs step 6) <a id="step-10"></a>
 
 Pick one project the check marked `drift` that already has a rule (it printed a `--method PATCH`
 line). Record its rules before changing them, into a file outside this repository:
@@ -718,7 +759,7 @@ project: Settings > Repository > Protected branches > the rule: Allowed to push 
 which form worked, so the printed form is corrected before merge 2. A 403 means your `glab` login is
 not Owner there; that project is a step 13 candidate.
 
-### Step 11. The rest (needs step 10 working, or the UI form)
+### Step 11. The rest (needs step 10 working, or the UI form) <a id="step-11"></a>
 
 Decide the project list first (decision b): the projects where you alone push the default branch.
 Regenerate the check's output so step 10's project reads `ok` and is not repeated:
@@ -774,7 +815,7 @@ What this costs you: with a blocking policy and your effective rights set to Den
 the default branch fail for you too; every change lands through a pull request (the printed policy
 lets you approve your own).
 
-### Step 12. Read, then set (needs step 6)
+### Step 12. Read, then set (needs step 6) <a id="step-12"></a>
 
 **UNVERIFIED: all of this group.** The state of the three repositories has never been read, because
 `az repos` produced no output from an agent session. If `az repos` hangs in your terminal too,
@@ -925,7 +966,7 @@ is what it was (the check reports it as drift again).
 
 ## Group H: the exceptions file
 
-### Step 13. Write it (needs steps 6 to 12 done as far as they go)
+### Step 13. Write it (needs steps 6 to 12 done as far as they go) <a id="step-13"></a>
 
 `~/.config/forge-protection/exceptions` is yours alone: it is outside this repository and outside
 the sandbox's writable paths. Use it only for the repositories you knowingly accept as unprotected:
@@ -987,7 +1028,7 @@ Delete the file: nothing is excepted, and the check reports those repositories a
 
 ## Group I: verification (spec section 6; needs everything above)
 
-### Step 14. From your own terminal
+### Step 14. From your own terminal <a id="step-14"></a>
 
 ```
 ~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"
@@ -1020,7 +1061,7 @@ If it fails: the first command's remaining rows say which step to repeat. `ssh -
 `<agent-account>` means your own SSH configuration or agent offers the machine key: look at `~/.ssh/config`
 and 1Password's agent order.
 
-### Step 15. From a new agent session
+### Step 15. From a new agent session <a id="step-15"></a>
 
 Start a **new** Claude Code session after step 9 (the tokens are read from the settings at start),
 in `~/.local/share/chezmoi-feat-forge-push-protection`, and ask it to run the following with its
@@ -1095,7 +1136,7 @@ read that repository's rules (with the classic variant, or a repository outside 
 selection); a row that shows `drift` only here, with the classic variant, means a ruleset the agent
 could bypass (`current_user_can_bypass` is not `never`): recheck step 8's last verification.
 
-### Step 16. Record
+### Step 16. Record <a id="step-16"></a>
 
 Tell the line, in the session or by paste, with no repository names:
 
