@@ -455,6 +455,10 @@ cmd_check() {
   for d in "$HOME"/Code/*; do collect "$d" 2; done
   sort -u "$WORK/remotes" | grep -v '^$' > "$WORK/sorted"
   total=$(wc -l < "$WORK/sorted" | tr -d ' ')
+  if [ "$total" -eq 0 ]; then
+    echo "forge-protection: no repositories found to check under ~/Code (three levels) or the dotfiles checkout; $skipped checkouts without origin skipped"
+    return 1
+  fi
   echo "# This output names repositories: never commit it or paste it into a tracked file."
   while IFS= read -r n; do
     case "$NL$EXC" in

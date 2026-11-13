@@ -919,6 +919,11 @@ reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$R.git" "git
 run check
 row_is unreadable "gh-alias/$R" "the remote is where pushes go (pushurl wins over url)"
 
+reset
+run check
+rc_is 1 "walk: nothing to check exits 1"
+out_has "no repositories found" "walk: nothing to check says so"
+
 echo "D. normalize_remote"
 norm() { (. /dev/stdin <<<"$(sed -n '/^normalize_remote()/,/^}/p' "$SCRIPT")"; normalize_remote "$1"); }
 for pair in \
