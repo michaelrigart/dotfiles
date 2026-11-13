@@ -107,8 +107,8 @@ gh_get() {  # [--paginate] <endpoint>
   forge_call gh api "$@"
 }
 
-glab_get() {  # <endpoint>
-  forge_call glab api --hostname gitlab.com "$1"
+glab_get() {  # [--paginate] <endpoint>
+  forge_call glab api --hostname gitlab.com "$@"
 }
 
 az_read() {  # <args...>: only read verbs
@@ -228,11 +228,75 @@ check_github() {  # <remote> <owner/repo>
   done
 }
 
+check_gitlab() {  # <remote> <group/.../project>
+  local remote=$1 path=$2 enc id def ep rules v n i name nenc json
+  case "$path" in
+    *//*|*/|/*|'') row unreadable "$remote" "not a group/project path"; return ;;
+    */*) ;;
+    *) row unreadable "$remote" "not a group/project path"; return ;;
+  esac
+  enc=$(jq -rn --arg p "$path" '$p | @uri')
+  if ! glab_get "projects/$enc"; then row unreadable "$remote" "$(fc_reason)"; return; fi
+  id=$(printf '%s' "$FC_OUT" | jq -r '.id // empty | tostring' 2>/dev/null)
+  def=$(printf '%s' "$FC_OUT" | jq -r '.default_branch // empty' 2>/dev/null)
+  case "$id" in ''|*[!0-9]*) row unreadable "$remote" "no project id in the answer"; return ;; esac
+  if [ -z "$def" ]; then row unreadable "$remote" "no default branch in the answer"; return; fi
+  case "$def" in *[[:cntrl:]]*) row unreadable "$remote" "the default branch name holds control characters"; return ;; esac
+  ep="projects/$id/protected_branches?per_page=100"
+  if ! glab_get --paginate "$ep"; then
+    row unreadable "$remote" "$(fc_reason)"; return
+  fi
+  rules=$(printf '%s' "$FC_OUT" | jq -sc 'add // []' 2>/dev/null)
+  if ! printf '%s' "$rules" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    row unreadable "$remote" "the protected branches answer is not a list"; return
+  fi
+  # GitLab applies the most permissive matching rule, so every rule whose name is the default branch
+  # or whose wildcard matches it is judged; `*` is any run of characters, anything else literal.
+  if ! v=$(printf '%s' "$rules" | jq -c --arg def "$def" '
+      def esc: gsub("(?<c>[^A-Za-z0-9])"; "\\\(.c)");
+      def hits($n): ($n == $def) or ($def | test("\\A" + ($n | split("*") | map(esc) | join(".*")) + "\\z"; "p"));
+      def pusher: (.access_level != 0) or (.user_id != null) or (.group_id != null) or (.deploy_key_id != null);
+      def merger: ((.access_level == 0 or ((.access_level // 0) >= 40)) | not) or (.user_id != null) or (.group_id != null);
+      [.[] | select((.name | type) == "string" and hits(.name))
+        | {name, force: (.allow_force_push != false),
+           push_bad: [(.push_access_levels // [])[] | select(pusher) | .id],
+           merge_bad: [(.merge_access_levels // [])[] | select(merger) | .id]}
+        | .body = ({}
+            + (if .force then {allow_force_push: false} else {} end)
+            + (if (.push_bad | length) > 0 then {allowed_to_push: ([.push_bad[] | {id: ., _destroy: true}] + [{access_level: 0}])} else {} end)
+            + (if (.merge_bad | length) > 0 then {allowed_to_merge: ([.merge_bad[] | {id: ., _destroy: true}] + [{access_level: 40}])} else {} end))
+        | .bad = (.force or (.push_bad | length) > 0 or (.merge_bad | length) > 0)]' 2>/dev/null); then
+    row unreadable "$remote" "the protected branches answer cannot be read"; return
+  fi
+  n=$(printf '%s' "$v" | jq -r 'length')
+  if [ "$n" -gt 0 ] && [ "$(printf '%s' "$v" | jq -r 'map(select(.bad)) | length')" -eq 0 ]; then
+    row ok "$remote" "default branch $def"; return
+  fi
+  row drift "$remote" "default branch $def"
+  if [ "$n" -eq 0 ]; then
+    remedy "glab api --hostname gitlab.com --method POST $(shq "projects/$id/protected_branches") -f $(shq "name=$def") -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false"
+    return
+  fi
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    if [ "$(printf '%s' "$v" | jq -r ".[$i].bad")" = true ]; then
+      name=$(printf '%s' "$v" | jq -r ".[$i].name")
+      nenc=$(jq -rn --arg p "$name" '$p | @uri')
+      json=$(printf '%s' "$v" | jq -c ".[$i].body")
+      remedy "glab api --hostname gitlab.com --method PATCH $(shq "projects/$id/protected_branches/$nenc") -H $(shq 'Content-Type: application/json') --input <(printf '%s\\n' $(shq "$json"))"
+      note "in place, never removed and re-created"
+      note "or in the UI: Settings > Repository > Protected branches > $name: Allowed to push and merge: No one; Allowed to force push: off"
+    fi
+    i=$((i + 1))
+  done
+}
+
 check_remote() {  # <normalized remote>
   local n=$1 host path
   host=${n%%/*}; path=${n#*/}
   case "$host" in
     github.com) check_github "$n" "$path" ;;
+    gitlab.com) check_gitlab "$n" "$path" ;;
     *) row unreadable "$n" "unknown forge host $host; an SSH host alias is read as one" ;;
   esac
 }

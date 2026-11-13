@@ -243,9 +243,10 @@ rc_is 1 "github bypass not readable: exit 1"
 eval_remedy() {  # <fixed string selecting the line> -> sets BODY, EXTRA (1 if the injected file appeared)
   local line
   line=$(printf '%s\n' "$OUT" | grep -F -- "$1" | head -n 1)
-  rm -f "$T/pwned" "$T/evaldir/pwned" "$T/body"
+  rm -f "$T/pwned" "$T/evaldir/pwned" "$T/body" "$T/argv"
   ( mkdir -p "$T/evaldir" && cd "$T/evaldir" &&
     gh() { cat "${@: -1}" > "$T/body"; }
+    glab() { printf '%s\n' "$@" > "$T/argv"; cat "${@: -1}" > "$T/body" 2>/dev/null; }
     eval "$line" ) >/dev/null 2>&1
   BODY=$(cat "$T/body" 2>/dev/null); EXTRA=0; [ ! -e "$T/pwned" ] && [ ! -e "$T/evaldir/pwned" ] || EXTRA=1
 }
@@ -280,6 +281,139 @@ reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
 ans gh "api repos/$R" '{"default_branch":"a\nb"}'
 run check
 row_is unreadable "github.com/$R.*control characters" "a default branch with a control character is unreadable, never printed into a row"
+
+echo "A2. gitlab"
+GP=example-group/example-sub/example-app
+GENC=example-group%2Fexample-sub%2Fexample-app
+GID=77
+GLA="api --hostname gitlab.com"
+gl_proj() { ans glab "$GLA projects/$GENC" "{\"id\":$GID,\"default_branch\":\"${1:-main}\"}"; }
+gl_pb()   { ans glab "$GLA --paginate projects/$GID/protected_branches?per_page=100" "$1"; }
+# glrule <name> <push level> <merge level> <force push> [first entry id]: one protected-branch rule
+glrule() { jq -nc --arg n "$1" --argjson p "$2" --argjson m "$3" --argjson f "$4" --argjson i "${5:-10}" \
+  '{id:$i,name:$n,push_access_levels:[{id:$i,access_level:$p}],merge_access_levels:[{id:($i+1),access_level:$m}],allow_force_push:$f}'; }
+glab_case() {  # <protected_branches answer> [default branch]: a fresh fixture, then a run
+  reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"
+  gl_proj "${2:-main}"; gl_pb "$1"
+  run check
+}
+GL_STRICT=$(glrule main 0 40 false 10)
+GLR="gitlab.com/$GP"
+
+glab_case "[$GL_STRICT]"
+row_is ok "$GLR" "gitlab ok (nested group path, @uri encoded): ok row"
+rc_is 0 "gitlab ok: exit 0"
+if grep -q "projects/$GENC\$" "$CALLS"; then _pass "gitlab ok: the nested path is @uri encoded in the call"; else _fail "gitlab ok: the nested path is @uri encoded in the call"; fi
+
+glab_case '[]'
+row_is drift "$GLR" "gitlab no rule: drift row"
+out_has "glab api --hostname gitlab.com --method POST projects/$GID/protected_branches -f name=main -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false" "gitlab no rule: the POST with push 0, merge 40, force push off"
+out_hasnt "PATCH" "gitlab no rule: no PATCH"
+rc_is 1 "gitlab no rule: exit 1"
+
+glab_case "[$(glrule main 40 40 false 10)]"
+row_is drift "$GLR" "gitlab push Maintainers: drift row"
+out_has "--method PATCH projects/$GID/protected_branches/main " "gitlab push Maintainers: the PATCH names the rule in place"
+out_has '"allowed_to_push":[{"id":10,"_destroy":true},{"access_level":0}]' "gitlab push Maintainers: the push entry is destroyed and No one added"
+out_hasnt 'allowed_to_merge' "gitlab push Maintainers: the merge side is left alone"
+out_hasnt 'allow_force_push' "gitlab push Maintainers: force push is left alone"
+out_has "# in place, never removed and re-created" "gitlab push Maintainers: the in-place note"
+out_has "# or in the UI: Settings > Repository > Protected branches > main: Allowed to push and merge: No one; Allowed to force push: off" "gitlab push Maintainers: the UI note"
+out_hasnt "--method POST" "gitlab push Maintainers: no POST beside the PATCH"
+rc_is 1 "gitlab push Maintainers: exit 1"
+
+glab_case "[$(glrule main 0 40 true 10)]"
+row_is drift "$GLR" "gitlab force push on: drift row"
+out_has '"allow_force_push":false' "gitlab force push on: the PATCH turns it off"
+out_hasnt 'allowed_to_push' "gitlab force push on: the push side is left alone"
+
+glab_case "[$(glrule main 0 30 false 10)]"
+row_is drift "$GLR" "gitlab merge Developers: drift row"
+out_has '"allowed_to_merge":[{"id":11,"_destroy":true},{"access_level":40}]' "gitlab merge Developers: the merge entry is replaced by Maintainers"
+
+glab_case "[$(glrule main 0 0 false 10)]"
+row_is ok "$GLR" "gitlab merge No one: ok"
+
+glab_case '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0,"deploy_key_id":3}],"merge_access_levels":[{"id":11,"access_level":40}],"allow_force_push":false}]'
+row_is drift "$GLR" "gitlab a deploy key allowed to push: drift row"
+out_has '"allowed_to_push":[{"id":10,"_destroy":true},{"access_level":0}]' "gitlab a deploy key allowed to push: the entry is destroyed"
+
+glab_case "[$GL_STRICT,$(glrule 'ma*' 40 40 false 20)]"
+row_is drift "$GLR" "gitlab strict exact rule beside a permissive wildcard: drift row"
+out_has "protected_branches/ma%2A " "gitlab strict exact beside a permissive wildcard: the PATCH names the wildcard rule"
+if [ "$(printf '%s\n' "$OUT" | grep -c -- '--method PATCH')" -eq 1 ]; then _pass "gitlab strict exact beside a permissive wildcard: the strict exact rule is not patched"; else _fail "gitlab strict exact beside a permissive wildcard: the strict exact rule is not patched"; fi
+
+glab_case "[$GL_STRICT,$(glrule 'ma*' 0 40 false 20)]"
+row_is ok "$GLR" "gitlab strict exact and strict wildcard: ok"
+
+glab_case "[$GL_STRICT]"
+ans glab "$GLA --paginate projects/$GID/protected_branches?per_page=100" "[$GL_STRICT]
+[$(glrule 'ma*' 40 40 false 20)]"
+run check
+row_is drift "$GLR" "gitlab a permissive wildcard on the second page: drift (every page is merged)"
+out_has "protected_branches/ma%2A " "gitlab a permissive wildcard on the second page: the PATCH names it"
+
+glab_case "[$(glrule develop 40 40 true 10)]"
+row_is drift "$GLR" "gitlab rule for another branch only: drift row"
+out_has "--method POST projects/$GID/protected_branches -f name=main" "gitlab rule for another branch only: the POST is printed"
+out_hasnt "PATCH" "gitlab rule for another branch only: the other branch's rule is not patched"
+
+glab_case "[$GL_STRICT,$(glrule 'dev*' 40 40 true 20),$(glrule mai 40 40 true 30),$(glrule 'm.in' 40 40 true 40),$(glrule 'main2' 40 40 true 50)]"
+row_is ok "$GLR" "gitlab non-matching rules (other wildcard, prefix, regex dot, suffix) are ignored: ok"
+
+glab_case "[$GL_STRICT,$(glrule '*' 40 40 false 20)]"
+row_is drift "$GLR" "gitlab a bare * rule matches every branch: drift"
+
+reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"
+ans glab "$GLA projects/$GENC" '{"message":"404 Project Not Found"}' 1 "glab: 404 Project Not Found (HTTP 404)"
+run check
+row_is unreadable "$GLR.*HTTP 404" "gitlab project 404: unreadable naming HTTP 404"
+rc_is 1 "gitlab project 404: exit 1"
+
+reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"; gl_proj
+ans glab "$GLA --paginate projects/$GID/protected_branches?per_page=100" '{"message":"403 Forbidden"}' 1 "glab: 403 Forbidden (HTTP 403)"
+run check
+row_is unreadable "$GLR.*HTTP 403" "gitlab protected_branches 403: unreadable naming HTTP 403"
+rc_is 1 "gitlab protected_branches 403: exit 1"
+
+reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"; gl_proj; gl_pb "[$GL_STRICT]"
+ans glab "$GLA projects/$GENC" "{\"id\":$GID,\"default_branch\":\"main\"}" "" "" 5
+export FORGE_PROTECTION_TIMEOUT=1
+run check
+unset FORGE_PROTECTION_TIMEOUT
+row_is unreadable "$GLR.*no answer within 1s" "gitlab no answer: unreadable naming the timeout"
+if [ "$SECS" -lt 4 ]; then _pass "gitlab no answer: returns within 4 s (took ${SECS}s)"; else _fail "gitlab no answer: returns within 4 s (took ${SECS}s)"; fi
+
+glab_case '{"message":"odd"}'
+row_is unreadable "$GLR.*not a list" "gitlab an answer that is not a list: unreadable"
+
+reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"
+ans glab "$GLA projects/$GENC" '{"default_branch":"main"}'
+run check
+row_is unreadable "$GLR.*no project id" "gitlab no project id: unreadable"
+
+glab_case '[]' 'a\nb'
+row_is unreadable "$GLR.*control characters" "gitlab a default branch with a control character is unreadable"
+
+# The remedy lines embed forge-supplied branch and rule names: pasted, each must run nothing extra
+# and hand glab the exact name.
+glab_case '[]' "$HOSTILE"
+row_is drift "$GLR" "gitlab hostile default branch: drift row"
+eval_remedy "--method POST"
+if [ "$EXTRA" -eq 0 ]; then _pass "gitlab hostile default branch: pasting the POST line runs nothing extra"; else _fail "gitlab hostile default branch: pasting the POST line runs nothing extra"; fi
+if grep -qxF "name=$HOSTILE" "$T/argv"; then _pass "gitlab hostile default branch: the pasted POST hands glab the exact name"; else _fail "gitlab hostile default branch: the pasted POST hands glab the exact name"; fi
+
+HRULE="main';touch $T/pwned;echo '"
+glab_case "[$(glrule "$HRULE" 40 40 true 10)]" "$HRULE"
+row_is drift "$GLR" "gitlab hostile rule name: drift row"
+eval_remedy "--method PATCH"
+if [ "$EXTRA" -eq 0 ]; then _pass "gitlab hostile rule name: pasting the PATCH line runs nothing extra"; else _fail "gitlab hostile rule name: pasting the PATCH line runs nothing extra"; fi
+if [ "$(jq -c . < "$T/body" 2>/dev/null)" = '{"allow_force_push":false,"allowed_to_push":[{"id":10,"_destroy":true},{"access_level":0}]}' ]; then
+  _pass "gitlab hostile rule name: the pasted PATCH hands glab the exact JSON body"
+else _fail "gitlab hostile rule name: the pasted PATCH hands glab the exact JSON body (got $(cat "$T/body" 2>/dev/null))"; fi
+if grep -qxF "projects/$GID/protected_branches/$(jq -rn --arg b "$HRULE" '$b | @uri')" "$T/argv"; then
+  _pass "gitlab hostile rule name: the pasted PATCH endpoint is the encoded name"
+else _fail "gitlab hostile rule name: the pasted PATCH endpoint is the encoded name"; fi
 
 echo "B. unknown host, exceptions"
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "git@gh-alias:$R.git"
