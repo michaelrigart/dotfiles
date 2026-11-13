@@ -116,12 +116,15 @@ clean pass. Use `run.sh`, or a loop over a glob. (<the existing parenthesis, unc
 judges each on its **exit status**, and cross-checks that against the counted assertions: a
 suite that dies partway is reported `INCONSISTENT` instead of folded into a total.
 
-**Reading a run.** A `????` row is exit 2, never an assertion failure: a suite whose subject
-is missing, or an `INCONCLUSIVE:` condition; `run.sh` prints the suite's line under the row. The
-`KEY=VALUE` suites (`live-agent-auth`, `live-agent-signing`, `live-credential-boundary`,
-`live-write-boundary`) are judged on exit status alone; a failed one closes with a
-`failed_keys=<key>,<key>` line, which `run.sh` shows under the FAIL row with any `INCONCLUSIVE:`
-lines, never a value.
+**Reading a run.** A `????` row is not a verdict: the suite asserted nothing, or its exit
+status contradicts its assertions (`INCONSISTENT`). Read the exit status the row prints and the
+line `run.sh` shows under it. Exit 2 is a suite's own guard (a missing subject, an
+`INCONCLUSIVE:` condition), never 1: 1 means an assertion failed. A kv suite (the `KEY=VALUE`
+status of `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
+`live-write-boundary`) encodes failures in its values and exits with the count, so it is judged
+on exit status alone. A kv suite that fails a probe closes with one `failed_keys=<key>,<key>`
+line; `run.sh` shows that line and any `INCONCLUSIVE:` lines under the FAIL row, never a
+`KEY=VALUE` line, so no value is echoed.
 
 **Before adding or changing a suite, a fixture or the runner, read `tests/AGENTS.md`:** it
 holds the suite conventions, the runner's knobs and the suite-specific gotchas. Claude Code
@@ -153,7 +156,7 @@ output idioms and `failed_keys`, `write-boundary-probe`), `## Suite-specific` (t
   | `a-exact-name` | `AGENTS.md` | `only an exact suite name lifts it` | no | `A substring filter` |
   | `a-execute` | `AGENTS.md` | `**Execute suites, never prefix an interpreter.**` | no | ``./tests/x.test.sh` is always right`` |
   | `a-passed-total` | `AGENTS.md` | `**Report totals as passed/total` | no | `exit status;INCONSISTENT` |
-  | `a-reading-run` | `AGENTS.md` | `**Reading a run.**` | no | `exit 2, never an assertion failure;judged on exit status alone;failed_keys=` |
+  | `a-reading-run` | `AGENTS.md` | `**Reading a run.**` | no | `is not a verdict;INCONSISTENT;Read the exit status the row prints;judged on exit status alone;failed_keys=` |
   | `a-map-row` | `AGENTS.md` | `gets its map row in the same commit` | no | `quote those lines in the pre-merge report` |
   | `t-missing-subject` | `tests/AGENTS.md` | `must fail loudly, not silently pass` | no | `exits 2 if not;Exit 2, never 1` |
   | `t-kv` | `tests/AGENTS.md` | `Two output idioms exist` | no | `failed_keys=;so no value is echoed` |
