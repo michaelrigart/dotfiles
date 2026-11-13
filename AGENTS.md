@@ -113,7 +113,7 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 .chezmoiexternal.toml     # pinned third-party skills (archive externals)
 .chezmoitemplates/agents/ # the agent instruction fragments: global.md, claude-code.md, codex.md (never deployed)
 .scripts/                 # provisioning helpers (ignored)
-tests/                    # test suites, `./tests/run.sh` runs them (ignored)
+tests/                    # test suites, `./tests/run.sh` runs them; tests/AGENTS.md (ignored)
 dot_config/               # → ~/.config (git, homebrew/Brewfile, mise, zsh, agents, …)
 dot_claude/  dot_codex/   # agent harness config: settings/config templates, hooks, guards, agents, skills
 private_dot_ssh/          # SSH key templates (1Password)
@@ -134,27 +134,19 @@ Suites live in `tests/`, one `<subject>.test.sh` per script under test.
 ./tests/run.sh forge worktree  # only suites whose name contains one of these
 ```
 
-Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; an explicit
-`RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the verdicts are
-the same either way; a load-sensitive suite's assertion count can differ (`xreview-packet`
-F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
-`# test-serial` line and runs alone after the parallel ones (today only `xreview`), and so does
-every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
+Suites run in parallel and print in name order, so the verdicts do not depend on load; a
+load-sensitive suite's assertion count can differ between runs (`xreview-packet` F7 slices a
+20,000-file case into 8 or 9).
 
-**The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,
-`RUN_SH_LOCK` overrides the path). A runner that has to wait prints on stderr who holds the lock
-(arguments, checkout, minutes held), again each minute, and once it has the lock how long it
-waited (`run.sh: waited 9 min for the test-run lock`). `RUN_SH_LOCK_WAIT=<seconds>` bounds the
-wait (`0` does not wait): past it the runner prints `giving up`, runs no suite, prints no totals
-and exits 75; a value that is not a non-negative integer exits 2. A nested runner sees
-`RUN_SH_LOCKED=1` and does not lock again. Never wrap it in `lockf` yourself.
+**The runner locks itself:** one per machine. A runner that has to wait prints on stderr who
+holds the lock (arguments, checkout, minutes held), again each minute, and once it has the lock
+how long it waited (`run.sh: waited 9 min for the test-run lock`). Never wrap it in `lockf`
+yourself.
 
-**Execute suites, never prefix an interpreter.** Every suite carries a correct shebang
-(most bash; `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `op-edit` and
-`wt-functions` are zsh). Running
-a zsh suite under `bash` reports bogus syntax errors that read exactly like a regression,
-because it stubs zsh builtins. `./tests/x.test.sh` is always right; `bash tests/x.test.sh`
-is the footgun. `run.sh` executes them for this reason.
+**Execute suites, never prefix an interpreter.** Every suite carries a correct shebang (most
+bash; `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `op-edit` and `wt-functions`
+are zsh). `./tests/x.test.sh` is always right; `bash tests/x.test.sh` on a zsh suite reports
+bogus syntax errors that read exactly like a regression.
 
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
 skipped by default (a `heavy` tag gives only the suite's timing; what the suite loads is in the
@@ -196,73 +188,43 @@ with the sandbox disabled.** They measure the sandbox, so disabling it inverts t
 `live-credential-boundary.test.sh` then reports every private key readable and exits
 12 or more. That is the suite working, not a regression.
 
-**Control for sandbox mode before calling anything a regression.** Comparing a sandboxed
-run against an unsandboxed one once produced a believable "18-test regression" that was
-entirely an artefact.
+**Control for sandbox mode before calling anything a regression:** compare only runs made in
+the same mode.
 
 **Never invoke suites with brace expansion.** `bash tests/live-{a,b}.test.sh` expands to
-`bash a b` — only the first runs, the second becomes an ignored `$1`, and the skipped
-suite prints nothing, so the run looks like a clean pass. Use `run.sh`, or a loop over a
-glob. (`live-agent-auth.test.sh` is the one that genuinely takes an argument — the repo
-path; `git-forge-guard.test.sh` optionally takes a guard path, defaulting to the source
-copy so it tests what will be deployed rather than what currently is.)
+`bash a b` — only the first runs, and the skipped suite prints nothing, so the run looks like a
+clean pass. Use `run.sh`, or a loop over a glob. (`live-agent-auth.test.sh` is the one that
+genuinely takes an argument — the repo path; `git-forge-guard.test.sh` optionally takes a guard
+path, defaulting to the source copy so it tests what will be deployed rather than what
+currently is.)
 
-**Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
-green" when it was 321 green / 3 red — 324 was the *total*. `run.sh` prints `passed/total`
-per suite, judges each on its **exit status**, and cross-checks that against the counted
-assertions: a suite that dies partway prints only the assertions it reached and would
-otherwise look clean, so it is reported `INCONSISTENT` instead of folded into a total.
-
-Two suite-specific gotchas worth keeping: `codex-config` drives the `modify_` **template**
-via `chezmoi execute-template --with-stdin --file` — without `--with-stdin` every case dies
-on "map has no entry for key stdin", and its empty-input fixture is `''`, not `'{}'`,
-because that file is TOML. `herdr-phase` stubs `herdr`, `glab` and `gh` on `PATH`; the script it
-tests is not runnable sandboxed, since it cannot create its run lock in `~/.cache` and exits 2.
-The script itself needs `/usr/bin/jq` and `/usr/bin/timeout` (and
-`/usr/bin/lockf`); the stubs do not replace them, and `refresh` exits 2 when any of them is missing.
+**Report totals as passed/total, never "N green".** `run.sh` prints `passed/total` per suite,
+judges each on its **exit status**, and cross-checks that against the counted assertions: a
+suite that dies partway is reported `INCONSISTENT` instead of folded into a total.
 
 While chezmoi's external cache is cold (after adding or bumping an external, before the
 warm-up), `codex-config`, `claude-settings`, `live-feedback-skill`, `git-pre-push-hook` and
 `ssh-sandbox-proxy` exit 2 with an
 `INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
 That is not a regression.
-
 `xreview-guard-cli` does the same after a glab, gh or az upgrade changes the commands, or the
-`api` flags, the pre-merge gate was measured against: it exits 2 with an `INCONCLUSIVE:` line naming
-what was added or removed. It also exits 2 when a CLI, or the az extension directory, is missing.
-That is not a regression either; the pin in the suite is updated in the change that weighs the new
-command or flag (gate it, deny it or leave it).
+`api` flags, the pre-merge gate was measured against: it exits 2 with an `INCONCLUSIVE:` line
+naming what was added or removed. It also exits 2 when a CLI, or the az extension directory, is
+missing. That is not a regression either.
 
-A suite whose subject has moved must fail loudly, not silently pass: each one checks its
-target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard
-is missing otherwise reports every "must allow" case as a pass. Exit 2, never 1: 1 means an
-assertion failed. `run.sh` prints the guard's line under the suite's `????` row.
-`tests/missing-subject.test.sh` hides one file per row and pins the exit; a
-suite whose guard changes gets a row there.
+**Reading a run.** A `????` row is not a verdict: the suite asserted nothing, or its exit
+status contradicts its assertions (`INCONSISTENT`). Read the exit status the row prints and the
+line `run.sh` shows under it. Exit 2 is a suite's own guard (a missing subject, an
+`INCONCLUSIVE:` condition), never 1: 1 means an assertion failed. A kv suite (the `KEY=VALUE`
+status of `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
+`live-write-boundary`) encodes failures in its values and exits with the count, so it is judged
+on exit status alone. A kv suite that fails a probe closes with one `failed_keys=<key>,<key>`
+line; `run.sh` shows that line and any `INCONCLUSIVE:` lines under the FAIL row, never a
+`KEY=VALUE` line, so no value is echoed.
 
-Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
-`KEY=VALUE` status the `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
-`live-write-boundary` suites share (the first three also so they never print key material). A kv suite
-encodes failures in its values and exits with the count, so it is judged on exit status
-alone — the prose cross-check does not apply to it. A kv suite that fails a probe closes with one
-`failed_keys=<key>,<key>` line (not when it dies early, before any key); `run.sh` shows that line
-and any `INCONCLUSIVE:` lines under the FAIL row, never a `KEY=VALUE` line, so no value is echoed,
-and does not count it as an assertion. A new kv suite should print it.
-`tests/write-boundary-probe.test.sh` drives `live-write-boundary` against a throwaway `HOME`
-and a stubbed `mkdir`, so its `.git/modules` probe, its sibling probe (including the INCONCLUSIVE-only
-exit 2, through the `WRITE_BOUNDARY_SIBLING_ONLY` seam, refused against the real home) and `failed_keys` line are
-tested without measuring a sandbox.
-
-**Inside a Herdr pane, `HERDR_SESSION` does not pick the session.** herdr 0.9.3 reads
-`HERDR_SESSION`, but `HERDR_SOCKET_PATH`, which herdr exports into every pane, outranks it;
-only `--session` outranks the socket (measured 2026-09-30 with `herdr status`). So
-`layout.sh`, `tab-goto.sh` and `phase.sh` thread `--session` in themselves, and nothing in
-them may call `command herdr` bare — from inside a pane a bare call targets the pane's own
-session, whatever `HERDR_SESSION` says. That is what made `dev-topology`'s isolation a
-fiction: it built its fixtures into the live session and then asserted against an empty
-`dev-test`. `layout.sh` also starts a server whenever `HERDR_SESSION` is set, even inside a
-Herdr pane, because the pane you are in belongs to a different session than the one you
-named.
+**Before adding or changing a suite, a fixture or the runner, read `tests/AGENTS.md`:** it
+holds the suite conventions, the runner's knobs and the suite-specific gotchas. Claude Code
+loads it when it reads a file under `tests/`; a subagent and Codex read it by hand.
 
 ## Troubleshooting
 

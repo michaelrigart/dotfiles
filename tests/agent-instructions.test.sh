@@ -17,7 +17,7 @@ RULES="$SRC/tests/fixtures/agent-instructions/rules.tsv"
 GLOBAL_T=dot_config/agents/GLOBAL.md.tmpl
 CODEX_T=dot_codex/AGENTS.md.tmpl
 CLAUDE_T=dot_claude/CLAUDE.md.tmpl
-for f in "$FRAG/global.md" "$FRAG/claude-code.md" "$FRAG/codex.md" "$SRC/$GLOBAL_T" "$SRC/$CODEX_T" "$SRC/$CLAUDE_T" "$RULES"; do
+for f in "$FRAG/global.md" "$FRAG/claude-code.md" "$FRAG/codex.md" "$SRC/AGENTS.md" "$SRC/tests/AGENTS.md" "$SRC/$GLOBAL_T" "$SRC/$CODEX_T" "$SRC/$CLAUDE_T" "$RULES"; do
   [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
 done
 command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 2; }
