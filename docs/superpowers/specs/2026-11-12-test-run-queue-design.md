@@ -275,3 +275,15 @@ Lock:
    `waited` line now gives the numbers to revisit it with.
 10. **Not covered.** Nothing tests `run.sh` placed in a subdirectory of another work tree; it
     always sits in `tests/` at its repository's top, and that path only widens the fail-safe.
+11. **A stale holder record is shown, not hidden.** §4 says a stale record degrades to the old
+    message. The waiter cannot tell a stale record from a current one, so any record that parses
+    is printed with its age; only a missing or unparsable one degrades. A record left by a killed
+    runner can therefore be shown while something that writes none holds the lock (the audit's
+    own lock in `.scripts/test-audit/audit.py`).
+12. **"Changed" means the working tree against the merge-base.** §2 lists commits, the index and
+    the working tree; `git diff B` compares `B` with the working tree, so a change staged and then
+    reverted in the working tree is not listed. That is the tree the suites test.
+13. **The heavy tag is pinned.** The tag is the one input the fail-safe cannot check, so
+    `tests/run.test.sh` asserts on the real repository that every `# test-requires: heavy…` line
+    parses to exactly `heavy`. It exits 2 when the map is missing, and the drift check counts
+    only files that exist under a named directory.
