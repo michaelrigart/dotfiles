@@ -196,11 +196,10 @@ While chezmoi's external cache is cold (after adding or bumping an external, bef
 warm-up), `codex-config`, `claude-settings`, `live-feedback-skill`, `git-pre-push-hook` and
 `ssh-sandbox-proxy` exit 2 with an
 `INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
-That is not a regression.
-`xreview-guard-cli` does the same after a glab, gh or az upgrade changes the commands, or the
-`api` flags, the pre-merge gate was measured against: it exits 2 with an `INCONCLUSIVE:` line
-naming what was added or removed. It also exits 2 when a CLI, or the az extension directory, is
-missing. That is not a regression either.
+That is not a regression. `xreview-guard-cli` does the same after a glab, gh or az upgrade
+changes the commands, or the `api` flags, the pre-merge gate was measured against: it exits 2
+with an `INCONCLUSIVE:` line naming what was added or removed. It also exits 2 when a CLI, or
+the az extension directory, is missing. That is not a regression either.
 
 **Reading a run.** A `????` row is not a verdict: the suite asserted nothing, or its exit
 status contradicts its assertions (`INCONSISTENT`). Read the exit status the row prints and the
