@@ -1504,14 +1504,16 @@ check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo ch
 # INT to the run (a ^C on a terminal): bash ignores INT in `&` jobs when job control is off, so the jobs
 # go on after timeout and the worker end, and a hung forge call would hold the lock for good. The
 # run is started through perl, which puts INT back to its default (a job the suite starts with `&`
-# would otherwise inherit INT ignored and the INT would do nothing). With an 8 s deadline the forge
-# call and its grandchild are cut 2 to 4 s in whatever happened to the run: both are dead and the lock
-# free before the deadline (8 s, and whole seconds can add one). Pins the bound, not the signal's
+# would otherwise inherit INT ignored and the INT would do nothing). With a 12 s deadline the forge
+# call and its grandchild are cut 6 to 8 s in whatever happened to the run, so the INT and the checks
+# after it fit inside that with room under load. Right after the run exits the orphaned job still holds
+# the lock (a job that did not hold it would free it at once); then both are dead and the lock free
+# before the deadline (12 s, and whole seconds can add one). Pins the bound, not the signal's
 # delivery. Bug caught: a call with no bound of its own, or one that leaves its children behind.
 job_reset
 printf 'grandchild' > "$GLD/hang-test__proj"
 t0="$(now_s)"
-PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" HERDR_PHASE_RUN_DEADLINE=8 \
+PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" HERDR_PHASE_RUN_DEADLINE=12 \
   /usr/bin/perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' /bin/bash "$PHASE" refresh --force >/dev/null 2>&1 &
 mpid=$!
 waitfor "$GLD/gpid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
@@ -1519,11 +1521,9 @@ kill -INT "$mpid" 2>/dev/null
 i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
 check "$(lock_busy)" "1" "after INT the orphaned job still holds the lock"
 _p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"; _g="$(cat "$GLD/gpid-test__proj" 2>/dev/null)"
-if kill -0 "$_p" 2>/dev/null; then echo "  note: INT ended the run and the hung forge call outlived it, so the bound is what frees the lock"
-else echo "  note: INT took the hung forge call with it, so the bound is not exercised"; fi
-i=0; while { kill -0 "$_p" 2>/dev/null || kill -0 "$_g" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
+i=0; while { kill -0 "$_p" 2>/dev/null || kill -0 "$_g" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 150 ]; do i=$((i + 1)); sleep 0.1; done
 t1="$(now_s)"
-check "$(within "$(secs "$t0" "$t1")" 8.5)" "yes" "after INT the forge call and its child are dead and the lock free by the deadline ($(secs "$t0" "$t1") s)"
+check "$(within "$(secs "$t0" "$t1")" 12.5)" "yes" "after INT the forge call and its child are dead and the lock free by the deadline ($(secs "$t0" "$t1") s)"
 for _x in "$_p" "$_g"; do
   if [ -z "$_x" ]; then _fail "after INT the hung forge process is dead (it never started)"
   elif kill -0 "$_x" 2>/dev/null; then _fail "after INT the hung forge process $_x is dead"; kill -9 "$_x" 2>/dev/null
@@ -1680,11 +1680,20 @@ _code="$(grep -v '^[[:space:]]*#' "$PHASE")"
 for _p in 'set -m' 'trap ' 'command herdr' 'kill ' 'python'; do
   case "$_code" in *"$_p"*) _fail "the script has no '$_p'";; *) _pass "the script has no '$_p'";; esac
 done
-# A herdr call outside `bounded` has no bound of its own, and in an orphaned job it would hold the run
-# lock until herdr answered. Bug caught: a herdr call that bypasses the bound.
-_herdr="$(printf '%s\n' "$_code" | grep -F 'herdr $HERDR_ARGS')"
-_unbounded="$(printf '%s\n' "$_herdr" | grep -v -E 'bounded [^|;&]*herdr \$HERDR_ARGS')"
-[ -n "$_herdr" ] && [ -z "$_unbounded" ] && _pass "every herdr call runs under bounded" || _fail "every herdr call runs under bounded (unbounded: $_unbounded)"
+# A herdr call outside `bounded "$RUN_END"` has no bound of its own, and in an orphaned job it would hold
+# the run lock until herdr answered. herdr_unbounded prints the code lines where `herdr` is a command
+# word that does not sit directly after that prefix (names such as herdr-phase and paths are not), and
+# fails when the script has no bounded herdr call at all. Bug caught: a herdr call, with or without
+# --session, that bypasses the bound.
+herdr_unbounded() { # herdr_unbounded <script> -> unbounded lines on stdout; 1 when there is no bounded call
+  local code rest
+  code="$(grep -v '^[[:space:]]*#' "$1")"
+  printf '%s\n' "$code" | grep -q -E 'bounded "\$RUN_END" herdr([[:space:]]|$)' || return 1
+  rest="$(printf '%s\n' "$code" | sed -E 's/bounded "\$RUN_END" herdr([[:space:]]|$)/\1/g')"
+  printf '%s\n' "$rest" | grep -E '(^|[[:space:];&|(])herdr([[:space:]]|$)' || true
+}
+_unbounded="$(herdr_unbounded "$PHASE")"; _hrc=$?
+[ "$_hrc" = 0 ] && [ -z "$_unbounded" ] && _pass "every herdr call runs under bounded" || _fail "every herdr call runs under bounded (rc $_hrc, unbounded: $_unbounded)"
 
 glab_stub
 rm -rf "$CACHE" "$GLD" "$T/held" "$T/release"
