@@ -38,9 +38,12 @@ reference below (§1 to §7, Tests) points into it.
   `-F`, `--field`, `--raw-field` or `--input`; `az` with read verbs only. Everything Michael does
   is under "Michael's steps", never a task.
 - **No new prompt.** No `ask` rule, no new `ask` verdict. Rule 4's grammar verdicts do not change.
-  The only guard verdicts that change are silent pushes whose deny came from the scan; Task 5
-  lists each and moves it to the hook suite (§5: "a push that passes rule 4 silently is scanned by
-  the hook alone").
+  No push-guard verdict differs from main's. A silent push the deployed hook will certainly run
+  for is scanned by the hook alone (§5: "a push that passes rule 4 silently is scanned by the
+  hook alone"), so its deny moves to the hook suite; Task 5 lists each. Every other silent push
+  (`--no-verify`, an assignment or wrapper on the command, a `core.hooksPath` that is not the
+  deployed hooks directory, a hook that is missing or not executable) is still scanned by the
+  helper, with main's verdict: the Decisions row "Silent pushes the hook will not see".
 - **No secret printed or logged.** Tests compare a token with `jq '… == $ENV.X'` and print only
   the boolean; no suite prints a value. The fixture secret is assembled at run time from two
   halves, as in `tests/git-forge-guard.test.sh`.
@@ -76,6 +79,7 @@ reference below (§1 to §7, Tests) points into it.
 | A push to a URL (hook `$1` is not a remote name) | Only history attributable to the destination is excluded. Tracking refs record what a remote's **fetch** URL holds, so the scan looks for the configured remotes whose single fetch URL (`git config --get-all remote.<r>.url`, exactly one value, compared as a string) equals the pushed URL and excludes exactly those remotes' tracking refs. A `pushurl`, a `pushInsteadOf` rewrite or a second `url` never attributes history: a remote that fetches from A and pushes to B says nothing about what B holds. With no such remote nothing is excluded: every source's whole history is scanned, and a history too large for the budget ends in the existing timeout refusal (fail closed). Another remote's history is never excluded, so a commit that only `backup` holds is still scanned before it goes to a different repository by URL. |
 | The scan's git environment | Inherited env minus `GITLEAKS_*` and `GIT_CONFIG_PARAMETERS`; inherited `GIT_CONFIG_COUNT` entries are kept and the pins appended after them. Measured in an agent session: git hands the hook four `safe.directory` entries and the proxy's parameters, and a `git -c x=y push` reaches the hook through `GIT_CONFIG_PARAMETERS`. |
 | Dry runs | git runs `pre-push` for `--dry-run` (measured, git 2.56.1), so the hook scans dry runs; the helper still never scans a canonical dry run. The hook suite drives judged pushes as dry runs and pins that git still runs the hook for them. |
+| Silent pushes the hook will not see | The helper scans an otherwise-allowed push (`run_scan`, main's verdict: the leak reason on a finding, the existing refusals on a timeout or a missing gitleaks) unless `hook_will_run` shows the deployed hook will run for it. It shows that only when all hold: no `--no-verify` among the push flags; no environment assignment on the command (any name: `HOME`, `XDG_CONFIG_HOME` and `PATH` can move git's configuration or the hook it finds, so the rule does not enumerate them; `GIT_CONFIG*`, `GIT_DIR` and `GIT_WORK_TREE` are already refused); no `command`, `env` or `sudo` wrapper; the repository's effective `core.hooksPath` (`git config --type=path --get`, as git reads it, a relative value taken from the work tree) resolves, by `realpath`, to the directory that holds the scan the helper would call (`SCAN`), and that directory holds an executable regular `pre-push`, and `SCAN` is a file. Any of these missing, or a query that fails, means scan. A dry run does not count against it: git runs `pre-push` for `--dry-run` (the row above). A push the hook will see is not scanned twice. An asking push is always scanned by the helper. |
 | Token rendering | The `modify_` script calls `op` at apply: `op item list --vault Private --format json`, then `op read` for each listed item. Listed: the variable is set. Not listed: absent (the inert and rollback state). `op` missing or failing: the live file's two values are carried unchanged, so a sandboxed preview neither drops nor diffs them. Listed but unreadable: exit 1 with no stdout (chezmoi keeps the old file). Values reach jq through its environment (`$ENV`), never its argv. |
 | 1Password items | `op://Private/GitHub Agent SSH Key/public key` (an SSH Key item), `op://Private/GitHub Agent Token/token`, `op://Private/GitLab Agent Token/token`. |
 | Agent SSH files | `~/.ssh/github-agent.pub` (template `private_dot_ssh/private_github-agent.pub.tmpl`, rendered only when the item is listed, so it is absent otherwise) and the static `~/.config/agent-identity/ssh_config`. `ssh-sandbox-proxy` adds `-F` for that config only when both files are readable, so `GIT_SSH_COMMAND` stays the proxy's path and `live-agent-auth`'s precondition holds. |
@@ -468,8 +472,20 @@ suite counts a FAIL when gitleaks is not installed rather than skipping its rows
   beside a pushed branch holding a secret" (`git push origin :old feat`); ask "a clean force push
   is scanned, then asks"; allow "a leaky feature push is left to the hook"; the rows the table
   keeps or doubles; deny "with the scan script missing, an asking push is denied"
-  (`PUSH_GUARD_SCAN=$TMP/none`, needle `could not run`) and allow "and a silent push is
-  unaffected". The section runs with the real gitleaks (`PATH="$REALPATH"`), as the moved one did,
+  (`PUSH_GUARD_SCAN=$TMP/none`, needle `could not run`) and deny "and a silent push is scanned
+  too, as the hook may not be there" (same setting, needle `could not run`). The suite's global
+  config names a hooks directory (`core.hooksPath`) holding a link to the scan source and a
+  `pre-push` stub, and `PUSH_GUARD_SCAN` points into it, so the hook counts as deployed for every
+  other row; fixture pushes run the stub. Rows for the Decisions row "Silent pushes the hook will
+  not see", each a leaky push unless named: deny `--no-verify` (needle `rule aws-access-token in
+  creds.txt`); allow `--no-verify` on a clean push; deny with `HOME=` and with `XDG_CONFIG_HOME=`
+  reassigned, with `env HOME=`, with `sudo` and with `command`; allow with `HOME=` reassigned on a
+  clean push; allow a leaky dry run that is not canonical text (`git -C <repo> push -n …` from
+  another directory) with the hook deployed (git runs the hook for it); deny when the
+  hooks directory lacks `pre-push`, when `pre-push` is not executable, and when the repository's
+  `core.hooksPath` names another directory; control: an ordinary leaky push with the hook deployed
+  is allowed by the helper and a recording gitleaks is not called, while the same stub is called for
+  `--no-verify`. The section runs with the real gitleaks (`PATH="$REALPATH"`), as the moved one did,
   and puts the stub back at its end. Convert the promisor and `nosuch` rows per the table.
 - [ ] **Step 3: Extend the other two suites.** `git-config.test.sh`: run the "a bare remote works"
   push with `HOME=$T`, and a marker hook at `$T/.config/git/hooks/pre-push`; the case also asserts
@@ -486,10 +502,13 @@ suite counts a FAIL when gitleaks is not installed rather than skipping its rows
 - [ ] **Step 6: Create `pre-push`** (`#!/bin/bash`, Interfaces) and add to `dot_config/git/config`:
   `[core]` `hooksPath = ~/.config/git/hooks` (git expands the `~`).
 - [ ] **Step 7: Wire the helper.** In `evaluate`, keep building `scan_sources`; remove the
-  `scan(...)` call and call `run_scan(root, remote, scan_sources)` only when there are scan sources
-  and `asks` remain, after the dry-run deny and immediately before the ask is returned. Update the
-  helper's header (a short paragraph: an asking push is scanned by `secret-scan` before the ask;
-  every push is scanned by the hook), the guard's header lines 12–15 and the Brewfile comment
+  `scan(...)` call and call `run_scan(root, remote, scan_sources)` when there are scan sources and
+  either `asks` remain (after the dry-run deny, immediately before the ask is returned) or
+  `hook_will_run` is false for an otherwise-allowed push (Decisions, "Silent pushes the hook will
+  not see"). `parse_plain` records whether `command`, `env` or `sudo` wrapped git, `judge` hands
+  that to `evaluate`, and `evaluate`'s default reads a caller that does not say as wrapped. Update
+  the helper's header (a short paragraph: an asking push is scanned by `secret-scan` before the ask,
+  a silent one when the hook may not see it, and every push by the hook), the guard's header lines 12–15 and the Brewfile comment
   ("secret scan in ~/.config/git/hooks/pre-push, and before a push guard ask").
 - [ ] **Step 8: Run and confirm GREEN.** `./tests/git-pre-pu[s]h-hook.test.sh`,
   `./tests/git-forge-guard.test.sh`, `./tests/git-config.test.sh`, `./tests/hook-path.test.sh`:
@@ -502,7 +521,10 @@ suite counts a FAIL when gitleaks is not installed rather than skipping its rows
   configuration row fails on the missing `forge.marker` (confirm it does: the pins alone still
   find the secret, so only the recorded environment can catch this); exclude every remote for a
   URL push → the two-remotes URL row fails; match a `pushurl` as well → the distinct-URLs row
-  fails; drop the scan copy in `hook-path.test.sh` → its new row fails.
+  fails; drop the scan copy in `hook-path.test.sh` → its new row fails; make `hook_will_run`
+  always true → every "silent push the hook will not see" deny row fails; drop each of its
+  conditions in turn (`--no-verify`, assignment, wrapper, `core.hooksPath` comparison, `pre-push`
+  existence, its executable bit) → the row for that condition fails.
 - [ ] **Step 10: Commit once.** `git add dot_config/git/ dot_claude/executable_git-forge-guard.sh
   dot_config/homebrew/Brewfile.tmpl tests/git-forge-guard.test.sh tests/git-config.test.sh
   tests/hook-path.test.sh` plus `git add 'dot_claude/git-pu[s]h-guard.py'` and

@@ -180,17 +180,24 @@ cat > "$GIT_CONFIG_GLOBAL" <<'EOF'
 EOF
 
 # A push that would ask is scanned for secrets, by the script the global pre-push hook also
-# runs (dot_config/git/hooks/secret-scan), before the ask. The decision cases run against a stub
-# gitleaks that finds nothing, so they exercise the decision alone; the scan section puts the
-# real binary back. The helper looks the script up at PUSH_GUARD_SCAN: the source copy here, so
-# the suite tests what will be deployed. The rows for the scan itself are in
-# tests/git-pre-push-hook.test.sh.
+# runs (dot_config/git/hooks/secret-scan), before the ask. A push that passes silently is scanned
+# by the helper too unless the deployed hook is certain to run for it. The decision cases run
+# against a stub gitleaks that finds nothing, so they exercise the decision alone; the scan
+# section puts the real binary back. The helper looks the script up at PUSH_GUARD_SCAN: a hooks
+# directory holding a link to the source copy and a pre-push stub (the fixture pushes run it),
+# which the global config's core.hooksPath names, as the deployed ~/.config/git/config does.
+# The rows for the scan and the hook themselves are in tests/git-pre-push-hook.test.sh.
 STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
 printf '#!/bin/sh\nexit 0\n' > "$STUBBIN/gitleaks"; chmod 755 "$STUBBIN/gitleaks"
 REALPATH=$PATH
 export PATH="$STUBBIN:$PATH"
-export PUSH_GUARD_SCAN="$SRC/dot_config/git/hooks/executable_secret-scan"
-[ -f "$PUSH_GUARD_SCAN" ] || { echo "missing scan script: $PUSH_GUARD_SCAN" >&2; exit 2; }
+[ -f "$SRC/dot_config/git/hooks/executable_secret-scan" ] \
+  || { echo "missing scan script: $SRC/dot_config/git/hooks/executable_secret-scan" >&2; exit 2; }
+HOOKS="$TMP/hooks"; mkdir -p "$HOOKS"
+ln -s "$SRC/dot_config/git/hooks/executable_secret-scan" "$HOOKS/secret-scan"
+printf '#!/bin/sh\nexit 0\n' > "$HOOKS/pre-push"; chmod 755 "$HOOKS/pre-push"
+export PUSH_GUARD_SCAN="$HOOKS/secret-scan"
+git config --file "$GIT_CONFIG_GLOBAL" core.hooksPath "$HOOKS"
 
 # cmdpayload <cwd> <command> -> prints the hook payload
 cmdpayload() {
@@ -3566,7 +3573,63 @@ else
   # deny naming the file, and a push that passes silently never reads it.
   PUSH_GUARD_SCAN="$TMP/none" expect deny  "with the scan script missing, an asking push is denied" "$CLEAN" 'git push --force origin feat'
   PUSH_GUARD_SCAN="$TMP/none" has_reason   "and the deny says the scan could not run" "could not run" "$CLEAN" 'git push --force origin feat'
-  PUSH_GUARD_SCAN="$TMP/none" expect allow "and a silent push is unaffected" "$CLEAN" 'git push origin feat'
+  PUSH_GUARD_SCAN="$TMP/none" expect deny  "and a silent push is scanned too, as the hook may not be there" "$CLEAN" 'git push origin feat'
+  PUSH_GUARD_SCAN="$TMP/none" has_reason   "and that deny says the scan could not run" "could not run" "$CLEAN" 'git push origin feat'
+
+  # A silent push the deployed hook will not see is scanned here, as on main: --no-verify, an
+  # assignment or wrapper that could move git's configuration, and a hooks directory that is not the deployed one or holds no pre-push. An
+  # ordinary push with the hook deployed is the hook's to scan. LEAKY holds the fixture secret.
+  expect deny  "--no-verify on a leaky feature push"          "$LEAKY" 'git push --no-verify origin feat'
+  has_reason   "and the deny names the rule and file" \
+               "rule aws-access-token in creds.txt" "$LEAKY" 'git push --no-verify origin feat'
+  expect allow "--no-verify on a clean feature push"          "$CLEAN" 'git push --no-verify origin feat'
+  expect allow "a dry run that is not canonical text is the hook's to scan" "$TMP" "git -C $LEAKY push -n origin feat"
+  expect deny  "HOME reassigned on a leaky push"              "$LEAKY" 'HOME=/nonexistent git push origin feat'
+  expect deny  "XDG_CONFIG_HOME reassigned on a leaky push"   "$LEAKY" 'XDG_CONFIG_HOME=/nonexistent git push origin feat'
+  expect deny  "env HOME= on a leaky push"                    "$LEAKY" 'env HOME=/nonexistent git push origin feat'
+  expect deny  "sudo on a leaky push"                         "$LEAKY" 'sudo git push origin feat'
+  expect deny  "command on a leaky push"                      "$LEAKY" 'command git push origin feat'
+  expect allow "HOME reassigned on a clean push"              "$CLEAN" 'HOME=/nonexistent git push origin feat'
+  NOHOOK="$TMP/hooks-nopre"; mkdir -p "$NOHOOK"
+  ln -s "$SRC/dot_config/git/hooks/executable_secret-scan" "$NOHOOK/secret-scan"
+  LEAKY_NOHOOK=$(clone leaky-nohook)
+  git -C "$LEAKY_NOHOOK" config core.hooksPath "$NOHOOK"
+  printf '%s\n' "$SECRET_LINE" > "$LEAKY_NOHOOK/creds.txt"
+  git -C "$LEAKY_NOHOOK" add creds.txt && git -C "$LEAKY_NOHOOK" commit -q -m "add creds"
+  PUSH_GUARD_SCAN="$NOHOOK/secret-scan" expect deny "a hooks directory with no pre-push, leaky" "$LEAKY_NOHOOK" 'git push origin feat'
+  OTHER="$TMP/hooks-else"; mkdir -p "$OTHER"
+  printf '#!/bin/sh\nexit 0\n' > "$OTHER/pre-push"; chmod 755 "$OTHER/pre-push"
+  LEAKY_ELSE=$(clone leaky-else)
+  git -C "$LEAKY_ELSE" config core.hooksPath "$OTHER"
+  printf '%s\n' "$SECRET_LINE" > "$LEAKY_ELSE/creds.txt"
+  git -C "$LEAKY_ELSE" add creds.txt && git -C "$LEAKY_ELSE" commit -q -m "add creds"
+  expect deny  "a repository core.hooksPath elsewhere, leaky" "$LEAKY_ELSE" 'git push origin feat'
+  # The hook is certain to run for an ordinary push, so the helper does not call gitleaks for it.
+  RECORD2="$TMP/recordgl2"; mkdir -p "$RECORD2"
+  printf '#!/bin/sh\necho called >> "%s/calls"\nexit 0\n' "$RECORD2" > "$RECORD2/gitleaks"; chmod 755 "$RECORD2/gitleaks"
+  PATH="$RECORD2:$REALPATH"
+  rm -f "$RECORD2/calls"
+  expect allow "an ordinary leaky push with the hook deployed is the hook's to scan" "$LEAKY" 'git push origin feat'
+  if [ -e "$RECORD2/calls" ]; then
+    fail=$((fail + 1)); printf '  FAIL %s\n' "the helper does not run gitleaks for a push the hook will scan"
+  else
+    pass=$((pass + 1)); printf '  ok   %s\n' "the helper does not run gitleaks for a push the hook will scan"
+  fi
+  run "$LEAKY" 'git push --no-verify origin feat' >/dev/null
+  if [ -e "$RECORD2/calls" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "the same recording stub sees gitleaks run for a --no-verify push"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s\n' "the same recording stub sees gitleaks run for a --no-verify push"
+  fi
+  PATH="$REALPATH"
+  NOEXEC="$TMP/hooks-noexec"; mkdir -p "$NOEXEC"
+  ln -s "$SRC/dot_config/git/hooks/executable_secret-scan" "$NOEXEC/secret-scan"
+  printf '#!/bin/sh\nexit 0\n' > "$NOEXEC/pre-push"; chmod 644 "$NOEXEC/pre-push"
+  LEAKY_NOEXEC=$(clone leaky-noexec)
+  git -C "$LEAKY_NOEXEC" config core.hooksPath "$NOEXEC"
+  printf '%s\n' "$SECRET_LINE" > "$LEAKY_NOEXEC/creds.txt"
+  git -C "$LEAKY_NOEXEC" add creds.txt && git -C "$LEAKY_NOEXEC" commit -q -m "add creds"
+  PUSH_GUARD_SCAN="$NOEXEC/secret-scan" expect deny "a pre-push that is not executable, leaky" "$LEAKY_NOEXEC" 'git push origin feat'
 fi
 
 echo "== rule 4: the scan fails closed =="

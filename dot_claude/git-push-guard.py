@@ -28,8 +28,10 @@
 #
 # Secrets: a push that would ask is scanned by secret-scan (dot_config/git/hooks, deployed to
 # ~/.config/git/hooks) before the ask is returned, so a secret is a deny, which beats an ask.
-# Every push, this one included, is scanned again by the global pre-push hook; a push that
-# passes here silently is scanned by the hook alone.
+# Every push is scanned by the global pre-push hook too, so a push that passes here silently is
+# scanned here only when the hook may not see it (hook_will_run): --no-verify, an assignment or
+# wrapper that could move git's configuration, or a core.hooksPath that is not the deployed
+# hooks directory. The verdict for a scanned push is main's.
 #
 # Fail direction: a push this cannot resolve is DENIED with a reason the agent can act on.
 # It never asks on doubt (an ask costs Michael a prompt) and never allows on doubt (a push
@@ -386,6 +388,7 @@ def parse_plain(tokens, cwd):
     while i < n and ASSIGN_RE.match(t[i]):
         assigns.append(t[i].split("=", 1)[0])
         i += 1
+    wrapped = i < n and t[i] in ("command", "sudo", "env")
     if i < n and t[i] in ("command", "sudo"):
         i += 1
     elif i < n and t[i] == "env":
@@ -443,8 +446,9 @@ def parse_plain(tokens, cwd):
             i += 1
     if i != n:
         return None
-    return {"cwd": cwd, "cd_used": cd_used, "assigns": assigns, "repo_opts": repo_opts,
-            "config_opts": config_opts, "unknown": unknown, "sub": sub, "args": args}
+    return {"cwd": cwd, "cd_used": cd_used, "assigns": assigns, "wrapped": wrapped,
+            "repo_opts": repo_opts, "config_opts": config_opts, "unknown": unknown, "sub": sub,
+            "args": args}
 
 
 # ------------------------------------------------------------------ git queries
@@ -2516,7 +2520,7 @@ def judge(s, session, text=False):
         raise Deny("Push guard: the current-branch substitution runs where the shell is, not "
                    "in the repository -C or cd selects. Name the branch literally.")
     return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args, session,
-                    text)
+                    text, s["wrapped"])
 
 
 def push_option(value, where=""):
@@ -2883,12 +2887,32 @@ def run_scan(root, remote, sources):
                    "reason, so the push is refused. Push by hand.".format(SCAN, p.returncode))
 
 
+def hook_will_run(repo, root, flags, assigns, wrapped):
+    """True only when the deployed global pre-push hook is certain to scan this push: no
+    --no-verify (git runs the hook for a dry run too); no environment assignment (HOME,
+    XDG_CONFIG_HOME, PATH and the rest could move git's configuration or the hook it finds)
+    and no wrapper (sudo changes HOME) on the command; and the repository's effective
+    core.hooksPath, read as git reads it, is the directory that holds the scan this helper
+    would run, with an executable pre-push beside it. Anything that cannot be shown is False:
+    a push the hook may not see is scanned here."""
+    if wrapped or assigns or "--no-verify" in flags:
+        return False
+    configured = repo.run("config", "--type=path", "--get", "core.hooksPath")
+    if not configured or not configured.strip():
+        return False
+    hooks = os.path.realpath(os.path.join(root, configured.strip()))
+    hook = os.path.join(hooks, "pre-push")
+    return (hooks == os.path.realpath(os.path.dirname(SCAN)) and os.path.isfile(SCAN)
+            and os.path.isfile(hook) and os.access(hook, os.X_OK))
+
+
 # ------------------------------------------------------------------ one push
-def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
+def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wrapped=True):
     """None to allow, a reason string to ask; raises Deny to deny. session is the hook
     payload's cwd, for the deny reasons that print a corrected push. bare: the raw command
     is canonical text (canonical); only a bare delete-only push of merged, pinned branches
-    passes silently."""
+    passes silently. wrapped: the command runs git through command, env or sudo; a caller
+    that does not say is read as wrapped, the reading that scans."""
     flags, remote_arg, refspecs = parse_push(args)
     # A dry run returns early, never scanned and never asked, only when the raw command is
     # canonical text and git reads it as a dry run (spec 2026-10-28, section 2, Dry runs).
@@ -3015,7 +3039,8 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
 
     # An asking push is scanned by secret-scan before the ask is returned: a push Michael
     # approves must already be clean, and a secret is a deny, which beats an ask. A push that
-    # passes silently is scanned by the global pre-push hook alone.
+    # passes silently is scanned here too unless the global pre-push hook is certain to run
+    # for it (hook_will_run), so no push goes unscanned that main would have scanned.
     scan_sources = list(sources)
     if "--tags" in flags:
         scan_sources.append("--tags")
@@ -3048,6 +3073,8 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
         if scan_sources:
             run_scan(root, remote, scan_sources)
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."
+    if scan_sources and not hook_will_run(repo, root, flags, assigns, wrapped):
+        run_scan(root, remote, scan_sources)
     return None
 
 
