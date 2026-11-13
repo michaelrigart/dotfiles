@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Read-only check that every repository's default branch is in the protection state the forge
-# push-protection spec asks for. Walks the dotfiles checkout and ~/Code/*/*, reads each
-# checkout's push URL for `origin`, asks the forge (GET calls only) and prints one row per
-# normalized remote. Never writes to a forge: the commands that reach the target state are
-# printed for Michael to run. Bash 3.2 compatible; needs git and jq.
+# push-protection spec asks for. Walks the dotfiles checkout and ~/Code/*/*, reads every push
+# URL of `origin` of each checkout (git pushes to all of them), asks the forge (GET calls only)
+# and prints one row per normalized remote. Never writes to a forge: the commands that reach
+# the target state are printed for Michael to run. Bash 3.2 compatible; needs git and jq.
 #
 # Usage: forge-protection.sh check | --help
 #
@@ -450,12 +450,16 @@ load_exceptions() {
 }
 
 collect() {  # <dir> <levels still to descend>: records a repository, never looks inside one
-  local d=$1 left=$2 e url
+  local d=$1 left=$2 e urls url
   [ -d "$d" ] || return 0
   if [ -e "$d/.git" ]; then
-    url=$(git -C "$d" remote get-url --push origin 2>/dev/null) || url=
-    if [ -z "$url" ]; then skipped=$((skipped + 1)); return 0; fi
-    normalize_remote "$url" >> "$WORK/remotes"; echo >> "$WORK/remotes"
+    urls=$(git -C "$d" remote get-url --push --all origin 2>/dev/null) || urls=
+    if [ -z "$urls" ]; then skipped=$((skipped + 1)); return 0; fi
+    while IFS= read -r url; do
+      if [ -n "$url" ]; then normalize_remote "$url" >> "$WORK/remotes"; echo >> "$WORK/remotes"; fi
+    done <<EOF
+$urls
+EOF
     return 0
   fi
   [ "$left" -gt 0 ] || return 0

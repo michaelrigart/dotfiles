@@ -978,6 +978,38 @@ reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$R.git" "git
 run check
 row_is unreadable "gh-alias/$R" "the remote is where pushes go (pushurl wins over url)"
 
+# git sends a push to every push address of origin: each is judged, and the checkout is fine only if all are
+R2=example-owner/second-repo
+gh_unprotected() { gh_repo "$1"; gh_rules "$1" '[]'; }
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$R.git" "git@github.com:$R.git"
+printf '\tpushurl = %s\n' "git@github.com:$R2.git" >> "$H/Code/ExampleOrg/example-repo/.git/config"
+gh_michael "$R"; gh_unprotected "$R2"
+run check
+row_is ok "github.com/$R" "two push addresses, the first protected: its row is ok"
+row_is drift "github.com/$R2" "two push addresses, the second unprotected: its row is drift"
+rows_are ok 1 "two push addresses, one unprotected: one ok row"
+rc_is 1 "two push addresses, one unprotected: exit 1"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$R.git" "git@github.com:$R.git"
+printf '\tpushurl = %s\n' "git@github.com:$R2.git" >> "$H/Code/ExampleOrg/example-repo/.git/config"
+gh_unprotected "$R"; gh_michael "$R2"
+run check
+row_is drift "github.com/$R" "two push addresses, the first unprotected: its row is drift"
+row_is ok "github.com/$R2" "two push addresses, the second protected: its row is ok"
+rc_is 1 "two push addresses, the first unprotected: exit 1"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$R.git" "git@github.com:$R.git"
+printf '\tpushurl = %s\n' "git@github.com:$R2.git" >> "$H/Code/ExampleOrg/example-repo/.git/config"
+gh_michael "$R"; gh_michael "$R2"
+run check
+rows_are ok 2 "two push addresses, both protected: two ok rows"
+rc_is 0 "two push addresses, both protected: exit 0"
+out_has "2 repositories: 2 ok, 0 drift, 0 unreadable, 0 excepted; 0 checkouts without origin skipped" "two push addresses, both protected: the summary counts both"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$R.git" "git@github.com:$R.git"
+printf '\tpushurl = %s\n' "git@github.com:$R2.git" >> "$H/Code/ExampleOrg/example-repo/.git/config"
+mkrepo "$H/Code/ExampleOrg/second-checkout" "https://github.com/$R2.git"
+gh_michael "$R"; gh_michael "$R2"
+run check
+rows_are ok 2 "one address reached from two checkouts: still one row"
+
 reset
 run check
 rc_is 1 "walk: nothing to check exits 1"
