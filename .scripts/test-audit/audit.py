@@ -13,7 +13,6 @@ import os
 import re
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -73,6 +72,13 @@ def make_writable(path):
 
 
 def remove_tree(path):
+    """Remove a copy a suite may have tampered with. Neither rmtree nor make_writable follows a
+    symlink or opens a FIFO; a symlink or file left where the copy was is unlinked."""
+    if os.path.islink(path) or (os.path.lexists(path) and not os.path.isdir(path)):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
     shutil.rmtree(path, ignore_errors=True)
     if not os.path.lexists(path):
         return
@@ -137,21 +143,8 @@ class Session:
 
     def __init__(self):
         self.proc = None
-        self.restores = []
         self.copies = []
         self.locks = []
-
-    def apply_text(self, path, text):
-        self.restores.append((path, path.read_bytes()))
-        path.write_text(text)
-
-    def restore_files(self):
-        for path, data in reversed(self.restores):
-            try:
-                path.write_bytes(data)
-            except OSError:
-                pass
-        self.restores.clear()
 
     def cleanup(self):
         for sig in STOP_SIGNALS:
@@ -159,7 +152,6 @@ class Session:
         if self.proc is not None:
             kill_group(self.proc)
             self.proc = None
-        self.restore_files()
         for copy in self.copies:
             remove_tree(copy)
         self.copies.clear()
@@ -234,15 +226,19 @@ def build_copy(repo, sha, root, command):
     copy = root / f"{sha[:12]}-{command}-{os.getpid()}"
     remove_tree(copy)
     copy.mkdir()
-    SESSION.copies.append(copy)
+    if copy not in SESSION.copies:
+        SESSION.copies.append(copy)
     archive = subprocess.Popen(["git", "-C", str(repo), "archive", sha], stdout=subprocess.PIPE)
     untar = subprocess.run(["tar", "-x", "-C", str(copy)], stdin=archive.stdout)
     archive.stdout.close()
     if archive.wait() != 0 or untar.returncode != 0:
         die(f"cannot archive {sha} from {repo}")
+    stamp = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%cI", sha], check=True,
+                           capture_output=True, text=True).stdout.strip()
+    env = {**os.environ, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
     for args in (["-c", "init.templateDir=", "init", "-q", "-b", "main"], ["add", "-A"],
                  [*GIT_IDENT, "commit", "-q", "-m", "audit copy"]):
-        subprocess.run(["git", "-C", str(copy), *args], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(copy), *args], check=True, stdout=subprocess.DEVNULL, env=env)
     return copy
 
 
@@ -482,7 +478,7 @@ def prepare(args, command, bind):
 
 def cmd_inventory(args):
     runner = prepare(args, "inventory", bind=True)
-    copy = runner.copy
+    copy = runner.ensure_copy()
     store_path = Path(args.state) / "inventory.jsonl"
     rows = {}
     if store_path.exists():
@@ -495,7 +491,7 @@ def cmd_inventory(args):
         if suite not in available:
             die(f"no such suite: {suite}")
     for suite in chosen:
-        row = suite_row(copy, suite)
+        row = suite_row(runner.ensure_copy(), suite)
         row.update(assertions=None, passed=None, failed=None, labels=[], rc=None, seconds=None)
         if row["requires"] in ("", "heavy"):
             run = runner.run(suite, BASELINE_TIMEOUT)
@@ -510,8 +506,7 @@ def cmd_inventory(args):
 
 def cmd_try(args):
     runner = prepare(args, "try", bind=False)
-    runner.log = sys.stderr  # stdout is the result's JSON alone
-    copy = runner.copy
+    copy = runner.ensure_copy()
     target = inside_copy(copy, args.file)
     script = inside_copy(copy, Path("tests") / f"{args.suite}.test.sh")
     if not script.exists():
@@ -697,94 +692,38 @@ def stale_outcome():
             "suites": {}, "flaky": False, "attempts": 0, "seconds": 0.0}
 
 
-INDEX_QUERY = ["ls-files", "-s", "-v"]
-
-
-def entry_line(copy, path):
-    """One path's record: relative path, type, permission mode, and a file's content hash or a
-    symlink's target."""
-    rel = os.path.relpath(path, copy)
-    info = os.lstat(path)
-    mode = f"{stat.S_IMODE(info.st_mode):o}"
-    if stat.S_ISLNK(info.st_mode):
-        return f"{rel}\0l\0{mode}\0{os.readlink(path)}"
-    if stat.S_ISDIR(info.st_mode):
-        return f"{rel}\0d\0{mode}"
-    if not stat.S_ISREG(info.st_mode):
-        return f"{rel}\0o{stat.S_IFMT(info.st_mode):o}\0{mode}"
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return f"{rel}\0f\0{mode}\0{digest.hexdigest()}"
-
-
-def copy_state(copy):
-    """What a suite or mutant can change in the copy, as one digest: every path under it, .git
-    included, with its type, permission mode and, for a file, its content hash or, for a symlink,
-    its target, plus what .git/index holds (staged entries, assume-unchanged and skip-worktree
-    flags). No timestamps, and not the index file itself, which `git status` rewrites. A directory's
-    mode change is seen. None when the walk, a file or git fails (no copy, no .git): that is dirty."""
-    def fail(err):
-        raise err
-    index = Path(copy) / ".git" / "index"
-    lines = []
-    try:
-        for path, dirs, files in os.walk(copy, onerror=fail):
-            dirs.sort()
-            lines.append(entry_line(copy, path))
-            lines.extend(entry_line(copy, os.path.join(path, name))
-                         for name in sorted(dirs + files) if os.path.join(path, name) != str(index))
-    except OSError:
-        return None
-    out = subprocess.run(["git", "-C", str(copy), *INDEX_QUERY], capture_output=True)
-    if out.returncode != 0:
-        return None
-    digest = hashlib.sha256("\n".join(lines).encode("utf-8", "surrogateescape"))
-    digest.update(b"\0" + out.stdout)
-    return digest.hexdigest()
-
-
 class Runner:
     """Runs mutants in this process's copy, one baseline per suite and session, and gives a
-    survivor a second run. Every run starts from a pristine copy: the copy's state as built."""
+    survivor a second run. Every run gets a copy built for it, at the same path, so a run never
+    meets what an earlier one left behind and nothing has to check whether the copy is clean."""
 
     def __init__(self, args, sha, command, check_argv=None):
         self.args, self.sha, self.command = args, sha, command
         self.check_argv = check_argv
         self.check_silent = False
         self.copy = None
-        self.pristine = None
+        self.used = False
         self.mutation = None
-        self.log = sys.stdout
         self.baselines = {}
 
-    def build(self):
-        self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
-        self.pristine = copy_state(self.copy)
-
     def ensure_copy(self):
-        if self.copy is None:
-            self.build()
+        """A copy no run has touched: the one built last, or a new one at the same path once a run
+        has used it. The previous copy is removed first, whatever a suite did to it."""
+        if self.copy is None or self.used:
+            self.copy = build_copy(self.args.repo, self.sha, self.args.copy_root, self.command)
+            self.used = False
         return self.copy
 
     def run(self, suite, timeout):
         """One run of a suite, or, with a rule check command, of the pseudo-suite `check`. Every
-        run goes through here: under a mutation it is applied for this run alone, and a copy the
-        run left unlike its pristine state is rebuilt before the next one."""
-        self.ensure_copy()
+        run goes through here, in a copy of its own: a mutation is applied to that copy, which is
+        discarded with the run."""
+        copy = self.ensure_copy()
         if self.mutation is not None:
             mutant, text = self.mutation
-            SESSION.apply_text(inside_copy(self.copy, mutant["file"]), text)
-        try:
-            run = self.execute(suite, timeout)
-        finally:
-            if self.mutation is not None:
-                SESSION.restore_files()
-        state = copy_state(self.copy)
-        if state is None or state != self.pristine:
-            self.rebuild(self.mutation[0]["id"] if self.mutation is not None else f"the baseline of {suite}")
-        return run
+            inside_copy(copy, mutant["file"]).write_text(text)
+        self.used = True
+        return self.execute(suite, timeout)
 
     def execute(self, suite, timeout):
         if self.check_argv is not None and suite == CHECK_SUITE:
@@ -837,13 +776,6 @@ class Runner:
         finally:
             self.mutation = None
         return {s: results[s] for s in suites}
-
-    def rebuild(self, what):
-        """A run wrote or deleted something inside the copy: start the next one from a fresh
-        copy, which is identical to the original, so the session's baselines still hold."""
-        SESSION.copies.remove(self.copy)
-        self.build()
-        print(f"copy rebuilt after {what}", file=self.log, flush=True)
 
 
 def rec_key(rec):

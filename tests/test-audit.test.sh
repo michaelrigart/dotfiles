@@ -810,8 +810,6 @@ rows = [row("dirty000001", 'FLAG=on; touch "$here/../stray"'),
 open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
 PY
 run sample --sample-from "$T/crafted"
-has "copy rebuilt after dirty000001" "Q8: a copy a mutant wrote into is rebuilt" "$OUT"
-lacks "copy rebuilt after dirty000002" "Q8: a clean copy is kept" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived']" "Q8: the next mutant runs in a clean copy and its baseline still holds"
 clean Q8
@@ -843,12 +841,10 @@ open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
 PY
 run sample --sample-from "$T/crafted"
 rc_is 0 "Q10: a mutant that deletes the copy does not stop the run"
-has "copy rebuilt after nogit0000001" "Q10: a copy without its .git is rebuilt" "$OUT"
-has "copy rebuilt after nocopy000001" "Q10: a vanished copy is rebuilt" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived', 'survived', 'survived']" "Q10: the mutants after the damage run in a clean copy, none is stale"
 eq "$(python3 -c 'import json,sys
-print([r["attempts"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[2, 2, 2]" "Q10: a survivor whose copy was deleted still gets its second run, in a rebuilt copy"
+print([r["attempts"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[2, 2, 2]" "Q10: a survivor whose copy was deleted still gets its second run, in a fresh copy"
 
 # Q11: a suite run under a mutant leaves a stray file in the copy; the next suite must not meet it
 mk Q11
@@ -880,7 +876,6 @@ open(sys.argv[1], "w").write(json.dumps(e) + "\n")
 PY
 run targeted "$T/res.jsonl"
 rc_is 0 "Q11: a mutant that makes its own suite write into the copy runs"
-has "copy rebuilt after" "Q11: the copy is rebuilt after the run that dirtied it" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["suites"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-targeted.jsonl")" "[{'res-a': 'survived', 'res-b': 'survived'}]" "Q11: the next suite runs in a clean copy: it survives the mutant instead of failing on the stray file"
 clean Q11
@@ -902,7 +897,6 @@ PY
 "${GIT[@]}" -C "$T/repo" add -A
 "${GIT[@]}" -C "$T/repo" commit -q -m residue
 run sample --sample-from "$T/crafted"
-has "copy rebuilt after the baseline of s" "Q12: a copy a baseline wrote into is rebuilt" "$OUT"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived']" "Q12: the mutated run starts clean, so a behaviour-neutral mutant survives"
 
@@ -920,30 +914,20 @@ PY
 "${GIT[@]}" -C "$T/repo" commit -q -m residue
 run inventory s s2
 rc_is 0 "Q13: inventory runs"
-has "copy rebuilt after the baseline of s" "Q13: the copy a suite wrote into is rebuilt" "$OUT"
 eq "$(python3 -c 'import json,sys
 print({r["suite"]: (r["rc"], r["failed"]) for r in map(json.loads, open(sys.argv[1]))})' "$T/state/inventory.jsonl")" "{'s': (0, 0), 's2': (0, 0)}" "Q13: the second suite is green, not failed by the first one's residue"
 clean Q13
 
-# Q14: what git status cannot see: a branch in the copy, and an empty directory
-mk Q14
-python3 - "$T/repo/tests/s.test.sh" "$T/repo/tests/s2.test.sh" <<'PY'
-import sys
-s, s2 = sys.argv[1:]
-t = open(s).read()
-open(s, "w").write(t.replace('echo "RESULT:', 'git -C "$here/.." branch residue\necho "RESULT:', 1))
-t = open(s2).read()
-open(s2, "w").write(t.replace('echo "RESULT:', 'mkdir "$here/../emptydir"\necho "RESULT:', 1))
-PY
-"${GIT[@]}" -C "$T/repo" add -A
-"${GIT[@]}" -C "$T/repo" commit -q -m residue
-run inventory s s2
-rc_is 0 "Q14: inventory runs"
-eq "$(printf '%s\n' "$OUT" | grep -cx 'copy rebuilt after the baseline of s')" 1 "Q14: a branch a suite created in the copy forces a rebuild"
-eq "$(printf '%s\n' "$OUT" | grep -cx 'copy rebuilt after the baseline of s2')" 1 "Q14: an empty directory a suite created forces a rebuild"
-
-# Q15-Q19: what lives inside .git or in a mode, which git status cannot see. residue <s> <s2> makes
-# suite s run the first snippet and s2 the second, both just before their RESULT line, and commits.
+# Q14-Q22: a run never sees what an earlier run left in its copy, wherever the residue lives, and a
+# suite that tampers with its copy cannot hang or escape the harness. Every run gets a copy built
+# for it. residue <s> <s2> makes suite s run the first snippet and s2 the second, both just before
+# their RESULT line, and commits. The harness runs under perl's alarm, so a regression that blocks
+# fails the case instead of hanging the suite.
+audb(){
+  perl -e 'alarm 90; exec @ARGV' "$AUDIT" --repo "$T/repo" --state "$T/state" --copy-root "$T/copies" --lock "$T/lock" \
+    --probe-dir "$T/ro" --subjects "$T/repo/subjects.tsv" "$@"
+}
+runb(){ OUT=$(audb "$@" 2>"$T/err"); RC=$?; ERR=$(<"$T/err"); }
 residue(){
   python3 - "$T/repo/tests/s.test.sh" "$T/repo/tests/s2.test.sh" "$1" "$2" <<'PY'
 import sys
@@ -955,112 +939,95 @@ PY
   "${GIT[@]}" -C "$T/repo" add -A
   "${GIT[@]}" -C "$T/repo" commit -q -m residue
 }
-rebuilt(){ printf '%s\n' "$OUT" | grep -cx "copy rebuilt after the baseline of $1"; }
 suite_failed(){ python3 -c 'import json,sys
 print({r["suite"]: (r["rc"], r["failed"]) for r in map(json.loads, open(sys.argv[1]))})' "$T/state/inventory.jsonl"; }
-
-mk Q15
-residue 'mkdir -p "$here/../.git/hooks"; printf "#!/bin/sh\nexit 1\n" > "$here/../.git/hooks/pre-commit"; chmod +x "$here/../.git/hooks/pre-commit"' \
+# residue_case <case> <what> <s plants> <s2 checks>: s2 must find none of it
+residue_case(){
+  mk "$1"
+  residue "$3" "$4"
+  runb inventory s s2
+  rc_is 0 "$1: the run finishes after $2"
+  eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "$1: the next run does not meet $2"
+}
+G='git -C "$here/.."'
+residue_case Q14 "a branch" "$G branch residue" "[ -n \"\$($G branch --list residue)\" ] && bad 'branch present at start'"
+residue_case Q15 "a tag" "$G tag residue" "[ -n \"\$($G tag --list residue)\" ] && bad 'tag present at start'"
+residue_case Q16 "a stash" 'echo change >> "$here/../docs/rules.md"; git -C "$here/.." -c user.name=x -c user.email=x@x stash push -q' \
+  "[ -n \"\$($G stash list)\" ] && bad 'stash present at start'"
+residue_case Q17 "an empty directory" 'mkdir "$here/../emptydir"' '[ -d "$here/../emptydir" ] && bad "empty directory present at start"'
+residue_case Q18 "an executable pre-commit hook" \
+  'mkdir -p "$here/../.git/hooks"; printf "#!/bin/sh\nexit 1\n" > "$here/../.git/hooks/pre-commit"; chmod +x "$here/../.git/hooks/pre-commit"' \
   '[ -e "$here/../.git/hooks/pre-commit" ] && bad "pre-commit hook present at start"'
-run inventory s s2
-rc_is 0 "Q15: inventory runs"
-eq "$(rebuilt s)" 1 "Q15: an executable pre-commit hook a suite planted in .git forces a rebuild"
-eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q15: the next suite sees no hook"
-
-mk Q16
-residue 'mkdir -p "$here/../.git/info"; echo "bin/" >> "$here/../.git/info/exclude"' \
+residue_case Q19 "an exclude rule" 'mkdir -p "$here/../.git/info"; echo "bin/" >> "$here/../.git/info/exclude"' \
   '[ -e "$here/../.git/info/exclude" ] && bad "exclude rule present at start"'
-run inventory s s2
-rc_is 0 "Q16: inventory runs"
-eq "$(rebuilt s)" 1 "Q16: an exclude rule a suite added in .git/info forces a rebuild"
-eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q16: the next suite sees no exclude rule"
-
-mk Q17
-residue 'git -C "$here/.." update-index --assume-unchanged bin/s.sh' \
-  'git -C "$here/.." update-index --skip-worktree docs/rules.md; [ "$(git -C "$here/.." ls-files -v bin/s.sh | cut -c1)" = h ] && bad "assume-unchanged flag present at start"'
-run inventory s s2
-rc_is 0 "Q17: inventory runs"
-eq "$(rebuilt s)" 1 "Q17: an assume-unchanged flag on a tracked file, which only changes .git/index, forces a rebuild"
-eq "$(rebuilt s2)" 1 "Q17: a skip-worktree flag on a tracked file forces a rebuild"
-eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q17: the suite after the assume-unchanged one sees no such flag"
-
-mk Q18
-residue 'chmod 750 "$here/../bin"' \
+residue_case Q20 "an assume-unchanged flag, which only changes .git/index" "$G update-index --assume-unchanged bin/s.sh" \
+  "[ \"\$($G ls-files -v bin/s.sh | cut -c1)\" = h ] && bad 'assume-unchanged flag present at start'"
+residue_case Q21 "a skip-worktree flag" "$G update-index --skip-worktree docs/rules.md" \
+  "[ \"\$($G ls-files -v docs/rules.md | cut -c1)\" = S ] && bad 'skip-worktree flag present at start'"
+residue_case Q22 "a changed directory mode" 'chmod 750 "$here/../bin"' \
   '[ "$(stat -f %Lp "$here/../bin" 2>/dev/null || stat -c %a "$here/../bin")" = 750 ] && bad "bin mode changed at start"'
-run inventory s s2
-rc_is 0 "Q18: inventory runs"
-eq "$(rebuilt s)" 1 "Q18: a mode change on a directory forces a rebuild"
-eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q18: the next suite sees the directory's original mode"
+residue_case Q23 "a fifo in place of .git/config" 'rm -f "$here/../.git/config"; mkfifo "$here/../.git/config"' \
+  "[ -p \"\$here/../.git/config\" ] && bad 'config fifo present at start'; $G status >/dev/null 2>&1 || bad 'git does not work at start'"
+residue_case Q24 "a fifo in place of .git/index" 'rm -f "$here/../.git/index"; mkfifo "$here/../.git/index"' \
+  "[ -p \"\$here/../.git/index\" ] && bad 'index fifo present at start'; $G status >/dev/null 2>&1 || bad 'git does not work at start'"
 
-mk Q19
-residue 'sleep 1; touch "$here/../docs/rules.md"; git -C "$here/.." status --ignored >/dev/null; git -C "$here/.." diff >/dev/null; git -C "$here/.." ls-files -s -v >/dev/null; cat "$here/../bin/s.sh" >/dev/null; ls -lR "$here/.." >/dev/null' \
-  'git -C "$here/.." status >/dev/null'
-run inventory s s2
-rc_is 0 "Q19: inventory runs"
-lacks "copy rebuilt after" "Q19: runs that only read, git status and git diff among them, rebuild nothing" "$OUT"
+# Q25: a mutant's run replaces the mutated file with a fifo, with a symlink to a file outside the copy,
+# and a copy's directory with a symlink to a directory outside: no write goes through any of them,
+# the harness neither blocks nor fails, and the next run starts clean
+mk Q25
+mkdir -p "$T/crafted" "$T/markers/outdir"
+printf 'outside\n' > "$T/markers/outside"
+printf 'kept\n' > "$T/markers/outdir/keep"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+def row(i, after):
+    return {"id": i, "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7, "context": "  FLAG=on",
+            "occurrence": 0, "col": 2, "before": "FLAG=on", "after": after, "suite": "s", "valid": 4}
+rows = [row("symlnk000001", 'FLAG=on; rm -f "$here/../bin/s.sh"; ln -s "$AUDIT_MARKERS/outside" "$here/../bin/s.sh"'),
+        row("fifo00000001", 'FLAG=on; rm -f "$here/../bin/s.sh"; mkfifo "$here/../bin/s.sh"'),
+        row("dirlnk000001", 'FLAG=on; mv "$(dirname "$here")" "$(dirname "$here")-gone"; ln -s "$AUDIT_MARKERS/outdir" "$(dirname "$here")"'),
+        row("after0000001", 'FLAG=on; :')]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+runb sample --sample-from "$T/crafted"
+rc_is 0 "Q25: a run that replaces the mutated file with a fifo, or a copy directory with a symlink, does not block or fail the harness"
+eq "$(<"$T/markers/outside")" "outside" "Q25: a mutated file replaced by a symlink is never written through to its target"
+eq "$(<"$T/markers/outdir/keep")" "kept" "Q25: a copy directory replaced by a symlink is unlinked, not followed into its target"
+eq "$(python3 -c 'import json,sys
+print([(r["verdict"], r["attempts"]) for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[('survived', 2), ('survived', 2), ('survived', 2), ('survived', 2)]" "Q25: every mutant, and its second run, ran in a clean copy"
 
-# Q20: copy_state itself, on a plain checkout: stable across reads, and moved by each kind of change
-mk Q20
-cp -R "$T/repo" "$T/direct"
-OUT=$(python3 - "$SRC/.scripts/test-audit" "$T/direct" <<'PY'
-import os, subprocess, sys
+# Q26: the copy a run gets is the same copy at the same path, with the same HEAD, for the baseline
+# and for each mutant run, so nothing a suite prints about its root tells the runs apart
+mk Q26
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+row = {"id": "same00000001", "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7,
+       "context": "  FLAG=on", "occurrence": 0, "col": 2, "before": "FLAG=on", "after": "FLAG=on; :",
+       "suite": "s", "valid": 1}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+residue 'pwd -P >> "$AUDIT_MARKERS/roots"; git -C "$here/.." rev-parse HEAD >> "$AUDIT_MARKERS/heads"' ''
+runb sample --sample-from "$T/crafted"
+rc_is 0 "Q26: the sample runs"
+eq "$(wc -l < "$T/markers/roots" | tr -d ' ')" 3 "Q26: the baseline, the mutant run and its second run all ran"
+eq "$(sort -u "$T/markers/roots" | wc -l | tr -d ' ')" 1 "Q26: every run's copy is at the same path"
+eq "$(sort -u "$T/markers/heads" | wc -l | tr -d ' ')" 1 "Q26: and has the same HEAD, which a copy built at another second would not without pinned dates"
+eq "$(python3 - "$SRC/.scripts/test-audit" "$T/repo" "$T/copies2" <<'PY'
+import subprocess, sys, time
 sys.path.insert(0, sys.argv[1])
 import audit
-copy = sys.argv[2]
-state = lambda: audit.copy_state(copy)
-git = lambda *a: subprocess.run(["git", "-C", copy, *a], capture_output=True, check=True)
-base = state()
-out = {"stable": base is not None and base == state()}
-git("status"); git("diff")
-out["after git status and diff"] = state() == base
-os.symlink("bin/s.sh", copy + "/link")
-linked = state()
-out["new symlink"] = linked != base
-os.remove(copy + "/link"); os.symlink("bin/p.py", copy + "/link")
-out["symlink retargeted"] = state() != linked
-os.remove(copy + "/link")
-out["symlink removed"] = state() == base
-with open(copy + "/docs/stray", "w") as f: f.write("aaaa")
-stray = state()
-with open(copy + "/docs/stray", "w") as f: f.write("bbbb")
-out["same-size content change"] = state() != stray
-os.remove(copy + "/docs/stray")
-import signal
-class Blocked(Exception): pass
-def hung(*_): raise Blocked()
-signal.signal(signal.SIGALRM, hung)
-os.mkfifo(copy + "/pipe")
-signal.alarm(10)
-try:
-    fifo = state()
-    out["fifo does not block"] = True
-except Blocked:
-    fifo = base
-    out["fifo does not block"] = False
-signal.alarm(0)
-out["fifo"] = fifo is not None and fifo != base
-os.remove(copy + "/pipe")
-out["fifo removed"] = state() == base
-os.chmod(copy + "/bin/s.sh", 0o700)
-out["file mode"] = state() != base
-os.chmod(copy + "/bin/s.sh", 0o755)
-out["mode restored"] = state() == base
-git("tag", "residue")
-out["tag"] = state() != base
-git("tag", "-d", "residue")
-os.makedirs(copy + "/.git/hooks", exist_ok=True)
-out["empty directory in .git"] = state() != base
-os.rmdir(copy + "/.git/hooks")
-os.chmod(copy + "/.git", 0o000)
-out["unreadable directory"] = state() is None
-os.chmod(copy + "/.git", 0o755)
-out["unreadable restored"] = state() == base
-os.rename(copy + "/.git", copy + "/.gitaway")
-out["no .git"] = state() is None
-print(sorted(k for k, v in out.items() if not v))
+sha = subprocess.check_output(["git", "-C", sys.argv[2], "rev-parse", "HEAD"], text=True).strip()
+head = lambda c: subprocess.check_output(["git", "-C", str(c), "rev-parse", "HEAD"], text=True).strip()
+first = audit.build_copy(sys.argv[2], sha, sys.argv[3], "x")
+a = head(first)
+time.sleep(1.2)
+second = audit.build_copy(sys.argv[2], sha, sys.argv[3], "x")
+print(first == second and a == head(second))
+audit.SESSION.cleanup()
 PY
-)
-eq "$OUT" "[]" "Q20: copy_state is stable across reads and git status, and moves on a symlink, a same-size content change, a file mode, a fifo without blocking, a tag, an empty directory in .git; None for an unreadable directory and for no .git"
+)" True "Q26: a copy built a second later at the same path has the same HEAD: the commit dates are pinned"
+
 
 echo "R. rule mutants"
 mk R
