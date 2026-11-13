@@ -1,7 +1,7 @@
 # Agent sessions only, through ssh-sandbox-proxy (spec 2026-11-12-forge-push-protection, section 1.1).
-Match host "github.com,ssh.github.com,github.com.,ssh.github.com."
+Match host "github.com,ssh.github.com"
   IdentityFile ~/.ssh/github-agent.pub
   IdentitiesOnly yes
   IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-Match host "*,!github.com,!ssh.github.com,!github.com.,!ssh.github.com."
+Match host "*,!github.com,!ssh.github.com"
   Include ~/.ssh/config
