@@ -779,7 +779,7 @@ MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAc
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
                        r"enablePullRequestAutoMerge|mergeBranch)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
-# The api options that take a value, per CLI (gh 2.103.3's and glab 1.130.0's --help), and -R/--repo,
+# The api options that take a value, per CLI (gh 2.102's and glab 1.120's --help), and -R/--repo,
 # which glab takes before api, after it and after the endpoint. Every other option is a boolean.
 GH_API_VALUE = {"-F", "--field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-X",
                 "--method", "-p", "--preview", "-f", "--raw-field", "-t", "--template", "--cache",

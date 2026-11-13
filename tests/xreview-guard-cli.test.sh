@@ -16,7 +16,9 @@
 # Equal to the pin: PASS per group. Different, or a CLI missing or failing: INCONCLUSIVE and exit 2,
 # never exit 1, since this is the environment drifting, not a regression in this repository.
 #
-#   ./tests/xreview-guard-cli.test.sh   (sandboxed is fine)
+#   ./tests/xreview-guard-cli.test.sh   (sandboxed is fine, but only because the suite also sets
+#   AZURE_EXTENSION_DIR: the azure-devops extension is read from ~/.azure/cliextensions, since a
+#   fresh AZURE_CONFIG_DIR has none. Without the extension the suite reports INCONCLUSIVE.)
 set -uo pipefail
 
 PROCEDURE="read each new command's --help, then gate it, deny it or leave it, in the change that updates this pin"
@@ -162,6 +164,7 @@ trap 'rm -rf "$WORK"' EXIT
 export AZURE_CONFIG_DIR="$WORK/azure"
 mkdir -p "$AZURE_CONFIG_DIR"
 export AZURE_EXTENSION_DIR="${AZURE_EXTENSION_DIR:-$HOME/.azure/cliextensions}"
+export AZURE_CORE_COLLECT_TELEMETRY=false
 
 pass=0
 inconclusive=0
@@ -178,7 +181,7 @@ cobra_names() { # cobra_names <cli> [<group>]
 }
 
 az_pr_names() {
-  az repos pr --help 2>/dev/null | awk '/^Commands:/ { on = 1; next } on && /^[[:space:]]*$/ { on = 0 } on { print $1 }'
+  az repos pr --help 2>/dev/null </dev/null | awk '/^Commands:/ { on = 1; next } on && /^[[:space:]]*$/ { on = 0 } on { print $1 }'
 }
 
 # group <label> <cli> <pin> <command...>: compare the names the command prints with the pin.
@@ -219,10 +222,17 @@ fi
 
 # Matching groups print nothing: an INCONCLUSIVE row with PASS lines beside it reads as inconsistent.
 printf '%s\n' "${messages[@]}"
+az_version() {
+  local core ext
+  core=$(az version --query '"azure-cli"' -o tsv 2>/dev/null </dev/null | head -n 1)
+  [ -n "$core" ] || return 0
+  ext=$(az version --query 'extensions."azure-devops"' -o tsv 2>/dev/null </dev/null | head -n 1)
+  case "$ext" in ''|None) printf 'az %s\n' "$core" ;; *) printf 'az %s, azure-devops %s\n' "$core" "$ext" ;; esac
+}
 installed=$({
   glab --version 2>/dev/null | head -n 1 | awk '{ print "glab " $2 }'
   gh --version 2>/dev/null | head -n 1 | awk '{ print "gh " $3 }'
-  az version --query '"azure-cli"' -o tsv 2>/dev/null | awk '{ print "az " $1 }'
+  command -v az >/dev/null 2>&1 && az_version
 } | paste -sd';' - | sed 's/;/; /g')
 printf '  pinned on: %s\n' "$(printf '%s\n' "$PIN_VERSIONS" | paste -sd';' - | sed 's/;/; /g')"
 printf '  installed: %s\n' "${installed:-no version readable}"
