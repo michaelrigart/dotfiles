@@ -54,11 +54,12 @@
 # files of .scripts/test-audit/subjects.tsv rows (file, lang, own_suite, loaded_by) whose
 # loaded_by lists it, its own file and tests/run.sh, under the map in the working tree or the
 # map at the merge base. The changed files are those of `git diff` against the merge base of
-# <ref> (default main) and HEAD, covering commits, the index and the working tree, plus
-# untracked unignored files; they are read NUL-delimited and compared byte for byte. A heavy
-# suite left out prints "(no subject changed since <merge base>)"; one that runs carries
-# [needs: heavy; changed: <first changed subject>(, +N more)]. Whatever the runner cannot read
-# or decide runs every heavy suite and says why in the same bracket: not a git work tree, an
+# <ref> (default main) and HEAD, that is the working tree against the merge base (so a change
+# staged and then reverted in the working tree is not listed), plus untracked unignored files;
+# they are read NUL-delimited and compared byte for byte. A heavy suite left out prints
+# "(no subject changed since <merge base>)"; one that runs carries [needs: heavy; changed:
+# <first changed subject>(, +N more)]. Whatever the runner cannot read or decide runs every
+# heavy suite and says why in the same bracket: not a git work tree, an
 # unresolvable base, no merge base, a failing git command, a missing, unreadable or malformed
 # subject map (working tree or merge base), or a suite with no row. An exact name or --all
 # still runs a heavy suite whatever the diff; every other gate stays.
@@ -95,7 +96,8 @@ norm() {
 }
 
 # Who holds the lock, as the clause of the waiting and giving-up lines. The record is
-# advisory: a missing, stale or unparsable one degrades to "held by another run".
+# advisory: a missing or unparsable one degrades to "held by another run"; a parsable one is
+# shown with its age, even when the runner that wrote it died without removing it.
 holder_clause() {
   local rec= ts chk args age
   [ -r "$lock.holder" ] && IFS= read -r rec <"$lock.holder"

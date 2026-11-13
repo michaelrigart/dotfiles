@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Tests for tests/run.sh: the requirement gate (a suite tagged `# test-requires:` runs only
 # when named exactly or with --all; a substring filter must still skip it), the parallel
-# run, the serial tag and the per-machine lock.
+# run, the serial tag, the per-machine lock and its holder record, and --changed (which heavy
+# suites run for a changed subject, and every way it falls back to running them all).
 #
-# Runs a COPY of run.sh in a temp directory holding two fake suites, so nothing here
-# executes a real suite (and nothing recurses into this one).
+# Runs a COPY of run.sh in a temp directory holding fake suites, and in throwaway git
+# repositories for --changed, so nothing here executes a real suite (and nothing recurses into
+# this one). The final sections read the real repository: the subject map must cover what the
+# heavy suites name (drift_check), every heavy tag must parse as `heavy`, and the runner must
+# read the real map as well-formed.
 #
 #   ./tests/run.test.sh   (sandboxed is fine)
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$SRC/tests/run.sh"
 [ -f "$RUN" ] || { echo "missing script under test: $RUN" >&2; exit 2; }
+SUBJECTS="$SRC/.scripts/test-audit/subjects.tsv"
+[ -f "$SUBJECTS" ] || { echo "missing subject map the drift checks read: $SUBJECTS" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -853,7 +859,8 @@ drift_loaded() {
       printf '%s\n' "$p"
     elif [ -d "$1/$p" ]; then
       case " $DRIFT_PART_DIRS " in *" $2:$p "*) continue ;; esac
-      git -C "$1" ls-files -z --cached --others --exclude-standard -- "$p" 2>/dev/null | tr '\0' '\n' || printf '%s\n' "$p"
+      git -C "$1" ls-files -z --cached --others --exclude-standard -- "$p" 2>/dev/null | tr '\0' '\n' \
+        | while IFS= read -r q; do if [ -f "$1/$q" ]; then printf '%s\n' "$q"; fi; done || printf '%s\n' "$p"
     fi
   done | LC_ALL=C sort -u
 }
@@ -906,6 +913,15 @@ drifts "a tracked or untracked file under a directory a heavy suite names is rep
 # repository the temporary directory may sit in.
 rm -rf "$R/.git"
 GIT_CEILING_DIRECTORIES="$(cd "$T" && pwd -P)" drifts "a directory the check cannot list is reported" "heavya: dot_d is loaded but has no subject-map row"
+# Bug caught: a tracked file deleted from the working tree still listed under its directory, so a
+# row kept for it reads as missing and a row dropped for it as loaded without a row.
+reset_repo; mkdir -p "$R/dot_d"; echo f > "$R/dot_d/f.sh"; echo g > "$R/dot_d/g.sh"
+write_map "$(row dot_d/f.sh heavya)" "$(row dot_d/g.sh heavya)"; commit "two files"
+rm "$R/dot_d/f.sh"
+names heavya 'cp -R "$SRC/dot_d" "$T/d"'
+drifts "a file deleted under a directory a heavy suite names is a stale row only" "heavya: subject-map row for dot_d/f.sh names a missing file"
+drop_rows 1 dot_d/f.sh
+drifts "and with its row dropped too nothing is reported" ""
 # Bug caught: a row left behind for a file that was moved or deleted.
 reset_repo; rm "$R/lib/a.sh"
 drifts "a row naming a missing file is reported" "heavya: subject-map row for lib/a.sh names a missing file"
@@ -923,9 +939,31 @@ names plainc 'cat "$SRC/dot_x/c.sh"'
 drifts "a fixture whose heavy suites' files all have rows passes" ""
 got="$(drift_check "$SRC")"; rc=$?
 if [ "$rc" = 0 ] && [ -z "$got" ]; then _pass "the subject map covers every file the heavy suites name"; else _fail "the subject map covers every file the heavy suites name" "exit $rc: $(printf '%s' "$got" | tr '\n' '|')"; fi
+# Bug caught: a heavy tag the runner's parse does not read as exactly `heavy` (one space before the
+# comment, say), which drops the suite from --changed and from the drift check. bad_heavy_tags
+# <repo root> prints each such line, parsed as the runner parses it.
+bad_heavy_tags() {
+  local f line req
+  for f in "$1"/tests/*.test.sh; do
+    while IFS= read -r line; do
+      req=${line#"# test-requires:"}; req=${req#"${req%%[! ]*}"}
+      case "$req" in heavy*) ;; *) continue ;; esac
+      req=${req%%  #*}
+      [ "$req" = heavy ] || printf '%s: %s\n' "${f##*/}" "$line"
+    done < <(grep '^# test-requires:' "$f")
+  done
+}
+reset_repo; printf '#!/usr/bin/env bash\n%s: heavy # one space\n' "$tag" > "$R/tests/heavyb.test.sh"
+got="$(bad_heavy_tags "$R")"
+if [ "$got" = "heavyb.test.sh: $tag: heavy # one space" ]; then _pass "a heavy tag with one space before its comment is reported"; else _fail "a heavy tag with one space before its comment is reported" "$got"; fi
+reset_repo
+got="$(bad_heavy_tags "$R")"
+if [ -z "$got" ]; then _pass "the fixture's heavy tags all parse as heavy"; else _fail "the fixture's heavy tags all parse as heavy" "$got"; fi
+got="$(bad_heavy_tags "$SRC")"
+if [ -z "$got" ]; then _pass "every heavy tag in the real suites parses as exactly heavy"; else _fail "every heavy tag in the real suites parses as exactly heavy" "$(printf '%s' "$got" | tr '\n' '|')"; fi
 # Bug caught: a hand-edited row the runner reads as malformed, so every --changed run runs every
 # heavy suite.
-reset_repo; cp "$SRC/$MAP" "$R/$MAP"
+reset_repo; cp "$SUBJECTS" "$R/$MAP"
 out="$(rr --changed)"
 both "the runner reads the real subject map as well-formed" 'no subject-map row' "$out"
 unset HOLDER_DONE
