@@ -20,7 +20,8 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
 LEDGER="$SRC/dot_claude/xreview-ledger.py"
 PACKET="$SRC/dot_claude/xreview-packet.py"
-for f in "$XREVIEW" "$LEDGER" "$PACKET"; do
+RPC_SRC="$SRC/dot_local/bin/executable_xreview-rpc"
+for f in "$XREVIEW" "$LEDGER" "$PACKET" "$RPC_SRC"; do
   [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
 done
 pass=0; fail=0
@@ -39,7 +40,8 @@ cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/revie
 # Every switch off unless a case turns some on, whatever the shipped packets.conf says.
 printf '%s=off\n' framing fit delta omit_plans > "$XDG_CONFIG_HOME/xreview/packets.conf"
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
-export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER" XREVIEW_PACKET="$PACKET"
+export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER" XREVIEW_PACKET="$PACKET" \
+       XREVIEW_TEXT_SCAN="$SRC/dot_local/bin/executable_agent-text-scan" RPC_SRC
 unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD XREVIEW_LEDGER_LOCK_WAIT
 PANE_CMD='codex --sandbox read-only --ask-for-approval never'
 
@@ -225,12 +227,15 @@ L
 cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
 printf '%sxreview-rpc %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"
-cmd="$1"; shift
-th=""; input=""; known=""; resolved=""; prefix=""; cwd=""; turn=""; report=""; since=""
+cmd="$1"
+# render and escape are the real ones: collect's rendering and the pane's excerpt are what they test.
+case "$cmd" in render|escape) exec "$RPC_SRC" "$@" ;; esac
+shift
+th=""; input=""; known=""; resolved=""; prefix=""; cwd=""; turn=""; report=""; since=""; raw=""
 while [ "$#" -gt 0 ]; do
   case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;;
                --resolved) resolved="$2"; shift ;; --prefix) prefix="$2"; shift ;; --new-since) since="$2"; shift ;;
-               --cwd) cwd="$2"; shift ;; --turn) turn="$2"; shift ;; --report) report="$2"; shift ;; esac; shift
+               --cwd) cwd="$2"; shift ;; --turn) turn="$2"; shift ;; --report) report="$2"; shift ;; --raw) raw="$2"; shift ;; esac; shift
 done
 case "$cmd" in
   # HOOKS_STATUS: what the pane-map hook's trust status reads (unset: nothing), printed even when
@@ -328,6 +333,12 @@ case "$cmd" in
              if mv "$P/hold.$t" "$P/holding.$t" 2>/dev/null; then
                : > "$P/waiting.$t"
                k=0; while [ -e "$P/holding.$t" ] && [ "$k" -lt 600 ]; do sleep 0.1; k=$((k + 1)); done
+             fi
+             # A schema miss with --raw: the text goes to that file (mode 600), none to stdout.
+             if [ "$r" = 4 ] && [ -n "$raw" ]; then
+               rm -f "$raw"; ( umask 077; printf '%s\n' "$o" > "$raw" )
+               echo 'xreview-rpc: the answer does not match the findings schema: $.verdict: not an allowed value' >&2
+               exit 4
              fi
              printf '%s\n' "$o"; exit "$r" ;;
 esac
@@ -989,6 +1000,14 @@ fresh; out="$(NO_TITLE=1 READ_FAIL=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" disp
 is "S16 an unreadable screen still warns, exit 0, with the nonce" \
    "$rc/$(printf '%s' "$out" | grep -cx 'xreview: the review is running but not shown in pane w1:p2')/$(printf '%s' "$out" | grep -c '^xr-')" "0/1/1"
 is "S16 and shows no excerpt" "$(printf '%s' "$out" | grep -c '^  | ')" 0
+# S16b: the excerpt is the reviewer's unrendered answer, so it is escaped like collect's rendering, or withheld.
+fresh; printf 'ok\xe2\x80\xaeevil\n' > "$P/screen"
+out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S16b a hidden character in the pane's screen is shown as <U+202E>" "$(printf '%s' "$out" | grep -cxF '  | ok<U+202E>evil')" 1
+fresh; printf 'ok\xe2\x80\xaeevil\n' > "$P/screen"
+out="$(XREVIEW_TEXT_SCAN=/nonexistent NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S16b and with the module missing only the withheld line is printed" \
+   "$(printf '%s' "$out" | grep -c "^  | (the pane's screen is withheld: it could not be scanned)$")/$(printf '%s' "$out" | grep -c '^  | ')/$(printf '%s' "$out" | grep -c 'evil')" "1/1/0"
 # The three-pair cap, with a bound far beyond three short rungs: the cap ends the ladder.
 fresh
 out="$(STUCK_TUI=1 XREVIEW_POLL_SECS=0.05 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=10 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
@@ -1138,9 +1157,12 @@ is "F1 the receipt records the checkpoint named at dispatch" "$(printf '%s' "$r"
 out="$(RPC_WAIT_RC=3 bash "$XREVIEW" collect "$nonce" 60 2>&1)"; rc=$?
 is "F2 a running turn exits 3" "$rc" 3
 is "F2 says so and how to keep waiting" "$(printf '%s' "$out" | grep -c "xreview collect $nonce")" 1
-out="$(RPC_WAIT_RC=4 RPC_WAIT_OUT='prose' bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
-is "F3 a schema miss exits 4" "$rc" 4
-is "F3 and labels the text untrusted" "$(printf '%s' "$out" | grep -c UNTRUSTED)" 1
+out="$(RPC_WAIT_RC=4 RPC_WAIT_OUT='PWNED prose' bash "$XREVIEW" collect "$nonce" 2>"$ROOT/err")"; rc=$?
+is "F3 a schema miss exits 4 and prints nothing on stdout" "$rc/${#out}" "4/0"
+is "F3 stderr says nothing was recorded and names the kept raw file" \
+   "$(grep -c 'Nothing was recorded' "$ROOT/err")/$(grep -cF "kept for Michael in $STATE/turns/$nonce.raw" "$ROOT/err")" "1/1"
+is "F3 the file holds the raw text, mode 600, and no reviewer text is in either stream" \
+   "$(cat "$STATE/turns/$nonce.raw")/$(stat -f %Lp "$STATE/turns/$nonce.raw")/$(printf '%s%s' "$out" "$(cat "$ROOT/err")" | grep -c PWNED)" "PWNED prose/600/0"
 out="$(RPC_WAIT_RC=1 bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
 is "F4 a failed turn exits 1" "$rc" 1
 out="$(RPC_WAIT_RC=5 bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
@@ -2517,7 +2539,7 @@ is "CL1 and says on stderr that it is not clean and why, and that the gate stays
 is "CL1 the receipt records the compaction and that it is not clean" \
    "$(receipt "$nonce" | jq -c '[.compacted, .clean, .targets[0].missing]')" '[true,false,[]]'
 is "CL1 the wait used the framed schema and asked for a report of this collect's own" \
-   "$(called "turn-wait --thread $U1 --turn turn-$U1 --budget 2700 --schema $XDG_CONFIG_HOME/xreview/findings.framed.schema.json --report $STATE/turns/$nonce\.report\.[0-9][0-9]*$")" 1
+   "$(called "turn-wait --thread $U1 --turn turn-$U1 --budget 2700 --schema $XDG_CONFIG_HOME/xreview/findings.framed.schema.json --report $STATE/turns/$nonce\.report\.[0-9][0-9]* --raw $STATE/turns/$nonce\.raw$")" 1
 is "CL1 the report does not linger" "$(reports_left "$nonce")" 0
 
 framed_dispatch pre-merge --diff "$CLR"
@@ -2795,7 +2817,7 @@ is "SL1 the pane is freed for each slice, then follows it" \
    "$(called 'herdr pane send-keys')/$(resumed "$U3")/$(resumed "$U4")" "4/1/1"
 is "SL1 no keystroke while a turn runs" \
    "$(awk '/xreview-rpc turn-start/ {r = 1} /xreview-rpc turn-wait/ {r = 0} r && /herdr pane send-keys/ {c++} END {print c + 0}' "$CALLS")" 0
-is "SL1 one merged answer: changes, as one slice asked for them" "$(jq -r .verdict "$ROOT/out")/$(grep -c . "$ROOT/out")" "changes/1"
+is "SL1 one merged answer: changes, as one slice asked for them" "$(jq -r .verdict "$ROOT/out")/$(jq -c '[.findings[].summary]' "$ROOT/out")" 'changes/["s"]'
 is "SL1 with every slice's findings, and reviewed_files the union in first-seen order" \
    "$(jq -c '[(.findings | length), .reviewed_files]' "$ROOT/out")" '[1,["s1.txt","s2.txt","s3.txt"]]'
 r="$(receipt "$nonce")"
@@ -2816,7 +2838,7 @@ is "SL1 the turn record names the last slice" "$(cat "$STATE/turns/$nonce")" "$U
 : > "$CALLS"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out2" 2>/dev/null; rc=$?
 is "SL1 collecting a finished round again prints the merged answer, waiting on nothing" \
-   "$rc/$(cmp -s "$ROOT/out" "$ROOT/out2" && echo same)/$(called 'xreview-rpc')" "0/same/0"
+   "$rc/$(cmp -s "$ROOT/out" "$ROOT/out2" && echo same)/$(( $(called 'xreview-rpc thread') + $(called 'xreview-rpc turn') ))" "0/same/0"
 
 sliced; approve_all "turn-$U3"
 echo 3 > "$P/rc.turn-$U3"
@@ -3328,11 +3350,47 @@ sliced; approve_all "turn-$U3"; echo null > "$P/compacted.turn-$U3"; echo true >
 bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "SL7 one compacted slice makes the receipt compacted" "$(receipt "$nonce" | jq -c '[.compacted, .clean]')" '[true,false]'
 
-sliced; approve_all "turn-$U3"; echo 4 > "$P/rc.turn-$U3"; printf 'prose\n' > "$P/answer.turn-$U3"
+sliced; approve_all "turn-$U3"; echo 4 > "$P/rc.turn-$U3"; printf 'PWNED prose\n' > "$P/answer.turn-$U3"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
-is "SL8 a slice's answer off the schema: exit 4, the raw text, nothing recorded" \
-   "$rc/$(cat "$ROOT/out")/$(receipt "$nonce" | grep -c .)" "4/prose/0"
+is "SL8 a slice's answer off the schema: exit 4, empty stdout, nothing recorded" \
+   "$rc/$(wc -c < "$ROOT/out" | tr -d ' ')/$(receipt "$nonce" | grep -c .)" "4/0/0"
+is "SL8 stderr says nothing was recorded and names the raw file, which holds the text; none is printed" \
+   "$(grep -c 'Nothing was recorded' "$ROOT/err")/$(grep -cF "kept for Michael in $STATE/turns/$nonce.raw" "$ROOT/err")/$(cat "$STATE/turns/$nonce.raw")/$(cat "$ROOT/out" "$ROOT/err" | grep -c PWNED)" "1/1/PWNED prose/0"
 is "SL8 the round stays where it was" "$(jq -c '[(.answers | map(select(. != null)) | length), (.turns | length)]' "$sl")" "[1,2]"
+
+# W: collect prints xreview's rendering, never the answer. Hidden text is escaped, the notice is the
+# first key, and the receipt is written as before.
+clr="$(git log -1 --format=%H -- cl1.txt)"
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$clr~1..$clr" b.md 2>/dev/null)"
+RPC_WAIT_OUT="$(jq -nc '{verdict:"changes",findings:[{severity:"P2",file:"a",line:1,summary:"a\u200bb",failure_scenario:"f"}]}')" \
+  bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "W1 one turn: the notice first, the hidden character escaped, the receipt written" \
+   "$rc/$(jq -r 'keys_unsorted[0]' "$ROOT/out")/$(jq -r '.findings[0].summary' "$ROOT/out")/$(receipt "$nonce" | jq -r .verdict)" "0/xreview/a<U+200B>b/changes"
+is "W1 and the validated answer is kept, mode 600, for Michael" \
+   "$(stat -f %Lp "$STATE/turns/$nonce.answer")/$(grep -c "$(printf '\342\200\213')" "$STATE/turns/$nonce.answer")" "600/1"
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"; rm -f "$STATE/turns/$nonce.shown"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "W3 a turn with no .shown file collects, and the rendering has no reviewed_files key" \
+   "$rc/$(jq -r 'has("reviewed_files")' "$ROOT/out")" "0/false"
+sliced; framed approve $L1 > "$P/answer.turn-$U1"; framed approve > "$P/answer.turn-$U4"
+jq -nc '{verdict:"changes",findings:[{severity:"P2",file:"s2.txt",line:1,summary:"a\u200bb",failure_scenario:"f"}],reviewed_files:$ARGS.positional}' \
+  --args $L2 > "$P/answer.turn-$U3"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out2" 2>/dev/null
+is "W2 a sliced round: the notice first, the second slice's hidden character escaped, labels from both slices" \
+   "$rc/$(jq -r 'keys_unsorted[0]' "$ROOT/out")/$(jq -r '.findings[0].summary' "$ROOT/out")/$(jq -c .reviewed_files "$ROOT/out")" '0/xreview/a<U+200B>b/["s1.txt","s2.txt"]'
+is "W2 and collecting the finished round again prints the same rendering" "$(cmp -s "$ROOT/out" "$ROOT/out2" && echo same)" same
+# W4: a render that cannot run fails closed, before anything is recorded; collect is safe to rerun.
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$clr~1..$clr" b.md 2>/dev/null)"
+XREVIEW_TEXT_SCAN=/nonexistent RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "W4 no text-scan module: exit 1, nothing on stdout, no receipt, told to collect again" \
+   "$rc/$(wc -c < "$ROOT/out" | tr -d ' ')/$(receipt "$nonce" | grep -c .)/$(grep -c 'restore it, then collect again' "$ROOT/err")" "1/0/0/1"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "W4 and with the module restored the same collect succeeds and records" \
+   "$rc/$(jq -r .verdict "$ROOT/out")/$(receipt "$nonce" | grep -c .)" "0/approve/1"
 
 # Two collects, A and B, wait on slice 1. A gets the answer first, starts slice 2 and saves
 # that; B's copy of the round is then stale. B saving slice 1's answer must keep A's slice 2,
