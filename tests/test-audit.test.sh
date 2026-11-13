@@ -982,7 +982,7 @@ run inventory s s2
 rc_is 0 "Q17: inventory runs"
 eq "$(rebuilt s)" 1 "Q17: an assume-unchanged flag on a tracked file, which only changes .git/index, forces a rebuild"
 eq "$(rebuilt s2)" 1 "Q17: a skip-worktree flag on a tracked file forces a rebuild"
-eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q17: the next suite sees neither flag"
+eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q17: the suite after the assume-unchanged one sees no such flag"
 
 mk Q18
 residue 'chmod 750 "$here/../bin"' \
@@ -1025,6 +1025,22 @@ stray = state()
 with open(copy + "/docs/stray", "w") as f: f.write("bbbb")
 out["same-size content change"] = state() != stray
 os.remove(copy + "/docs/stray")
+import signal
+class Blocked(Exception): pass
+def hung(*_): raise Blocked()
+signal.signal(signal.SIGALRM, hung)
+os.mkfifo(copy + "/pipe")
+signal.alarm(10)
+try:
+    fifo = state()
+    out["fifo does not block"] = True
+except Blocked:
+    fifo = base
+    out["fifo does not block"] = False
+signal.alarm(0)
+out["fifo"] = fifo is not None and fifo != base
+os.remove(copy + "/pipe")
+out["fifo removed"] = state() == base
 os.chmod(copy + "/bin/s.sh", 0o700)
 out["file mode"] = state() != base
 os.chmod(copy + "/bin/s.sh", 0o755)
@@ -1044,7 +1060,7 @@ out["no .git"] = state() is None
 print(sorted(k for k, v in out.items() if not v))
 PY
 )
-eq "$OUT" "[]" "Q20: copy_state is stable across reads and git status, and moves on a symlink, a same-size content change, a file mode, a tag, an empty directory in .git; None for an unreadable directory and for no .git"
+eq "$OUT" "[]" "Q20: copy_state is stable across reads and git status, and moves on a symlink, a same-size content change, a file mode, a fifo without blocking, a tag, an empty directory in .git; None for an unreadable directory and for no .git"
 
 echo "R. rule mutants"
 mk R
