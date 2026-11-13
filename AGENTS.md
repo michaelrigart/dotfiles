@@ -68,10 +68,15 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   safe-autonomy evaluation, and `process-replay.py` (with its package `process_replay/`,
   plain 644 modules) and `xreview-replay.py` are the replay-experiment harnesses.
   `skill-updates.sh` is non-interactive too and runs weekly in the `skill-updates` workflow.
-  `forge-protection.sh check` is read-only (GET calls only); its output names repositories and is
-  never committed.
+  `forge-protection.sh check` is read-only (GET calls only): it walks `~/Code` to three levels
+  and reads each repository's forge protection, skipping the ones listed in the owner's
+  `~/.config/forge-protection/exceptions`. Its output names repositories and is never committed;
+  agents run it only through its mocked suite, never with a write verb.
   The scripts are mode `755` (not the 644 policy file) — git stores only the exec bit, so a
   clone yields 755, never 700.
+- The global pre-push hook and its secret scan live in `dot_config/git/hooks/` and deploy to
+  `~/.config/git/hooks` (`core.hooksPath`, which replaces each repository's `.git/hooks`; the hook
+  runs the repository's own one after its scan). Edit the source; never the deployed copy.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
 - Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
@@ -177,6 +182,11 @@ names, `run`'s drift check fails until it does. Under `--changed` a skipped heav
 `[needs: heavy; changed: …]` or the reason the runner could not tell; quote those lines in the
 pre-merge report.
 
+`git-pre-push-hook` needs `gitleaks` and runs sandboxed; its rows are dry-run pushes through a real
+git, so none publishes anything. `forge-protection` stubs `gh`, `glab` and `az` on `PATH` and
+takes about two minutes (it is not tagged heavy); `ssh-sandbox-proxy` renders its templates with a
+stubbed `op`.
+
 `live-write-boundary` also probes a dotfiles `wt` sibling. That probe measures only from a
 session started in one (`~/.local/share/chezmoi-<branch>`); from anywhere else it reads
 FAIL (exit 2) with an `INCONCLUSIVE: sibling:` line and no `failed_keys`.
@@ -212,7 +222,8 @@ The script itself needs `/usr/bin/jq` and `/usr/bin/timeout` (and
 `/usr/bin/lockf`); the stubs do not replace them, and `refresh` exits 2 when any of them is missing.
 
 While chezmoi's external cache is cold (after adding or bumping an external, before the
-warm-up), `codex-config`, `claude-settings` and `live-feedback-skill` exit 2 with an
+warm-up), `codex-config`, `claude-settings`, `live-feedback-skill`, `git-pre-push-hook` and
+`ssh-sandbox-proxy` exit 2 with an
 `INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
 That is not a regression.
 
