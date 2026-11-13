@@ -78,3 +78,8 @@ a-reading-run	AGENTS.md	**Reading a run.**	no	is not a verdict;INCONSISTENT;Read
 a-map-row	AGENTS.md	gets its map row in the same commit	no	quote those lines in the pre-merge report	a new suite file gets its map row; heavy-suite lines are quoted in the pre-merge report
 t-missing-subject	tests/AGENTS.md	must fail loudly, not silently pass	no	exits 2 if not;Exit 2, never 1	a suite whose subject moved exits 2, never 1
 t-kv	tests/AGENTS.md	Two output idioms exist	no	failed_keys=;so no value is echoed	the kv output idiom prints failed_keys and never echoes a value
+a-bump-pointer	AGENTS.md	Third-party skills are pinned	no	follow the procedure at the top of `.chezmoiexternal.toml`;Closing one without a bump declines that release	the skills bullet points at the bump procedure and keeps the decline rule
+ext-bump-scan	.chezmoiexternal.toml	agent-text-scan --diff	yes	A bump reads the upstream diff first and runs `agent-text-scan --diff` on it: an `invisible` finding stops the bump until Michael has seen it, and any other finding that matters goes in the commit message.	a bump scans the upstream diff and an invisible finding stops it
+ext-bump-warm	.chezmoiexternal.toml	managed >/dev/null	no	outside the sandbox	a bump warms the cache outside the sandbox
+ext-bump-closes	.chezmoiexternal.toml	Closes #<issue>	no	commit message	the bump commit message closes the issue
+a-herdr-bare	AGENTS.md	never call `command herdr` bare	no	--session;HERDR_SOCKET_PATH	herdr scripts thread --session and never call herdr bare

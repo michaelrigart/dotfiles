@@ -9,7 +9,7 @@
 # Non-goal suites are listed in loaded_by for completeness; the harness never runs them.
 # Files no suite loads are absent.
 .chezmoidata/machines.toml	data	provision	provision
-.chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard
+.chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,agent-instructions
 .chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard
 .chezmoitemplates/agents/claude-code.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/codex.md	prose	agent-instructions	agent-instructions
