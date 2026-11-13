@@ -30,6 +30,10 @@
   Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
 - **Plan runs.** Plans give each task a `Depends on:` line and run in the line's checkout, never in
   a worktree per task. To run one, first load the `plan-run` skill: it overrides superpowers.
+- **Claude review findings.** For `sp-reviewer` and `sp-architect`, Fix now narrows: a finding gets
+  code only when it names an Engineering judgement cost or a real caller reaching its failure (a
+  code path, an input the system accepts, an attacker its threat model names; unsure counts as
+  real). Any other finding gets one line under Rulings. Codex findings: the `cross-review` skill.
 - **Dispatching a `wt` line.** Find the checkout's session in `ListAgents` (named after it) and
   `SendMessage` it the brief: spec, plan or task, branch, artifact paths, what to report back. That
   session runs the line itself, with its own subagents and `xreview` reviews from its checkout. If

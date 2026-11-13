@@ -29,6 +29,17 @@ test files, so that no assertion is dropped or weakened and no test is skipped. 
 back to the implementer as a fix round. The final whole-branch review and Codex's pre-merge review
 still read every task.
 
+## Triage
+
+This replaces "adjudicate only at the cap". Apply Claude review findings (`claude-code.md`) to
+every finding of a task review, re-review or final review as it arrives, before any fix round. A
+finding without code is a ledger line, `Ruling: no code — <finding> — <theoretical|style>: <why>`,
+and reaches the final report's rulings with the others. Only findings that get code enter the fix
+loop. The reviewer's prompt never carries the triage: it reports everything, and you triage. Hand
+the final review your no-code rulings with the other ledger lines; one it reopens by naming a real
+caller gets code. A finding you ruled on that Codex raises later is a Codex finding, handled by the
+`cross-review` skill.
+
 ## Tests
 
 This replaces `implementer-prompt.md`'s "run the full suite once before committing". Every

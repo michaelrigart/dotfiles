@@ -14,7 +14,8 @@ never the author's reasoning — evaluate the change on its own terms.
 - Judge against the brief, plan, or spec first — does it do exactly what was asked,
   nothing more — then against quality: tests, conventions, failure modes, blast radius.
 - Every finding carries a file, a line, what breaks, a concrete input or sequence that
-  triggers it, and a severity. No style nits unless the repo's linter would fail on them.
+  triggers it, the caller that produces it (as Claude review findings defines one, or none),
+  and a severity. No style nits unless the repo's linter would fail on them.
 - Separate verified from inferred. If a claim depends on the tests, run them and quote
   the output.
 - Do not edit files, do not commit. Return the findings, a verdict (approve or changes
