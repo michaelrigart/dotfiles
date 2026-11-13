@@ -1,6 +1,6 @@
 # Shrink Herdr's `phase.sh`
 
-**Status:** Approved
+**Status:** In progress (dotfiles: no MR; branch `refactor/phase-sh`)
 **Date:** 2026-11-12
 **Sign-off:** Michael, 2026-11-12 (Codex spec review approved, `xr-1794520796-fe06b267`)
 **Branch:** `refactor/phase-sh`, in the `wt` checkout `~/.local/share/chezmoi-refactor-phase-sh`
@@ -365,6 +365,50 @@ each one makes a wrong answer read as a failed lookup or a dropped row, never as
    `state` is a list or object is dropped instead of failing the lookup; nesting deeper than 256
    fails the lookup; in the workspace list, `is_linked_worktree` must be exactly `true` and a
    null or non-object entry is skipped.
+
+## Amendment, 2026-11-13: what the branch measured, and the final review
+
+1. **The size and suite goals were missed; the structural goal was met.**
+
+   | | `main` | this branch |
+   |---|---|---|
+   | script, total lines | 848 | 675 |
+   | script, code lines | 495 | 407 |
+   | script, comment lines | 301 | 220 |
+   | suite, lines | 2,041 | 2,154 |
+   | suite, assertions | 537 | 556 |
+   | suite, wall time (run directly, loaded machine) | 125 s | 100 to 106 s |
+   | one live refresh, 24 linked spaces | 8.6 to 10.4 s | 6.4 to 6.9 s |
+
+   "About 300 to 350 lines" (Size) took a count of code lines for a total, and the `jq` programs
+   came out barely shorter than the Python. The supervisor is gone (no process groups, traps,
+   polling, clock or reaping) and so is Python, but the reviews added about 40 lines back: the
+   per-call bound, the deadline check and the parser rules of the Task 3 amendment. "A shorter,
+   faster suite" (Goals) held for time only: the supervision cases went, and cases for the
+   per-call bound and for each parser rule took their place. A comments-only pass removed five
+   lines; what is left states a reason the code cannot.
+2. **How a cut run ends** (corrects section 6, item 2, and the first amendment): at the outer
+   deadline Apple's `timeout -s KILL` kills its own group, itself included, and on a forwarded
+   TERM it dies of that signal. launchd and Herdr see a death by signal; only a shell parent
+   reports it as 137 or 143. What a Herdr hook shows for that was not observed and is an
+   after-apply check.
+3. **The per-call bound reads the wall clock** (`date +%s`), unlike the outer deadline. A Mac that
+   sleeps mid-run wakes with nothing left: the remaining calls of that run are skipped and its
+   remaining badges wait for the next run. A bound is never longer than the run deadline, so a
+   clock stepped back cannot stretch one beyond it. Accepted.
+4. **Behaviour changes against `main` that the sections above did not list:**
+   - an empty `HERDR_PHASE_RUN_DEADLINE` or `HERDR_PHASE_LOCK_WAIT` is refused (exit 2); it used
+     to mean the default;
+   - a run that cannot create its cache directory or open the lock exits 2 (a sandboxed run, for
+     one); it used to skip the repository and exit 0;
+   - a GitLab row whose `state` is missing or not a string is dropped; it used to hold its
+     branch's slot with an empty state;
+   - a pipeline answer whose `iid` is written `12.0` matches MR 12;
+   - `refresh` also requires `/usr/bin/lockf` (as `main` did, without checking).
+5. **Rulings on findings no real caller reaches** (no code, by the triage rule the driver set for
+   this line on 2026-11-13): a forge branch name holding a NUL badges the branch without it (git
+   refnames cannot hold one); the deadline check in the worker cannot fire after `refresh` ran it
+   and stays for a hand-run `_refresh`.
 
 ## Left to the builder
 
