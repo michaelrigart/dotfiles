@@ -186,7 +186,7 @@ EOF
 # section puts the real binary back. The helper looks the script up at PUSH_GUARD_SCAN: a hooks
 # directory holding a link to the source copy and a pre-push stub (the fixture pushes run it),
 # which the global config's core.hooksPath names, as the deployed ~/.config/git/config does.
-# The rows for the scan and the hook themselves are in tests/git-pre-push-hook.test.sh.
+# The rows for the scan and the hook themselves are in the git-pre-push-hook suite.
 STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
 printf '#!/bin/sh\nexit 0\n' > "$STUBBIN/gitleaks"; chmod 755 "$STUBBIN/gitleaks"
 REALPATH=$PATH
@@ -3523,7 +3523,7 @@ else
 fi
 
 echo "== rule 4: a push that would ask is scanned first =="
-# The scan itself moved to the global pre-push hook (tests/git-pre-push-hook.test.sh holds its
+# The scan itself moved to the global pre-push hook (the git-pre-push-hook suite holds its
 # rows). The guard still runs the same script (PUSH_GUARD_SCAN, exported at the top) before it
 # returns an ask: a push Michael approves must already be clean, and a secret is a deny, which
 # beats an ask. A push that passes rule 4 silently is left to the hook alone.
