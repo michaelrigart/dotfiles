@@ -149,6 +149,7 @@ wall time):
 | Suite | Needs | Why |
 |---|---|---|
 | `xreview`, `git-forge-guard`, `wt-functions` | `heavy`: 672 s, 242 s, 123 s | skipped by default for their length. Run by exact name when a file its tag lists changes, and all three before every pre-merge review: `./tests/run.sh xreview git-forge-guard wt-functions` |
+| `test-audit` | `heavy`: 89 s | the audit harness's own suite, skipped by default for its length. Run by exact name when `.scripts/test-audit/` or `tests/fixtures/test-audit/` changes: `./tests/run.sh test-audit` |
 | `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `zshrc` | unsandboxed | drives a real zsh on a pseudo-terminal (Alt-k and SIGURG), and the sandbox has no pty devices; it then exits 2 (INCONCLUSIVE) |
