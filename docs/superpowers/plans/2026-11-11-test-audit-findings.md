@@ -3,7 +3,7 @@
 **Status:** Implemented (branch `chore/test-audit`; the dotfiles have no MR)  
 **Measured at:** `523a95d` (main) for phase 1; the refresh at `eb60a84`; the phase 3 validation at `21563e5` and `0c14b64` (R37, R39); the whole runs at `5debd73`  
 **Spec:** `docs/superpowers/specs/2026-11-11-test-audit-design.md`  
-**Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R41)  
+**Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R42)  
 **Classification:** `docs/superpowers/plans/2026-11-11-test-audit-classification.tsv` (6517 tests, every in-scope suite)  
 **Targeted manifest:** `.scripts/test-audit/targeted.jsonl` (121 candidates)
 
@@ -277,7 +277,7 @@ Per file (sampled, killed, flaky, survived, inconclusive, baseline-red, stale, k
 | Heavy run | 1353.2 s, 10 suites, 6057/6057 | 1168.2 s, 10 suites, 6295/6295 | |
 | Harness suite alone | 362/362 (`7159f37`) | 62.9 s, 405/405 | |
 
-**Net change.** The approved cuts remove about 22.2 s of suite time (the estimate in "What you decide"). The harness suite runs by default and costs 62.9 s on its own. So the branch adds about 41 s of suite time to each default run. The default run's wall time cannot show either figure: main's changes and the machine's load sit between 444.6 s and 412.1 s. Gating `test-audit` behind a `test-requires` tag would turn the net into a saving; that is Michael's call (R39).
+**Net change.** The approved cuts remove about 22.2 s of suite time (the estimate in "What you decide"). The harness suite runs by default and costs 62.9 s on its own. So the branch adds about 41 s of suite time to each default run. The default run's wall time cannot show either figure: main's changes and the machine's load sit between 444.6 s and 412.1 s. Gating `test-audit` behind a `test-requires` tag would turn the net into a saving; that is Michael's call (R39). He gated it as heavy (R42).
 
 **Kill rate.** The phase 1 sample is not re-run whole (R33 d), so there is no after kill rate to set beside 67.3 percent. What the validation shows instead: every code mutant that a touched suite killed before the cuts is still killed (296 of 296).
 

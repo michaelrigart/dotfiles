@@ -584,3 +584,13 @@ Rulings made during the run are recorded here, because the dotfiles have no MR. 
   - A build costs about 0.4 s a run. The harness suite now takes about 89 s, against 62.9 s at `5debd73`, so it adds about 67 s per default run net of the cuts. Whether to gate it stays Michael's call (R39).
 
   This changes how copies are prepared, not how a result is measured, and the scoped review confirmed that independently. There is still one baseline per suite per session, with the same attribution and run conditions, and each run's copy is identical to the as-built copy at the same path. So Task 15's records stand on R40's argument and residue inventory. Cost if wrong: re-measuring what a later review shows to depend on the copy.
+- **R42 (Michael's calls, 2026-11-13).** After the merge-ready report on `06b9294`, Michael accepted the line's recommendations on the open items:
+  - `tests/test-audit.test.sh` is gated `# test-requires: heavy`, with its row in AGENTS.md. It takes 89 s, and runs by exact name when `.scripts/test-audit/` or its fixtures change. The default run no longer pays for it, so the audit's net effect there is the cuts' saving of about 22 s.
+  - The orphaned control at `tests/process-replay/t_e2e.py:455-462` goes, with its scaffolding (`rid_of`, `CASE_D`). Its paired assertion was an approved cut, and on its own it checks only the fixture.
+  - The rest stay as reported:
+    - the exit code of `dev` and `alfred-relay` on missing input is a separate line;
+    - herdr-phase's `$draft` duplicate waits for the next audit;
+    - the wt-teardown guard, the xreview-skill pin and the §4.4 non-safety clause gaps stay as approved;
+    - the X13b flake is watched.
+
+  Cost: none.
