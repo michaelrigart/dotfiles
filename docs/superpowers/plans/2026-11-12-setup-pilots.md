@@ -13,10 +13,12 @@ on Michael's word. No pilot may add permission prompts. Main-session effort stay
 
 ## To paste (Michael)
 
-**Pilot A**, in the `feat/review-loop` session, before it starts Task 0:
+**Pilot A** did not run: `feat/review-loop` finished and merged without the line being typed
+(see Results). To run it on a later line, paste this in that line's session before its first
+task, with the plan's path and task range filled in:
 
 ```
-/goal Tasks 0-6 of docs/superpowers/plans/2026-11-12-review-loop.md are committed, the full suite and the pre-merge reviews are recorded, the branch is pushed and the final report is written; or the session is waiting on a decision only Michael can make; or stop after 40 turns
+/goal Tasks <first>-<last> of <plan path> are committed, the full suite and the pre-merge reviews are recorded, the branch is pushed and the final report is written; or the session is waiting on a decision only Michael can make; or stop after 40 turns
 ```
 
 If it stops to ask something, answer and paste the same line again. Off: `/goal clear`.
@@ -204,6 +206,14 @@ runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
 Michael approved all three pairings on 2026-11-12: A on `feat/review-loop`, B on the suite-speed
 line (items 30, 29, 33) once `chore/test-audit` is on main, C as the shadow review of
 `fix/xreview-trust`.
+
+### Pilot A: not run (2026-11-13)
+
+`feat/review-loop` ran Tasks 0-6 and was merged to main (`c3ac87b`) on 2026-11-13; its
+worktree is removed. No `/goal` line was typed in its session (the transcript holds the text
+only inside the driver's messages), so there is nothing to count. The protocol stands for a
+later line: any plan run of five or more tasks, with the line from "To paste" typed by Michael
+before the first task. It must not be the Pilot B line.
 
 ### Pilot C, interim: 2 of 8 tasks (2026-11-12)
 
