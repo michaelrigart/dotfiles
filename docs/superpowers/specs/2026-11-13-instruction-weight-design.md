@@ -1,6 +1,6 @@
 # Instruction weight: move workflow detail out of the always-loaded text
 
-**Status:** Approved
+**Status:** In progress (branch `chore/instruction-weight`; the dotfiles have no MR)
 **Date:** 2026-11-13. Signed off by Michael on 2026-11-13 ("I follow your recommendations", relayed
 by the driver session). Codex approved round 2 (xr-1794595820-5f42cbbc).
 **Branch:** `chore/instruction-weight`, in the `wt` checkout
@@ -74,7 +74,7 @@ The plan carries a table that maps every sentence leaving a file to one of: kept
 moved (where), dropped (why). Michael reviews it with the diff. A sentence stays in the
 always-loaded file when it binds at a moment its new home would not be loaded.
 
-### A. Dotfiles `AGENTS.md` (248 to at most 150 lines)
+### A. Dotfiles `AGENTS.md` (248 lines; the goal is under Goals)
 
 **New file `tests/AGENTS.md`.** Claude Code loads a nested `AGENTS.md` when it reads a file in
 that directory (documented for the Read tool, version 2.1.277 and later). Running a suite
@@ -185,7 +185,7 @@ once `fix/xreview-trust` is on main and this branch is rebased on it (decision 2
 
 - **`rules.tsv`:** a moved rule's row follows it to its new file with the same terms; a split
   rule gets one row per part. No safety row is removed.
-- **Caps** in `agent-instructions`: dotfiles `AGENTS.md` at most 150 lines, `cross-review`
+- **Caps** in `agent-instructions`: dotfiles `AGENTS.md` at the goal's limit, `cross-review`
   skill at most 150. They stop the regrowth this spec removes.
 - **Pointers:** rows pin the root's pointer to `tests/AGENTS.md` and to the bump procedure,
   and that the procedure's steps (`agent-text-scan --diff`, the warm-up, `Closes #`) are in

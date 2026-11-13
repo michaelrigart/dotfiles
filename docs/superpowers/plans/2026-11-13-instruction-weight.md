@@ -14,6 +14,7 @@ agent description, an `xreview` refusal). The always-loaded file keeps the rule 
 chezmoi templates.
 
 **Spec:** `docs/superpowers/specs/2026-11-13-instruction-weight-design.md`
+**Status:** In progress
 
 ## Global Constraints
 
@@ -68,8 +69,9 @@ chezmoi templates.
 
 | Lines | Block | Disposition |
 |---|---|---|
-| 116, 118-124 | intro, command block | kept |
-| 126-131 | parallel runs | kept, as the text under "Assertion counts" below; moved: `RUN_JOBS` and its default, "an explicit `RUN_JOBS=1` … sequential order", the `# test-serial` sentence |
+| 116 | intro sentence | dropped in Task 2: it repeats the Rules bullet "`tests/` holds every test suite, one `<subject>.test.sh` per script under test" |
+| 118-124 | command block | kept |
+| 126-131 | parallel runs | kept, as the first paragraph of the kept text below; moved: `RUN_JOBS` and its default, "an explicit `RUN_JOBS=1` … sequential order", the `# test-serial` sentence |
 | 133-139 | runner lock | kept: "one per machine", who-holds-the-lock sentence, "Never wrap it in `lockf` yourself."; moved: the lock path and `RUN_SH_LOCK`, `RUN_SH_LOCK_WAIT` with exits 75 and 2, `RUN_SH_LOCKED` |
 | 141-146 | execute suites | kept, as the text below; moved: "because it stubs zsh builtins", "`run.sh` executes them for this reason" |
 | 148-154 | gates, exact name | kept whole |
@@ -86,7 +88,7 @@ chezmoi templates.
 | 220-231 | output idioms, `failed_keys`, `write-boundary-probe` | moved; how a kv suite's result reads is kept, as "Reading a run" below |
 | 233-242 | `HERDR_SESSION` | moved whole as history; its rule goes to Rules in Task 2 |
 
-Nothing is dropped in this task.
+Nothing else is dropped in this task.
 
 **Kept text, exact** (wrap at 95 columns):
 
@@ -161,14 +163,13 @@ output idioms and `failed_keys`, `write-boundary-probe`), `## Suite-specific` (t
   | `t-missing-subject` | `tests/AGENTS.md` | `must fail loudly, not silently pass` | no | `exits 2 if not;Exit 2, never 1` |
   | `t-kv` | `tests/AGENTS.md` | `Two output idioms exist` | no | `failed_keys=;so no value is echoed` |
 
-  In `tests/agent-instructions.test.sh`, beside the fragment caps, add a cap in the same shape:
-  `AGENTS.md is at most 190 lines`, reading `$SRC/AGENTS.md`. Add `$SRC/AGENTS.md` and
-  `$SRC/tests/AGENTS.md` to the suite's "missing file under test" loop.
+  The line cap is added in Task 2. In `tests/agent-instructions.test.sh`, add `$SRC/AGENTS.md`
+  and `$SRC/tests/AGENTS.md` to the suite's "missing file under test" loop.
 
 - [ ] **Step 2: Run it and see it fail.**
   Run: `./tests/run.sh agent-instructions`
   Expected: exit 2, `missing file under test: …/tests/AGENTS.md`. Then `touch tests/AGENTS.md`
-  and rerun: FAIL on the cap (248) and on `a-tests-pointer`, `t-missing-subject`, `t-kv`.
+  and rerun: FAIL on the three new rows only: `a-tests-pointer`, `t-missing-subject`, `t-kv`.
 
 - [ ] **Step 3: Write `tests/AGENTS.md`** from the Disposition table, verbatim.
 
@@ -192,10 +193,7 @@ output idioms and `failed_keys`, `write-boundary-probe`), `## Suite-specific` (t
 
 - [ ] **Step 7: Run the suites.**
   Run: `./tests/run.sh agent-instructions missing-subject run`
-  Expected: all pass; quote the `passed/total` lines. `wc -l AGENTS.md` at most 205 at this
-  point (Task 2 removes about 15 more).
-  The cap assertion stays red until Task 2 if the count is above 190; if so say so in the
-  report and do not weaken it.
+  Expected: all pass; quote the `passed/total` lines.
 
 - [ ] **Step 8: Commit.** `git add AGENTS.md tests/AGENTS.md tests/fixtures/agent-instructions/rules.tsv tests/agent-instructions.test.sh .scripts/test-audit/subjects.tsv` (plus `tests/missing-subject.test.sh` if changed);
   message `Move suite-writing detail to tests/AGENTS.md`.
