@@ -796,8 +796,9 @@ copy, not by running the suite (C.6).
 | K70 | 602-636 | the escalation list is exactly the expected bullets | changed text, same check: `expected_esc` becomes the five bullets in C.3 (the four judgement triggers, verbatim, then "`xreview` refuses with `Michael's call: report this and stop.`") |
 | K71 | new (Task 6) | a line cap on the skill | added, at the measured number (C.5), not 150, unless Michael decides otherwise |
 
-New in `tests/xreview.test.sh` (Task 5): for R1-R25, the `xreview:` line of each refusal ends with
-`Michael's call: report this and stop.`. For R26-R37, none does. For R8, check the message line,
+New in `tests/xreview.test.sh` (Task 5): for R1-R25, the message of each refusal (its `xreview:`
+line and any continuation lines, excluding pane-screen and `DIE_NOTE` lines) ends with
+`Michael's call: report this and stop.`; R2, R4, R12, R18 and R19 get the cases they lack today. For R26-R37, none does. For R8, check the message line,
 not the last line of stderr: the pane's screen follows it.
 
 ## C.5 Verdict

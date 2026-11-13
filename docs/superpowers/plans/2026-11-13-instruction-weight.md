@@ -349,21 +349,31 @@ Global Constraints for C, in addition to the plan's:
 
 **Interfaces:**
 - Produces: the marker, exactly `Michael's call: report this and stop.`, as the last words of
-  the `xreview:` line of each of R1–R25; Task 6's skill quotes it. The action clauses of
+  the message of each of R1–R25; Task 6's skill quotes it. "The message" is what the refusal
+  prints on stderr from its `xreview:` line up to, and not including, any pane-screen lines
+  (`  | …`) or a following `DIE_NOTE` line. Most messages are one line; R23 has four lines and
+  R24 two, and for those the marker ends the last line. The action clauses of
   R26–R37 as C.2's "New text" column gives them.
 
 - [ ] **Step 1: Write the failing assertions** in `tests/xreview.test.sh`, extending the case
   that already raises each refusal (C.2's last column names them; C.4's "replaced" rows K8,
   K41, K45, K48, K53, K56, K58 and K68 name the same cases):
-  - for each of R1–R23 that a case raises today: its `xreview:` line ends with the marker. For
-    R8 check the message line, not the last line of stderr (the pane's screen follows it);
+  - for every one of R1–R25: its message (as Interfaces defines it) ends with the marker. Write
+    one helper for "the message of the refusal in this stderr" and use it everywhere, so R8
+    (the pane's screen follows), R23 and R24 (several lines) and the sliced refusals (a
+    `DIE_NOTE` line follows) are all read the same way;
   - R3 names `codex-daemon restart`; R6 carries "Michael can set XREVIEW_PANE to one of them";
     R23 names `XREVIEW_MAX_ROUNDS`; R22 says "never drop it with xreview round --reset";
   - R28 ends "wait for it, then dispatch again"; R29 carries "run codex-daemon ensure, then
     collect again"; R30 and R31 end "(do NOT retry the dispatch): report this and stop";
   - none of R26–R37 carries the marker.
-  A refusal no case raises today (C.2 says "none" for R2, R4, R12, R18, R19) gets no new case:
-  list them in the report as unpinned. In `tests/xreview-packet.test.sh`, change `CAP_TEXT` and
+  C.2 says no case pins R2, R4, R12, R18 or R19 today. Each gets a case: R2, R4 and R12 are the
+  sliced-collect twins of R1, R3 and R10, so add them beside the sliced-collect cases (SL
+  section) with the same stubs that raise their twins; R18 and R19 are raised by making the
+  locks directory, then the lock file, impossible to create, beside the lock cases (near the
+  "another dispatch is using" assertions). After the Task 6 skill, the marker is the only thing
+  that tells the agent these are escalations, so none may stay unpinned. If one cannot be
+  raised in the suite's harness, stop and report which and why. In `tests/xreview-packet.test.sh`, change `CAP_TEXT` and
   `CAP_FRAMED` (and F1) to C.2's new texts for R24 and R25.
 - [ ] **Step 2: Run** `./tests/run.sh xreview-packet` and `./tests/run.sh xreview` (the exact
   name lifts the heavy gate; about 11 minutes; do not set `RUN_SH_LOCK_WAIT`).
@@ -387,16 +397,23 @@ Global Constraints for C, in addition to the plan's:
 
 **Files:**
 - Modify: `dot_claude/skills/cross-review/SKILL.md` (replaced by C.3, verbatim)
-- Modify: `tests/xreview-skill.test.sh` (per C.4)
+- Modify: `tests/xreview-skill.test.sh` (per C.4), `tests/fixtures/agent-instructions/rules.tsv`
 
 - [ ] **Step 1: Change the suite first**, per C.4: remove K37, K49, K57 and K59; remove the
   skill half of K8, K41, K45, K48, K53, K56, K58 and K68 (Task 5 put their replacement on the
   messages); in K51 keep the first phrase only; in K65 remove the two phrases C.4 names; set
-  K70's `expected_esc` to the five bullets of C.3's escalation list; add K71:
+  K70's `expected_esc` to the five bullets of C.3's escalation list; add three rows to
+  `tests/fixtures/agent-instructions/rules.tsv` for the rules that replace the lists, file
+  `dot_claude/skills/cross-review/SKILL.md`, safety `yes`, each with its whole sentence as the
+  term: `cr-refusal-follow` (anchor `When a refusal names its next step`, term
+  `**When a refusal names its next step, follow it.**`), `cr-refusal-marker` (same anchor,
+  term ``A refusal marked `Michael's call: report this and stop.` is an escalation (below).``)
+  and `cr-refusal-no-workaround` (same anchor, term `Never work around a refusal.`); add K71:
   `the skill is at most 250 lines`, in the shape of the caps in
   `tests/agent-instructions.test.sh`.
 - [ ] **Step 2: Run** `./tests/run.sh xreview-skill`.
-  Expected: K70 FAILS (the old list); K71 FAILS (381); the rest pass.
+  Expected: K70 FAILS (the old list); K71 FAILS (381); the rest pass. And
+  `./tests/run.sh agent-instructions`: the three new rows FAIL (anchor not found).
 - [ ] **Step 3: Replace the skill** with the fenced block under C.3, byte for byte (the block's
   first line is the frontmatter's `---`).
   Check: `wc -l dot_claude/skills/cross-review/SKILL.md` prints 235.
