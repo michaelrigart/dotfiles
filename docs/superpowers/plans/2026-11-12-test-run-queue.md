@@ -2,7 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented
+
+> **Completed 2026-11-13 on `chore/test-run-queue`. Do not run this plan again.** Its execution
+> notes bind that run only; what was built differently is in the spec's implementation notes.
 
 **Goal:** `tests/run.sh --changed` runs a heavy suite only when its subject changed on the branch, and a runner waiting on the per-machine lock says who holds it and can refuse to wait.
 

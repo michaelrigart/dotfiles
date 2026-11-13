@@ -1,6 +1,6 @@
 # Test-run queue: heavy suites by changed subject, and a lock that reports
 
-**Status:** Approved
+**Status:** Implemented (branch `chore/test-run-queue`; the dotfiles use no MR)
 
 ## Intent
 
@@ -241,4 +241,37 @@ Lock:
 
 ## Implementation notes
 
-(none yet)
+1. **Four heavy suites, not three.** `chore/test-audit` merged while this was built and tagged
+   `test-audit` heavy. Where this spec says "all three", the code, the map and `AGENTS.md` cover
+   all four.
+2. **Order of work.** The lock and `--changed` were built on fixtures before the rebase onto the
+   audit (§1, amended 2026-11-13); the drift check, the map header, the tags and `AGENTS.md`
+   followed it.
+3. **`lockf` runs in the foreground.** The plan had the outer runner forward INT and TERM to a
+   backgrounded `lockf`. A backgrounded `lockf` starts its children with SIGINT ignored and does
+   not forward TERM, so Ctrl-C orphaned the suites. In the foreground Ctrl-C behaves as before.
+4. **The runner fails closed on its own shell errors.** An expansion error abandons the whole
+   enclosing top-level command in bash, an `exit` inside it included. So the check that the lock
+   block ran, and the checks that the dispatch and report loops finished, are separate top-level
+   commands that exit 2. Without them a bad `RUN_SH_LOCK_WAIT` ran unlocked, and an error while
+   deciding one suite printed a pass with a heavy suite dropped.
+5. **Malformed map rows, widened.** Besides "not four tab-separated fields" (§2), a field with
+   leading or trailing whitespace, whitespace or an empty entry in `loaded_by`, or a CR is
+   malformed and selects every heavy suite. An empty `loaded_by` field stays valid.
+6. **`--changed` details.** The last `--changed` wins; `--changed=` with no ref is refused.
+   `RUN_SH_LOCK_WAIT` is read base 10 (`08` is eight seconds).
+7. **The drift check and directories.** When a heavy suite names a directory, every file under it
+   that git tracks or would add (untracked and not ignored) needs a row listing the suite: a new
+   fixture file must select `test-audit`. Two pairs are excepted by name in `tests/run.test.sh`
+   (`DRIFT_PART_DIRS`), because the suite does not load the directory: `wt-functions` names
+   `dot_local/bin` only as the prefix of two wrappers it lists, and `git-forge-guard` names
+   `dot_claude` only in a command line it feeds the guard.
+8. **Map rows the check exposed.** `test-audit` had none and got 21, plus `tests/run.sh`;
+   `.chezmoiignore` and `.chezmoiexternal.toml` now list `git-forge-guard`, whose
+   `chezmoi managed` check reads both, so a skill bump's pre-merge run includes that suite.
+   `subjects.tsv` lists `test-audit` under the directory rule, so a map edit runs it (89 s).
+   `-` in `own_suite` also marks a file the audit must not mutate.
+9. **Approach B stays out.** Lock narrowing was left to the line's judgement and not built; the
+   `waited` line now gives the numbers to revisit it with.
+10. **Not covered.** Nothing tests `run.sh` placed in a subdirectory of another work tree; it
+    always sits in `tests/` at its repository's top, and that path only widens the fail-safe.
