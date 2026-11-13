@@ -336,6 +336,32 @@ Rulings by the line (refactor/phase-sh), put to the driver session under Michael
 4. **`herdr` never inherits the run lock** (adds to section 1): both `herdr` calls run with
    `9>&-`, so a server the CLI might start cannot hold the lock for its lifetime.
 
+## Amendment, 2026-11-13: findings of the Task 3 review
+
+Rulings by the line. They change what the GitLab parser accepts, which the Non-goals left alone;
+each one makes a wrong answer read as a failed lookup or a dropped row, never as a badge.
+
+1. **A GitLab answer that is not a list is a failed lookup.** The Python cached an empty table
+   for an open answer such as `{"message":"x"}` from a `glab` that exits 0, wiping every MR badge
+   for a TTL. Now the open half failing keeps the cached table, and the merged half failing
+   gives the open rows without caching them, as on GitHub.
+2. **GitLab rows are filtered like GitHub's.** A row is dropped when its `source_branch` is not a
+   non-empty string, or it or `state` holds a tab or newline; `iid` prints only as a positive
+   whole number. Unfiltered, a forge could forge a second row or shift a column.
+3. **A number prints as plain digits or not at all** (both forges): `1e300` is dropped. This
+   narrows item 12 of section 6, which still holds for `12.0` and `12e0`.
+4. **A branch name holding U+FFFD is dropped** (both forges). `jq` replaces invalid UTF-8 and
+   lone surrogates with it, where the Python failed the lookup or passed the bytes through; a
+   branch literally named with U+FFFD loses its badge.
+5. **Forge answers reach `jq` as files** (`--rawfile` from a process substitution), since one
+   argument cannot hold a large answer; and "open rows only" is `jq` status 10, mapped to 3 in
+   bash, because `jq` itself exits 3 on a compile error.
+6. Other inputs on which `jq` and the Python differ, all hostile and all at least as safe: two
+   JSON documents in one answer now fail; a byte-order mark is accepted; a GitHub row whose
+   `state` is a list or object is dropped instead of failing the lookup; nesting deeper than 256
+   fails the lookup; in the workspace list, `is_linked_worktree` must be exactly `true` and a
+   null or non-object entry is skipped.
+
 ## Left to the builder
 
 - How the two forge answers reach `jq`.
