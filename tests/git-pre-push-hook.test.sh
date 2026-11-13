@@ -841,7 +841,11 @@ expect_push pass "with secret-scan restored the same push passes" "$CLEAN" origi
 
 echo "== the files deploy =="
 # chezmoi must manage both files, or the global hook never reaches ~/.config/git/hooks.
-managed=$(chezmoi --source "$SRC" managed 2>/dev/null)
+if ! managed=$(chezmoi --source "$SRC" managed 2>"$TMP/managed.err"); then
+  printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' \
+    "$(awk 'NF { print; exit }' "$TMP/managed.err")" "$SRC" >&2
+  exit 2
+fi
 for f in .config/git/hooks/pre-push .config/git/hooks/secret-scan; do
   if printf '%s\n' "$managed" | grep -qx "$f"; then ok "chezmoi manages $f"; else bad "chezmoi manages $f"; fi
 done
