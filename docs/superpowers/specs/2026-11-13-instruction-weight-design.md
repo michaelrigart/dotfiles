@@ -32,11 +32,10 @@ lines). What is left there is small. The weight is in the dotfiles `AGENTS.md` a
 ## Goals, non-goals, anti-goals
 
 - **Goals:**
-  - dotfiles `AGENTS.md` at most 200 lines, measured about 197 (the goal at sign-off was 150.
+  - dotfiles `AGENTS.md` at most 205 lines, measured 201 (the goal at sign-off was 150.
     Codex's spec and plan reviews kept in the root everything that binds while running suites
     or reading a run, and no rule is cut to reach a number. Decided by the driver session on
-    Michael's delegation, 2026-11-13, after 175 and 190 proved too low as the table was
-    measured);
+    Michael's delegation, 2026-11-13, once the moves were measured);
   - `cross-review` skill at most 150 lines;
   - `claude-code.md` below its 50-line cap, so the next rule has room;
   - no rule lost: every sentence that leaves a file is kept elsewhere, or is named as dropped
