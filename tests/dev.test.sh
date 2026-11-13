@@ -29,7 +29,9 @@ LAYOUT="$ROOT/dot_config/herdr/executable_layout.sh"
 TABGOTO="$ROOT/dot_config/herdr/executable_tab-goto.sh"
 CONFIG="$ROOT/dot_config/herdr/config.toml"
 SMART_SPLITS="$ROOT/dot_config/nvim/lua/plugins/smart-splits.lua"
-[[ -r "$FUNCS" ]] || { print -ru2 -- "cannot read $FUNCS"; exit 1 }
+for f in "$FUNCS" "$LAYOUT" "$TABGOTO" "$CONFIG" "$SMART_SPLITS"; do
+  [[ -r "$f" ]] || { print -ru2 -- "missing file under test: $f"; exit 2 }
+done
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t

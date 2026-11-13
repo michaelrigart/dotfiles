@@ -12,7 +12,7 @@ set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GUARD="$SRC/dot_claude/executable_worktree-guard.sh"
-[ -f "$GUARD" ] || { echo "missing guard: $GUARD" >&2; exit 1; }
+[ -f "$GUARD" ] || { echo "missing guard: $GUARD" >&2; exit 2; }
 
 pass=0; fail=0
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/wt-guard.XXXXXX") || exit 1

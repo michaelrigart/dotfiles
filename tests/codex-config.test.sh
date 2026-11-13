@@ -18,9 +18,9 @@ set -uo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TPL="$SRC/dot_codex/modify_private_config.toml"
 HOOKS_TPL="$SRC/dot_codex/modify_private_hooks.json"
-[ -f "$TPL" ] || { echo "missing template: $TPL" >&2; exit 1; }
-[ -f "$HOOKS_TPL" ] || { echo "missing template: $HOOKS_TPL" >&2; exit 1; }
-command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 1; }
+[ -f "$TPL" ] || { echo "missing template: $TPL" >&2; exit 2; }
+[ -f "$HOOKS_TPL" ] || { echo "missing template: $HOOKS_TPL" >&2; exit 2; }
+command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/codex-config.XXXXXX")"
 trap 'rm -rf "$T"' EXIT

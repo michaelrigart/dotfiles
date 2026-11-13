@@ -18,7 +18,8 @@ SKILL="$ROOT/dot_claude/skills/cross-review/SKILL.md"
 # search to the CLI reports drift that is not there.
 IMPL=("$XREVIEW" "$ROOT/dot_claude/executable_xreview-guard.sh" "$ROOT/dot_claude/xreview-guard.py"
       "$ROOT/dot_claude/xreview-ledger.py" "$ROOT/dot_claude/executable_xreview-apply-guard.sh")
-for _f in "$SKILL" "${IMPL[@]}"; do
+# global.md is read only by an absence check, which a missing file would pass.
+for _f in "$SKILL" "${IMPL[@]}" "$ROOT/.chezmoitemplates/agents/global.md"; do
   [ -f "$_f" ] || { echo "missing file under test: $_f" >&2; exit 2; }
 done
 pass=0; fail=0
@@ -26,7 +27,7 @@ _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
 for f in "${IMPL[@]}" "$SKILL"; do
-  [ -r "$f" ] || { printf 'cannot read %s\n' "$f" >&2; exit 1; }
+  [ -r "$f" ] || { printf 'cannot read %s\n' "$f" >&2; exit 2; }
 done
 
 # --- subcommands -------------------------------------------------------------

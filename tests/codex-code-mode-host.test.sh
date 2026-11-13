@@ -21,11 +21,10 @@ _pass() { echo "  ok  $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1 (got '$2', want '$3')"; fi; }
 
-if [ ! -r "$SHIM" ]; then
-  echo "FATAL: $SHIM not found — every assertion below would pass vacuously." >&2
-  echo "RESULT: 0 passed, 1 total, 1 failed"
-  exit 2
-fi
+# Without the launcher, section D installs the shim alone and passes on nothing.
+for f in "$SHIM" "$ROOT/dot_local/bin/executable_codex"; do
+  [ -r "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
+done
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/codex-host-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT

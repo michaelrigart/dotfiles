@@ -33,11 +33,7 @@ _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 check() { if [ "$1" = "$2" ]; then _pass "$3"; else _fail "$3 (got '$1', want '$2')"; fi; }
 
-if [ ! -r "$PHASE" ]; then
-  echo "FATAL: $PHASE not found — every assertion below would pass vacuously."
-  echo "RESULT: 0 passed, 1 failed"
-  exit 1
-fi
+[ -r "$PHASE" ] || { echo "missing script under test: $PHASE" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/herdr-phase-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
