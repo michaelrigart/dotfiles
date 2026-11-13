@@ -271,6 +271,9 @@ check_gitlab() {  # <remote> <group/.../project>
   if ! printf '%s' "$rules" | jq -e 'type == "array"' >/dev/null 2>&1; then
     row unreadable "$remote" "the protected branches answer is not a list"; return
   fi
+  if ! printf '%s' "$rules" | jq -e 'all(.[]; type == "object" and (.name | type) == "string")' >/dev/null 2>&1; then
+    row unreadable "$remote" "a protected branch rule has no name"; return
+  fi
   # GitLab applies the most permissive matching rule, so every rule whose name is the default branch
   # or whose wildcard matches it is judged; `*` is any run of characters, anything else literal.
   if ! v=$(printf '%s' "$rules" | jq -c --arg def "$def" '

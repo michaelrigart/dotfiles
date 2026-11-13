@@ -506,6 +506,10 @@ if [ "$SECS" -lt 4 ]; then _pass "gitlab no answer: returns within 4 s (took ${S
 glab_case '{"message":"odd"}'
 row_is unreadable "$GLR.*not a list" "gitlab an answer that is not a list: unreadable"
 
+glab_case "[$GL_STRICT,{\"id\":31,\"name\":null,\"push_access_levels\":[{\"id\":12,\"access_level\":40}],\"merge_access_levels\":[{\"id\":13,\"access_level\":40}],\"allow_force_push\":true}]"
+row_is unreadable "$GLR.*has no name" "gitlab a rule without a name beside a strict one: unreadable, never skipped"
+rc_is 1 "gitlab a rule without a name: exit 1"
+
 reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"
 ans glab "$GLA projects/$GENC" '{"default_branch":"main"}'
 run check

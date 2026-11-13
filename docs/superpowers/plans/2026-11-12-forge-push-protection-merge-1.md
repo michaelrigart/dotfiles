@@ -194,11 +194,14 @@ against them.
   `ruleset_id`, `repos/<o>/<r>/rulesets/<id>`:
   - a ruleset is *closed* when `enforcement == "active"` and either `bypass_actors` is present and
     empty, or absent with `current_user_can_bypass == "never"`;
-  - a ruleset is *owner-only* when active and either every `bypass_actors` entry is
-    `{actor_type: "RepositoryRole", actor_id: 5}`, or the field is absent with
-    `current_user_can_bypass == "never"`;
-  - `ok` when `deletion` and `non_fast_forward` each come from a closed ruleset and `update` and
-    `creation` each come from an owner-only one; `unreadable` when any ruleset answer has neither
+  - a ruleset is *owner-only* when active and either `bypass_actors` is non-empty and every entry
+    is `{actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always"}`, or the field is absent
+    with `current_user_can_bypass == "never"`;
+  - `ok` when `deletion` and `non_fast_forward` each come from a closed ruleset, `update` and
+    `creation` each come from an owner-only one, and **every** active ruleset on the default branch
+    that carries `update` or `creation` is owner-only (GitHub enforces all applicable rulesets, so
+    one more that the owner cannot bypass locks him out; a ruleset in `evaluate` or `disabled`
+    enforces nothing and is not judged); `unreadable` when any ruleset answer has neither
     bypass field, or any call fails (reason: the `HTTP nnn` from gh's stderr, or "no answer within
     Ns"); else `drift`.
   - Remediation: no closed ruleset with both of its rules → `gh api --method POST
@@ -206,7 +209,10 @@ against them.
     `protect-main` body, `include` set to `refs/heads/<default>`; no owner-only ruleset with both
     of its rules → the same form with §2.1's `main-owner-only` body; a ruleset that has the rules but
     fails enforcement or bypass → `note "in the UI: https://github.com/<o>/<r>/rules/<id>: Enforcement
-    Active, bypass list <none | Repository admin>"`.
+    Active, bypass list <none | Repository admin with bypass mode "always">"`, followed for an
+    active ruleset with `update` or `creation` that is not owner-only by `; ruleset '<name>' blocks
+    the owner's direct push of the default branch until then (or drop its update and creation
+    rules)`. No POST is printed for a state a POST cannot fix.
   - Printed commands: every forge-supplied word (a repository, a branch, an id, a path) enters a
     printed line through `shq`, which leaves a word bare only when it holds nothing but
     `A-Za-z0-9_./:@%+,-` and otherwise single-quotes it, so it reads back exactly under Bash, POSIX
@@ -230,6 +236,10 @@ against them.
   - `github one merged ruleset with the admin bypass` (all four rules in one ruleset) → `drift`,
     and the `protect-main` POST is printed (catches a check that accepts §2.1's rejected design).
   - `github an extra bypass actor` (a `User` actor beside role 5) → `drift`.
+  - `github admin bypass for pull requests only` (`bypass_mode: "pull_requests_only"`) → `drift`,
+    the note names the mode, no POST; `github a third active ruleset with update and no bypass` →
+    `drift`, the note names it, no POST; the same third ruleset in `evaluate` or `disabled` → `ok`;
+    `github a third owner-only ruleset` → `ok`.
   - `github ruleset in evaluate mode` → `drift` with the UI note.
   - `github rules read 403` → `unreadable` naming `HTTP 403`, exit 1; `github repo 404` →
     `unreadable`; `github no answer` (`.sleep` 5, `FORGE_PROTECTION_TIMEOUT=1`) → `unreadable`
