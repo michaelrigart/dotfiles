@@ -413,8 +413,7 @@ EXP_ALLOW_READ='[
   "~/.ssh/huginn.pub",
   "~/.ssh/michael.pub",
   "~/.ssh/michael_rsa.pub",
-  "~/.ssh/viumore_rsa.pub",
-  "~/.ssh/github-agent.pub"
+  "~/.ssh/viumore_rsa.pub"
 ]'
 jq_is '.env.SSH_AUTH_SOCK' "$AGENT_SOCKET" "Claude uses the stable 1Password agent socket"
 jq_is '.env.PATH | split(":")[0]' "$HOME/.local/bin" "Claude resolves XDG executables first"
@@ -1154,8 +1153,8 @@ echo "Z. agent identity tokens (spec 2026-11-12-forge-push-protection, section 1
 # preview neither drops nor diffs them. Listed but unreadable: the apply fails with no output.
 # Values are compared inside jq ($ENV) and only a boolean is printed.
 export OP_GH=fixture-gh-0001 OP_GL=fixture-gl-0001 LIVE_GH=live-gh-0001 LIVE_GL=live-gl-0001
-ITEMS_BOTH='[{"title":"GitHub Agent SSH Key"},{"title":"GitHub Agent Token"},{"title":"GitLab Agent Token"}]'
-ITEMS_GH='[{"title":"GitHub Agent SSH Key"},{"title":"GitHub Agent Token"}]'
+ITEMS_BOTH='[{"title":"GitHub Agent Token"},{"title":"GitLab Agent Token"}]'
+ITEMS_GH='[{"title":"GitHub Agent Token"}]'
 LIVE_BOTH=$(printf '{"env":{"GH_TOKEN":"%s","GITLAB_TOKEN":"%s","STALE":"1"}}' "$LIVE_GH" "$LIVE_GL")
 ERRS="$OPD/stderr.all"; : > "$ERRS"
 emit_op() { # emit_op <live-json> [VAR=value ...]: one apply with a stub-op scenario; sets OUT and RC
@@ -1222,32 +1221,6 @@ if grep -qF -e "$OP_GH" -e "$OP_GL" -e "$LIVE_GH" -e "$LIVE_GL" "$ERRS" "$JQ_LOG
 else _pass "no token appears in stderr or in jq argv"; fi
 if [ -s "$OP_LOG" ]; then _fail "op is only asked to list items and read the two tokens" "$(cat "$OP_LOG")"
 else _pass "op is only asked to list items and read the two tokens"; fi
-# The agent SSH configuration must stay readable in the sandbox: no deny rule, credential entry
-# or allowRead gap hides ~/.config/agent-identity/ssh_config (its Match block is what pins the key).
-# A Read(<glob>) deny rule as a regex over a ~-rooted path: ** crosses directories (**/ may match
-# none), * stays inside one segment. ** is swapped for placeholders before the single * is translated,
-# so the .* it becomes is not rewritten again. Self-tested below against hypothetical rules.
-READ_COVERS='def read_covers($t): select(startswith("Read(")) | .[5:-1]
-    | gsub("(?<c>[.+?^$(){}|\\[\\]\\\\])"; "\\\(.c)")
-    | gsub("\\*\\*/"; "\u0001") | gsub("\\*\\*"; "\u0002") | gsub("\\*"; "[^/]*")
-    | gsub("\u0001"; "(.*/)?") | gsub("\u0002"; ".*")
-    | . as $re | select($t | test("^" + $re + "$"));'
-SSH_CFG="~/.config/agent-identity/ssh_config"
-for rule in 'Read(~/.config/**)' 'Read(~/**/ssh_config)' 'Read(~/.config/agent-identity/**)' 'Read(~/.config/agent-identity/ssh_config)' 'Read(**/ssh_config)'; do
-  n=$("$REAL_JQ" -n --arg r "$rule" --arg t "$SSH_CFG" "$READ_COVERS"' [$r | read_covers($t)] | length')
-  if [ "$n" = 1 ]; then _pass "the coverage check detects $rule"; else _fail "the coverage check detects $rule" "matched $n"; fi
-done
-for rule in 'Read(~/.ssh/**)' 'Read(~/.config/ha-mcp/**)' 'Read(**/*.key)' 'Edit(~/.config/**)'; do
-  n=$("$REAL_JQ" -n --arg r "$rule" --arg t "$SSH_CFG" "$READ_COVERS"' [$r | read_covers($t)] | length')
-  if [ "$n" = 0 ]; then _pass "the coverage check ignores $rule"; else _fail "the coverage check ignores $rule" "matched $n"; fi
-done
-emit '{}'
-jq_is "$READ_COVERS"' [.permissions.deny[]? | read_covers("~/.config/agent-identity/ssh_config")] | length' 0 \
-      "no Read deny rule covers the agent SSH configuration"
-jq_is '[.sandbox.credentials.files[].path | . as $c | select("~/.config/agent-identity/ssh_config" | startswith($c))] | length' 0 \
-      "no credential path covers the agent SSH configuration"
-jq_is '.sandbox.filesystem.allowRead | index("~/.ssh/github-agent.pub") != null' true \
-      "the agent public key is readable through allowRead"
 
 # --- agent definitions must declare a frontmatter name ----------------------
 #

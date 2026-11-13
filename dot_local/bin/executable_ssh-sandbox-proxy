@@ -6,14 +6,8 @@ case "$proxy" in
   socks5://*|socks5h://*) ;;
   *) proxy=${ALL_PROXY:-${all_proxy:-}} ;;
 esac
-agent_config="$HOME/.config/agent-identity/ssh_config"
-agent_args=()
-if [ -r "$agent_config" ] && [ -r "$HOME/.ssh/github-agent.pub" ]; then
-  agent_args=(-F "$agent_config")
-fi
-
 if [ -z "$proxy" ]; then
-  exec /usr/bin/ssh ${agent_args[@]+"${agent_args[@]}"} "$@"
+  exec /usr/bin/ssh "$@"
 fi
 
 case "$proxy" in
@@ -71,4 +65,4 @@ export NCAT_PROXY_AUTH="$username:$password"
 
 exec /usr/bin/ssh \
   -o "ProxyCommand=/opt/homebrew/bin/ncat --proxy $endpoint --proxy-type $proxy_type --proxy-dns remote %h %p" \
-  ${agent_args[@]+"${agent_args[@]}"} "$@"
+  "$@"
