@@ -1299,6 +1299,16 @@ is "AZ-A6 an unknown option is denied by name" \
 is "AZ-A6b so is --detect false" "$(decision "$AZ" "$AZN --detect false")" deny
 is "AZ-A6c a value before any option" "$(decision "$AZ" 'az repos pr create develop --target-branch develop')" deny
 is "AZ-A6d two --target-branch" "$(decision "$AZ" "$AZN --target-branch main")" deny
+# az swaps a word @<path>, and a value name=@<path>, for the file's contents before it reads any
+# option, so --description @f can carry --auto-complete. Each is denied naming @<path>; an @ inside
+# a word (a mail address in a description) is no file and stays allowed.
+AZAT=''
+for c in '--title T @f' '--description @f' '--description=@f'; do
+  AZAT="$AZAT$(denies "$AZ" "$AZN $c" '@<path>')"
+done
+is "AZ-A6e a word az reads from a file is denied, naming @<path>" "$AZAT" 111
+is "AZ-A6f an @ inside a word is no file" \
+   "$(decision "$AZ" "$AZN --description 'ping a@b.c'")" allow
 git -C "$AZ" config remote.origin.url 'git@github.com:acme/repo.git'
 is "AZ-A7 none named, an origin that is not Azure is denied" "$(decision "$AZ" "$AZN")" deny
 is "AZ-A7b saying so" "$(reason "$AZ" "$AZN" | grep -c -F 'is not an Azure DevOps URL')" 1

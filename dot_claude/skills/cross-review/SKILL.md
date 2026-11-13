@@ -341,9 +341,9 @@ fingerprint) and the branch it is meant to land on. A `PreToolUse` guard gates
 default branch. It also denies GraphQL mutations that create, merge, enqueue or retarget,
 `glab mr for`, `gh pr revert`, a writing `glab api` call that carries `--placeholder`, and merges
 onto a branch with a merge queue or train. `az repos pr update` is denied by a permission rule:
-hand Michael the command. It
-denies the rest unless the latest full-range `pre-merge` review of exactly that change, for that
-destination, has the verdict `approve`. Spec and plan reviews never open it, a partial
+hand Michael the command. The
+guard denies the rest unless the latest full-range `pre-merge` review of exactly that change, for
+that destination, has the verdict `approve`. Spec and plan reviews never open it, a partial
 range never does, and neither does a newer pending review or a verdict of `changes`. That is
 the one part of this workflow prose cannot guarantee: a skipped review is otherwise
 indistinguishable from one that found nothing.

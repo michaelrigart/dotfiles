@@ -9,8 +9,10 @@
 #   glab mr, glab top level   `glab __complete mr ''`, `glab __complete ''`
 #   gh pr, gh top level       `gh __complete pr ''`, `gh __complete ''`
 #   az repos pr               the names under "Commands:" in `az repos pr --help`
+#   glab api, gh api flags    the flag names of `glab __complete api -` and `gh __complete api -`
 #
-# It reads command names only; flags are not pinned (a new flag on a gated verb is denied by name).
+# Apart from the api flags it reads command names only: the gated verbs' flags are not pinned (a new
+# flag on one is denied by name), but the gate reads an unknown api flag as a boolean.
 # It never runs a gated verb, with or without --help.
 #
 # Equal to the pin: PASS per group. Different, or a CLI missing or failing: INCONCLUSIVE and exit 2,
@@ -150,6 +152,52 @@ status
 variable
 workflow'
 
+PIN_GLAB_API_FLAGS='--field
+--form
+--header
+--help
+--hostname
+--include
+--input
+--method
+--output
+--paginate
+--placeholder
+--raw-field
+--silent
+-F
+-H
+-X
+-f
+-h
+-i'
+
+PIN_GH_API_FLAGS='--allow-escape-sequences
+--cache
+--field
+--header
+--help
+--hostname
+--include
+--input
+--jq
+--method
+--paginate
+--preview
+--raw-field
+--silent
+--slurp
+--template
+--verbose
+-F
+-H
+-X
+-f
+-i
+-p
+-q
+-t'
+
 PIN_AZ_REPOS_PR='checkout
 create
 list
@@ -180,6 +228,12 @@ cobra_names() { # cobra_names <cli> [<group>]
   "$cli" __complete "$@" '' 2>/dev/null | awk -F'\t' '$1 != "" && $1 !~ /^:/ && $1 != "help" && $1 != "completion" { print $1 }'
 }
 
+# The flags `api` completes for `-`, as printed (--x and -x both): the gate reads an unknown api flag
+# as a boolean, which is how --placeholder got past it.
+api_flags() { # api_flags <cli>
+  "$1" __complete api - 2>/dev/null | awk -F'\t' '$1 ~ /^-/ { print $1 }'
+}
+
 az_pr_names() {
   az repos pr --help 2>/dev/null </dev/null | awk '/^Commands:/ { on = 1; next } on && /^[[:space:]]*$/ { on = 0 } on { print $1 }'
 }
@@ -194,7 +248,7 @@ group() {
   local got
   got=$("$@" | LC_ALL=C sort -u)
   if [ -z "$got" ]; then
-    note "$label: the installed $cli listed no commands (failed or unreadable)"
+    note "$label: the installed $cli listed no names (failed or unreadable)"
     return
   fi
   local want added removed
@@ -202,7 +256,7 @@ group() {
   added=$(LC_ALL=C comm -13 <(printf '%s\n' "$want") <(printf '%s\n' "$got") | paste -sd' ' -)
   removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$got") | paste -sd' ' -)
   if [ -z "$added" ] && [ -z "$removed" ]; then
-    passes+=("  PASS: $label matches the pin ($(printf '%s\n' "$got" | wc -l | tr -d ' ') commands)")
+    passes+=("  PASS: $label matches the pin ($(printf '%s\n' "$got" | wc -l | tr -d ' ') names)")
     pass=$((pass + 1))
   else
     note "$label: added ${added:-none}; removed ${removed:-none}"
@@ -214,6 +268,8 @@ group "glab top level" glab "$PIN_GLAB_TOP" cobra_names glab
 group "gh pr" gh "$PIN_GH_PR" cobra_names gh pr
 group "gh top level" gh "$PIN_GH_TOP" cobra_names gh
 group "az repos pr" az "$PIN_AZ_REPOS_PR" az_pr_names
+group "glab api flags" glab "$PIN_GLAB_API_FLAGS" api_flags glab
+group "gh api flags" gh "$PIN_GH_API_FLAGS" api_flags gh
 
 if [ "$inconclusive" -eq 0 ]; then
   printf '%s\n' "${passes[@]}"

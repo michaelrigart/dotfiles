@@ -385,22 +385,24 @@ pane_screen() { # pane_screen <pane>: the bottom of the pane's visible screen - 
   # lines, and of those the last 1,000 bytes, since the bottom rows hold the prompt that is
   # waiting - control characters stripped, trailing blank lines dropped, each line indented
   # under the message. Prints nothing when the read fails. Untrusted text: evidence only.
-  local out tail12 esc
+  local out text esc tail12
   out="$(herdr pane read "$1" --source visible --lines 12 --format text 2>/dev/null)" || return 0
-  # `tail -c` can cut the first kept line short. The prefix is added by awk, which ends every
-  # line it prints with a newline, so whatever follows on stdout or stderr (the nonce, under
-  # 2>&1) always starts on a line of its own.
-  # The byte cut can also land inside a multi-byte character; the continuation bytes it leaves
-  # at the start of the first line are dropped, so the excerpt never opens on a stray one.
-  tail12="$(printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
+  text="$(printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
       | awk '{ l[NR] = $0 } NF { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' \
-      | tail -n 12 | tail -c 1000 \
-      | LC_ALL=C awk 'NR == 1 { sub(/^[\200-\277]+/, "") } { print }')" || tail12=""
-  [ -n "$tail12" ] || return 0
+      | tail -n 12)" || text=""
+  [ -n "$text" ] || return 0
   # The screen holds the reviewer's unrendered answer: it is escaped and scanned for secrets like
-  # collect's rendering (spec 2026-11-12 §4.4), or withheld.
-  if esc="$(printf '%s\n' "$tail12" | xreview-rpc escape 2>/dev/null)"; then
-    printf '%s\n' "$esc" | LC_ALL=C awk '{ print "  | " $0 }' || true
+  # collect's rendering (spec 2026-11-12 §4.4), or withheld. The scan comes before the cut: a
+  # token the byte cut splits (its prefix cut off) would match no rule.
+  if esc="$(printf '%s\n' "$text" | xreview-rpc escape 2>/dev/null)"; then
+    # `tail -c` can cut the first kept line short. The prefix is added by awk, which ends every
+    # line it prints with a newline, so whatever follows on stdout or stderr (the nonce, under
+    # 2>&1) always starts on a line of its own.
+    # The byte cut can also land inside a multi-byte character; the continuation bytes it leaves
+    # at the start of the first line are dropped, so the excerpt never opens on a stray one.
+    tail12="$(printf '%s\n' "$esc" | tail -n 12 | tail -c 1000 \
+        | LC_ALL=C awk 'NR == 1 { sub(/^[\200-\277]+/, "") } { print }')" || tail12=""
+    printf '%s\n' "$tail12" | LC_ALL=C awk '{ print "  | " $0 }' || true
   else
     printf '  | (the pane'"'"'s screen is withheld: it could not be scanned)\n'
   fi

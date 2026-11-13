@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 # The pre-merge gate: its command grammar and its checks. xreview-guard.sh beside this file
-# runs it for a payload that mentions create, new, merge, accept, pulls, graphql or revert (or
-# mr with for, or create with az, repos and pr) and one of glab, gh, git or az. Design:
+# runs it for a payload that mentions create, new, merge, accept, pulls, graphql, revert or
+# placeholder (or mr with for, or create with az, repos and pr) and one of glab, gh, git or az.
+# Design:
 # docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Reads the PreToolUse payload on stdin. Prints ONE hookSpecificOutput deny object, or
@@ -186,6 +187,9 @@ AZ_FLAG = ("Pre-merge gate: {} is not among the options the gate allows for az r
 AZ_VALUE = ("Pre-merge gate: az repos pr create takes its words as options and their values, and "
             "{} comes before any option, so the gate cannot read what it is. Pass each value "
             "after the option it belongs to.")
+AZ_FILE = ("Pre-merge gate: az reads the word {} from a file (@<path>, or <name>=@<path>) and "
+           "replaces it with the file's contents before it reads any option, so the gate cannot "
+           "read what the command carries. Write the text inline.")
 AZ_NEED_DEST = ("Pre-merge gate: name the destination explicitly with --target-branch <branch>. az "
                 "would otherwise ask the API for the repository's default branch, which the gate "
                 "does not read.")
@@ -670,7 +674,7 @@ def tool_name(word):
 
 
 def candidates(tokens):
-    """Each word naming git, glab or gh, with the words after it in its simple command. Any
+    """Each word naming git, glab, gh or az, with the words after it in its simple command. Any
     word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
     xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc, function f {) or
     an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the command
@@ -1663,9 +1667,13 @@ def az_check_project(top, opts):
 
 
 def judge_az(shape, ledger):
-    """az repos pr create: only the options in AZ_CREATE_ALLOWED; the project is origin's;
+    """az repos pr create: no word az reads from a file (@<path>, <name>=@<path>); only the
+    options in AZ_CREATE_ALLOWED; the project is origin's;
     --target-branch is required; the source is --source-branch or the current branch, as origin
     has it. The decision is the ledger's, as for glab mr create."""
+    for w in shape["args"]:
+        if w.startswith("@") or w.partition("=")[2].startswith("@"):
+            raise Deny(AZ_FILE.format(w))
     opts = az_options(shape["args"])
     for name, values in opts:
         if name not in AZ_CREATE_ALLOWED:

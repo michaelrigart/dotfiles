@@ -1008,6 +1008,16 @@ fresh; printf 'ok\xe2\x80\xaeevil\n' > "$P/screen"
 out="$(XREVIEW_TEXT_SCAN=/nonexistent NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "S16b and with the module missing only the withheld line is printed" \
    "$(printf '%s' "$out" | grep -c "^  | (the pane's screen is withheld: it could not be scanned)$")/$(printf '%s' "$out" | grep -c '^  | ')/$(printf '%s' "$out" | grep -c 'evil')" "1/1/0"
+# S16c: the excerpt is escaped and scanned before the 12-line, 1,000-byte cut. A token the cut would
+# split (its ghp_ prefix cut off) no longer matches a rule, so a cut first would show its tail.
+# Line 1 is 10 x's and the 40-byte token; the other 11 lines hold 980 bytes, so the cut falls 31
+# bytes into line 1, inside the token. The secret is built at run time.
+TOK16="ghp_$(printf 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8')"
+x88="$(head -c 88 /dev/zero | tr '\0' x)"
+fresh; { printf '%s%s\n' xxxxxxxxxx "$TOK16"; for _ in $(seq 10); do printf '%s\n' "$x88"; done; printf '%sx\n' "$x88"; } > "$P/screen"
+out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S16c a token the byte cut would split shows no part of itself" \
+   "$(printf '%s' "$out" | grep -c -F -e "${TOK16: -16}" -e "${TOK16:4:12}")/$(printf '%s' "$out" | grep -c '^  | ')" "0/12"
 # The three-pair cap, with a bound far beyond three short rungs: the cap ends the ladder.
 fresh
 out="$(STUCK_TUI=1 XREVIEW_POLL_SECS=0.05 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=10 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
