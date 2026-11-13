@@ -164,9 +164,12 @@ outside a batch surfaces at the end of the run instead of at the task that cause
 
 The rule exists; the gaps are superpowers' escalation ("one tier above", `…/SKILL.md:157-158`), its
 "always specify the model" (`:160-162`), and the absence of a named reviewer type for task reviews.
-Two cells of the `claude-code.md` table change, and the skill (§6) carries the rest:
+Two cells of the `claude-code.md` table change, and the skill (§6) carries the rest. The
+`sp-standard` cell is shown as amended: the final review found its "scoped review" overlapping the
+`sp-reviewer` cell.
 
 ```
+  | `sp-standard` | integration, debugging, fix rounds, plan-run controllers, merges |
   | `sp-reviewer` | cold diff review, every per-task review and re-review |
   | `sp-architect` | design, plan review, the final whole-branch review; a fix only after an `sp-standard` attempt at it failed |
 ```
@@ -227,14 +230,15 @@ still read every task.
 
 ## Triage
 
-This replaces "adjudicate only at the cap". Apply Claude review findings (`claude-code.md`) to
-every finding of a task review, re-review or final review as it arrives, before any fix round. A
-finding without code is a ledger line, `Ruling: no code — <finding> — <theoretical|style>: <why>`,
-and reaches the final report's rulings with the others. Only findings that get code enter the fix
-loop. The reviewer's prompt never carries the triage: it reports everything, and you triage. Hand
-the final review your no-code rulings with the other ledger lines; one it reopens by naming a real
-caller gets code. A finding you ruled on that Codex raises later is a Codex finding, handled by the
-`cross-review` skill.
+This replaces "adjudicate only at the cap". Apply Claude review findings (`claude-code.md`) to every
+finding of a task review, re-review or final review as it arrives, before any fix round. A finding
+without code is a ledger line, `Ruling: no code — <finding> — <theoretical|style>: <why>`, and
+reaches the final report's rulings with the others. Every finding that gets code enters the fix loop
+in its round, whatever its severity; nothing else does. A spec-compliance gap is never triaged: fix
+it, or take it to Michael as a spec change. The reviewer's prompt never carries the triage: it
+reports everything, and you triage. Hand the final review your no-code rulings with the other ledger
+lines; one it reopens by naming a real caller gets code. A finding you ruled on that Codex raises
+later is a Codex finding, handled by the `cross-review` skill.
 
 ## Tests
 
@@ -359,10 +363,12 @@ regression:
 |---|---|---|---|
 | `cc-plan-runs` (replaces `cc-parallel`) | `claude-code.md`, `**Plan runs.**` | no | the trigger losing `plan-run` or its precedence, so the skill never loads and per-task gates and per-task full runs return silently; the no-worktree clause dropped |
 | `cc-review-findings` | `claude-code.md`, `**Claude review findings.**` | yes | the caller condition, "only" or "unsure counts as real" dropped or weakened (fix-everything again, or a looser triage); the Codex clause dropped (triage creeping into the Codex loop) |
-| `pr-review-set` | `plan-run/SKILL.md`, `A task gets the task review` | yes | a safety-boundary or consumed task losing its per-task review: the obligation and both conditions sit in the one checked paragraph, and the revert check deletes each in turn |
+| `pr-review-set` | `plan-run/SKILL.md`, `A task gets the task review` | yes | a safety-boundary or consumed task losing its per-task review: the obligation and both conditions sit in the one checked paragraph, and the revert check deletes each in turn; its terms are every sentence of the paragraph, verbatim |
 | `pr-check` | `plan-run/SKILL.md`, `Every other task gets your check` | no | unreviewed tasks also losing the mechanical check |
 | `pr-tests` | `plan-run/SKILL.md`, `never the full suite` | no | per-task full runs returning, or no full run before the final review |
-| `pr-real-run` | `plan-run/SKILL.md`, `Run the change once the way its user will` | yes | the run leaving the sandbox (escapes, prompts) or what needs Michael being run by the agent |
+| `pr-real-run` | `plan-run/SKILL.md`, `Run the change once the way its user will` | yes | the run leaving the sandbox (escapes, prompts) or what needs Michael being run by the agent; its terms are every sentence of the block |
+| `pr-triage` | `plan-run/SKILL.md`, `A spec-compliance gap is never triaged` | yes | a finding that gets code skipping the fix loop, or a spec-compliance gap being triaged instead of fixed or taken to Michael as a spec change; the terms are the two sentences |
+| `cc-table-standard` (terms updated) | `claude-code.md`, the `sp-standard` table row | no | "scoped review" back in the `sp-standard` cell, so two types take the same dispatch |
 | `sp-reviewer-caller` | `sp-reviewer.md`, `Every finding carries` | no | findings arriving without a caller, so the controller cannot triage |
 | `g-wt` (terms updated) | `global.md`, `` **`wt` worktrees.** `` | yes | the same-turn briefing or the session's ownership of the spec dropped, so the driver writes specs again; the `wt-rm` clause is kept as it is |
 | `cc-dispatch-wt` (terms updated) | `claude-code.md`, `` **Dispatching a `wt` line.** `` | no | "In the turn that ran `wt`" or "spec included" dropped |
@@ -478,3 +484,15 @@ record of what was put to him.
 Not a decision: the dispatch change (§9) is Michael's instruction of 2026-11-12. Its one consequence
 to confirm at sign-off is that a line's spec changes now reach him from the line's session, not
 through the driver.
+
+## Amended during execution (2026-11-13, final review)
+
+Three text changes after the final whole-branch review; none reopens a Decision.
+
+- **§6, Triage:** "Only findings that get code enter the fix loop." became "Every finding that gets
+  code enters the fix loop in its round, whatever its severity; nothing else does. A spec-compliance
+  gap is never triaged: fix it, or take it to Michael as a spec change." Row `pr-triage` pins it.
+- **§4, routing:** the `sp-standard` cell lost "scoped review", which overlapped the `sp-reviewer`
+  cell (one type per dispatch). Row `cc-table-standard` lost the term.
+- **Testing:** `pr-review-set` and `pr-real-run` pin every sentence of their block, verbatim,
+  after three rounds of finding them short of the contract one clause at a time.
