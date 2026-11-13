@@ -320,9 +320,12 @@ report to the driver with the measured table. Then wait for the driver's word on
 
 **Depends on:** the driver's word that `fix/xreview-trust` is on main.
 
-- [ ] Rebase onto `origin/main`. Place the `xreview-guard-cli` paragraph that branch added to
-  `AGENTS.md` Testing in `tests/AGENTS.md` under `## Suite-specific`; rerun Task 1's Step 5
-  check against the new main and `./tests/run.sh agent-instructions`.
+- [x] Rebase onto `origin/main` (done, 4c35ad4). The `xreview-guard-cli` paragraph that branch
+  added to `AGENTS.md` Testing was split by the move test: what its exit 2 means reads a run's
+  result and stays in the root, joined to the cold-cache paragraph (as the plan review ruled
+  for that paragraph); "the pin in the suite is updated in the change that weighs the new
+  command or flag" binds while changing the suite and moved to `tests/AGENTS.md`,
+  `## Suite-specific`. Root: 204 lines.
 - [ ] Append `## Appendix C` to this plan: one row per sentence or list item of the rebased
   `dot_claude/skills/cross-review/SKILL.md` (kept / moved to which `xreview` or guard message /
   dropped as rationale, with the rule it explained), and one row per `die` in

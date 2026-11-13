@@ -32,7 +32,8 @@ lines). What is left there is small. The weight is in the dotfiles `AGENTS.md` a
 ## Goals, non-goals, anti-goals
 
 - **Goals:**
-  - dotfiles `AGENTS.md` at most 205 lines, measured 201 (the goal at sign-off was 150.
+  - dotfiles `AGENTS.md` at most 205 lines, measured 201, and 204 once rebased onto main's
+    `xreview-guard-cli` paragraph (the goal at sign-off was 150.
     Codex's spec and plan reviews kept in the root everything that binds while running suites
     or reading a run, and no rule is cut to reach a number. Decided by the driver session on
     Michael's delegation, 2026-11-13, once the moves were measured);
@@ -116,7 +117,9 @@ The same test applies to Rules:
 - Every other Rules bullet stays as it is.
 
 `fix/xreview-trust` adds six lines to Testing (`xreview-guard-cli`). Whichever branch rebases
-second places them by the same test (they describe one suite's exit 2: `tests/AGENTS.md`).
+second places them by the same test. Done at the rebase: what the suite's exit 2 means reads a
+run's result and stays in the root, joined to the cold-cache paragraph; the rule for updating
+its pin moved to `tests/AGENTS.md`.
 
 ### B. Fragments, agents and descriptions
 
