@@ -350,9 +350,13 @@ each one makes a wrong answer read as a failed lookup or a dropped row, never as
    whole number. Unfiltered, a forge could forge a second row or shift a column.
 3. **A number prints as plain digits or not at all** (both forges): `1e300` is dropped. This
    narrows item 12 of section 6, which still holds for `12.0` and `12e0`.
-4. **A branch name holding U+FFFD is dropped** (both forges). `jq` replaces invalid UTF-8 and
-   lone surrogates with it, where the Python failed the lookup or passed the bytes through; a
-   branch literally named with U+FFFD loses its badge.
+4. **A branch name holding U+FFFD is dropped** (both forges). `jq` replaces invalid UTF-8 and a
+   lone low surrogate with it, where the Python failed the lookup or passed the bytes through; a
+   branch literally named with U+FFFD loses its badge. A lone high surrogate is a parse error in
+   `jq`, so the whole answer is a failed lookup.
+   Section 4's "`jq` cannot tell `1e0` or `1.0` from `1`" is also wrong for 1.7.1 (`12.0`
+   renders as `12.0`): what makes them one is the rule itself, a number equal to its floor,
+   printed as that floor.
 5. **Forge answers reach `jq` as files** (`--rawfile` from a process substitution), since one
    argument cannot hold a large answer; and "open rows only" is `jq` status 10, mapped to 3 in
    bash, because `jq` itself exits 3 on a compile error.
