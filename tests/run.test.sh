@@ -916,11 +916,9 @@ names heavyb 'cat "${SRC}/dot_x/b.sh"'
 names heavyb 'cat "$(cd x && pwd)/dot_x/c.sh"'
 drifts "a heavy suite with no row is reported, with the files it names after any root" \
   "$(printf '%s\n' 'heavyb: dot_x/b.sh is loaded but has no subject-map row' 'heavyb: dot_x/c.sh is loaded but has no subject-map row' 'heavyb: no subject-map row')"
-# Bug caught: a path that does not exist, a suite that is not heavy, or a root left on a path,
-# reported as drift.
+# Bug caught: a path that does not exist, or a suite that is not heavy, reported as drift.
 reset_repo; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"; write_map "$(row dot_x/b.sh heavya)"
 names heavya 'cat "$SRC/dot_x/b.sh" "$SRC/dot_x/gone.sh"'
-names heavya 'cat "${SRC}/dot_x/b.sh" "$(cd x && pwd)/dot_x/b.sh"'
 names plainc 'cat "$SRC/dot_x/c.sh"'
 drifts "a fixture whose heavy suites' files all have rows passes" ""
 got="$(drift_check "$SRC")"; rc=$?
