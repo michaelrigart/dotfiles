@@ -1,6 +1,6 @@
 # Instruction weight: move workflow detail out of the always-loaded text
 
-**Status:** In progress (branch `chore/instruction-weight`; the dotfiles have no MR)
+**Status:** Implemented (branch `chore/instruction-weight`; parts A and B merged as 1a94111, part C on the branch; the dotfiles have no MR)
 **Date:** 2026-11-13. Signed off by Michael on 2026-11-13 ("I follow your recommendations", relayed
 by the driver session). Codex approved round 2 (xr-1794595820-5f42cbbc).
 **Branch:** `chore/instruction-weight`, in the `wt` checkout
@@ -155,7 +155,7 @@ its pin moved to `tests/AGENTS.md`.
 
 Result: `claude-code.md` at about 41 lines. The caps in `agent-instructions` stay as they are.
 
-### C. `cross-review` skill (370 to at most 150 lines)
+### C. `cross-review` skill (381 lines; the goal is under Goals)
 
 1. **Refusals carry their own next step.** Today the skill lists every `xreview` refusal twice:
    once under Dispatching (what it means) and once under Iterating (escalate or not). Each
@@ -195,7 +195,8 @@ messages whose body told the reader to act (run `round --reset`, unset `XREVIEW_
 the layout, slice by hand): they are reworded so the only imperative is the closing clause.
 Point 2 above changed: the gated-verb list and the quoting advice stay in the skill, since
 moving them would edit a guard's deny message. The Caps bullet under Testing reads 250 for the
-skill.
+skill. After the final review the escalation list's last bullet also names a failed
+`codex-daemon ensure`, restoring the old "the Codex daemon is down and will not start".
 
 ### Order
 
@@ -208,8 +209,8 @@ once `fix/xreview-trust` is on main and this branch is rebased on it (decision 2
 
 - **`rules.tsv`:** a moved rule's row follows it to its new file with the same terms; a split
   rule gets one row per part. No safety row is removed.
-- **Caps** in `agent-instructions`: dotfiles `AGENTS.md` at the goal's limit, `cross-review`
-  skill at most 150. They stop the regrowth this spec removes.
+- **Caps:** dotfiles `AGENTS.md` at the goal's limit, in `agent-instructions`; the `cross-review`
+  skill at most 250 lines, in `xreview-skill`. They stop the regrowth this spec removes.
 - **Pointers:** rows pin the root's pointer to `tests/AGENTS.md` and to the bump procedure,
   and that the procedure's steps (`agent-text-scan --diff`, the warm-up, `Closes #`) are in
   `.chezmoiexternal.toml`.
