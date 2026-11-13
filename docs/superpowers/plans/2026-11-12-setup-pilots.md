@@ -339,6 +339,25 @@ Running total, 11 reviews: Sonnet raised 13 of Opus's 29 findings (Critical 2 of
 2 of 5, Minor 9 of 19); same verdict on 7 of 11; Opus 202 tool calls and 2,090 s, Sonnet 216
 and 1,549 s.
 
+**Reviews 12 and 13: Task 3.**
+
+| # | Review | Opus verdict | Sonnet verdict | Opus findings (C/I/M) | Sonnet raised | Opus tools, time | Sonnet tools, time |
+|---|---|---|---|---|---|---|---|
+| 12 | Task 3 (`ca4ea6b`) | needs fixes | needs fixes | 0/1/2 | 1 | 16, 104 s | 19, 100 s |
+| 13 | Task 3 fix round 1 (`995db99`) | passed | passed | 0/0/0 | 0 | 12, 47 s | 11, 38 s |
+
+- Review 12, Important: an empty `--raw ""` falls through to stdout (`if raw:`). Sonnet raised
+  it, reproduced it and proposed the same fix.
+- Review 12, Minor: no row pins the write-failure path; `$: unexpected key` repeats per key.
+  Sonnet missed both.
+- Review 12, Sonnet only, four Minor, not hand-checked: mode 0400 from the umask, a test
+  comment citing R9f for R2, U+2028/2029 not escaped (Opus lists it as a residual risk), a
+  RecursionError on deep nesting (pre-existing).
+
+Running total, 13 reviews: Sonnet raised 14 of Opus's 32 findings (Critical 2 of 5, Important
+3 of 6, Minor 9 of 21); same verdict on 9 of 13; Opus 230 tool calls and 2,241 s, Sonnet 246
+and 1,687 s.
+
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
 
