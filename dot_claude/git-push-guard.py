@@ -26,6 +26,13 @@
 # file name that mentions a push is no push. Nothing else is parsed: no control structures,
 # subshells, heredocs, evaluators or chains.
 #
+# Secrets: a push that would ask is scanned by secret-scan (dot_config/git/hooks, deployed to
+# ~/.config/git/hooks) before the ask is returned, so a secret is a deny, which beats an ask.
+# Every push is scanned by the global pre-push hook too, so a push that passes here silently is
+# scanned here only when the hook may not see it (hook_will_run): --no-verify, an assignment or
+# wrapper that could move git's configuration, or a core.hooksPath that is not the deployed
+# hooks directory. The verdict for a scanned push is main's.
+#
 # Fail direction: a push this cannot resolve is DENIED with a reason the agent can act on.
 # It never asks on doubt (an ask costs Michael a prompt) and never allows on doubt (a push
 # is the one irreversible outward path).
@@ -164,11 +171,9 @@ import json
 import os
 import re
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from bisect import bisect_left, bisect_right
 from collections import namedtuple
@@ -310,36 +315,6 @@ SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 UNSUPPORTED = ("unsupported push configuration for the push guard: {}; "
                "push by hand or simplify the configuration")
-GITLEAKS_LEAKS_EXIT = 99
-# gitleaks parses `git log -p` output, and log formatting config breaks the parse. Under
-# Michael's own format.pretty it reported "0 commits scanned" and findings with no commit,
-# so no commit-bound fingerprint. These pin git's default output for the scan alone.
-GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
-                    ("log.abbrevCommit", "false"), ("diff.noprefix", "false"),
-                    ("diff.mnemonicPrefix", "false"), ("color.ui", "false"),
-                    ("color.diff", "false"),
-                    # diff.submodule=diff starts a child diff inside a bumped submodule, which
-                    # has no --no-ext-diff of its own: its diff.external and textconv would run
-                    ("diff.submodule", "short"),
-                    # past this size git prints "Binary files differ" for a text file
-                    ("core.bigFileThreshold", "2g")]
-# The scan reads a merge as the diff against what git would merge by itself (remerge), so a
-# secret added while committing a merge is seen; git log -p shows a merge with no diff.
-MERGE_DIFF = "--diff-merges=remerge"
-# Options that make `git log -p` show every added line: a root commit, a file marked binary
-# or -diff by .gitattributes or .git/info/attributes, a textconv or external diff driver.
-# --submodule=short keeps a bumped gitlink a one-line patch: under diff.submodule=diff git
-# runs a child diff in the submodule, whose own configuration then runs its drivers.
-PATCH_OPTS = ["--root", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short",
-              MERGE_DIFF]
-# The file that changes what gitleaks reports. Only a committed one is a reviewed exception.
-EXCEPTION_FILES = [".gitleaksignore"]
-# A gitleaks config, in any extension or letter case. gitleaks reads one from the directory
-# it scans (.gitleaks.toml, then any .gitleaks.<ext> viper finds beside it), and a config can
-# extend another file, so the guard supports none: the scan always runs the default rules.
-GITLEAKS_CONFIG_RE = re.compile(r"\.gitleaks\..*", re.I)
-SCANNED_RE = re.compile(r"\b(\d+) commits? scanned\b")
-ERR_RE = re.compile(r"^\S+\s+ERR\b", re.M)
 PLAIN = ("Push guard: this command may run git push in a shape the guard does not check. Run "
          "the push as a plain command of its own: git push [options] <remote> <branch> "
          "(for another repository: git -C <path> push [options] <remote> <branch>; piped only "
@@ -413,6 +388,7 @@ def parse_plain(tokens, cwd):
     while i < n and ASSIGN_RE.match(t[i]):
         assigns.append(t[i].split("=", 1)[0])
         i += 1
+    wrapped = i < n and t[i] in ("command", "sudo", "env")
     if i < n and t[i] in ("command", "sudo"):
         i += 1
     elif i < n and t[i] == "env":
@@ -470,8 +446,9 @@ def parse_plain(tokens, cwd):
             i += 1
     if i != n:
         return None
-    return {"cwd": cwd, "cd_used": cd_used, "assigns": assigns, "repo_opts": repo_opts,
-            "config_opts": config_opts, "unknown": unknown, "sub": sub, "args": args}
+    return {"cwd": cwd, "cd_used": cd_used, "assigns": assigns, "wrapped": wrapped,
+            "repo_opts": repo_opts, "config_opts": config_opts, "unknown": unknown, "sub": sub,
+            "args": args}
 
 
 # ------------------------------------------------------------------ git queries
@@ -2543,7 +2520,7 @@ def judge(s, session, text=False):
         raise Deny("Push guard: the current-branch substitution runs where the shell is, not "
                    "in the repository -C or cd selects. Name the branch literally.")
     return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args, session,
-                    text)
+                    text, s["wrapped"])
 
 
 def push_option(value, where=""):
@@ -2863,19 +2840,39 @@ def dry_run_deny(asks, args, root, session):
 
 
 # ------------------------------------------------------------------ the secret scan
-def run_gitleaks(cmd, cwd, env):
-    """(returncode, stdout, stderr) of gitleaks, within what is left of the budget. It runs
-    in its own process group so a timeout takes gitleaks and the git it spawned down
-    together: a survivor holding the pipes would keep this helper (and the hook) waiting."""
+# One deployed copy, beside the global pre-push hook (dot_config/git/hooks/secret-scan). The
+# guard trusts that path, which sandboxed sessions cannot write; PUSH_GUARD_SCAN exists only so
+# the test suite can point at the source copy or at a missing file.
+SCAN = os.environ.get("PUSH_GUARD_SCAN") or os.path.join(
+    os.path.expanduser("~"), ".config", "git", "hooks", "secret-scan")
+
+
+def run_scan(root, remote, destination, sources):
+    """secret-scan over the commits a push that would ask sends. Returns on a clean scan and
+    raises Deny otherwise, with the scan's own reason: a scan that cannot run is a deny, never
+    a pass. The scan gets what is left of the budget less a second, so its own timeout reason
+    comes first. The scan runs in its own session, and at the budget its process group is
+    killed: the scan itself and the git calls it makes. That kill does not reach gitleaks:
+    secret-scan starts gitleaks in a session of its own, so a gitleaks the scan has not yet
+    reaped can outlive this kill. In normal operation it never comes to that: the scan's own
+    budget is a second shorter, so the scan ends first and kills its gitleaks itself. A
+    survivor holds none of this helper's pipes, so it cannot keep this helper waiting."""
     remaining = BUDGET - (time.monotonic() - START)
     if remaining <= 0:
         raise Deny(TIMED_OUT)
+    cmd = [sys.executable, "-I", SCAN, "--repo", root, "--remote", remote,
+           "--destination", destination, "--budget", str(max(remaining - 1, 0.1)),
+           "--"] + list(sources)
+    could_not = ("Push guard: the secret scan ({}) could not run ({}), so the push is refused. "
+                 "Restore it with chezmoi apply, or push by hand.")
+    if not os.path.isfile(SCAN):
+        raise Deny(could_not.format(SCAN, "no such file"))
     try:
-        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
                              start_new_session=True)
     except OSError as e:
-        raise Deny("Push guard: gitleaks could not run ({}), so the push is refused.".format(e))
+        raise Deny(could_not.format(SCAN, e))
     try:
         out, err = p.communicate(timeout=remaining)
     except subprocess.TimeoutExpired:
@@ -2884,200 +2881,39 @@ def run_gitleaks(cmd, cwd, env):
         except OSError:
             p.kill()
         p.communicate()
-        raise Deny("Push guard: the gitleaks scan did not finish within the push guard's time "
-                   "budget, so the push is refused. Scan by hand (gitleaks git --redact) and "
-                   "push by hand.")
-    return p.returncode, out, err
+        raise Deny(TIMED_OUT)
+    if p.returncode != 0:
+        raise Deny((err or "").strip() or
+                   "Push guard: the secret scan ({}) refused the push (exit {}) without a "
+                   "reason, so the push is refused. Push by hand.".format(SCAN, p.returncode))
 
 
-def expected_commits(repo, remote, sources, env):
-    """How many outgoing commits gitleaks must report scanning: those whose patch has a hunk
-    (@@) in a file that is not deleted. gitleaks counts a commit for every file it reads a
-    hunk from, a hunk that only removes lines included, and skips a deleted file; a file
-    with no hunk (a pure rename, a mode change, an empty new file) gives it nothing. So an
-    empty commit, a clean merge or a commit that only deletes files is not counted, and a
-    commit that only removes lines is. It reads the same `git log -p` stream with the same
-    options and pins gitleaks is given, so the two counts agree unless gitleaks lost
-    something. Run through Repo.run, under the same budget as every git call.
-    The listing is read as bytes and split at LF alone, as gitleaks splits it. Decoded text
-    also breaks at CR, and --text puts a binary file's bytes in the patch: a GIF, PNG or font
-    holding CR before the 0x01 marker or @@ gave phantom commits and hunks, so 598 expected
-    where gitleaks rightly scanned all 573 outgoing commits."""
-    out = repo.run("log", "-p", "-U0", "--no-color", "--format=%x01%H", *PATCH_OPTS,
-                   *(list(sources) + ["--not", "--remotes=" + remote]), env=env, long=True,
-                   raw=True)
-    if out is None:
-        raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
-                   "scan cannot show it covered them and the push is refused. Push by hand."
-                   .format(" ".join(sources)))
-    # A hunk line never starts with \x01, "diff ", "deleted file mode" or @@: every line of
-    # a hunk starts with +, -, a space or a backslash.
-    count, scanned, deleted = 0, False, False
-    for line in out.split(b"\n"):
-        if line.startswith(b"\x01"):
-            count += 1 if scanned else 0
-            scanned, deleted = False, False
-        elif line.startswith(b"diff "):
-            deleted = False                            # a file header: a new file
-        elif line.startswith(b"deleted file mode "):
-            deleted = True
-        elif line.startswith(b"@@") and not deleted:
-            scanned = True
-    return count + (1 if scanned else 0)
-
-
-def scan(root, remote, sources):
-    """gitleaks over the commits this push would send. Returns on a clean scan and
-    raises Deny otherwise; a scan that cannot run, or cannot prove it covered the commits,
-    is a deny, never a pass.
-    The scan runs gitleaks' default rules only: a gitleaks config file (.gitleaks.<ext>, in
-    any letter case) in the working tree or committed on a pushed ref is an unsupported
-    configuration, and the push is refused naming it.
-    --ignore-gitleaks-allow: the only exception is a reviewed .gitleaksignore entry, never
-    an inline comment. gitleaks reads .gitleaksignore from the working
-    tree, so a copy that is not byte-identical to the one committed on HEAD and on every
-    pushed ref (untracked, ignored, modified, hidden by skip-worktree or
-    status.showUntrackedFiles, or committed on another branch) is refused: commit it first,
-    and the exception is reviewed like any other change. A push by pattern (--tags, --all,
-    --mirror) names no refs to compare, so with an exception file present it is refused and
-    the refs must be pushed by name. Every git call here runs with
-    replace refs off (GIT_NO_REPLACE_OBJECTS), since a push sends the real objects. GITLEAKS_*
-    variables are dropped from the environment for the same reason. Lazy fetch is off
-    for every git call and for gitleaks (GIT_NO_LAZY_FETCH): the repository's configuration
-    stays agent-writable, so a promisor remote is never trusted. A genuine blob-filtered
-    partial clone is denied with the "Push by hand" message. Commit and
-    annotated-tag messages are not scanned (gitleaks git mode scans patches only)."""
-    exe = shutil.which("gitleaks")
-    if not exe:
-        raise Deny("Push guard: gitleaks is not installed, so the outgoing commits cannot be "
-                   "scanned for secrets and the push is refused. Install it with: "
-                   "brew bundle --file ~/.config/homebrew/Brewfile")
-    repo = Repo(root, [])
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GITLEAKS_")}
-    # A replace ref swaps an object for another in git log, but pack-objects sends the real
-    # one: the scan must read what will be sent, in every git call it makes.
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
-    env["GIT_NO_LAZY_FETCH"] = "1"
-    env["GIT_CONFIG_COUNT"] = str(len(GIT_LOG_DEFAULTS))
-    for i, (key, value) in enumerate(GIT_LOG_DEFAULTS):
-        env["GIT_CONFIG_KEY_%d" % i] = key
-        env["GIT_CONFIG_VALUE_%d" % i] = value
-    outgoing = repo.run("rev-list", *(list(sources) + ["--not", "--remotes=" + remote]),
-                        env=env)
-    if outgoing is None:
-        raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
-                   "scan cannot show it covered them and the push is refused. Push by hand."
-                   .format(" ".join(sources)))
-    if not outgoing.strip():
-        return                                         # nothing leaves: nothing to scan
-    # A gitleaks config in the working tree would steer this scan, and one committed on a
-    # pushed ref is a configuration this scan does not honour.
-    try:
-        names = sorted(os.listdir(root))
-    except OSError as e:
-        raise Deny("Push guard: cannot list {} ({}), so the guard cannot rule out a gitleaks "
-                   "config there and the push is refused. Push by hand.".format(root, e))
-    for name in names:
-        if GITLEAKS_CONFIG_RE.fullmatch(name):
-            raise Deny(UNSUPPORTED.format("the gitleaks config file " + name + " in the working tree"))
-    for source in sources:
-        trees = repo.run("log", "--no-walk", "--format=%T", source, "--", env=env)
-        listed = [repo.run("ls-tree", "-z", "--name-only", tree, env=env)
-                  for tree in sorted(set((trees or "").split()))]
-        if trees is None or None in listed:
-            raise Deny("Push guard: git could not list the files of {}, so the guard cannot rule "
-                       "out a gitleaks config committed there and the push is refused. Push by "
-                       "hand.".format(source))
-        for name in "\0".join(listed).split("\0"):
-            if GITLEAKS_CONFIG_RE.fullmatch(name):
-                raise Deny(UNSUPPORTED.format(
-                    "the gitleaks config file " + name + " committed on " + source))
-    # The worktree copy is what gitleaks reads, so it must be the committed one on HEAD and on
-    # every ref pushed: an exception committed on another branch reviews nothing here.
-    present = [n for n in EXCEPTION_FILES if os.path.lexists(os.path.join(root, n))]
-    # A pseudo-source (--tags, --branches, --all) stands for refs this check does not list,
-    # so none of them could be compared: with an exception in play, only named refs go.
-    if present and any(x.startswith("-") for x in sources):
-        raise Deny("Push guard: this push sends refs by pattern (--tags, --all or --mirror) and "
-                   "the working tree holds {}, so the guard cannot show that exception is "
-                   "committed on every ref it sends. Push the branches and tags by name "
-                   "(git push {} <branch-or-tag> ...), so each one is checked."
-                   .format(" and ".join(present), remote))
-    refs = ["HEAD"] + [x for x in sources if x != "HEAD"]
-    for name in present:
-        worktree = repo.run("hash-object", "--no-filters", "--", name, env=env)
-        for ref in refs:
-            committed = repo.run("rev-parse", "--verify", "--quiet", ref + ":" + name, env=env)
-            if worktree is None or committed is None or worktree.strip() != committed.strip():
-                raise Deny("Push guard: {0} differs from {1}:{0} (or {1} has none), so it "
-                           "cannot decide what the secret scan skips. Commit the exception "
-                           "first, on the ref being pushed (a fingerprint in "
-                           ".gitleaksignore), then push.".format(name, ref))
-    # Never skipped on an expected count of 0: that count is only as good as git's view of
-    # the patches, and gitleaks must agree with it.
-    expected = expected_commits(repo, remote, sources, env)
-    log_opts = " ".join(list(sources) + PATCH_OPTS + ["--not", "--remotes=" + remote])
-    fd, report = tempfile.mkstemp(prefix="push-guard-", suffix=".json")
-    os.close(fd)
-    try:
-        code, out, err = run_gitleaks(
-            [exe, "git", "--no-banner", "--no-color", "--redact", "--ignore-gitleaks-allow",
-             "--exit-code", str(GITLEAKS_LEAKS_EXIT),
-             "--report-format", "json", "--report-path", report,
-             "--log-opts=" + log_opts, root], root, env)
-        if code == GITLEAKS_LEAKS_EXIT:
-            raise Deny(leak_reason(report, remote))
-        tail = "\n".join((err or out or "").strip().splitlines()[-5:])
-        if code != 0:
-            raise Deny("Push guard: gitleaks failed (exit {}), so the push is refused:\n{}"
-                       .format(code, tail))
-        # A clean exit proves nothing on its own: gitleaks reports "no leaks found" and exits
-        # 0 when its own git log fails or is misparsed (color.diff=always once gave 0
-        # commits scanned). Only a scan of every commit with a hunk counts as clean.
-        seen = SCANNED_RE.findall(err or "")
-        if ERR_RE.search(err or ""):
-            raise Deny("Push guard: gitleaks logged an error while scanning, so the push is "
-                       "refused:\n{}".format(tail))
-        if not seen or int(seen[-1]) != expected:
-            raise Deny("Push guard: gitleaks scanned {} commit(s) but this push carries {} "
-                       "with changes to scan, so the scan is not trusted and the push is "
-                       "refused. Check the git log configuration, or scan by hand "
-                       "(gitleaks git --redact) and push by hand.".format(
-                           seen[-1] if seen else "an unknown number of", expected))
-    finally:
-        try:
-            os.unlink(report)
-        except OSError:
-            pass
-
-
-def leak_reason(report, remote):
-    try:
-        with open(report, encoding="utf-8") as fh:
-            findings = json.load(fh)
-    except (OSError, ValueError):
-        findings = []
-    lines = ["- rule {} in {} at commit {} (fingerprint {})".format(
-        f.get("RuleID", "?"), f.get("File", "?"), str(f.get("Commit", "?"))[:12],
-        f.get("Fingerprint", "?")) for f in findings[:10]]
-    if len(findings) > 10:
-        lines.append("- and {} more".format(len(findings) - 10))
-    return ("Push guard: gitleaks found {} secret(s) in the commits this push would send to {}:\n"
-            "{}\n\n"
-            "Take the secret out of those commits (rewrite the branch), and rotate it if it is "
-            "real. If a finding is a false positive, add its fingerprint as a line in the "
-            "repository's tracked .gitleaksignore and commit that, so the exception is "
-            "reviewed like any other change.").format(
-                len(findings) or "one or more", remote,
-                "\n".join(lines) or "- (the gitleaks report could not be read)")
+def hook_will_run(repo, root, flags, assigns, wrapped):
+    """True only when the deployed global pre-push hook is certain to scan this push: no
+    --no-verify (git runs the hook for a dry run too); no environment assignment (HOME,
+    XDG_CONFIG_HOME, PATH and the rest could move git's configuration or the hook it finds)
+    and no wrapper (sudo changes HOME) on the command; and the repository's effective
+    core.hooksPath, read as git reads it, is the directory that holds the scan this helper
+    would run, with an executable pre-push beside it. Anything that cannot be shown is False:
+    a push the hook may not see is scanned here."""
+    if wrapped or assigns or "--no-verify" in flags:
+        return False
+    configured = repo.run("config", "--type=path", "--get", "core.hooksPath")
+    if not configured or not configured.strip():
+        return False
+    hooks = os.path.realpath(os.path.join(root, configured.strip()))
+    hook = os.path.join(hooks, "pre-push")
+    return (hooks == os.path.realpath(os.path.dirname(SCAN)) and os.path.isfile(SCAN)
+            and os.path.isfile(hook) and os.access(hook, os.X_OK))
 
 
 # ------------------------------------------------------------------ one push
-def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
+def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wrapped=True):
     """None to allow, a reason string to ask; raises Deny to deny. session is the hook
     payload's cwd, for the deny reasons that print a corrected push. bare: the raw command
     is canonical text (canonical); only a bare delete-only push of merged, pinned branches
-    passes silently."""
+    passes silently. wrapped: the command runs git through command, env or sudo; a caller
+    that does not say is read as wrapped, the reading that scans."""
     flags, remote_arg, refspecs = parse_push(args)
     # A dry run returns early, never scanned and never asked, only when the raw command is
     # canonical text and git reads it as a dry run (spec 2026-10-28, section 2, Dry runs).
@@ -3202,8 +3038,10 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
         if not name.startswith("refs/") and name == default:
             asks.append("it updates " + default + ", the default branch of " + remote)
 
-    # The scan runs before any ask is returned: a push Michael approves must already be
-    # clean, and a secret is a deny, which beats an ask.
+    # An asking push is scanned by secret-scan before the ask is returned: a push Michael
+    # approves must already be clean, and a secret is a deny, which beats an ask. A push that
+    # passes silently is scanned here too unless the global pre-push hook is certain to run
+    # for it (hook_will_run), so no push goes unscanned that main would have scanned.
     scan_sources = list(sources)
     if "--tags" in flags:
         scan_sources.append("--tags")
@@ -3211,8 +3049,6 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
         scan_sources.append("--branches")
     if "--mirror" in flags:
         scan_sources.append("--all")
-    if scan_sources:
-        scan(root, remote, scan_sources)
 
     # A delete-only push of merged branches, each pinned to the tip read here and written
     # bare (canonical text, nothing before git or between git and push), needs no ask; merged
@@ -3235,7 +3071,14 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
     if asks:
         if "-n" in flags or "--dry-run" in flags:
             raise Deny(dry_run_deny(asks, args, root, session))
+        if scan_sources:
+            run_scan(root, remote, fetch_url, scan_sources)
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."
+    # A source git cannot resolve is the scan's to refuse, as on main: git would stop that
+    # push before the hook, but the verdict stays a deny.
+    if scan_sources and not (hook_will_run(repo, root, flags, assigns, wrapped)
+                             and repo.run("rev-list", "--no-walk", *scan_sources) is not None):
+        run_scan(root, remote, fetch_url, scan_sources)
     return None
 
 

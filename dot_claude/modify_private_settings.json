@@ -33,7 +33,39 @@ if ! printf '%s' "$input" | jq empty >/dev/null 2>&1 \
   exit 1
 fi
 
-printf '%s' "$input" | jq \
+# The agent forge tokens (spec 2026-11-12-forge-push-protection, section 1.4). 1Password is the
+# source: an item that is listed gets its token read, an item that is not listed leaves its
+# variable absent (the inert and rollback state). When op is missing or fails, the live file's
+# two values are carried, so a sandboxed preview neither drops nor diffs them. A listed item
+# whose token cannot be read stops the apply, since writing the file without it would drop the
+# variable. The values travel only in this shell and in jq environment, never in an argv, and
+# nothing here prints one.
+op_state=unreachable
+agent_gh_token=""
+agent_gitlab_token=""
+read_agent_tokens() {
+  local items title token
+  command -v op >/dev/null 2>&1 || return 0
+  items=$(op item list --vault Private --format json 2>/dev/null) || return 0
+  printf '%s' "$items" | jq -e 'type == "array" and all(.[]; type == "object")' >/dev/null 2>&1 || return 0
+  op_state=reachable
+  for title in "GitHub Agent Token" "GitLab Agent Token"; do
+    # jq reads the whole list, so no early exit hands the writer a SIGPIPE on a long list.
+    printf '%s' "$items" | jq -e --arg t "$title" 'any(.[]; .title == $t)' >/dev/null 2>&1 || continue
+    if ! token=$(op read "op://Private/$title/token" 2>/dev/null) || [ -z "$token" ]; then
+      echo "modify settings.json: 1Password lists \"$title\" but its token cannot be read — refusing to overwrite" >&2
+      exit 1
+    fi
+    case $title in
+      GitHub*) agent_gh_token=$token ;;
+      *) agent_gitlab_token=$token ;;
+    esac
+  done
+}
+read_agent_tokens
+
+printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$agent_gitlab_token" jq \
+  --arg op_state "$op_state" \
   --arg sl "/opt/homebrew/bin/bash $HOME/.claude/statusline.sh" \
   --arg herdr_hook "/opt/homebrew/bin/bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
@@ -67,6 +99,15 @@ printf '%s' "$input" | jq \
   | "Deleting a remote branch that is already merged into the remote" as $rule_opening
   # Any other retired rule text, deleted by name like the retired keys below. None yet.
   | [] as $retired_rules
+  # Tokens: read from 1Password when it answered (an unlisted item is absent), else the live
+  # values, so an unreachable 1Password changes nothing. Only string values are carried.
+  | (if $op_state == "reachable" then
+       ((if ($ENV.AGENT_GH_TOKEN // "") != "" then {"GH_TOKEN": $ENV.AGENT_GH_TOKEN} else {} end)
+        + (if ($ENV.AGENT_GITLAB_TOKEN // "") != "" then {"GITLAB_TOKEN": $ENV.AGENT_GITLAB_TOKEN} else {} end))
+     else
+       (($live.env | objects) // {})
+       | with_entries(select((.key == "GH_TOKEN" or .key == "GITLAB_TOKEN") and (.value | type == "string")))
+     end) as $agent_tokens
   | $live + {
       "theme": "custom:tokyo-night",
       # 30 days of transcripts: the safe-autonomy evaluation measures over them.
@@ -88,7 +129,7 @@ printf '%s' "$input" | jq \
         # verification sees only the system roots, not keychain-added private CAs;
         # nothing here needs one.
         "SSL_CERT_FILE": "/etc/ssl/cert.pem"
-      },
+      } + $agent_tokens,
       # No agent attribution in git history or MR/PR descriptions. `attribution`
       # supersedes the deprecated `includeCoAuthoredBy` and adds `sessionUrl`, which is
       # a SEPARATE gate: `includeCoAuthoredBy: false` alone still appended the
@@ -147,6 +188,9 @@ printf '%s' "$input" | jq \
           "Read(~/.local/share/tagteam/displaced/**)", "Edit(~/.local/share/tagteam/displaced/**)",
           "Read(~/.local/share/tagteam/sessions/*/.credentials.json)",
           "Edit(~/.local/share/tagteam/sessions/*/.credentials.json)",
+          # Forge protection exceptions (the owner file) and the deployed global pre-push hook:
+          # an Edit() deny covers Write too, and unlike an ask it cannot be answered with a yes.
+          "Edit(~/.config/forge-protection/**)", "Edit(~/.config/git/hooks/**)",
           # Keychain secrets never enter the transcript: the logins tagteam stores, the
           # Claude Code login and the gh and glab tokens all sit in the login Keychain,
           # which the sandbox does not cover. This keeps them out of the transcript only;
@@ -445,7 +489,8 @@ printf '%s' "$input" | jq \
             "~/.ssh/huginn.pub",
             "~/.ssh/michael.pub",
             "~/.ssh/michael_rsa.pub",
-            "~/.ssh/viumore_rsa.pub"
+            "~/.ssh/viumore_rsa.pub",
+            "~/.ssh/github-agent.pub"
           ],
           # Ordinary work only: source trees, the chezmoi source, documents and the vault. A
           # dotfiles wt checkout is a sibling, ~/.local/share/chezmoi-<branch>, and is written

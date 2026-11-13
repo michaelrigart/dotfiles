@@ -24,7 +24,11 @@ is_exempt() {
   esac
 }
 
-entries=$(printf '{}' | /bin/bash "$MOD" | jq -r '.sandbox.credentials.files[]?.path')
+# The settings script asks op for the agent tokens: a stub that fails keeps the real op (a Touch ID
+# prompt) out of this suite.
+STUB="$(mktemp -d "${TMPDIR:-/tmp}/ssh-inventory.XXXXXX")"; trap 'rm -rf "$STUB"' EXIT
+printf '#!/bin/sh\nexit 1\n' > "$STUB/op"; chmod 755 "$STUB/op"
+entries=$(printf '{}' | PATH="$STUB:$PATH" /bin/bash "$MOD" | jq -r '.sandbox.credentials.files[]?.path')
 
 # Capability gate, before any assertion. Enumeration and stat must BOTH work: the stale
 # check below uses [ -f ], which fails closed the same way and would otherwise report

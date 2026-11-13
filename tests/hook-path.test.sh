@@ -55,6 +55,15 @@ for d in "" hooks/; do
   done
 done
 
+# The forge guard's push helper runs the secret scan from $HOME/.config/git/hooks, which this
+# mirror of ~/.claude does not cover: without the script beside the mirror the helper denies every
+# asking push with the missing-scan reason and never reaches the scan's git calls, while the
+# suite still reports green. So the script is mirrored too, and a row below fails on that reason.
+SCAN_SRC="$SRC/dot_config/git/hooks/executable_secret-scan"
+[ -f "$SCAN_SRC" ] || { echo "missing script under test: $SCAN_SRC" >&2; exit 2; }
+mkdir -p "$T/.config/git/hooks"
+cp "$SCAN_SRC" "$T/.config/git/hooks/secret-scan"; chmod 755 "$T/.config/git/hooks/secret-scan"
+
 # Stubs for every executable in the system directories a hook could fall back to, all links to
 # one marker script that records the name it was run as.
 HOSTILE="$T/hostile"; mkdir -p "$HOSTILE"
@@ -173,10 +182,13 @@ if [ -e "$MARKS/fsmonitor" ] && [ -e "$MARKS/ext" ] && [ -e "$MARKS/ssh" ] \
 else _fail "the fixture repositories run their configured commands under plain git" "$live"; fi
 rm -f "$MARKS"/*
 
-SETTINGS=$(printf '{}'| HOME="$T" /bin/bash "$MOD") || { echo "settings did not render" >&2; exit 2; }
+# The settings script asks op for the agent tokens: a stub that fails keeps the real op (a Touch ID
+# prompt when unsandboxed) out of this suite; the script then carries the live values.
+mkdir "$T/opstub" && printf '#!/bin/sh\nexit 1\n' > "$T/opstub/op" && chmod 755 "$T/opstub/op"
+SETTINGS=$(printf '{}'| PATH="$T/opstub:$PATH" HOME="$T" /bin/bash "$MOD") || { echo "settings did not render" >&2; exit 2; }
 total=$(printf '%s' "$SETTINGS" | jq '[.hooks[][]?.hooks[]?.command, .statusLine.command]
   | map(select(type == "string")) | length')
-n=0; skipped=0
+n=0; skipped=0; NOSCAN_ALL=""
 while IFS= read -r cmd; do
   [ -n "$cmd" ] || continue
   # The SessionStart env export runs no script: only a bare echo is skipped.
@@ -190,17 +202,18 @@ while IFS= read -r cmd; do
   else _fail "the configured script is in the mirror: $cmd" "not found under \$HOME/.claude"; continue; fi
   # Every hook runs against both repositories with each payload (the statusline reads only the
   # directory); a marker from the hostile PATH or from the repositories' configuration fails it.
-  rm -f "$MARKS"/*; ran=""
+  rm -f "$MARKS"/*; ran=""; noscan=""
   for r in "$T/repo" "$T/repo-ssh" "$T/repo-plain" "$T/repo-hook"; do
     inputs=("$(jq -cn --arg d "$r" '{model:{display_name:"Opus"},workspace:{current_dir:$d}}')")
     case $cmd in *statusline*) ;; *)
       inputs=(); for c in "${COMMANDS[@]}"; do inputs+=("$(payload "$r" "$c")"); done ;; esac
     for input in "${inputs[@]}"; do
       bump "$r"
-      ( cd "$r" && printf '%s' "$input" | env -i HOME="$T" XDG_STATE_HOME="$T/state" TMPDIR="$T" \
+      out=$( cd "$r" && printf '%s' "$input" | env -i HOME="$T" XDG_STATE_HOME="$T/state" TMPDIR="$T" \
         HERDR_ENV=1 HERDR_SOCKET_PATH="$T/no-herdr.sock" HERDR_PANE_ID=p1 \
-        PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/sh -c "$cmd" >/dev/null 2>&1 )
+        PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/sh -c "$cmd" 2>/dev/null )
       what=$(printf '%s' "$input" | jq -r '.tool_input.command // "statusline"')
+      case $out in *"the secret scan ("*) noscan="$noscan[${r##*/}, $what] " ;; esac
       [ -e "$T/marker" ] && ran="$ran[PATH: $(tr '\n' ' ' < "$T/marker")| ${r##*/}, $what] "
       [ -n "$(ls "$MARKS")" ] && ran="$ran[config: $(ls "$MARKS" | tr '\n' ' ')| ${r##*/}, $what] "
       rm -f "$T/marker" "$MARKS"/*
@@ -208,7 +221,21 @@ while IFS= read -r cmd; do
   done
   if [ -n "$ran" ]; then _fail "no hostile tool or repository-configured command runs: $cmd" "$ran"
   else _pass "no hostile tool or repository-configured command runs: ${cmd#/opt/homebrew/bin/bash }"; fi
+  NOSCAN_ALL="$NOSCAN_ALL$noscan"
 done < <(printf '%s' "$SETTINGS" | jq -r '(.hooks[][]?.hooks[]?.command, .statusLine.command) | select(type == "string")')
+# The scan's reason must appear nowhere: a guard that cannot find the scan denies with it and never
+# reaches the scan's git calls, which is the hostile-configuration check of this suite. The control
+# runs the same guard from a home without the script and must print it, so the row can fail.
+GCMD=$(printf '%s' "$SETTINGS" | jq -r '.hooks[][]?.hooks[]?.command | select(type == "string" and contains("git-forge-guard.sh"))' | head -1)
+mkdir -p "$T/nohome"; ln -s "$T/.claude" "$T/nohome/.claude"
+ctl=$( cd "$T/repo-plain" && payload "$T/repo-plain" "git push origin main" | env -i HOME="$T/nohome" TMPDIR="$T" \
+  PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/sh -c "$GCMD" 2>/dev/null )
+case $ctl in
+  *"the secret scan ("*) _pass "control: with no scan script beside the mirror the guard denies with the missing-scan reason" ;;
+  *) _fail "control: with no scan script beside the mirror the guard denies with the missing-scan reason" "$ctl" ;;
+esac
+if [ -z "$NOSCAN_ALL" ]; then _pass "no hook reason is the missing-scan text (the scan script is mirrored)"
+else _fail "no hook reason is the missing-scan text (the scan script is mirrored)" "$NOSCAN_ALL"; fi
 [ "$n" -gt 0 ] && [ "$n" -eq $((total - skipped)) ] \
   && _pass "all $n configured hook and statusline commands were exercised ($skipped echo skipped)" \
   || _fail "all configured commands were exercised" "ran $n, skipped $skipped, settings name $total"

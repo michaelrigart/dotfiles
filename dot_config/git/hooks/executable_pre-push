@@ -1,0 +1,60 @@
+#!/bin/bash
+# Global pre-push hook (core.hooksPath in ~/.config/git/config; spec
+# 2026-11-12-forge-push-protection-design.md, section 5): every push is scanned for secrets by
+# the secret-scan beside this file, then the repository's own pre-push hook runs, because
+# core.hooksPath replaces .git/hooks for every repository.
+#
+# git passes the remote's name and URL and writes one line per ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A delete has an all-zero local sha and sends nothing. A refusal is a non-zero exit.
+set -u
+
+saved=$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 1
+trap 'rm -f "$saved"' EXIT
+if ! cat > "$saved"; then
+  echo "Push guard: cannot save the list of refs git sends, so the push is refused. Push by hand." >&2
+  exit 1
+fi
+
+shas=()
+while IFS=' ' read -r lref lsha rref rsha || [ -n "$lref" ]; do
+  case $lsha in
+    '' | *[!0]*) ;;
+    *) continue ;;
+  esac
+  [ -n "$lsha" ] && shas+=("$lsha")
+done < "$saved"
+
+if [ "${#shas[@]}" -gt 0 ]; then
+  scan="$(dirname "$0")/secret-scan"
+  if [ ! -f "$scan" ]; then
+    echo "Push guard: the secret scan ($scan) is missing, so the push is refused. Restore it with chezmoi apply." >&2
+    exit 1
+  fi
+  root=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -z "$root" ]; then
+    echo "Push guard: cannot resolve the work tree this push runs in, so the push is refused. Push by hand." >&2
+    exit 1
+  fi
+  # $1 is the remote's name, or the URL as typed; $2 is where git sends (a pushurl, or a
+  # pushInsteadOf rewrite of the URL). The scan attributes history to the remotes that fetch from
+  # exactly $2 and to nothing else, so it gets $2 as --destination; the shown form only names the
+  # push in its reasons.
+  shown="${1:-}"
+  if [ "$shown" != "${2:-}" ] && ! git remote 2>/dev/null | grep -Fxq -- "$shown"; then
+    shown="${2:-} (rewritten from $shown)"
+  fi
+  /usr/bin/python3 -I "$scan" --repo "$root" --remote "$shown" --destination "${2:-}" -- "${shas[@]}" || exit 1
+fi
+
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [ -z "$common" ]; then
+  echo "Push guard: cannot find the repository's own hooks directory, so the push is refused (its own pre-push hook cannot run). Push by hand." >&2
+  exit 1
+fi
+own="$common/hooks/pre-push"
+if [ -x "$own" ] && [ ! "$own" -ef "$0" ]; then
+  "$own" "$@" < "$saved"
+  exit $?
+fi
+exit 0
