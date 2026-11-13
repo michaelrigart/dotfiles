@@ -672,6 +672,10 @@ as the record.
   converging, and Azure repositories are going out of use.
 - A writing `glab api --placeholder` is denied by name (§5.6).
 - A prompt on a gated verb's `--help` is an accepted limit; no gate or rule changes for it (§7).
+- Two limits found by the pre-merge reviews are accepted (§7), a decision relayed by the driver
+  session: a `url.<base>.insteadOf` rewrite of origin, and an `api` segment filled from a branch
+  named `merge_requests` or `pulls`. The structural rule for the second (deny a writing `api` call
+  with any filled segment) is not built.
 
 - **D1, `git pull` on the default branch.**
   - A: gate the forms that pull another ref, as a redirect to `git merge` (§5.3, about 40 lines

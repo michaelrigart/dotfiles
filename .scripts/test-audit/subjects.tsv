@@ -120,7 +120,7 @@ dot_config/xreview/reviewer.md	prose	xreview-packet	xreview-packet,xreview,xrevi
 dot_config/zsh/config	zsh	zsh-config	zsh-config
 dot_config/zsh/functions	zsh	wt-functions	wt-functions,chezmoi-wrapper,dev,zshrc-reload,dev-topology
 dot_config/zsh/zshenv	zsh	zshenv	zshenv,wt-functions
-dot_local/bin/executable_agent-text-scan	py	agent-text-scan	agent-text-scan,hook-path
+dot_local/bin/executable_agent-text-scan	py	agent-text-scan	agent-text-scan,xreview,hook-path
 dot_local/bin/executable_codex	sh	codex-launcher	codex-launcher,codex-code-mode-host,hook-path
 dot_local/bin/executable_codex-code-mode-host	sh	codex-code-mode-host	codex-code-mode-host,hook-path
 dot_local/bin/executable_codex-daemon	sh	codex-daemon	codex-daemon,codex-code-mode-host,hook-path
@@ -133,7 +133,7 @@ dot_local/bin/executable_wt-prepare	zsh	wt-functions	wt-functions,hook-path
 dot_local/bin/executable_wt-rm	zsh	wt-functions	wt-functions,dev-topology,hook-path
 dot_local/bin/executable_wt-teardown	zsh	wt-teardown	wt-teardown,wt-functions,dev-topology,hook-path
 dot_local/bin/executable_xreview	bash	xreview	xreview,xreview-apply-guard,xreview-skill,live-codex-daemon,hook-path
-dot_local/bin/executable_xreview-rpc	py	xreview-rpc	xreview-rpc,xreview-packet,live-codex-daemon,hook-path
+dot_local/bin/executable_xreview-rpc	py	xreview-rpc	xreview-rpc,xreview,xreview-packet,live-codex-daemon,hook-path
 dot_zshrc	zsh	zshrc-reload	zshrc-reload,zshrc
 tests/fixtures/test-audit/bin/esc.py	py	-	test-audit
 tests/fixtures/test-audit/bin/loop.sh	bash	-	test-audit
