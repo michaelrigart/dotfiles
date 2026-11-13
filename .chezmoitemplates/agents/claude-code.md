@@ -6,7 +6,7 @@
     `switch --track`, or a new branch started from a remote ref (`switch -c b origin/x`).
   - Works sandboxed: git `add`, `commit`, `push`/`fetch` over SSH, `mise exec`, local TCP.
 - **Excluded tools.** `docker`, `basecamp`, `herdr`, `wt`, `xreview` and `review` are declared
-  unsandboxed in `sandbox.excludedCommands`. Sandboxed, they fail or lie: "no Codex pane".
+  unsandboxed in `sandbox.excludedCommands`. Sandboxed they lie: "unauthenticated", "no Codex pane".
   - The declaration only applies when the tool is the first command of the Bash call, on its own.
     Do setup in a separate call; never pipe or prefix these tools, or pass the escape flag for them.
 - **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths
@@ -28,8 +28,8 @@
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
   Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
 - **Liveness.** Before a turn ends waiting on a child, background a `sleep` for its expected time.
-  On wake-up or resume, first tail each child's output. Stop one silent past its time, or report it
-  up; only its parent redoes or parks its step, never rerunning a prompted command.
+  After any wait or resume, first tail each child's output. Stop one silent past its time (a `wt`
+  line: tell Michael); only its parent redoes or parks its step, never doing what a prompt gated.
 - **Plan runs.** Plans give each task a `Depends on:` line and run in the line's checkout, never in
   a worktree per task. To run one, first load the `plan-run` skill: it overrides superpowers.
 - **Claude review findings.** For `sp-reviewer` and `sp-architect`, Fix now narrows: a finding gets
