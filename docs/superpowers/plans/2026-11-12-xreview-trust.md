@@ -457,9 +457,9 @@ check and its rulings R8, R10 and R11.
 - Test: `tests/xreview-guard.test.sh`, `tests/claude-settings.test.sh`
 
 **Interfaces:**
-- `gated_verb` returns None for every `az repos pr update`, plain or reordered. `AZ_VERBS` holds
-  `create` only. `az_completing` stays for creation; `az_unreadable`, `az_update_harmless`, the
-  `az-update` kind and its arm in the judge are removed, with every comment that describes them.
+- `gated_verb` returns None for every `az repos pr update`, plain or reordered. `AZ_VERBS` and
+  `az_completing` served the update alone and are removed with `az_unreadable`, `az_update_harmless`, the
+  `az-update` kind and its arm in the judge, and with every comment that describes them.
 - The fast path (`xreview-guard.sh`) no longer starts the helper for `update`.
 - `GLAB_API_VALUE` gains `--placeholder` (and its short form, if `glab api --help` shows one). A
   `glab api` call carrying it, as `--placeholder x=y` or `--placeholder=x=y`, for which `may_write`

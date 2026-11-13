@@ -247,7 +247,7 @@ recorded, so `collect` is always safe to rerun.
 - `collect` then prints one fixed message on stderr and exits 4:
 
   > xreview: the review failed: the reviewer's answer does not match the findings schema | exceeds
-  > xreview's bounds (n problems; first: \<path\>: \<problem\>). Nothing was recorded. The answer is
+  > xreview's bounds (\<path\>: \<problem\>). Nothing was recorded. The answer is
   > kept for Michael in \<file\> and is in the Codex pane. It is not printed here and is not to be
   > read into this session. Report it; do not re-dispatch.
 
@@ -285,7 +285,8 @@ saying the screen was withheld. The 12-line, 1,000-byte cap stays.
 ### 4.5 What the bounds buy, and what they do not
 
 **What they buy:**
-- **Nothing hidden.** Claude never receives a character it cannot see.
+- **Nothing hidden.** Claude never receives a character that `is_hidden` names (the limits of that
+  definition are in §7).
 - **Structure.** Every value is a field that xreview typed and placed. A schema miss prints none of
   the reviewer's bytes.
 - **Volume.** A finding carries at most 2,000 characters of reviewer text, and an answer at most
@@ -332,7 +333,13 @@ The gate learns a third CLI, for creation only.
 - Global options come after the verb. `repos pr create` in any other order after `az` is denied as
   reordered, and the message gives the plain form.
 - `--help` is exempt.
-- The fast path adds `az` as a whole word; it already triggers on `create`.
+- The fast path adds `az`, matched like its other words, in any letter case; it already triggers
+  on `create`.
+
+**A word az would read from a file is denied.** az replaces a word `@<path>`, and a value
+`<name>=@<path>`, with that file's contents before it reads any option, so `--description @f` can
+carry `--auto-complete`. A creation holding either form is denied, and the description is written
+inline.
 
 **Options are read as az reads them.** A word that is not an option is a value of the option
 before it, since several options take many values: `--description`, `--labels`, `--work-items` and
@@ -401,12 +408,12 @@ It reuses `check`, `remote_head`, `one` and `current_source`.
 
 ### 5.2 Never-rules go to `permissions.deny`
 
-Three silent denies go beside the publishing verbs (`modify_private_settings.json:171-178`):
+Three silent denies, one with its aliases, go beside the publishing verbs (`modify_private_settings.json:171-178`):
 
 | Rule | Why |
 |---|---|
 | `Bash(glab stack*)` | `sync` force-pushes past the push guard and opens MRs past the gate. The group is experimental ("might be unstable or removed at any time"), so all of it is denied. The transcripts on this Mac hold 0 such commands. |
-| `Bash(gh agent-task create*)` | A PR made by the forge, of the kind `gh pr revert` and `glab mr for` produce. The gate already denies those. |
+| `Bash(gh agent-task create*)`, and its aliases `gh agent`, `gh agents` and `gh agent-tasks` | A PR made by the forge, of the kind `gh pr revert` and `glab mr for` produce. The gate already denies those. |
 | `Bash(az repos pr update*)` | An update can complete a PR or change its state (`--status`, `--auto-complete`, `--bypass-policy`). The transcripts hold one real update, a description edit; Michael runs the next one himself. |
 
 All are prefix patterns, the form the publishing verbs already use, and they match plain forms
@@ -476,8 +483,10 @@ measured against. The suite holds the pin, with the versions. It is not heavy (i
 Exit 2 reports the environment drifting, as the cold-cache suites do, so it never turns another
 line's suite red.
 
-**Not pinned.** Flags are not pinned. A new flag on a gated verb is denied by name (checked against
-the installed versions, §3.4), and a removed flag shows up as a deny.
+**Flags.** The flags of `glab api` and `gh api` are pinned too (`__complete api -`): the gate reads
+an unknown `api` flag as a boolean, which is how `--placeholder` got past it. The gated verbs'
+flags are not pinned. A new flag on one is denied by name (checked against the installed versions,
+§3.4), and a removed flag shows up as a deny.
 
 **Version comments.** The guard's version comments are updated to the measured versions.
 
@@ -493,7 +502,10 @@ with no receipt: the path the gate sees does not name `merge_requests`.
 - A `glab api` call that carries `--placeholder`, in either spelling (`--placeholder x=y`,
   `--placeholder=x=y`), and may write (`may_write`) is denied by name. The message says to write
   the path out.
-- A read with `--placeholder` passes.
+- A read with `--placeholder` passes: a call both readings take for a read, the parse and the
+  words alone.
+- The fast path starts the helper on the word `placeholder`, since a segment split over two
+  placeholders names no other trigger word.
 - Resolving placeholders before matching was rejected: it copies glab's substitution rules into a
   frozen guard, for an option no transcript uses.
 
@@ -507,7 +519,10 @@ None added. Every change is either a deny (guard or rule) or an output format. g
 **Reviewer's answer**
 - The meaning of up to 2,000 characters of reviewer text per finding. That covers an instruction, a
   false claim, and a secret that is split, paraphrased or in a format gitleaks does not know.
-- Visible look-alike characters are rendered as written.
+- Visible look-alike characters are rendered as written, and so are the characters `is_hidden`
+  leaves out: the emoji selectors U+FE0E and U+FE0F, private-use characters, and U+2028 and U+2029.
+- A merged sliced round over the 40,000-character total fails for good; the measured maximum is a
+  fifth of it.
 - An agent that reads `turns/<nonce>.answer`, the raw file or the Codex rollouts
   (`~/.codex/sessions`) itself gets the unrendered text.
 - The reviewer reads across the whole disk; that was ruled on 2026-11-01.
@@ -522,7 +537,12 @@ None added. Every change is either a deny (guard or rule) or an output format. g
   - `az rest` or `az devops invoke` to the PR API;
   - gh and glab extensions, and another agent started from a CLI (`glab duo cli`).
   - a global option before `az`'s group names, or another letter case, which the update rule
-    misses: `az --debug repos pr update`, `az Repos PR UPDATE`.
+    misses: `az --debug repos pr update`, `az Repos PR UPDATE`;
+  - `az`'s command words read from files: `az @g @p @v …`;
+  - `GH`, `GLAB` or `Git` in another letter case, which runs the same tool on this filesystem
+    (older than this line);
+  - an `api` endpoint segment the CLI fills from the current branch's name (`:branch`,
+    `{branch}`), on a branch named `merge_requests` or `pulls` (older than this line).
 - A gated verb's `--help` can still prompt: the ask rule `Bash(glab mr merge*)` matches it, and an
   ask rule cannot be narrowed by a hook. Two unattended implementers of this line waited on that
   prompt. Agents read the flags from the guard's allowlists instead; the rule stays.
@@ -585,7 +605,7 @@ Tests are table-driven, with one row per rule class, and each row names the bug 
 | | G1: a writing `glab api` call with `--placeholder`, in both spellings, is denied; the same call as a GET is allowed | A placeholder spelling a gated path |
 | | P1 (D1 option A only): on the default branch, `git pull origin feature` and `git pull . feature` are denied with the redirect | The merge-class gap |
 | | P2 (D1 option A only): `git pull`, `--rebase` and `origin <default>` on it are allowed, alone and in a pipe or chain, and so is `git pull origin feature` elsewhere | False denies on syncs |
-| `claude-settings` (0 s) | `EXP_DENY` gains the three rules, as an exact list | A rule lost |
+| `claude-settings` (0 s) | `EXP_DENY` gains the three rules and the aliases, as an exact list | A rule lost |
 | `xreview-guard-cli` (new, about 4 s) | The installed surface equals the pin | Drift adding an ungated verb |
 
 `git-forge-guard` (heavy, 242 s) is unchanged: `git-forge-guard.sh` is not touched. The heavy
