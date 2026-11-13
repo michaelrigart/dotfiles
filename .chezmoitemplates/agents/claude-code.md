@@ -22,8 +22,8 @@
   |---|---|
   | `sp-mechanical` | tasks from a clear plan |
   | `sp-standard` | integration, debugging, scoped review, fix rounds, plan-run controllers, merges |
-  | `sp-reviewer` | cold diff review |
-  | `sp-architect` | design, plan review, the final whole-branch review |
+  | `sp-reviewer` | cold diff review, every per-task review and re-review |
+  | `sp-architect` | design, plan review, the final whole-branch review; a fix only after an `sp-standard` attempt at it failed |
   | `web-researcher` | all web research, a skill's researchers included: it holds only WebFetch and WebSearch, so the dispatcher passes it any reference text and saves its notes |
 
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
