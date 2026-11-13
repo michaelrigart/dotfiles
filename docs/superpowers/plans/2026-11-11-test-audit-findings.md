@@ -3,7 +3,7 @@
 **Status:** Implemented (branch `chore/test-audit`; the dotfiles have no MR)  
 **Measured at:** `523a95d` (main) for phase 1; the refresh at `eb60a84`; the phase 3 validation at `21563e5` and `0c14b64` (R37, R39); the whole runs at `5debd73`  
 **Spec:** `docs/superpowers/specs/2026-11-11-test-audit-design.md`  
-**Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R40)  
+**Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R41)  
 **Classification:** `docs/superpowers/plans/2026-11-11-test-audit-classification.tsv` (6517 tests, every in-scope suite)  
 **Targeted manifest:** `.scripts/test-audit/targeted.jsonl` (121 candidates)
 
@@ -231,7 +231,7 @@ Per file (sampled, killed, flaky, survived, inconclusive, baseline-red, stale, k
 **Which commit supplied each number:**
 - `0c14b64`, the rebased branch after pre-merge fix round 1 (R37, R39): the rule mutants, the code mutants, and the targeted mutants for `claude-settings`, `git-config` and `ha-mcp`;
 - `21563e5`, the cut commit before the rebase (R37): the targeted mutants for the other suites. Main changed none of those suites, and their cut lines are byte-identical after the rebase;
-- `5debd73`: the whole runs, the merged cases and the harness suite's own cost. After it, `f83a3bb` and `fc4860c` change only the harness's clean-copy check and its suite (R40), and the other commits only the design records. The whole runs are repeated on the final commit before the push;
+- `5debd73`: the whole runs, the merged cases and the harness suite's own cost. After it, `f83a3bb`, `fc4860c`, `300363a` and `0c0f010` change only how the harness prepares and removes its copies, and its own suite (R40, R41). The other commits change only the design records. The whole runs are repeated on the final commit before the push;
 - `f83a3bb`: the residue check with the fixed clean-copy check (R40).
 
 **Validation:**
@@ -1004,10 +1004,10 @@ A mutant is inconclusive when it timed out, printed fewer assertions than the ba
 
 **Reuse.** The harness (`.scripts/test-audit/audit.py`, `mutators.py`, `rules.py`) keeps resumable state bound to a SHA and takes the machine lock per suite run, so it can interleave with other lines. `subjects.tsv` (which suite loads which file), `targeted.jsonl` (121 candidates with their mutants), the classification TSV (6517 rows) and `accept` carry over; a new audit re-runs `accept` on a changed classification in seconds. `rule-check.sh` and `proposed-rules.tsv` became the `rule` helper in `tests/agent-instructions.test.sh` and `tests/fixtures/agent-instructions/rules.tsv` (Task 13).
 
-**Every suite run starts from a pristine copy (R39).** Before R39, all of one mutant's suites ran in one copy, and the copy was checked only after the last of them. A suite that left a file behind could then turn a later suite red, and that red would count as a false killer.
+**Every suite run gets a fresh copy (R39-R41).** Before R39, all of one mutant's suites ran in one copy, and the copy was checked only after the last of them. A suite that left a file behind could then turn a later suite red, and that red would count as a false killer.
 - Every run now goes through one helper. That covers baselines, reruns, `inventory` and `try`.
-- The helper compares the copy against its as-built state: one digest over every path in the copy, `.git` included (type, mode, and content or symlink target), plus what the index holds. On any difference it rebuilds the copy. The first version compared `git status --ignored`, refs, local config, worktrees, stash and empty directories, and missed a hook planted in `.git` (R40).
-- The measurement before R39 never logged a mutant run that left residue. Section 1.5 gives the residue check for baselines.
+- R39 and R40 compared the copy after each run against its as-built state and rebuilt it on a difference. Each Codex round then found a change the comparison missed: first a hook planted in `.git`, then a FIFO that hung the comparison's own git query. R41 drops the comparison. Every run gets a copy built for it at the same path, at about 0.4 s a run, so no residue reaches a later run, and nothing reads a copy a suite may have tampered with.
+- The measurement before R39 never logged a mutant run that left residue. Section 1.5 gives the residue checks.
 
 **The gate commands fail closed.** `report --compare` exits 1 when anything is `lost` or `not run`. `rules` exits 1 for a rule that yields no mutant. Before R39 both exited 0, and the validation had to read their output to see a failure.
 

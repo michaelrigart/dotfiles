@@ -577,3 +577,10 @@ Rulings made during the run are recorded here, because the dotfiles have no MR. 
   - The fixed harness's inventory of the 35 suites Task 15 ran, at `f83a3bb`, is green, with no copy rebuilt: no suite's baseline leaves anything behind in its copy, `.git` included.
 
   Cost if wrong: re-running the affected suites' records, within R33's 9 h.
+- **R41 (pre-merge fix round 4, driver ruling).** Codex's round 4 found that the clean-copy check's `git ls-files` ran outside any timeout, so a FIFO planted as `.git/config` would hang the harness. The same class reached the restore of a mutated file, which wrote through the path: a FIFO blocked it, and a symlink sent the write outside the copy. Rounds 3 and 4 had each found a gap the previous fix left in this one place, which is the global stop condition for a review loop. The driver ruled for the structural option instead of a third patch (`300363a`, with the scoped review's Minor fixes in `0c0f010`):
+  - Every suite run gets a copy built for it, at the same path. Nothing checks or restores a used copy: `copy_state`, the rebuild and the restore are deleted.
+  - The copy's commit takes the source commit's date, so every run sees the same HEAD. Before, a copy's HEAD came from its build time, which was the same within a session.
+  - Removing a tampered copy never follows a link, and a copy that cannot be removed stops the session with a message.
+  - A build costs about 0.4 s a run. The harness suite now takes about 89 s, against 62.9 s at `5debd73`, so it adds about 67 s per default run net of the cuts. Whether to gate it stays Michael's call (R39).
+
+  This changes how copies are prepared, not how a result is measured, and the scoped review confirmed that independently. There is still one baseline per suite per session, with the same attribution and run conditions, and each run's copy is identical to the as-built copy at the same path. So Task 15's records stand on R40's argument and residue inventory. Cost if wrong: re-measuring what a later review shows to depend on the copy.
