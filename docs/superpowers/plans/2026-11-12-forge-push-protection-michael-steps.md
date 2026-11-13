@@ -796,6 +796,41 @@ az repos show --org <org-url> --project <project> --repository <repo> --output j
 az repos policy list --org <org-url> --project <project> --repository-id <repo-id> --branch <branch> --output json
 ```
 
+**Record the state before you change anything**, for each of the three repositories, into files
+outside this repository: the policy list above, and your three permissions on the branch. The
+rollback of this group goes back to these files; without them it has nothing to go back to. Save the
+policy list:
+
+```
+mkdir -p ~/.local/state/forge-protection
+az repos policy list --org <org-url> --project <project> --repository-id <repo-id> --branch <branch> --output json > ~/.local/state/forge-protection/azure-before-<repo-id>-policies.json
+```
+
+Then the permissions, with the same calls the check makes (it runs them but does not print them):
+
+```
+az account show --query user.name --output tsv
+```
+
+```
+printf '%s' <branch> | iconv -f UTF-8 -t UTF-16LE | xxd -p
+```
+
+(for `main` that prints `6d00610069006e00`; a branch name with `/` is converted one segment at a
+time and the segments joined with `/`.)
+
+```
+az devops security permission show --id 2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87 --subject <user-name> --token repoV2/<project-id>/<repo-id>/refs/heads/<hex-branch>/ --org <org-url> --output json > ~/.local/state/forge-protection/azure-before-<repo-id>-permissions.json
+```
+
+The saved answer holds your own entry for the branch: its `allow` and `deny` bits (8 force push, 128
+bypass policies when pushing, 32768 bypass policies when completing pull requests) next to
+`extendedInfo`, which carries the inherited rights. **UNVERIFIED:** that the explicit entry shows
+Allow, Deny or Not set exactly as the dialog does. So also open Repos > Branches > `<branch>` > ⋯ >
+Branch security > your user and write the three values the dialog shows (Allow, Deny or Not set) into
+`~/.local/state/forge-protection/azure-before-<repo-id>-dialog.txt`. Check that all three files exist
+and are not empty before the next step; the policy file of a repository without policies holds `[]`.
+
 Target: an enabled, blocking policy of type "Minimum number of reviewers" with at least 1
 reviewer. The check recognises the type by its type id, `fa4e907d-c16b-4a4c-9dfa-4906e5d171dd`
 (`type.id`), never by the display name, which is localised. **UNVERIFIED:** that id is taken from
@@ -817,22 +852,7 @@ Then your effective permissions on that branch. In the UI: Repos > Branches > `<
 Branch security > your user. "Force push (rewrite history, delete branches and tags)", "Bypass
 policies when pushing" and "Bypass policies when completing pull requests" must not show Allow
 (own or inherited); where one does, set it to **Deny** for your user on that branch. The check
-reads the same with this call, which the script runs but does not print:
-
-```
-az account show --query user.name --output tsv
-```
-
-```
-printf '%s' <branch> | iconv -f UTF-8 -t UTF-16LE | xxd -p
-```
-
-(for `main` that prints `6d00610069006e00`; a branch name with `/` is converted one segment at a
-time and the segments joined with `/`.)
-
-```
-az devops security permission show --id 2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87 --subject <user-name> --token repoV2/<project-id>/<repo-id>/refs/heads/<hex-branch>/ --org <org-url> --output json
-```
+reads the same with the permission call recorded above, which the script runs but does not print.
 
 **UNVERIFIED: the bits and token format.** The script treats bit values 8 (force push), 128 (bypass
 policies when pushing) and 32768 (bypass policies when completing pull requests) in any
@@ -878,8 +898,30 @@ line is told.
 
 ### Rollback, group G
 
-In the UI: Project settings > Repositories > `<repo>` > Policies > Branch policies > the policy
-> Delete; and Branch security > your user: set the three permissions back to "Not set".
+Per repository, from the files recorded in step 12 (`azure-before-<repo-id>-policies.json`,
+`-permissions.json` and `-dialog.txt` in `~/.local/state/forge-protection/`). Protection that existed
+before these steps stays.
+
+Policies: delete only a policy these steps created. Read the policy list again and list the ids the
+recorded file does not hold:
+
+```
+az repos policy list --org <org-url> --project <project> --repository-id <repo-id> --branch <branch> --output json > ~/.local/state/forge-protection/azure-after-<repo-id>-policies.json
+jq -n --slurpfile b ~/.local/state/forge-protection/azure-before-<repo-id>-policies.json --slurpfile a ~/.local/state/forge-protection/azure-after-<repo-id>-policies.json '[$a[0][].id] - [$b[0][].id] | .[]'
+```
+
+Each id printed is one of yours: Project settings > Repositories > `<repo>` > Policies > Branch
+policies > that policy > Delete (or `az repos policy delete --id <policy-id> --org <org-url> --project <project>`;
+**UNVERIFIED:** the flags, see `az repos policy delete --help`). A policy whose id the recorded file
+holds existed before: delete nothing, and if you edited it in step 12 (turned it on, made it
+Required, raised the reviewer count), put those settings back to the values the recorded file holds
+(`isEnabled`, `isBlocking`, `settings.minimumApproverCount`, `settings.creatorVoteCounts`).
+
+Permissions: Branch security > your user: set each of the three permissions (Force push, Bypass
+policies when pushing, Bypass policies when completing pull requests) to the value `-dialog.txt`
+recorded, which may be Allow or Deny as well as Not set. Never set all three to Not set without
+reading it: a Deny that stood before these steps is protection, and an Allow that stood before them
+is what it was (the check reports it as drift again).
 
 ## Group H: the exceptions file
 
