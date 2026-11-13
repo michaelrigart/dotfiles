@@ -83,10 +83,12 @@ NO_DIFFS = "This review carries no diffs, so there is no file list; return revie
 # (spec 3.8). With framing on, the cap is Michael's to raise, as the cross-review skill says: it
 # names his file, which lies outside the sandbox, and nothing offers another way round it.
 CAP_REFUSAL = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
-               "Review them in slices, or raise the cap if the reviewer can hold it: "
-               "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch.")
+               "The cap is Michael's to raise, if the reviewer can hold it: "
+               "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch. "
+               "Michael's call: report this and stop.")
 CAP_REFUSAL_FRAMED = ("the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to "
-                      "raise, as cap= in ~/.config/xreview/packets.conf; no review was started.")
+                      "raise, as cap= in ~/.config/xreview/packets.conf; no review was started. "
+                      "Michael's call: report this and stop.")
 # The cap while fit is off: XREVIEW_MAX_DIFF_BYTES for one dispatch, else packets.conf's cap=
 # line, else this (spec 3.8). A cap= value that is not a whole number refuses, naming the file.
 DEFAULT_CAP = 100000

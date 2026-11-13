@@ -657,10 +657,12 @@ SLICE = "This is slice {} of {} of one change. The other slices are reviewed in 
 LISTED = "{} was shown whole in the approved plan review {}; only its changes since then are shown here."
 MISSED = "The last round's reviewed_files did not list: {}. Review them too."
 CAP_TEXT = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
-            "Review them in slices, or raise the cap if the reviewer can hold it: "
-            "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch.")
+            "The cap is Michael's to raise, if the reviewer can hold it: "
+            "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch. "
+            "Michael's call: report this and stop.")
 CAP_FRAMED = ("the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to raise, "
-              "as cap= in ~/.config/xreview/packets.conf; no review was started.")
+              "as cap= in ~/.config/xreview/packets.conf; no review was started. "
+              "Michael's call: report this and stop.")
 NO_DIFFS = "This review carries no diffs, so there is no file list; return reviewed_files as an empty list."
 HAVE_ZSTD = __import__("shutil").which("zstd") is not None
 
@@ -922,6 +924,8 @@ def _k10():
     is_("F1 framing on with fit off refuses, saying the cap is Michael's to raise",
         (fo["action"], fo["reason"]), ("refuse", CAP_FRAMED.format(n, n - 1)))
     ok("F1 and never offers slicing or the variable", "slices" not in fo["reason"] and "XREVIEW_MAX_DIFF_BYTES" not in fo["reason"], fo["reason"])
+    ok("F1 both cap refusals end with the marker, the only imperative", over["reason"].endswith(" Michael's call: report this and stop.")
+       and fo["reason"].endswith(" Michael's call: report this and stop.") and "Review them in slices" not in over["reason"], (over["reason"], fo["reason"]))
     fs = built(request([t1], sp[:1], switches_file=swf(framing=True)))
     ok("F1 framing on with fit off sends a framed packet", fs["action"] == "send" and b"Files in this change (2):" in pkt(fs))
     # the cap counts characters, as bash's ${#d} does, not bytes

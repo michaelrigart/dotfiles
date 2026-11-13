@@ -197,8 +197,8 @@ find_pane() {
   n="$(printf '%s' "$ids" | grep -c . || true)"
   case "$n" in
     1) printf '%s\n' "$ids" ;;
-    0) die "no Codex pane for $root. Apply the project layout, or set XREVIEW_PANE" ;;
-    *) die "several Codex panes for $root: $(printf '%s' "$ids" | tr '\n' ' ' | sed 's/ $//') - set XREVIEW_PANE to one of them" ;;
+    0) die "no Codex pane for $root (Michael applies the project layout, or sets XREVIEW_PANE). Michael's call: report this and stop." ;;
+    *) die "several Codex panes for $root: $(printf '%s' "$ids" | tr '\n' ' ' | sed 's/ $//'); Michael can set XREVIEW_PANE to one of them. Michael's call: report this and stop." ;;
   esac
 }
 
@@ -332,7 +332,7 @@ thread_state_or_die() { # thread_state_or_die <pane> <thread>: die if <thread> i
   local out
   if ! out="$(xreview-rpc thread-status --thread "$2" 2>/dev/null)" \
      || ! printf '%s' "$out" | jq -e '.running | type == "boolean"' >/dev/null 2>&1; then
-    die "cannot read whether thread $2 in the Codex pane $1 is running; no review was started"
+    die "cannot read whether thread $2 in the Codex pane $1 is running; no review was started. Michael's call: report this and stop."
   fi
   if printf '%s' "$out" | jq -e '.running == true' >/dev/null 2>&1; then
     die "the Codex pane $1's thread $2 is mid-turn; wait for it to finish, then dispatch again"
@@ -348,7 +348,7 @@ pane_guard() {
   # One successful read serves both the status and the title: a read that fails is a check
   # that could not be completed, never an idle pane or an empty title.
   obj="$(pane_obj "$pane")" \
-    || die "cannot read the Codex pane $pane (herdr pane get); no review was started"
+    || die "cannot read the Codex pane $pane (herdr pane get); no review was started. Michael's call: report this and stop."
   status="$(printf '%s' "$obj" | jq -r '.agent_status // empty' 2>/dev/null)"
   case "$status" in
     working|blocked) die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again" ;;
@@ -361,21 +361,21 @@ pane_guard() {
     t="$(xreview-rpc thread-resolve --prefix "$prefix" 2>/dev/null)" || rrc=$?
     case "$rrc" in
       0) is_safe_id "$t" \
-           || die "cannot read whether thread $prefix in the Codex pane $pane is running; no review was started"
+           || die "cannot read whether thread $prefix in the Codex pane $pane is running; no review was started. Michael's call: report this and stop."
          thread_state_or_die "$pane" "$t" ;;
       1) ;;
-      *) die "cannot read whether thread $prefix in the Codex pane $pane is running; no review was started" ;;
+      *) die "cannot read whether thread $prefix in the Codex pane $pane is running; no review was started. Michael's call: report this and stop." ;;
     esac
   fi
   codex="$(proc_codex "$proc")"
   # A foreground group that is not the shell and holds no Codex process is no observation: it
   # could be a TUI on a pre-session screen, resuming a thread the guard cannot read.
   if [ -z "$codex" ] && ! proc_freed "$proc"; then
-    die "cannot read the Codex pane $pane's process (herdr pane process-info); no review was started"
+    die "cannot read the Codex pane $pane's process (herdr pane process-info); no review was started. Michael's call: report this and stop."
   fi
   if [ -n "$codex" ]; then
     target="$(resume_target "$codex")" \
-      || die "the Codex pane $pane is resuming something other than a thread id; no review was started"
+      || die "the Codex pane $pane is resuming something other than a thread id (codex resume --last, or a picker), and the pane is Michael's; no review was started. Michael's call: report this and stop."
     [ -z "$target" ] || thread_state_or_die "$pane" "$target"
   fi
 }
@@ -476,7 +476,7 @@ thread_running() { # thread_running <thread>: 0 when xreview-rpc thread-status r
   local out
   if ! out="$(xreview-rpc thread-status --thread "$1" 2>/dev/null)" \
      || ! printf '%s' "$out" | jq -e '.running | type == "boolean"' >/dev/null 2>&1; then
-    die "cannot read whether the review thread $1 is running; no review was started"
+    die "cannot read whether the review thread $1 is running; no review was started. Michael's call: report this and stop."
   fi
   printf '%s' "$out" | jq -e '.running == true' >/dev/null 2>&1
 }
@@ -501,7 +501,7 @@ pane_is_free() { # pane_is_free <pane>: 0 when the shell is back in the foregrou
   # is not, or the read failed (never "freed"). DIES when herdr reports the pane closed.
   local proc
   if proc="$(pane_proc "$1")"; then proc_freed "$proc"; return; fi
-  pane_gone "$1" && die "the Codex pane $1 closed while being freed; no review was started"
+  pane_gone "$1" && die "the Codex pane $1 closed while being freed; no review was started. Michael's call: report this and stop."
   return 1
 }
 
@@ -532,7 +532,7 @@ pane_quit() {
       sleep "$poll"
     done
   done
-  die_with_screen "$pane" "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
+  die_with_screen "$pane" "the Codex pane $pane did not exit its session within ${wait}s; no review was started. Michael's call: report this and stop."
 }
 
 # pane_resume <pane> <thread> <root> - spec 7.3 step 5 and 2026-10-01 §4.5, best effort,
@@ -645,9 +645,9 @@ lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at th
   local dir f rc=0 wait="${XREVIEW_LOCK_WAIT:-60}" re='^([0-9]+(\.[0-9]*)?|\.[0-9]+)$'
   [[ $wait =~ $re ]] || wait=60
   dir="${XDG_STATE_HOME:-$HOME/.local/state}/xreview/locks"
-  mkdir -p "$dir" 2>/dev/null && [ -d "$dir" ] || die "cannot create $dir; no review was started"
+  mkdir -p "$dir" 2>/dev/null && [ -d "$dir" ] || die "cannot create $dir; no review was started. Michael's call: report this and stop."
   f="$dir/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_').lock"
-  { exec 9>>"$f"; } 2>/dev/null || die "cannot open $f; no review was started"
+  { exec 9>>"$f"; } 2>/dev/null || die "cannot open $f; no review was started. Michael's call: report this and stop."
   # Exit 75 only when the bound runs out with the lock still held; the helper's own other
   # failure exits 2. Bash trusts only 75 as contention: any other status (1, 2, 127, a signal -
   # no python, no flock on this filesystem) is "cannot lock", never reported as contention.
@@ -670,8 +670,8 @@ except Exception:
 ' "$wait" 2>/dev/null || rc=$?
   case "$rc" in
     0) ;;
-    75) die "another dispatch is using the Codex pane $1; no review was started" ;;
-    *) die "cannot lock the Codex pane $1 ($f); no review was started" ;;
+    75) die "another dispatch is using the Codex pane $1; no review was started - wait for it, then dispatch again" ;;
+    *) die "cannot lock the Codex pane $1 ($f); no review was started. Michael's call: report this and stop." ;;
   esac
 }
 
@@ -1311,8 +1311,8 @@ cmd_dispatch() {
   if [ "$needs_thread" = 0 ]; then
     _dispatch_decide ""
   fi
-  codex-daemon ensure || die "the Codex daemon is not running; no review was started"
-  codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
+  codex-daemon ensure || die "the Codex daemon is not running; no review was started. Michael's call: report this and stop."
+  codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above); its fix, codex-daemon restart, disconnects every open Codex TUI, so an agent never runs it. Michael's call: report this and stop."
   xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
   warn_pane_map_untrusted
   # With fit or delta on the decision depends on the thread (its context, its turns), and
@@ -1328,9 +1328,9 @@ cmd_dispatch() {
     # cannot hold is refused, before any thread is started or the pane is touched.
     if [ "$pinned" = 1 ] && [ -n "$thread" ] && [ "$action" != send ]; then
       if [ -n "${XREVIEW_THREAD:-}" ]; then
-        die "the review thread $thread (XREVIEW_THREAD) cannot hold this packet; unset XREVIEW_THREAD to let xreview move the review to a fresh thread. No review was started."
+        die "the review thread $thread (XREVIEW_THREAD) cannot hold this packet; no review was started. XREVIEW_THREAD is Michael's: unset XREVIEW_THREAD lets xreview move the review to a fresh thread. Michael's call: report this and stop."
       fi
-      die "the pinned review thread $thread cannot hold this packet; xreview round --reset drops the pin so the review can move to a fresh thread. No review was started."
+      die "the pinned review thread $thread cannot hold this packet; no review was started. The pin is Michael's: never drop it with xreview round --reset. Michael's call: report this and stop."
     fi
   fi
   pane="$(find_pane)"
@@ -1339,7 +1339,7 @@ cmd_dispatch() {
   # The process is read once, here: the guard and pane_free's fast path judge this same
   # observation, and a dispatch that cannot read it refuses before any keystroke.
   proc="$(pane_proc "$pane")" \
-    || die "cannot read the Codex pane $pane's process (herdr pane process-info); no review was started"
+    || die "cannot read the Codex pane $pane's process (herdr pane process-info); no review was started. Michael's call: report this and stop."
   # A herdr-idle pane can still be mid-turn on the daemon side: a disconnected TUI keeps its
   # title's thread id prefix, and a TUI on a pre-session screen is about to open the thread
   # its argv resumes. The guard refuses on either, or when it cannot tell.
@@ -1351,9 +1351,10 @@ cmd_dispatch() {
   round=$(( $(current_round "$branch") + 1 ))
   if [ -n "$max" ] && [ "$round" -gt "$max" ]; then
     bump_round "$branch" >/dev/null
-    die "round $round exceeds the cap of $max for this branch.
+    die "round $round exceeds the cap of $max for this branch (XREVIEW_MAX_ROUNDS).
 Two models circling the same point is Michael's call, not another turn.
-Report the remaining disagreement, or: xreview round --reset"
+Report the remaining disagreement; lifting the cap (xreview round --reset) is his.
+Michael's call: report this and stop."
   fi
 
   # Thread: XREVIEW_THREAD, then the pin, then the recorded checkpoint thread. The chosen
@@ -1531,7 +1532,7 @@ _collect_fail() {
        exit 3 ;;
     4) _collect_exit4 schema "$werr" "$dir/turns/$nonce.raw" ;;
     5) die "the Codex daemon is unreachable; the turn is on record for $nonce - run codex-daemon ensure, then collect again" ;;
-    *) die "the reviewer turn failed for $nonce (do NOT retry the dispatch)" ;;
+    *) die "the reviewer turn failed for $nonce (do NOT retry the dispatch): report this and stop" ;;
   esac
 }
 
@@ -1899,8 +1900,8 @@ _slice_start() {
   DIE_NOTE="slice $((i + 1)) of $n has not started; the round is on record for $nonce; run xreview collect $nonce again (do NOT re-dispatch)"
   guard_project_config
   pane_command >/dev/null
-  codex-daemon ensure || die "the Codex daemon is not running"
-  codex-daemon check || die "refusing to start the next slice while the daemon carries a pane's environment (see above)"
+  codex-daemon ensure || die "the Codex daemon is not running. Michael's call: report this and stop."
+  codex-daemon check || die "refusing to start the next slice while the daemon carries a pane's environment (see above); its fix, codex-daemon restart, disconnects every open Codex TUI, so an agent never runs it. Michael's call: report this and stop."
   xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above)"
   pane="$(find_pane)"
   lock_pane "$pane"
@@ -1924,7 +1925,7 @@ _slice_start() {
     return 0
   fi
   proc="$(pane_proc "$pane")" \
-    || die "cannot read the Codex pane $pane's process (herdr pane process-info)"
+    || die "cannot read the Codex pane $pane's process (herdr pane process-info). Michael's call: report this and stop."
   pane_guard "$pane" "$proc"
   th="$(xreview-rpc thread-start --cwd "$(repo_root)" --started "$(state_dir)/started")" || die "could not start a new review thread"
   assert_id "$th"
@@ -2030,7 +2031,7 @@ cmd_collect() {
     if other="$(nonce_elsewhere "$nonce")"; then
       die "$nonce was dispatched from another checkout (its state is $other); run collect with the -C it was dispatched with"
     fi
-    die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
+    die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch): report this and stop"
   fi
   # A third field names the checkpoint and a fourth the branch dispatched on; a record from
   # before either existed has two or three, and its receipt names the current branch.

@@ -256,6 +256,8 @@ case "$cmd" in
   thread-resolve)
     # RPC_RESOLVE_RC=<n>: the resolver exits n (5: daemon unreachable, 2: usage, 1: no match).
     [ -n "${RPC_RESOLVE_RC:-}" ] && exit "$RPC_RESOLVE_RC"
+    # RPC_RESOLVE_OUT=<text>: the resolver answers exactly that, with exit 0 (an id that is not safe, say).
+    [ -n "${RPC_RESOLVE_OUT:-}" ] && { echo "$RPC_RESOLVE_OUT"; exit 0; }
     for u in "$U0" "$U1" "$U2" "$U3" "$U4"; do
       case "$u" in "$prefix"*) echo "$u"; exit 0 ;; esac
     done
@@ -381,7 +383,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
         SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE ENSURE_MARK \
-        ENSURE_WRITES_CONF HOOKS_STATUS HOOKS_STATUS_RC RPC_ARCHIVE_FAIL_FOR
+        ENSURE_WRITES_CONF HOOKS_STATUS HOOKS_STATUS_RC RPC_ARCHIVE_FAIL_FOR RPC_RESOLVE_OUT
   export NEW_UUID="$U1"
   packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
@@ -409,6 +411,18 @@ none_after() { # none_after <marker> <target>: <target> never appears in $CALLS 
   # the first line matching <marker> (C1: nothing may send-keys once the turn exists).
   awk -v m="$1" -v t="$2" '$0 ~ m {f=1} f && $0 ~ t {c++} END{print c+0}' "$CALLS"
 }
+# The marker that ends the message of every refusal only Michael can clear, and MARK_END, a grep
+# pattern for a line ending with it. The skill tells an agent to stop on it.
+MARK="Michael's call: report this and stop."
+MARK_END="Michael's call: report this and stop[.]$"
+refusal_msg() { # refusal_msg <text> <output>: the message of the refusal whose "xreview:" line
+  # contains <text>: that line and the lines after it, up to (not including) the pane's screen
+  # ("  | " lines) or the next "xreview:" line (a DIE_NOTE).
+  printf '%s\n' "$2" | T="$1" awk '
+    f && (/^xreview: / || /^  \| /) { exit }
+    !f && /^xreview: / && index($0, ENVIRON["T"]) { f = 1 }
+    f { print }'
+}
 
 echo "A. rounds are not capped by default; XREVIEW_MAX_ROUNDS is an opt-in bound"
 fresh
@@ -429,6 +443,15 @@ starts="$(called 'xreview-rpc turn-start')"
 out="$(XREVIEW_MAX_ROUNDS=13 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "XREVIEW_MAX_ROUNDS=13 refuses the fourteenth round" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
 is "and starts no turn"               "$(called 'xreview-rpc turn-start')" "$starts"
+is "A R23 the cap refusal names XREVIEW_MAX_ROUNDS" \
+   "$(refusal_msg 'exceeds the cap' "$out" | head -n 1)" "xreview: round 14 exceeds the cap of 13 for this branch (XREVIEW_MAX_ROUNDS)."
+is "A R23 its message is four lines" "$(refusal_msg 'exceeds the cap' "$out" | wc -l | tr -d ' ')" 4
+is "A R23 its message ends with the marker, on its own last line" \
+   "$(refusal_msg 'exceeds the cap' "$out" | tail -n 1)" "$MARK"
+is "A R23 and the other lines say it is Michael's, never an instruction to lift the cap" \
+   "$(refusal_msg 'exceeds the cap' "$out" | sed -n '2,3p')" \
+   "Two models circling the same point is Michael's call, not another turn.
+Report the remaining disagreement; lifting the cap (xreview round --reset) is his."
 is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 14
 bash "$XREVIEW" round --reset >/dev/null
 is "reset returns the counter to zero" "$(bash "$XREVIEW" round)" 0
@@ -466,6 +489,9 @@ is "with no correlation line any more"       "$(grep -c 'correlation' "$P/packet
 fresh
 out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan --diff HEAD~1..HEAD b.md 2>&1)"
 is "an oversized diff is refused, never truncated" "$(printf '%s' "$out" | grep -c 'too large')" 1
+is "B R24 the refusal's message is two lines, the second the cap as Michael's to raise" \
+   "$(refusal_msg 'too large to carry inline' "$out" | wc -l | tr -d ' ')/$(refusal_msg 'too large to carry inline' "$out" | tail -n 1)" \
+   "2/The cap is Michael's to raise, if the reviewer can hold it: cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch. $MARK"
 is "before anything is touched" "$(untouched)" yes
 fresh
 out="$(bash "$XREVIEW" dispatch --checkpoint plan --diff no-such-ref..HEAD b.md 2>&1)"
@@ -481,9 +507,13 @@ echo "C. preconditions refuse before anything is touched"
 fresh; out="$(ENSURE_RC=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C1 a daemon that will not start refuses" "$rc" 1
 is "C1 untouched" "$(untouched)" yes
+is "C1 R1 the message ends with the marker" "$(refusal_msg 'the Codex daemon is not running' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 fresh; out="$(CHECK_RC=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C2 a contaminated daemon refuses" "$rc" 1
 is "C2 and says why" "$(printf '%s' "$out" | grep -c 'refusing to dispatch while the daemon')" 1
+is "C2 R3 the message names the fix, codex-daemon restart, and its cost" \
+   "$(refusal_msg 'refusing to dispatch while the daemon' "$out" | grep -c 'codex-daemon restart, disconnects every open Codex TUI, so an agent never runs it')" 1
+is "C2 R3 the message ends with the marker" "$(refusal_msg 'refusing to dispatch while the daemon' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 is "C2 untouched" "$(untouched)" yes
 fresh; out="$(RPC_HEALTH_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C13 an unreachable daemon via xreview-rpc refuses" "$rc" 1
@@ -492,12 +522,16 @@ is "C13 untouched" "$(untouched)" yes
 is "C13 no round consumed" "$(bash "$XREVIEW" round)" 0
 fresh; : > "$P/agent"; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C3 no Codex pane refuses" "$(printf '%s' "$out" | grep -c 'no Codex pane')" 1
+is "C3 R5 the message says the layout and XREVIEW_PANE are Michael's, and ends with the marker" \
+   "$(refusal_msg 'no Codex pane for' "$out" | grep -c "(Michael applies the project layout, or sets XREVIEW_PANE)")/$(refusal_msg 'no Codex pane for' "$out" | tail -n 1 | grep -c "$MARK_END")" "1/1"
 is "C3 untouched" "$(untouched)" yes
 fresh
 export EXTRA_PANES=",{\"agent\":\"codex\",\"agent_status\":\"idle\",\"cwd\":\"$CWD\",\"pane_id\":\"w9:p2\",\"terminal_title\":\"x\"}"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C4 several Codex panes refuse" "$(printf '%s' "$out" | grep -c 'several Codex panes')" 1
 is "C4 naming both" "$(printf '%s' "$out" | grep -c 'w1:p2 w9:p2')" 1
+is "C4 R6 the message says Michael can set XREVIEW_PANE to one of them, and ends with the marker" \
+   "$(refusal_msg 'several Codex panes for' "$out" | grep -c 'Michael can set XREVIEW_PANE to one of them')/$(refusal_msg 'several Codex panes for' "$out" | tail -n 1 | grep -c "$MARK_END")" "1/1"
 is "C4 untouched" "$(untouched)" yes
 out="$(XREVIEW_PANE=w1:p2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C5 XREVIEW_PANE picks one" "$(printf '%s' "$out" | grep -c '^xr-')" 1
@@ -509,12 +543,16 @@ is "C9 and names the pane" "$(printf '%s' "$out" | grep -c 'XREVIEW_PANE=w1:p1 i
 is "C9 untouched" "$(untouched)" yes
 fresh; echo working > "$P/status"; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C6 a pane mid-turn refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
+is "C6 R27 it ends with its own step, never the marker" \
+   "$(refusal_msg 'is mid-turn' "$out" | tail -n 1 | grep -c 'wait for it to finish, then dispatch again$')/$(refusal_msg 'is mid-turn' "$out" | grep -cF "$MARK")" "1/0"
 is "C6 untouched" "$(untouched)" yes
 fresh; echo blocked > "$P/status"; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C10 a blocked pane refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
 is "C10 untouched" "$(untouched)" yes
 fresh; out="$(RPC_THREAD_RUNNING=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C11 a running thread behind an idle pane refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
+is "C11 R26 it ends with its own step, never the marker" \
+   "$(refusal_msg 'is mid-turn' "$out" | tail -n 1 | grep -c 'wait for it to finish, then dispatch again$')/$(refusal_msg 'is mid-turn' "$out" | grep -cF "$MARK")" "1/0"
 is "C11 untouched" "$(untouched)" yes
 fresh
 U5=55555555-5555-4555-8555-555555555555   # never on the resolver stub's known-id list
@@ -750,7 +788,8 @@ fresh
 out="$(STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "T3b it refuses" "$rc" 1
 is "T3b with the exact line" \
-   "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 did not exit its session within 1s; no review was started')" 1
+   "$(printf '%s' "$out" | grep -cx "xreview: the Codex pane w1:p2 did not exit its session within 1s; no review was started. $MARK")" 1
+is "T3b R8 and the message ends with the marker" "$(refusal_msg 'did not exit its session' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 is "T3b after at most three ctrl+c pairs" \
    "$(called 'herdr pane send-keys' | awk '{print ($1 >= 2 && $1 <= 6) ? "yes" : "no ("$1")"}')" yes
 is "T3b no turn was ever started" "$(called 'xreview-rpc turn-start')" 0
@@ -762,6 +801,7 @@ out="$(GONE_AFTER_KEYS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)";
 is "T4a it refuses" "$rc" 1
 is "T4a and says the pane closed while being freed" \
    "$(printf '%s' "$out" | grep -c 'closed while being freed')" 1
+is "T4a R7 and the message ends with the marker" "$(refusal_msg 'closed while being freed' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 is "T4a no turn was ever started" "$(called 'xreview-rpc turn-start')" 0
 is "T4a and no nonce is printed" "$(printf '%s' "$out" | grep -c '^xr-')" 0
 
@@ -923,7 +963,9 @@ is "S4 all before the turn" "$(none_after 'xreview-rpc turn-start' 'herdr pane s
 fresh; printf 'Update available! 0.160.0\n\033[31mpress enter\033[0m\n' > "$P/screen"
 out="$(STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "S5 a pane that never quits refuses" "$rc" 1
-is "S5 with the exact line" "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 did not exit its session within 1s; no review was started')" 1
+is "S5 with the exact line" "$(printf '%s' "$out" | grep -cx "xreview: the Codex pane w1:p2 did not exit its session within 1s; no review was started. $MARK")" 1
+is "S5 R8 the message is that one line: the screen after it is not part of it" \
+   "$(refusal_msg 'did not exit its session' "$out" | wc -l | tr -d ' ')/$(refusal_msg 'did not exit its session' "$out" | tail -n 1 | grep -c "$MARK_END")" "1/1"
 is "S5 then the screen, indented" "$(printf '%s' "$out" | grep -cx '  | Update available! 0.160.0')" 1
 is "S5 with escapes stripped" "$(printf '%s' "$out" | grep -c "$(printf '\033')")" 0
 is "S5 no turn" "$(called 'xreview-rpc turn-start')" 0
@@ -969,15 +1011,18 @@ out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.m
 is "S7 a pane resuming a running thread refuses as mid-turn" "$(printf '%s' "$out" | grep -c "thread $U2 is mid-turn")" 1
 is "S7 untouched" "$(untouched)" yes
 fresh; out="$(PROCINFO_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
-is "S8 an unreadable process refuses, naming the check" "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started")" 1
+is "S8 an unreadable process refuses, naming the check" "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started. $MARK")" 1
+is "S8 R11 and the message ends with the marker" "$(refusal_msg "cannot read the Codex pane w1:p2's process" "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 is "S8 untouched" "$(untouched)" yes
 fresh; printf 'codex resume %s' "$U2" > "$P/argv"
 out="$(RPC_STATUS_FAIL_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
-is "S9 an unreadable running state refuses" "$(printf '%s' "$out" | grep -cx "xreview: cannot read whether thread $U2 in the Codex pane w1:p2 is running; no review was started")" 1
+is "S9 an unreadable running state refuses" "$(printf '%s' "$out" | grep -cx "xreview: cannot read whether thread $U2 in the Codex pane w1:p2 is running; no review was started. $MARK")" 1
+is "S9 R14 and the message ends with the marker" "$(refusal_msg 'cannot read whether thread' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 is "S9 untouched" "$(untouched)" yes
 fresh; printf 'codex resume --last' > "$P/argv"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
-is "S10 resume --last refuses" "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 is resuming something other than a thread id; no review was started')" 1
+is "S10 resume --last refuses" "$(printf '%s' "$out" | grep -cx "xreview: the Codex pane w1:p2 is resuming something other than a thread id (codex resume --last, or a picker), and the pane is Michael's; no review was started. $MARK")" 1
+is "S10 R13 and the message ends with the marker" "$(refusal_msg 'is resuming something other than a thread id' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 is "S10 untouched" "$(untouched)" yes
 fresh; printf 'codex -m resume' > "$P/argv"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
@@ -1023,7 +1068,7 @@ fresh
 out="$(STUCK_TUI=1 XREVIEW_POLL_SECS=0.05 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=10 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "S17 a pane that never quits gets exactly three ctrl+c pairs" "$(called 'herdr pane send-keys')" 6
 is "S17 then refuses with the exact line" \
-   "$rc/$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 did not exit its session within 10s; no review was started')" "1/1"
+   "$rc/$(printf '%s' "$out" | grep -cx "xreview: the Codex pane w1:p2 did not exit its session within 10s; no review was started. $MARK")" "1/1"
 is "S17 no turn" "$(called 'xreview-rpc turn-start')" 0
 # An argv the guard cannot read for certain refuses; one it can still reads as before.
 for case_argv in "codex --newflag v resume $U2" "codex resume $U2 prompt" "codex fix-the-tests" \
@@ -1031,7 +1076,7 @@ for case_argv in "codex --newflag v resume $U2" "codex resume $U2 prompt" "codex
   fresh; printf '%s' "$case_argv" > "$P/argv"
   out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
   is "S18 '$case_argv' refuses" \
-     "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 is resuming something other than a thread id; no review was started')" 1
+     "$(printf '%s' "$out" | grep -cx "xreview: the Codex pane w1:p2 is resuming something other than a thread id (codex resume --last, or a picker), and the pane is Michael's; no review was started. $MARK")" 1
   is "S18 '$case_argv': untouched" "$(untouched)" yes
 done
 fresh; printf 'codex fork %s' "$U2" > "$P/argv"
@@ -1047,7 +1092,8 @@ is "S19 a bare fork proceeds too" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 for how in FAIL NOBOOL; do
   fresh; out="$(env RPC_STATUS_${how}_FOR=$U1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
   is "S22 an unreadable status for the chosen thread ($how) refuses, exactly" \
-     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot read whether the review thread $U1 is running; no review was started")" "1/1"
+     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot read whether the review thread $U1 is running; no review was started. $MARK")" "1/1"
+  is "S22 R17 $how: and the message ends with the marker" "$(refusal_msg 'cannot read whether the review thread' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
   is "S22 $how: untouched, no turn, no key" "$(untouched)" yes
 done
 # The title check fails closed: a pane read that fails, or a resolver that cannot reach the
@@ -1055,24 +1101,31 @@ done
 for how in exit envelope; do
   fresh; out="$(GET_FAIL=$how bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
   is "S20 a failed pane read ($how) refuses, naming the check" \
-     "$(printf '%s' "$out" | grep -cx 'xreview: cannot read the Codex pane w1:p2 (herdr pane get); no review was started')" 1
+     "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2 (herdr pane get); no review was started. $MARK")" 1
+  is "S20 R9 $how: and the message ends with the marker" "$(refusal_msg 'herdr pane get' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
   is "S20 $how: untouched" "$(untouched)" yes
 done
 P29="$(printf '%s' "$U0" | cut -c1-29)"   # the prefix the pane's title shows
 for rrc in 5 2; do
   fresh; out="$(RPC_RESOLVE_RC=$rrc bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
   is "S21 a resolver exiting $rrc refuses, naming the prefix" \
-     "$(printf '%s' "$out" | grep -cx "xreview: cannot read whether thread $P29 in the Codex pane w1:p2 is running; no review was started")" 1
+     "$(printf '%s' "$out" | grep -cx "xreview: cannot read whether thread $P29 in the Codex pane w1:p2 is running; no review was started. $MARK")" 1
+  is "S21 R16 exit $rrc: and the message ends with the marker" "$(refusal_msg 'cannot read whether thread' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
   is "S21 exit $rrc: untouched" "$(untouched)" yes
 done
 fresh; out="$(RPC_RESOLVE_RC=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "S21 a resolver exiting 1 (no such thread) does not block" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+fresh; out="$(RPC_RESOLVE_OUT='not a safe id' bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S21 R15 a resolver answering an id that is not safe refuses, exactly" \
+   "$(printf '%s' "$out" | grep -cx "xreview: cannot read whether thread $P29 in the Codex pane w1:p2 is running; no review was started. $MARK")" 1
+is "S21 R15 and the message ends with the marker, untouched" \
+   "$(refusal_msg 'cannot read whether thread' "$out" | tail -n 1 | grep -c "$MARK_END")/$(untouched)" "1/yes"
 # A Codex process that is not fully described is no observation: before the ladder, the
 # process-info refusal.
 for bad in argv-empty argv-null argv-missing name-missing; do
   fresh; out="$(PROCINFO_BAD=$bad bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
   is "S22 a Codex process with $bad refuses as unreadable" \
-     "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started")" 1
+     "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started. $MARK")" 1
   is "S22 $bad: untouched" "$(untouched)" yes
 done
 # A foreground group that is not the shell, with no Codex process to read, is no observation:
@@ -1082,7 +1135,8 @@ for fg in empty vim; do
   fresh; : > "$P/title"; rm -f "$P/status"
   out="$(PROCINFO_FG=$fg bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
   is "S23 a non-shell foreground with $fg and no Codex process refuses as unreadable" \
-     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started")" "1/1"
+     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started. $MARK")" "1/1"
+  is "S23 R10 $fg: and the message ends with the marker" "$(refusal_msg "cannot read the Codex pane w1:p2's process" "$out" | tail -n 1 | grep -c "$MARK_END")" 1
   is "S23 $fg: untouched" "$(untouched)" yes
 done
 # The shell in the foreground is already free: no key, and the resume.
@@ -1171,14 +1225,22 @@ out="$(RPC_WAIT_RC=4 RPC_WAIT_OUT='PWNED prose' bash "$XREVIEW" collect "$nonce"
 is "F3 a schema miss exits 4 and prints nothing on stdout" "$rc/${#out}" "4/0"
 is "F3 stderr says nothing was recorded, gives the rpc's detail and names the kept raw file" \
    "$(grep -c 'Nothing was recorded' "$ROOT/err")/$(grep -cF "kept for Michael in $STATE/turns/$nonce.raw" "$ROOT/err")/$(grep -cF '($.verdict: not an allowed value)' "$ROOT/err")" "1/1/1"
+is "F3 R37 the exit-4 message ends with its own step, never the marker" \
+   "$(refusal_msg 'the review failed' "$(cat "$ROOT/err")" | tail -n 1 | grep -c 'Report it; do not re-dispatch[.]$')/$(refusal_msg 'the review failed' "$(cat "$ROOT/err")" | grep -cF "$MARK")" "1/0"
 is "F3 the file holds the raw text, mode 600, and no reviewer text is in either stream" \
    "$(cat "$STATE/turns/$nonce.raw")/$(stat -f %Lp "$STATE/turns/$nonce.raw")/$(printf '%s%s' "$out" "$(cat "$ROOT/err")" | grep -c PWNED)" "PWNED prose/600/0"
 out="$(RPC_WAIT_RC=1 bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
 is "F4 a failed turn exits 1" "$rc" 1
+is "F4 R30 it ends 'do NOT retry the dispatch): report this and stop', never the marker" \
+   "$(refusal_msg 'the reviewer turn failed' "$out" | tail -n 1 | grep -c '(do NOT retry the dispatch): report this and stop$')/$(refusal_msg 'the reviewer turn failed' "$out" | grep -cF "$MARK")" "1/0"
 out="$(RPC_WAIT_RC=5 bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
 is "F5 an unreachable daemon exits 1 and says so" "$rc/$(printf '%s' "$out" | grep -c unreachable)" "1/1"
+is "F5 R29 it carries 'run codex-daemon ensure, then collect again', never the marker" \
+   "$(refusal_msg 'the Codex daemon is unreachable' "$out" | grep -c 'run codex-daemon ensure, then collect again$')/$(refusal_msg 'the Codex daemon is unreachable' "$out" | grep -cF "$MARK")" "1/0"
 out="$(bash "$XREVIEW" collect xr-1-nosuchnonce 2>&1)"; rc=$?
 is "F6 an unknown nonce is ambiguous and exits 1" "$rc/$(printf '%s' "$out" | grep -c 'do NOT retry')" "1/1"
+is "F6 R31 it ends 'do NOT retry the dispatch): report this and stop', never the marker" \
+   "$(refusal_msg 'ambiguous: no turn on record' "$out" | tail -n 1 | grep -c '(do NOT retry the dispatch): report this and stop$')/$(refusal_msg 'ambiguous: no turn on record' "$out" | grep -cF "$MARK")" "1/0"
 out="$(bash "$XREVIEW" collect "$U1" "$nonce" 2>&1)"; rc=$?
 is "F7 the old thread-first form is refused with the usage" "$rc/$(printf '%s' "$out" | grep -c 'usage: xreview collect <nonce>')" "1/1"
 is "F8 the default budget is at least 30 minutes" \
@@ -1306,6 +1368,8 @@ is "no title-reset escape sequence in the code (the two-step reset is gone)" \
    "$(printf '%s' "$code" | grep -cF '2;xreview')" 0
 is "pane_prepare never calls thread-resolve any more (the thread is always already known)" \
    "$(awk '/^pane_prepare\(\)/{f=1} f{print} f && /^}/{exit}' "$XREVIEW" | grep -c 'thread-resolve')" 0
+is "the marker ends exactly the 23 lines of R1-R23 (R26-R37 carry none, R34-R36 included)" \
+   "$(grep -c "Michael's call: report this and stop[.]" "$XREVIEW")" 23
 
 echo "I. a repository path with a space"
 mkdir -p "$ROOT/sp ace" && cd "$ROOT/sp ace" || exit 1
@@ -1330,7 +1394,9 @@ for _ in $(seq 50); do [ -e "$ROOT/held" ] && break; sleep 0.1; done
 out="$(XREVIEW_LOCK_WAIT=0.5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "P1 a held pane refuses at the bound" "$rc" 1
 is "P1 with the exact message" \
-   "$(printf '%s' "$out" | grep -cx 'xreview: another dispatch is using the Codex pane w1:p2; no review was started')" 1
+   "$(printf '%s' "$out" | grep -cx 'xreview: another dispatch is using the Codex pane w1:p2; no review was started - wait for it, then dispatch again')" 1
+is "P1 R28 the message ends with its own step, never the marker" \
+   "$(refusal_msg 'another dispatch is using' "$out" | tail -n 1 | grep -c 'wait for it, then dispatch again$')/$(refusal_msg 'another dispatch is using' "$out" | grep -cF "$MARK")" "1/0"
 is "P1 untouched" "$(untouched)" yes
 is "P1 and no round consumed" "$(bash "$XREVIEW" round)" 0
 kill -9 "$holder"; wait "$holder" 2>/dev/null
@@ -1354,7 +1420,14 @@ fresh; rm -rf "$XDG_STATE_HOME/xreview/locks"; : > "$XDG_STATE_HOME/xreview/lock
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "P4 an uncreatable lock directory refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot create')" "1/1"
 is "P4 untouched" "$(untouched)" yes
+is "P4 R18 and the message ends with the marker" "$(refusal_msg 'cannot create' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 rm -f "$XDG_STATE_HOME/xreview/locks"
+fresh; rm -rf "$XDG_STATE_HOME/xreview/locks"; mkdir -p "$LOCKF"   # a directory where the pane's lock file goes
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+rmdir "$LOCKF"
+is "P4b an unopenable lock file refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot open .*w1_p2.lock')" "1/1"
+is "P4b R19 and the message ends with the marker" "$(refusal_msg 'cannot open' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
+is "P4b untouched" "$(untouched)" yes
 for bad in abc . 1.2.3 $'5\nx'; do
   fresh
   out="$(XREVIEW_LOCK_WAIT=$bad bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
@@ -1387,12 +1460,13 @@ for variant in nolock exit1 timeout; do
   out="$(bash "$ROOT/xreview-$variant" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
   if [ "$variant" = nolock ] || [ "$variant" = exit1 ]; then
     is "P8 a helper that cannot lock ($variant) refuses as 'cannot lock'" \
-       "$rc/$(printf '%s' "$out" | grep -c "^xreview: cannot lock the Codex pane w1:p2 (.*w1_p2.lock); no review was started$")" "1/1"
+       "$rc/$(printf '%s' "$out" | grep -c "^xreview: cannot lock the Codex pane w1:p2 (.*w1_p2.lock); no review was started. $MARK\$")" "1/1"
+    is "P8 R20 ($variant) and the message ends with the marker" "$(refusal_msg 'cannot lock the Codex pane' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
     is "P8 and never as contention" "$(printf '%s' "$out" | grep -c 'another dispatch')" 0
     is "P8 and no traceback" "$(printf '%s' "$out" | grep -c 'Traceback')" 0
   else
     is "P8 a helper that times out (exit 75) refuses as 'another dispatch'" \
-       "$rc/$(printf '%s' "$out" | grep -c '^xreview: another dispatch is using the Codex pane w1:p2; no review was started$')" "1/1"
+       "$rc/$(printf '%s' "$out" | grep -c '^xreview: another dispatch is using the Codex pane w1:p2; no review was started - wait for it, then dispatch again$')" "1/1"
   fi
   is "P8 $variant: untouched" "$(untouched)" yes
 done
@@ -2137,7 +2211,9 @@ is "N5 no thread was started for it" "$(called 'xreview-rpc thread-start')" 0
 is "N5 and no round consumed" "$(bash "$XREVIEW" round)" 0
 fresh; packets framing; out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
 is "N5 framing with the fit check off keeps the cap, and says it is Michael's to raise" \
-   "$rc/$(printf '%s' "$out" | grep -c "too large to carry inline ([0-9]* bytes, cap 10). The cap is Michael's to raise, as cap= in ~/.config/xreview/packets.conf; no review was started.$")" "1/1"
+   "$rc/$(printf '%s' "$out" | grep -c "too large to carry inline ([0-9]* bytes, cap 10). The cap is Michael's to raise, as cap= in ~/.config/xreview/packets.conf; no review was started. $MARK\$")" "1/1"
+is "N5 R25 the message is that one line, ending with the marker" \
+   "$(refusal_msg 'too large to carry inline' "$out" | wc -l | tr -d ' ')/$(refusal_msg 'too large to carry inline' "$out" | tail -n 1 | grep -c "$MARK_END")" "1/1"
 is "N5 and offers neither slicing nor the variable" \
    "$(printf '%s' "$out" | grep -c 'Review them in slices')/$(printf '%s' "$out" | grep -c 'XREVIEW_MAX_DIFF_BYTES')" "0/0"
 is "N5 untouched here too" "$(untouched)" yes
@@ -2194,6 +2270,9 @@ for kind in pin env; do
   is "N2 a $kind thread that cannot hold the packet is refused, naming it" "$rc/$(printf '%s' "$out" | grep -c -- "$U2 .*cannot hold this packet")" "1/1"
   is "N2 and the remedy is named ($kind)" \
      "$(printf '%s' "$out" | grep -c "$([ "$kind" = pin ] && echo 'round --reset' || echo 'unset XREVIEW_THREAD')")" 1
+  is "N2 and it is Michael's, never the agent's, to lift ($kind)" \
+     "$(refusal_msg 'cannot hold this packet' "$out" | grep -c "$([ "$kind" = pin ] && echo 'The pin is Michael.s: never drop it with xreview round --reset[.]' || echo 'XREVIEW_THREAD is Michael.s: unset XREVIEW_THREAD lets xreview move')")" 1
+  is "N2 R21 R22 the message ends with the marker ($kind)" "$(refusal_msg 'cannot hold this packet' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
   is "N2 untouched, no thread started, nothing superseded ($kind)" \
      "$(untouched)/$(called 'xreview-rpc thread-start')/$([ -e "$STATE/superseded" ] && echo left || echo none)" "yes/0/none"
 done
@@ -2961,6 +3040,20 @@ is "SL5 and the checkpoint's thread is still slice 1's, nothing superseded" \
 ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL5 a daemon that will not start refuses the same way, the pane untouched" \
    "$rc/$(grep -c "the round is on record for $nonce" "$ROOT/err")/$(untouched)" "1/1/yes"
+is "SL5 R2 its message is one line, ending with the marker, the note after it not part of it" \
+   "$(refusal_msg 'the Codex daemon is not running' "$(cat "$ROOT/err")" | wc -l | tr -d ' ')/$(refusal_msg 'the Codex daemon is not running' "$(cat "$ROOT/err")" | tail -n 1 | grep -c "$MARK_END")" "1/1"
+: > "$CALLS"
+CHECK_RC=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL5 a daemon that carries a pane's environment refuses, the round on record, the pane untouched" \
+   "$rc/$(grep -c "the round is on record for $nonce" "$ROOT/err")/$(untouched)" "1/1/yes"
+is "SL5 R4 its message names the fix, codex-daemon restart, and its cost, and ends with the marker" \
+   "$(refusal_msg 'refusing to start the next slice while the daemon' "$(cat "$ROOT/err")" | grep -c 'its fix, codex-daemon restart, disconnects every open Codex TUI, so an agent never runs it[.] ')/$(refusal_msg 'refusing to start the next slice while the daemon' "$(cat "$ROOT/err")" | tail -n 1 | grep -c "$MARK_END")" "1/1"
+: > "$CALLS"
+PROCINFO_FAIL=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL5 a pane whose process cannot be read refuses, the round on record, nothing started" \
+   "$rc/$(grep -c "the round is on record for $nonce" "$ROOT/err")/$(called 'xreview-rpc thread-start')/$(called 'xreview-rpc turn-start')" "1/1/0/0"
+is "SL5 R12 its message is one line, ending with the marker" \
+   "$(refusal_msg "cannot read the Codex pane w1:p2's process" "$(cat "$ROOT/err")" | wc -l | tr -d ' ')/$(refusal_msg "cannot read the Codex pane w1:p2's process" "$(cat "$ROOT/err")" | tail -n 1 | grep -c "$MARK_END")" "1/1"
 : > "$CALLS"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL5 collecting again resumes: slice 2 and 3 start, slice 1 is not waited on" \
@@ -3517,6 +3610,8 @@ is "CK5 -C collect of that nonce answers with the verdict" "$rc/$(printf '%s' "$
 out="$(RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$CKN" 2>&1)"; rc=$?
 is "CK5 collect without -C names the other checkout, never 'ambiguous'" \
    "$rc/$(printf '%s' "$out" | grep -c 'was dispatched from another checkout')/$(printf '%s' "$out" | grep -cF "$(ckstate)")/$(printf '%s' "$out" | grep -c ambiguous)" "1/1/1/0"
+is "CK5 R33 it ends with its own step, never the marker" \
+   "$(refusal_msg 'was dispatched from another checkout' "$out" | tail -n 1 | grep -c 'run collect with the -C it was dispatched with$')/$(refusal_msg 'was dispatched from another checkout' "$out" | grep -cF "$MARK")" "1/0"
 rm -f "$STATE/applying" "$(ckstate)/applying"
 out="$(bash "$XREVIEW" -C "$CK" apply "$CKN" 2>&1)"; rc=$?
 is "CK6 -C apply opens the window in the checkout, over the checkout's changes" \
@@ -3525,6 +3620,8 @@ bash "$XREVIEW" -C "$CK" apply --done >/dev/null 2>&1
 out="$(bash "$XREVIEW" apply "$CKN" 2>&1)"; rc=$?
 is "CK6 apply without -C refuses, and writes no window" \
    "$rc/$(printf '%s' "$out" | grep -c 'was dispatched from another checkout')/$(printf '%s' "$out" | grep -c 'run apply with the -C')/$([ -e "$STATE/applying" ] && echo caller || echo none)" "1/1/1/none"
+is "CK6 R32 it ends with its own step, never the marker" \
+   "$(refusal_msg 'was dispatched from another checkout' "$out" | tail -n 1 | grep -c 'run apply with the -C it was dispatched with$')/$(refusal_msg 'was dispatched from another checkout' "$out" | grep -cF "$MARK")" "1/0"
 bash "$XREVIEW" apply --done >/dev/null 2>&1
 out="$(bash "$XREVIEW" apply xr-ck-none 2>&1)"; rc=$?
 is "CK6 a nonce on record nowhere still opens the window" "$rc/$([ -e "$STATE/applying" ] && echo opened || echo none)" "0/opened"
