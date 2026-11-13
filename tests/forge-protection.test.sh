@@ -311,7 +311,7 @@ if grep -q "projects/$GENC\$" "$CALLS"; then _pass "gitlab ok: the nested path i
 
 glab_case '[]'
 row_is drift "$GLR" "gitlab no rule: drift row"
-out_has "glab api --hostname gitlab.com --method POST projects/$GID/protected_branches -f name=main -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false" "gitlab no rule: the POST with push 0, merge 40, force push off"
+out_has "glab api --hostname gitlab.com --method POST projects/$GID/protected_branches -f 'name=main' -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false" "gitlab no rule: the POST with push 0, merge 40, force push off"
 out_hasnt "PATCH" "gitlab no rule: no PATCH"
 rc_is 1 "gitlab no rule: exit 1"
 
@@ -413,7 +413,7 @@ out_has "protected_branches/ma%2A " "gitlab a permissive wildcard on the second 
 
 glab_case "[$(glrule develop 40 40 true 10)]"
 row_is drift "$GLR" "gitlab rule for another branch only: drift row"
-out_has "--method POST projects/$GID/protected_branches -f name=main" "gitlab rule for another branch only: the POST is printed"
+out_has "--method POST projects/$GID/protected_branches -f 'name=main'" "gitlab rule for another branch only: the POST is printed"
 out_hasnt "PATCH" "gitlab rule for another branch only: the other branch's rule is not patched"
 
 glab_case "[$GL_STRICT,$(glrule 'dev*' 40 40 true 20),$(glrule mai 40 40 true 30),$(glrule 'm.in' 40 40 true 40),$(glrule 'main2' 40 40 true 50)]"
@@ -425,7 +425,7 @@ row_is drift "$GLR" "gitlab a bare * rule matches every branch: drift"
 # the match is anchored at both ends: a proper suffix (ain) or prefix (mai) of main is another branch's rule
 glab_case "[$(glrule ain 40 40 true 10),$(glrule mai 40 40 true 20)]"
 row_is drift "$GLR" "gitlab rules ain and mai (a suffix and a prefix of main): drift row"
-out_has "--method POST projects/$GID/protected_branches -f name=main" "gitlab rules ain and mai: no rule matches, so the POST is printed"
+out_has "--method POST projects/$GID/protected_branches -f 'name=main'" "gitlab rules ain and mai: no rule matches, so the POST is printed"
 out_hasnt "PATCH" "gitlab rules ain and mai: neither is patched"
 
 reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"
@@ -508,7 +508,13 @@ az_acct() { ans az "account show --output json" "${1:-$AZACCT}"; }
 az_perm() {  # <repo id> <branch> <answer> [user]
   ans az "devops security permission show --id $AZNS --subject ${4:-$AZUSER} --token $(az_tok "$AZPID" "$1" "$2") --org $AZOURL --output json" "$3"
 }
-pol() { jq -nc --arg n "$1" --argjson e "$2" --argjson b "$3" --argjson c "$4" '{id:7,isEnabled:$e,isBlocking:$b,settings:{minimumApproverCount:$c},type:{displayName:$n}}'; }
+AZREVID=fa4e907d-c16b-4a4c-9dfa-4906e5d171dd   # the policy type id of Minimum number of reviewers
+AZBUILDID=0609b952-1397-4640-95ec-e00a01b2c241  # the policy type id of Build
+pol() {  # <display name> <enabled> <blocking> <count> [type id, default the reviewers type]
+  jq -nc --arg n "$1" --argjson e "$2" --argjson b "$3" --argjson c "$4" --arg t "${5:-$AZREVID}" '{id:7,isEnabled:$e,isBlocking:$b,settings:{minimumApproverCount:$c},type:{id:$t,displayName:$n}}'
+}
+# acd <effectiveAllow> <effectiveDeny>: one entry carrying both
+acd() { printf '[{"acesDictionary":{"d":{"allow":0,"deny":0,"extendedInfo":{"effectiveAllow":%s,"effectiveDeny":%s}}},"includeExtendedInfo":true,"inheritPermissions":true,"token":"t"}]' "$1" "$2"; }
 ace() { printf '[{"acesDictionary":{"d":{"allow":0,"deny":0,"extendedInfo":{"effectiveAllow":%s}}},"includeExtendedInfo":true,"inheritPermissions":true,"token":"t"}]' "$1"; }
 AZGOOD=$(pol "Minimum number of reviewers" true true 1)
 AZREALISTIC=16502   # bits 2, 4, 16, 32, 64 and 16384: none of 8, 128, 32768
@@ -554,12 +560,18 @@ out_has "    az repos policy approver-count create --org $AZOURL --project 'exam
 rc_is 1 "azure no policy: exit 1"
 out_hasnt "Branch security" "azure no policy: no permission note when none is allowed"
 
-# only the type Minimum number of reviewers counts
-azure_case "[$(pol 'Build' true true 1)]" "$(ace $AZREALISTIC)"
+# only the type Minimum number of reviewers counts, matched by its type id
+azure_case "[$(pol 'Build' true true 1 "$AZBUILDID")]" "$(ace $AZREALISTIC)"
 row_is drift "$AZR" "azure a blocking policy of another type only: drift row"
 out_has "approver-count create" "azure a blocking policy of another type only: the create command is printed"
-azure_case "[$(pol 'Build' true true 1),$AZGOOD]" "$(ace $AZREALISTIC)"
+azure_case "[$(pol 'Build' true true 1 "$AZBUILDID"),$AZGOOD]" "$(ace $AZREALISTIC)"
 row_is ok "$AZR" "azure a policy of another type beside the reviewers policy: ok"
+azure_case "[$(pol 'Mindestanzahl von Prüfern' true true 1)]" "$(ace $AZREALISTIC)"
+row_is ok "$AZR" "azure the reviewers policy under a localised display name (same type id): ok, matched by id"
+out_hasnt "approver-count create" "azure the reviewers policy under a localised display name: no duplicate create"
+azure_case "[$(pol 'Minimum number of reviewers' true true 1 "$AZBUILDID")]" "$(ace $AZREALISTIC)"
+row_is drift "$AZR" "azure a policy named Minimum number of reviewers with another type id: drift, not counted"
+out_has "approver-count create" "azure a policy named Minimum number of reviewers with another type id: the create command is printed"
 
 # a reviewers policy that is off, optional or asks for nobody is drift with a note, not a second create
 for spec in "disabled|false true 1" "not blocking|true false 1" "no reviewers|true true 0"; do
@@ -596,13 +608,22 @@ row_is drift "$AZR" "azure a second access control list allows ForcePush: drift"
 azure_case '[]' "$(ace $((AZREALISTIC + 128)))"
 out_has "approver-count create" "azure no policy and a bit: the create command"
 out_has "set \"$N128\" to Deny" "azure no policy and a bit: and the permission note"
+# effectiveDeny never cancels effectiveAllow (fail closed: a group grant can still apply): a bit in both is drift, a bit only denied is fine
+azure_case "[$AZGOOD]" "$(acd $((AZREALISTIC + 128)) 128)"
+row_is drift "$AZR" "azure a bit in effectiveAllow and in effectiveDeny: drift, the deny does not cancel it"
+out_has "set \"$N128\" to Deny" "azure a bit in effectiveAllow and in effectiveDeny: the note names it"
+out_has "a group grant" "azure a bypass bit: the note says a group grant stays effective when the user already shows Deny"
+azure_case "[$AZGOOD]" "$(acd $AZREALISTIC 128)"
+row_is ok "$AZR" "azure a bit only in effectiveDeny: ok"
 
 # fail closed: an answer lacking a field the target depends on is never ok
 azu "policies answer an object" "policies answer" '{"value":[]}' "$(ace 0)"
 azu "policies answer null" "policies answer" 'null' "$(ace 0)"
 azu "policies answer an object of policies" "policies answer" "{\"x\":$AZGOOD}" "$(ace 0)"
 azu "policy without a type" "policies answer" '[{"isEnabled":true,"isBlocking":true,"settings":{"minimumApproverCount":1}}]' "$(ace 0)"
-azu "policy type without a display name" "policies answer" '[{"isEnabled":true,"isBlocking":true,"settings":{"minimumApproverCount":1},"type":{"id":"x"}}]' "$(ace 0)"
+azu "policy type without an id" "policies answer" '[{"isEnabled":true,"isBlocking":true,"settings":{"minimumApproverCount":1},"type":{"displayName":"Minimum number of reviewers"}}]' "$(ace 0)"
+azu "policy type id a number" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c '.type.id = 7')]" "$(ace 0)"
+azu "policy type id null" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c '.type.id = null')]" "$(ace 0)"
 azu "reviewers policy without isEnabled" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c 'del(.isEnabled)')]" "$(ace 0)"
 azu "reviewers policy without isBlocking" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c 'del(.isBlocking)')]" "$(ace 0)"
 azu "reviewers policy without minimumApproverCount" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c 'del(.settings.minimumApproverCount)')]" "$(ace 0)"
@@ -705,6 +726,16 @@ run check
 rows_are unreadable 2 "azure two repositories, account show fails: both unreadable"
 if [ "$(grep -c '^az account show' "$CALLS")" -eq 1 ]; then _pass "azure two repositories, account show fails: it is not asked again"; else _fail "azure two repositories, account show fails: it is not asked again"; fi
 
+# only a timeout stops the later az calls: an ordinary failure (here HTTP 404) of one repository leaves the next one read
+AZ2
+ans az "repos show --org $AZOURL --project example project --repository aaa-repo --output json" "" 1 "ERROR: TF401019: The Git repository does not exist (HTTP 404)"
+az_showok "example project" zzz-repo; az_pol "example project" "$AZRID" main "[$AZGOOD]"
+az_acct; az_perm "$AZRID" main "$(ace $AZREALISTIC)"
+run check
+row_is unreadable "aaa-repo.*HTTP 404" "azure a failed repos show that is no timeout: the first remote is unreadable naming the failure"
+row_is ok "zzz-repo" "azure a failed repos show that is no timeout: the second remote is still read and ok"
+if grep -q '^az repos show .*--repository zzz-repo ' "$CALLS"; then _pass "azure a failed repos show that is no timeout: the second repos show is called"; else _fail "azure a failed repos show that is no timeout: the second repos show is called"; fi
+
 # after the first az timeout every later Azure row is unreadable with no further az call
 AZ2
 ans az "repos show --org $AZOURL --project example project --repository aaa-repo --output json" '{}' "" "" 5
@@ -777,6 +808,49 @@ run check
 row_is drift "$AZR" "azure a subject with a newline: drift row"
 if printf '%s\n' "$OUT" | grep 'touch pwned' | grep -qv '^    # '; then _fail "azure a subject with a newline: every printed line that names it is a comment"; else _pass "azure a subject with a newline: every printed line that names it is a comment"; fi
 out_has 'touch pwned' "azure a subject with a newline: the note still names it"
+
+# The printed commands are pasted into zsh, which expands a word that starts with = (to a command path) or ~
+# (to a home directory), and with magic_equal_subst also the part after any name=. Each remedy line is run
+# under `zsh -f` with the forge CLI a function that records its argv (and the --input body), once with the
+# defaults and once with magic_equal_subst: a branch that looks like such an expansion must reach the CLI literally.
+command -v zsh >/dev/null 2>&1 || { echo "missing zsh: the zsh paste rows cannot run" >&2; exit 2; }
+zsh_remedy() {  # <fixed string selecting the line> [zsh option...] -> $T/argv and $T/body hold what the CLI got
+  local line
+  line=$(printf '%s\n' "$OUT" | grep -F -- "$1" | head -n 1); shift
+  rm -f "$T/argv" "$T/body"
+  ZARGV="$T/argv" ZBODY="$T/body" zsh -f "$@" -c '
+    rec() { printf "%s\n" "$@" > "$ZARGV"; cat "${@[-1]}" > "$ZBODY" 2>/dev/null; }
+    gh() { rec "$@"; }; glab() { rec "$@"; }; az() { rec "$@"; }
+    '"$line" >/dev/null 2>&1
+}
+for ZO in "default options|" "magic_equal_subst|-o magic_equal_subst"; do
+  zlabel=${ZO%%|*}; zopts=${ZO#*|}
+  for ZB in '=ls' '~root' '=(ls)'; do
+    zl="zsh ($zlabel), default branch $ZB"
+    reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
+    ans gh "api repos/$R" "$(jq -nc --arg b "$ZB" '{default_branch:$b}')"
+    ans gh "api --paginate repos/$R/rules/branches/$(jq -rn --arg b "$ZB" '$b | @uri')?per_page=100" '[]'
+    run check
+    row_is drift "github.com/$R" "$zl, github: drift row"
+    zsh_remedy '"name":"protect-main"' $zopts
+    if [ "$(jq -r '.conditions.ref_name.include[0]' "$T/body" 2>/dev/null)" = "refs/heads/$ZB" ]; then _pass "$zl, github: the pasted line hands gh the literal ref"; else _fail "$zl, github: the pasted line hands gh the literal ref (got $(cat "$T/body" 2>/dev/null))"; fi
+
+    glab_case '[]' "$ZB"
+    row_is drift "$GLR" "$zl, gitlab: drift row"
+    zsh_remedy "--method POST" $zopts
+    if grep -qxF -- "name=$ZB" "$T/argv" 2>/dev/null; then _pass "$zl, gitlab: the pasted POST hands glab the literal name"; else _fail "$zl, gitlab: the pasted POST hands glab the literal name (got $(grep name= "$T/argv" 2>/dev/null))"; fi
+
+    glab_case "[$(glrule "$ZB" 0 40 true 10)]" "$ZB"
+    row_is drift "$GLR" "$zl, gitlab rule: drift row"
+    zsh_remedy "--method PATCH" $zopts
+    if [ "$(jq -c . < "$T/body" 2>/dev/null)" = '{"allow_force_push":false}' ]; then _pass "$zl, gitlab rule: the pasted PATCH hands glab the exact JSON body"; else _fail "$zl, gitlab rule: the pasted PATCH hands glab the exact JSON body (got $(cat "$T/body" 2>/dev/null))"; fi
+
+    azure_case '[]' "$(ace 0)" "$ZB"
+    row_is drift "$AZR" "$zl, azure: drift row"
+    zsh_remedy "az repos policy approver-count create" $zopts
+    if [ "$(argv_after --branch)" = "$ZB" ]; then _pass "$zl, azure: the pasted create hands az the literal --branch"; else _fail "$zl, azure: the pasted create hands az the literal --branch (got $(argv_after --branch))"; fi
+  done
+done
 
 echo "B. unknown host, exceptions"
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "git@gh-alias:$R.git"

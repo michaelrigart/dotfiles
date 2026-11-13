@@ -146,11 +146,15 @@ row() {  # <ok|drift|unreadable|excepted> <remote> [detail]
 }
 remedy() { printf '    %s\n' "$1"; }
 note() { printf '    # %s\n' "$(printf '%s' "$1" | tr -d '\000-\037\177')"; }
-# shq <text>: one shell word that reads back as exactly <text> (Bash 3.2 and POSIX sh), so a
-# forge-supplied branch or path pasted into a printed command cannot break out of its quotes.
+# shq <text>: one shell word that reads back as exactly <text> in Bash 3.2, POSIX sh and zsh, so a
+# forge-supplied branch or path pasted into a printed command cannot break out of its quotes. The
+# unquoted-safe set holds no character that is special to any of them: `=` is out because zsh
+# expands a word starting with it to a command path (and, with magic_equal_subst, name==x too), and
+# `~`, `#`, `^`, `(`, `{`, `*`, `?` and `[` are out already (tilde, comment, extendedglob, glob and
+# brace expansion). `%` and `,` stay: they only act at the start of a command word or inside braces.
 shq() {
   case "$1" in
-    ''|*[!A-Za-z0-9_./:@%+=,-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    ''|*[!A-Za-z0-9_./:@%+,-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -352,12 +356,13 @@ check_azure() {  # <remote> <org> <project> <repo>
   if ! az_read repos policy list --org "$orgurl" --project "$project" --repository-id "$rid" --branch "$branch" --output json; then
     row unreadable "$remote" "$(fc_reason)"; return
   fi
-  # Only a policy of type "Minimum number of reviewers" counts. A policy without a type name, or a
-  # reviewers policy without isEnabled, isBlocking or minimumApproverCount, cannot be judged.
+  # Only a policy of type "Minimum number of reviewers" (type id fa4e907d-…, never its display name,
+  # which is localised) counts. A policy without a string type id, or a reviewers policy without
+  # isEnabled, isBlocking or minimumApproverCount, cannot be judged.
   if ! pol=$(printf '%s' "$FC_OUT" | jq -c '
       if type != "array" then error("not a list") else . end
-      | map(if type == "object" and ((.type | type) == "object") and ((.type.displayName | type) == "string") then . else error("no type") end)
-      | map(select(.type.displayName == "Minimum number of reviewers"))
+      | map(if type == "object" and ((.type | type) == "object") and ((.type.id | type) == "string") then . else error("no type") end)
+      | map(select(.type.id == "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"))
       | map(if (.isEnabled | type) == "boolean" and (.isBlocking | type) == "boolean" and (.settings.minimumApproverCount | type) == "number"
             then {ok: (.isEnabled and .isBlocking and .settings.minimumApproverCount >= 1)}
             else error("fields") end)
@@ -398,7 +403,7 @@ check_azure() {  # <remote> <org> <project> <repo>
   fi
   if [ "$n" -gt 0 ]; then
     names=$(printf '%s' "$bits" | jq -r 'map("\"" + . + "\"") | join(", ")')
-    note "Repos > Branches > $branch > Branch security > $AZ_USER: set $names to Deny"
+    note "Repos > Branches > $branch > Branch security > $AZ_USER: set $names to Deny (if it already shows Deny for the user, a group grant is still effective: check the groups)"
   fi
 }
 
