@@ -3652,8 +3652,10 @@ else
   pass=$((pass + 1)); printf '  ok   %s\n' "a dry run never runs gitleaks"
 fi
 # A push naming a ref that does not exist cannot be listed, so it cannot be shown covered. Plain,
-# git itself refuses it before any hook; as a force push the guard asks, so it is scanned first.
+# git itself refuses it before any hook, and the helper still scans it so the verdict stays
+# main's deny; as a force push the guard asks, so it is scanned first.
 expect deny  "a source that is not a ref is a deny"   "$CLEAN" 'git push --force origin nosuch'
+expect deny  "a plain push of a source that is not a ref" "$CLEAN" 'git push origin nosuch'
 # A gitleaks that hangs (or a git it spawns) must end in a deny within the helper's budget. The
 # helper kills the scan's process group; the scan's own, shorter budget kills its gitleaks first,
 # and a survivor holds none of the helper's pipes, so it cannot keep the helper waiting.

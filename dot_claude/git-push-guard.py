@@ -3074,7 +3074,10 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
         if scan_sources:
             run_scan(root, remote, fetch_url, scan_sources)
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."
-    if scan_sources and not hook_will_run(repo, root, flags, assigns, wrapped):
+    # A source git cannot resolve is the scan's to refuse, as on main: git would stop that
+    # push before the hook, but the verdict stays a deny.
+    if scan_sources and not (hook_will_run(repo, root, flags, assigns, wrapped)
+                             and repo.run("rev-list", "--no-walk", *scan_sources) is not None):
         run_scan(root, remote, fetch_url, scan_sources)
     return None
 
