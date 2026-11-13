@@ -56,42 +56,35 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   only with its Edit/Write tools and git commands that touch only the repository (`add`,
   `commit`). Check `git branch --show-current` before each commit, since a session can sit
   in the wrong checkout.
-- `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
-  `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
-  scripts: they change system settings and need interaction.
-  `install-claude-managed-settings.sh` installs `claude-managed-settings.json`, the Claude Code
-  mods lock, into `/Library/Application Support/ClaudeCode/`, and refuses a `managed-settings.d`
-  beside it. `configure.sh` runs it; `chezmoi apply` never does. Running it for real (sudo,
-  `--replace` to overwrite a different policy) is Michael's; agents run it only in test mode,
-  through its suite and `tests/provision.test.sh`.
-  `measure-interventions.py` sits beside them: the transcript metrics for the
-  safe-autonomy evaluation, and `process-replay.py` (with its package `process_replay/`,
-  plain 644 modules) and `xreview-replay.py` are the replay-experiment harnesses.
-  `skill-updates.sh` is non-interactive too and runs weekly in the `skill-updates` workflow.
+- `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`, `reconcile-agents.sh`,
+  `preflight-ssh-agent.sh`), deliberately not `run_once_` scripts: they change system settings
+  and need interaction. `install-claude-managed-settings.sh` installs
+  `claude-managed-settings.json`, the Claude Code mods lock, into
+  `/Library/Application Support/ClaudeCode/`, and refuses a `managed-settings.d` beside it.
+  `configure.sh` runs it; `chezmoi apply` never does. Running it for real (sudo, `--replace` to
+  overwrite a different policy) is Michael's; agents run it only in test mode, through its
+  suite and `tests/provision.test.sh`.
   `forge-protection.sh check` is read-only (GET calls only): it walks `~/Code` to three levels
   and reads each repository's forge protection, skipping the ones listed in the owner's
   `~/.config/forge-protection/exceptions`. Its output names repositories and is never committed;
   agents run it only through its mocked suite, never with a write verb.
-  The scripts are mode `755` (not the 644 policy file) — git stores only the exec bit, so a
-  clone yields 755, never 700.
+  The scripts are mode `755` (not the 644 policy file), except `process-replay.py`'s package
+  `process_replay/`, plain 644 modules — git stores only the exec bit, so a clone yields 755,
+  never 700.
 - The global pre-push hook and its secret scan live in `dot_config/git/hooks/` and deploy to
   `~/.config/git/hooks` (`core.hooksPath`, which replaces each repository's `.git/hooks`; the hook
   runs the repository's own one after its scan). Edit the source; never the deployed copy.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
+- `layout.sh`, `tab-goto.sh` and `phase.sh` thread `--session` into every herdr call and never
+  call `command herdr` bare: inside a Herdr pane `HERDR_SOCKET_PATH` outranks `HERDR_SESSION`,
+  so a bare call targets the pane's own session. `layout.sh` starts a server whenever
+  `HERDR_SESSION` is set, even inside a pane. History: `tests/AGENTS.md`.
 - Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
   `symlink_` in `dot_claude/skills/` and a `.chezmoiignore` re-include.
-  `.scripts/skill-updates.sh`, run weekly by the `skill-updates` workflow, reports new
-  releases as `skill-update` issues. Closing one without a bump declines that release; it is
-  never filed again. A bump reads the upstream diff first and runs `agent-text-scan --diff` on it: an `invisible`
-  finding stops the bump until Michael has seen it, and any other finding that matters goes in
-  the commit message. It then changes the SHA and its tag
-  comment, then warms chezmoi's cache outside the sandbox
-  (`command chezmoi --source <checkout> managed >/dev/null`: sandboxed, Go's TLS fails).
-  Confirm afterwards that `command chezmoi --source <checkout> managed` lists
-  `.agents/skills/<name>/SKILL.md`, and that `.scripts/skill-updates.sh` prints
-  `current: <name> <tag>` (a SHA that exists only in a fork still downloads). The commit
-  message carries `Closes #<issue>`.
+  `.scripts/skill-updates.sh`, run weekly by the `skill-updates` workflow, reports new releases
+  as `skill-update` issues. Closing one without a bump declines that release; it is never filed
+  again. To bump one, follow the procedure at the top of `.chezmoiexternal.toml`.
 - Permissions: `~/.ssh` 700, private keys 600, public keys 644, sensitive configs 600.
 - Brewfile: only tools actually in use. Add packages by editing
   `dot_config/homebrew/Brewfile.tmpl` in a `wt` checkout; once merged, Michael runs
@@ -113,7 +106,7 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 .chezmoiexternal.toml     # pinned third-party skills (archive externals)
 .chezmoitemplates/agents/ # the agent instruction fragments: global.md, claude-code.md, codex.md (never deployed)
 .scripts/                 # provisioning helpers (ignored)
-tests/                    # test suites, `./tests/run.sh` runs them (ignored)
+tests/                    # test suites, `./tests/run.sh` runs them; tests/AGENTS.md (ignored)
 dot_config/               # → ~/.config (git, homebrew/Brewfile, mise, zsh, agents, …)
 dot_claude/  dot_codex/   # agent harness config: settings/config templates, hooks, guards, agents, skills
 private_dot_ssh/          # SSH key templates (1Password)
@@ -123,8 +116,6 @@ docs/superpowers/         # design records (tracked, ignored by chezmoi)
 ```
 
 ## Testing
-
-Suites live in `tests/`, one `<subject>.test.sh` per script under test.
 
 ```bash
 ./tests/run.sh                 # every suite with no special requirement
@@ -149,20 +140,17 @@ wait (`0` does not wait): past it the runner prints `giving up`, runs no suite, 
 and exits 75; a value that is not a non-negative integer exits 2. A nested runner sees
 `RUN_SH_LOCKED=1` and does not lock again. Never wrap it in `lockf` yourself.
 
-**Execute suites, never prefix an interpreter.** Every suite carries a correct shebang
-(most bash; `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `op-edit` and
-`wt-functions` are zsh). Running
-a zsh suite under `bash` reports bogus syntax errors that read exactly like a regression,
-because it stubs zsh builtins. `./tests/x.test.sh` is always right; `bash tests/x.test.sh`
-is the footgun. `run.sh` executes them for this reason.
+**Execute suites, never prefix an interpreter.** Every suite carries a correct shebang (most
+bash; `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `op-edit` and
+`wt-functions` are zsh). `./tests/x.test.sh` is always right; `bash tests/x.test.sh` on a zsh
+suite reports bogus syntax errors that read exactly like a regression.
 
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
 skipped by default (a `heavy` tag gives only the suite's timing; what the suite loads is in the
-subject map alone). A substring filter to `./tests/run.sh` keeps that gate; only an
-exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, while
-`./tests/run.sh reconcile` does not; `./tests/run.sh xreview` is the exact name, so it
-lifts the gate and also selects every `xreview-*` suite, which run beside it at no extra
-wall time):
+subject map alone). A substring filter to `./tests/run.sh` keeps that gate; only an exact suite
+name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, while
+`./tests/run.sh reconcile` does not; `./tests/run.sh xreview` is the exact name, so it lifts
+the gate and also selects every `xreview-*` suite, which run beside it at no extra wall time):
 
 | Suite | Needs | Why |
 |---|---|---|
@@ -188,81 +176,50 @@ takes about two minutes (it is not tagged heavy); `ssh-sandbox-proxy` renders it
 stubbed `op`.
 
 `live-write-boundary` also probes a dotfiles `wt` sibling. That probe measures only from a
-session started in one (`~/.local/share/chezmoi-<branch>`); from anywhere else it reads
-FAIL (exit 2) with an `INCONCLUSIVE: sibling:` line and no `failed_keys`.
+session started in one (`~/.local/share/chezmoi-<branch>`); from anywhere else it reads FAIL
+(exit 2) with an `INCONCLUSIVE: sibling:` line and no `failed_keys`.
 
-**Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or `live-write-boundary`
-with the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:
-`live-credential-boundary.test.sh` then reports every private key readable and exits
-12 or more. That is the suite working, not a regression.
+**Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or
+`live-write-boundary` with the sandbox disabled.** They measure the sandbox, so disabling it
+inverts the result: `live-credential-boundary.test.sh` then reports every private key readable
+and exits 12 or more. That is the suite working, not a regression.
 
-**Control for sandbox mode before calling anything a regression.** Comparing a sandboxed
-run against an unsandboxed one once produced a believable "18-test regression" that was
-entirely an artefact.
+**Control for sandbox mode before calling anything a regression:** compare only runs made in
+the same mode.
 
 **Never invoke suites with brace expansion.** `bash tests/live-{a,b}.test.sh` expands to
-`bash a b` — only the first runs, the second becomes an ignored `$1`, and the skipped
-suite prints nothing, so the run looks like a clean pass. Use `run.sh`, or a loop over a
-glob. (`live-agent-auth.test.sh` is the one that genuinely takes an argument — the repo
-path; `git-forge-guard.test.sh` optionally takes a guard path, defaulting to the source
-copy so it tests what will be deployed rather than what currently is.)
+`bash a b` — only the first runs, and the skipped suite prints nothing, so the run looks like a
+clean pass. Use `run.sh`, or a loop over a glob. (`live-agent-auth.test.sh` is the one that
+genuinely takes an argument — the repo path; `git-forge-guard.test.sh` optionally takes a guard
+path, defaulting to the source copy so it tests what will be deployed rather than what
+currently is.)
 
-**Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
-green" when it was 321 green / 3 red — 324 was the *total*. `run.sh` prints `passed/total`
-per suite, judges each on its **exit status**, and cross-checks that against the counted
-assertions: a suite that dies partway prints only the assertions it reached and would
-otherwise look clean, so it is reported `INCONSISTENT` instead of folded into a total.
-
-Two suite-specific gotchas worth keeping: `codex-config` drives the `modify_` **template**
-via `chezmoi execute-template --with-stdin --file` — without `--with-stdin` every case dies
-on "map has no entry for key stdin", and its empty-input fixture is `''`, not `'{}'`,
-because that file is TOML. `herdr-phase` stubs `herdr`, `glab` and `gh` on `PATH`; the script it
-tests is not runnable sandboxed, since it cannot create its run lock in `~/.cache` and exits 2.
-The script itself needs `/usr/bin/jq` and `/usr/bin/timeout` (and
-`/usr/bin/lockf`); the stubs do not replace them, and `refresh` exits 2 when any of them is missing.
+**Report totals as passed/total, never "N green".** `run.sh` prints `passed/total` per suite,
+judges each on its **exit status**, and cross-checks that against the counted assertions: a
+suite that dies partway is reported `INCONSISTENT` instead of folded into a total.
 
 While chezmoi's external cache is cold (after adding or bumping an external, before the
 warm-up), `codex-config`, `claude-settings`, `live-feedback-skill`, `git-pre-push-hook` and
-`ssh-sandbox-proxy` exit 2 with an
-`INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
-That is not a regression.
+`ssh-sandbox-proxy` exit 2 with an `INCONCLUSIVE:` line and the warm-up command, and `run.sh`
+shows it under their `????` row. That is not a regression. `xreview-guard-cli` does the same
+after a glab, gh or az upgrade changes the commands, or the `api` flags, the pre-merge gate was
+measured against: it exits 2 with an `INCONCLUSIVE:` line naming what was added or removed. It
+also exits 2 when a CLI, or the az extension directory, is missing. That is not a regression
+either.
 
-`xreview-guard-cli` does the same after a glab, gh or az upgrade changes the commands, or the
-`api` flags, the pre-merge gate was measured against: it exits 2 with an `INCONCLUSIVE:` line naming
-what was added or removed. It also exits 2 when a CLI, or the az extension directory, is missing.
-That is not a regression either; the pin in the suite is updated in the change that weighs the new
-command or flag (gate it, deny it or leave it).
+**Reading a run.** A `????` row is not a verdict: the suite asserted nothing, or its exit
+status contradicts its assertions (`INCONSISTENT`). Read the exit status the row prints and the
+line `run.sh` shows under it. On a `????` row, exit 2 is the suite's own guard (a missing
+subject, an `INCONCLUSIVE:` condition), never 1: 1 means an assertion failed. A kv suite (the
+`KEY=VALUE` status of `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
+`live-write-boundary`) encodes failures in its values and exits with the count, so it is judged
+on exit status alone. A kv suite that fails a probe closes with one `failed_keys=<key>,<key>`
+line; `run.sh` shows that line and any `INCONCLUSIVE:` lines under the FAIL row, never a
+`KEY=VALUE` line, so no value is echoed.
 
-A suite whose subject has moved must fail loudly, not silently pass: each one checks its
-target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard
-is missing otherwise reports every "must allow" case as a pass. Exit 2, never 1: 1 means an
-assertion failed. `run.sh` prints the guard's line under the suite's `????` row.
-`tests/missing-subject.test.sh` hides one file per row and pins the exit; a
-suite whose guard changes gets a row there.
-
-Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
-`KEY=VALUE` status the `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
-`live-write-boundary` suites share (the first three also so they never print key material). A kv suite
-encodes failures in its values and exits with the count, so it is judged on exit status
-alone — the prose cross-check does not apply to it. A kv suite that fails a probe closes with one
-`failed_keys=<key>,<key>` line (not when it dies early, before any key); `run.sh` shows that line
-and any `INCONCLUSIVE:` lines under the FAIL row, never a `KEY=VALUE` line, so no value is echoed,
-and does not count it as an assertion. A new kv suite should print it.
-`tests/write-boundary-probe.test.sh` drives `live-write-boundary` against a throwaway `HOME`
-and a stubbed `mkdir`, so its `.git/modules` probe, its sibling probe (including the INCONCLUSIVE-only
-exit 2, through the `WRITE_BOUNDARY_SIBLING_ONLY` seam, refused against the real home) and `failed_keys` line are
-tested without measuring a sandbox.
-
-**Inside a Herdr pane, `HERDR_SESSION` does not pick the session.** herdr 0.9.3 reads
-`HERDR_SESSION`, but `HERDR_SOCKET_PATH`, which herdr exports into every pane, outranks it;
-only `--session` outranks the socket (measured 2026-09-30 with `herdr status`). So
-`layout.sh`, `tab-goto.sh` and `phase.sh` thread `--session` in themselves, and nothing in
-them may call `command herdr` bare — from inside a pane a bare call targets the pane's own
-session, whatever `HERDR_SESSION` says. That is what made `dev-topology`'s isolation a
-fiction: it built its fixtures into the live session and then asserted against an empty
-`dev-test`. `layout.sh` also starts a server whenever `HERDR_SESSION` is set, even inside a
-Herdr pane, because the pane you are in belongs to a different session than the one you
-named.
+**Before adding or changing a suite, a fixture or the runner, read `tests/AGENTS.md`:** it
+holds the suite conventions and the suite-specific gotchas. Claude Code
+loads it when it reads a file under `tests/`; a subagent and Codex read it by hand.
 
 ## Troubleshooting
 

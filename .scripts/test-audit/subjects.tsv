@@ -9,7 +9,7 @@
 # Non-goal suites are listed in loaded_by for completeness; the harness never runs them.
 # Files no suite loads are absent.
 .chezmoidata/machines.toml	data	provision	provision
-.chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard
+.chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,agent-instructions
 .chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard
 .chezmoitemplates/agents/claude-code.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/codex.md	prose	agent-instructions	agent-instructions
@@ -50,6 +50,7 @@
 .scripts/test-audit/subjects.tsv	data	run	run,test-audit
 .scripts/test-audit/targeted.jsonl	data	-	test-audit
 .scripts/xreview-replay.py	py	xreview-replay	xreview-replay,process-replay
+AGENTS.md	prose	agent-instructions	agent-instructions
 Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/From Claude Code.json	data	alfred-relay	alfred-relay
 Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/From Codex.json	data	alfred-relay	alfred-relay
 Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/info.plist	data	alfred-relay	alfred-relay
@@ -59,10 +60,10 @@ Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	herdr-phase
 dot_agents/skills/merge-request/SKILL.md	prose	agent-skills	agent-skills
 dot_agents/skills/second-brain/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills
 dot_claude/CLAUDE.md.tmpl	data	agent-instructions	agent-instructions
-dot_claude/agents/sp-architect.md	prose	claude-settings	claude-settings,live-feedback-skill
+dot_claude/agents/sp-architect.md	prose	claude-settings	claude-settings,live-feedback-skill,agent-instructions
 dot_claude/agents/sp-mechanical.md	prose	claude-settings	claude-settings,live-feedback-skill
 dot_claude/agents/sp-reviewer.md	prose	claude-settings	claude-settings,live-feedback-skill,agent-instructions
-dot_claude/agents/sp-standard.md	prose	claude-settings	claude-settings,live-feedback-skill,review
+dot_claude/agents/sp-standard.md	prose	claude-settings	claude-settings,live-feedback-skill,review,agent-instructions
 dot_claude/agents/web-researcher.md	prose	claude-settings	claude-settings,agent-instructions
 dot_claude/executable_git-forge-guard.sh	bash	git-forge-guard	git-forge-guard,hook-path
 dot_claude/executable_path-resolution-guard.sh	bash	path-resolution-guard	path-resolution-guard,hook-path
@@ -79,6 +80,7 @@ dot_claude/skills/api-review/SKILL.md	prose	claude-settings	claude-settings
 dot_claude/skills/cross-review/SKILL.md	prose	xreview-skill	xreview-skill,agent-instructions,claude-settings,review
 dot_claude/skills/design-records/SKILL.md	prose	agent-instructions	agent-instructions,claude-settings
 dot_claude/skills/live-feedback/SKILL.md	prose	live-feedback-skill	live-feedback-skill,claude-settings
+dot_claude/skills/plan-run/SKILL.md	prose	agent-instructions	agent-instructions,claude-settings
 dot_claude/skills/symlink_clarity	data	agent-skills	agent-skills
 dot_claude/skills/symlink_merge-request	data	agent-skills	agent-skills
 dot_claude/skills/symlink_second-brain	data	agent-skills	agent-skills
@@ -140,6 +142,7 @@ dot_local/bin/executable_xreview	bash	xreview	xreview,xreview-apply-guard,xrevie
 dot_local/bin/executable_xreview-rpc	py	xreview-rpc	xreview-rpc,xreview,xreview-packet,live-codex-daemon,hook-path
 dot_zshrc	zsh	zshrc-reload	zshrc-reload,zshrc
 private_dot_ssh/private_github-agent.pub.tmpl	data	ssh-sandbox-proxy	ssh-sandbox-proxy,claude-settings,live-agent-auth
+tests/AGENTS.md	prose	agent-instructions	agent-instructions
 tests/fixtures/test-audit/bin/esc.py	py	-	test-audit
 tests/fixtures/test-audit/bin/loop.sh	bash	-	test-audit
 tests/fixtures/test-audit/bin/p.py	py	-	test-audit

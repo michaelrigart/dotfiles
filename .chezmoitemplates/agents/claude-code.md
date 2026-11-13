@@ -12,19 +12,10 @@
 - **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths
   or `git -C`; a lone `cd` lasts only in the main session. Name directories, not a recursive
   `grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.
-- **Cleanup never blocks a run.** Delete a finished `.superpowers/sdd/<plan>` workspace with
-  `sdd-clean <workspace>`, never `rm -rf`. Other deletions and container removals wait until
-  the run's work is done and go together, or into the final report as commands.
+- **Cleanup never blocks a run.** Deletions and container removals wait until the run's work is
+  done and go together, or into the final report as commands. A plan workspace: the `plan-run`
+  skill.
 - **Subagents.** Use the named types in `~/.claude/agents/`; each pairs a model with an effort.
-
-  | Type | Use for |
-  |---|---|
-  | `sp-mechanical` | tasks from a clear plan |
-  | `sp-standard` | integration, debugging, fix rounds, plan-run controllers, merges |
-  | `sp-reviewer` | cold diff review, every per-task review and re-review |
-  | `sp-architect` | design, plan review, the final whole-branch review; a fix only after an `sp-standard` attempt at it failed |
-  | `web-researcher` | all web research, a skill's researchers included: it holds only WebFetch and WebSearch, so the dispatcher passes it any reference text and saves its notes |
-
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
   Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
 - **Liveness.** Before a turn ends awaiting a child, background `sleep` for its expected time. After

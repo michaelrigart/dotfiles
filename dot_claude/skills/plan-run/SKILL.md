@@ -1,6 +1,6 @@
 ---
 name: plan-run
-description: Use when running an implementation plan as its controller, under superpowers:subagent-driven-development. Says which tasks get a per-task review, how review findings are triaged, which suites run when, and which agent type takes each dispatch; these rules take precedence over that skill and its templates.
+description: Use when running an implementation plan as its controller. Its rules take precedence over superpowers:subagent-driven-development and its templates.
 ---
 
 # Plan runs
@@ -64,3 +64,7 @@ Run the change once the way its user will, inside the sandbox: the `run` skill f
 a CLI against a scratch home. Record the command and what it showed in the ledger. Anything
 unexpected is a finding for the final review's fix wave. What needs Michael (an apply, an
 unsandboxed or live suite) goes in the final report as his step.
+
+## After the run
+
+Delete a finished `.superpowers/sdd/<plan>` workspace with `sdd-clean <workspace>`, never `rm -rf`.

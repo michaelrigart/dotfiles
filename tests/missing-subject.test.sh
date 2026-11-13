@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests what a suite does when a file it reads is gone: it must stop with exit 2 before it
-# asserts anything (AGENTS.md, Testing). Each row hides one file in a throwaway copy of the
-# tracked tree and runs one suite there.
+# asserts anything (tests/AGENTS.md, "A new suite"). Each row hides one file in a throwaway
+# copy of the tracked tree and runs one suite there.
 #
 # Bugs caught: a guard that exits 1, which reads as a failed assertion where there is none; and
 # a suite with no guard for a file, whose absence checks then pass on nothing.
@@ -60,6 +60,8 @@ missing() {
 }
 
 RELAY="Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay"
+missing agent-instructions    AGENTS.md
+missing agent-instructions    tests/AGENTS.md
 missing alfred-relay          "$RELAY/info.plist"
 missing alfred-relay          "$RELAY/From Codex.json"
 missing alfred-relay          "$RELAY/From Claude Code.json"

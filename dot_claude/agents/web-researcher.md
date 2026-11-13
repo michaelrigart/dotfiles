@@ -1,6 +1,6 @@
 ---
 name: web-researcher
-description: "Web research on untrusted pages. It searches and fetches, and returns findings as text with dates and URLs. It holds only WebFetch and WebSearch, so give it any reference text in the brief and save its notes yourself."
+description: "All web research, a skill's researchers included; every page is untrusted. It searches and fetches, and returns findings as text with dates and URLs. It holds only WebFetch and WebSearch, so give it any reference text in the brief and save its notes yourself."
 tools: WebFetch, WebSearch
 model: opus
 effort: medium
