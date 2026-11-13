@@ -900,7 +900,7 @@ run sample --sample-from "$T/crafted"
 eq "$(python3 -c 'import json,sys
 print([r["verdict"] for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "['survived']" "Q12: the mutated run starts clean, so a behaviour-neutral mutant survives"
 
-# Q13: inventory runs every suite from a pristine copy: s leaves a stray file that would fail s2
+# Q13: inventory runs every suite in a fresh copy: s leaves a stray file that would fail s2
 mk Q13
 python3 - "$T/repo/tests/s.test.sh" "$T/repo/tests/s2.test.sh" <<'PY'
 import sys
@@ -918,7 +918,7 @@ eq "$(python3 -c 'import json,sys
 print({r["suite"]: (r["rc"], r["failed"]) for r in map(json.loads, open(sys.argv[1]))})' "$T/state/inventory.jsonl")" "{'s': (0, 0), 's2': (0, 0)}" "Q13: the second suite is green, not failed by the first one's residue"
 clean Q13
 
-# Q14-Q22: a run never sees what an earlier run left in its copy, wherever the residue lives, and a
+# Q14-Q27: a run never sees what an earlier run left in its copy, wherever the residue lives, and a
 # suite that tampers with its copy cannot hang or escape the harness. Every run gets a copy built
 # for it. residue <s> <s2> makes suite s run the first snippet and s2 the second, both just before
 # their RESULT line, and commits. The harness runs under perl's alarm, so a regression that blocks
@@ -992,7 +992,8 @@ PY
 runb sample --sample-from "$T/crafted"
 rc_is 0 "Q25: a run that replaces the mutated file with a fifo, or a copy directory with a symlink, does not block or fail the harness"
 eq "$(<"$T/markers/outside")" "outside" "Q25: a mutated file replaced by a symlink is never written through to its target"
-eq "$(<"$T/markers/outdir/keep")" "kept" "Q25: a copy directory replaced by a symlink is unlinked, not followed into its target"
+eq "$(<"$T/markers/outdir/keep")" "kept" "Q25: a copy directory replaced by a symlink leaves its target alone"
+lacks "copy left behind" "Q25: and is replaced by a real copy: the symlink is unlinked, not reported as a copy that cannot be removed" "$ERR"
 eq "$(python3 -c 'import json,sys
 print([(r["verdict"], r["attempts"]) for r in map(json.loads, open(sys.argv[1]))])' "$T/state/runs-sample.jsonl")" "[('survived', 2), ('survived', 2), ('survived', 2), ('survived', 2)]" "Q25: every mutant, and its second run, ran in a clean copy"
 
@@ -1028,6 +1029,57 @@ audit.SESSION.cleanup()
 PY
 )" True "Q26: a copy built a second later at the same path has the same HEAD: the commit dates are pinned"
 
+# Q27: a try run starts its mutated run from a fresh copy, not from the copy its baseline wrote into
+mk Q27
+python3 - "$T/repo/tests/s.test.sh" <<'PY'
+import sys
+path = sys.argv[1]
+t = open(path).read()
+t = t.replace('bad "forced red"\n', 'bad "forced red"\n[ -e "$here/../stray" ] && bad "stray present at start"\n', 1)
+t = t.replace('echo "RESULT:', 'echo residue > "$here/../stray"\necho "RESULT:', 1)
+open(path, "w").write(t)
+PY
+"${GIT[@]}" -C "$T/repo" add -A
+"${GIT[@]}" -C "$T/repo" commit -q -m residue
+run try bin/s.sh 'FLAG=on' 'FLAG=on; :' s
+rc_is 0 "Q27: try runs"
+eq "$(jget verdict)" survived "Q27: a behaviour-neutral mutant survives, so the baseline's stray file did not reach the mutated run"
+
+# Q28: make_writable never follows a link, even where a check made before the chmod would say the
+# path is a directory: the link under the copy points at a directory outside it, whose modes stay
+mk Q28
+eq "$(python3 - "$SRC/.scripts/test-audit" "$T/mw" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import audit
+base = sys.argv[2]
+os.makedirs(base + "/out/sub")
+os.makedirs(base + "/copy/a/b")
+os.symlink(base + "/out", base + "/copy/a/link")
+os.chmod(base + "/out", 0o751)
+os.chmod(base + "/out/sub", 0o750)
+os.chmod(base + "/copy/a/b", 0)
+os.path.islink = lambda path: False
+audit.make_writable(base + "/copy")
+print(oct(os.stat(base + "/out").st_mode & 0o777), oct(os.stat(base + "/out/sub").st_mode & 0o777), oct(os.stat(base + "/copy/a/b").st_mode & 0o777))
+PY
+)" "0o751 0o750 0o700" "Q28: make_writable opens the directories below the copy and leaves a directory a link points to alone"
+
+# Q29: a previous copy that cannot be removed or replaced stops the session with a message, not a traceback
+mk Q29
+mkdir -p "$T/crafted"
+python3 - "$T/crafted/sample.jsonl" <<'PY'
+import json, sys
+row = {"id": "stuck0000001", "kind": "code", "file": "bin/s.sh", "op": "delete", "line": 7,
+       "context": "  FLAG=on", "occurrence": 0, "col": 2, "before": "FLAG=on",
+       "after": 'FLAG=on; chmod 600 "$(dirname "$(dirname "$here")")"', "suite": "s", "valid": 1}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+runb sample --sample-from "$T/crafted"
+chmod 755 "$T/copies"
+rc_is 2 "Q29: a copy root a mutant made unsearchable ends the run with the harness's exit 2"
+has "cannot replace the previous copy at" "Q29: and says so" "$ERR"
+lacks "Traceback" "Q29: instead of a traceback" "$ERR"
 
 echo "R. rule mutants"
 mk R

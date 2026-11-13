@@ -60,20 +60,30 @@ def die(message):
     sys.exit(2)
 
 
-def make_writable(path):
-    if os.path.islink(path) or not os.path.isdir(path):
+def make_writable(path, dir_fd=None):
+    """Make path and every directory under it searchable and writable by the owner, so rmtree can
+    empty it. Each step is relative to the directory already open, and none follows a link, so a
+    directory swapped for a symlink mid-walk is not entered and nothing outside is chmodded."""
+    try:
+        os.chmod(path, 0o700, dir_fd=dir_fd, follow_symlinks=False)
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except (OSError, NotImplementedError):
         return
     try:
-        os.chmod(path, 0o700)
-        for name in os.listdir(path):
-            make_writable(os.path.join(path, name))
+        with os.scandir(fd) as entries:
+            names = [entry.name for entry in entries if entry.is_dir(follow_symlinks=False)]
+        for name in names:
+            make_writable(name, fd)
     except OSError:
         pass
+    finally:
+        os.close(fd)
 
 
 def remove_tree(path):
-    """Remove a copy a suite may have tampered with. Neither rmtree nor make_writable follows a
-    symlink or opens a FIFO; a symlink or file left where the copy was is unlinked."""
+    """Remove a copy a suite may have tampered with. rmtree unlinks a symlink or FIFO inside it
+    without following or opening it, make_writable never follows a link, and a symlink or file left
+    where the copy was is unlinked."""
     if os.path.islink(path) or (os.path.lexists(path) and not os.path.isdir(path)):
         try:
             os.unlink(path)
@@ -225,7 +235,10 @@ def build_copy(repo, sha, root, command):
     root.mkdir(parents=True, exist_ok=True)
     copy = root / f"{sha[:12]}-{command}-{os.getpid()}"
     remove_tree(copy)
-    copy.mkdir()
+    try:
+        copy.mkdir()
+    except OSError as err:
+        die(f"cannot replace the previous copy at {copy}: {err}")
     if copy not in SESSION.copies:
         SESSION.copies.append(copy)
     archive = subprocess.Popen(["git", "-C", str(repo), "archive", sha], stdout=subprocess.PIPE)
@@ -470,10 +483,8 @@ def preflight(args, bind):
 
 
 def prepare(args, command, bind):
-    """The runner of one command, with its copy built: every suite run goes through it."""
-    runner = Runner(args, preflight(args, bind), command)
-    runner.ensure_copy()
-    return runner
+    """The runner of one command: every suite run goes through it."""
+    return Runner(args, preflight(args, bind), command)
 
 
 def cmd_inventory(args):
