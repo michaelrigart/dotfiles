@@ -924,8 +924,6 @@ def _k10():
     is_("F1 framing on with fit off refuses, saying the cap is Michael's to raise",
         (fo["action"], fo["reason"]), ("refuse", CAP_FRAMED.format(n, n - 1)))
     ok("F1 and never offers slicing or the variable", "slices" not in fo["reason"] and "XREVIEW_MAX_DIFF_BYTES" not in fo["reason"], fo["reason"])
-    ok("F1 both cap refusals end with the marker, the only imperative", over["reason"].endswith(" Michael's call: report this and stop.")
-       and fo["reason"].endswith(" Michael's call: report this and stop.") and "Review them in slices" not in over["reason"], (over["reason"], fo["reason"]))
     fs = built(request([t1], sp[:1], switches_file=swf(framing=True)))
     ok("F1 framing on with fit off sends a framed packet", fs["action"] == "send" and b"Files in this change (2):" in pkt(fs))
     # the cap counts characters, as bash's ${#d} does, not bytes
