@@ -43,7 +43,7 @@ lines). What is left there is small. The weight is in the dotfiles `AGENTS.md` a
     grown main. No rule is cut to reach a number. Decided by the driver session on Michael's
     delegation, 2026-11-13; part A stops here, and a later finding that asks for another
     sentence back in the root is taken as is unless the file would pass the cap;
-  - `cross-review` skill at most 250 lines, measured 235, from 381: a regrowth guard (the goal
+  - `cross-review` skill at most 250 lines, measured 236, from 381: a regrowth guard (the goal
     at sign-off was 150. The sentence table, Appendix C of the plan, shows that 150 cannot be
     reached without cutting a rule or editing a guard's deny message; the kept rules alone come
     to 235. Decided by the driver session on Michael's delegation, 2026-11-13);

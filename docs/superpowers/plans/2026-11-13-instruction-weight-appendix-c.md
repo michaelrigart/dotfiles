@@ -8,7 +8,8 @@ words, not by number.
 
 These supersede C.5's options and settle C.6 items 3, 4 and 6.
 
-1. **Goal:** the skill is at most 250 lines, measured 235: a regrowth guard, as in part A. A later
+1. **Goal:** the skill is at most 250 lines, measured 236 (235 as drafted, plus
+   the line decision 6 added): a regrowth guard, as in part A. A later
    review finding that keeps a rule in the skill is taken as is; the cap reopens only past 250.
 2. **Rationale beyond the spec's five kinds is dropped too**, each rule staying. Those rows are
    marked `[beyond-spec]` in C.1, each with the rule it explained. If the plan review says a
