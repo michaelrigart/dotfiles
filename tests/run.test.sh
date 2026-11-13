@@ -20,6 +20,8 @@ trap 'rm -rf "$T"' EXIT
 # Fixture runners lock on their own file, never the machine's; MARK is where fixtures
 # report what they saw of each other.
 export RUN_SH_LOCK="$T/lock" MARK="$T/mark"
+# A bound or poll interval set for this suite must not reach the fixture runners.
+unset RUN_SH_LOCK_WAIT RUN_SH_LOCK_POLL
 L="$RUN_SH_LOCK"
 mkdir -p "$MARK"
 cp "$RUN" "$T/run.sh"
@@ -295,7 +297,8 @@ touch "$T/release"
 wait "$holder"
 
 # A runner that must take the lock starts with none of the variables a locked parent exports.
-fresh() { env -u RUN_SH_LOCKED -u RUN_SH_LOCK_OWNER -u RUN_SH_LOCK_SINCE "$@"; }
+FRESH=(env -u RUN_SH_LOCKED -u RUN_SH_LOCK_OWNER -u RUN_SH_LOCK_SINCE -u RUN_SH_LOCK_WAIT -u RUN_SH_LOCK_POLL)
+fresh() { "${FRESH[@]}" "$@"; }
 cat > "$T/nestedrun.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 d=$(cd "$(dirname "$0")" && pwd)
@@ -318,6 +321,8 @@ hold 15 "$(printf '%s\tCHK/x\txreview wt' "$(( $(now) - 840 ))")"
 out="$(fresh "$T/run.sh" lockheld 2>&1)"
 wait "$holder"
 ran "a waiter names the holder's age, arguments and checkout" yes "held for 14 min by 'run.sh xreview wt' in CHK/x" "$out"
+# Bug caught: lockf's own "already locked" line printed before every waiting line.
+ran "a waiter prints no line of lockf's own" no '^lockf:' "$out"
 
 # Bug caught: the waiting line printed once, so a long wait looks hung.
 hold 25 "$(printf '%s\tCHK/x\txreview' "$(now)")"
@@ -429,6 +434,94 @@ rm -f "$L.holder"
 out="$(fresh RUN_SH_LOCK="$T/newdir/lock" "$T/run.sh" plain-alpha 2>&1)"
 ran "a missing lock directory is created and the run starts" yes 'ok +plain-alpha' "$out"
 ran "and nothing is said of waiting" no 'wait' "$out"
+# Bug caught: lockf started in the background, so Ctrl-C reached neither the suites nor the
+# runner's lock: the orphaned runner finished its suites beside the next owner.
+cat > "$T/slowint.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+trap 'echo interrupted > "$MARK/slowint.int"; exit 130' INT
+: > "$MARK/slowint.started"
+i=0; while [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+echo "  ok  slowint"
+SUITE
+chmod 755 "$T/slowint.test.sh"
+rm -f "$MARK"/slowint.*
+set -m
+"${FRESH[@]}" "$T/run.sh" slowint > "$T/int.out" 2>&1 &
+pg=$!
+set +m
+i=0; while [ ! -e "$MARK/slowint.started" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+kill -INT -- "-$pg"
+wait "$pg"; rc=$?
+i=0; while [ ! -e "$MARK/slowint.int" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+if [ "$rc" = 130 ]; then _pass "an interrupt during a run exits 130"; else _fail "an interrupt during a run exits 130" "exit $rc"; fi
+if [ -e "$MARK/slowint.int" ]; then _pass "and the interrupt reaches the running suite"; else _fail "and the interrupt reaches the running suite" "$(cat "$T/int.out")"; fi
+ran "and the runner does not go on to report" no 'suites passed|suites run' "$(sleep 1; cat "$T/int.out")"
+hold 600
+set -m
+"${FRESH[@]}" "$T/run.sh" lockheld > "$T/intw.out" 2>&1 &
+pg=$!
+set +m
+i=0; while ! grep -q 'waiting for' "$T/intw.out" && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+kill -INT -- "-$pg"
+wait "$pg"; rc=$?
+touch "$T/release"; wait "$holder"
+if [ "$rc" = 130 ]; then _pass "an interrupt while waiting for the lock exits 130"; else _fail "an interrupt while waiting for the lock exits 130" "exit $rc"; fi
+ran "and no suite runs" no 'ok +|suites' "$(cat "$T/intw.out")"
+
+# Bug caught: a bound or poll with a leading zero read as octal, which aborted the lock block
+# and ran the suites unlocked beside the holder.
+hold 20
+out="$(fresh RUN_SH_LOCK_WAIT=08 RUN_SH_LOCK_POLL=09 "$T/run.sh" lockheld 2>&1)"; rc=$?
+wait "$holder"
+ran "RUN_SH_LOCK_WAIT=08 waits for the holder, then runs" yes 'ok +lockheld' "$out"
+ran "and prints no shell error" no 'value too great|run\.sh: line' "$out"
+if [ "$rc" = 0 ]; then _pass "and exits 0"; else _fail "and exits 0" "exit $rc"; fi
+hold 20 "$(printf '08\tCHK/z\tfoo')"
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+ran "a record timestamp with a leading zero is read in base 10" yes "held for [0-9]+ min by 'run.sh foo' in CHK/z" "$out"
+ran "and prints no shell error" no 'value too great|run\.sh: line' "$out"
+
+# Bug caught: a bound or poll value that does not leak into the suites ends up gating the
+# fixture runners the suites start.
+cat > "$T/envseen.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "${RUN_SH_LOCK_WAIT-unset} ${RUN_SH_LOCK_POLL-unset} ${RUN_SH_LOCK_OWNER-unset} ${RUN_SH_LOCK_SINCE-unset}" > "$MARK/envseen"
+echo "  ok  envseen"
+SUITE
+chmod 755 "$T/envseen.test.sh"
+fresh RUN_SH_LOCK_WAIT=30 RUN_SH_LOCK_POLL=5 "$T/run.sh" envseen >/dev/null 2>&1
+if [ "$(cat "$MARK/envseen")" = "unset unset unset unset" ]; then _pass "the lock variables do not reach the suites"; else _fail "the lock variables do not reach the suites" "$(cat "$MARK/envseen")"; fi
+
+# Bug caught: arguments with a tab or newline breaking the one-line, three-field record.
+fresh "$T/run.sh" holderseen $'a\tb' $'c\nd' >/dev/null 2>&1
+n=$(wc -l < "$MARK/holderseen.rec" | tr -d ' '); nf=$(awk -F'\t' '{print NF}' "$MARK/holderseen.rec" | tr '\n' ' ')
+if [ "$n" = 1 ] && [ "$nf" = "3 " ]; then _pass "a record from arguments with a tab and a newline is one line of three fields"; else _fail "a record from arguments with a tab and a newline is one line of three fields" "$n lines, fields: $nf"; fi
+
+# Bug caught: a relative RUN_SH_LOCK putting the record where waiters do not look (the runner
+# changes into tests/ before it writes it).
+cat > "$T/relseen.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+if [ -e "$REL_START/rel/lock.holder" ]; then echo start; elif [ -e "$REL_TESTS/rel/lock.holder" ]; then echo tests; else echo none; fi > "$MARK/relseen"
+echo "  ok  relseen"
+SUITE
+chmod 755 "$T/relseen.test.sh"
+mkdir -p "$T/sub" "$T/rel"
+export REL_START="$T/sub" REL_TESTS="$T"
+(cd "$T/sub" && fresh RUN_SH_LOCK=rel/lock "$T/run.sh" relseen >/dev/null 2>&1)
+if [ "$(cat "$MARK/relseen")" = start ]; then _pass "a relative RUN_SH_LOCK keeps its record beside the lock"; else _fail "a relative RUN_SH_LOCK keeps its record beside the lock" "$(cat "$MARK/relseen")"; fi
+
+# Bug caught: consecutive tabs collapsing, so an empty checkout field made the arguments the checkout.
+hold 15 "$(printf '%s\t\tfoo' "$(now)")"
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+ran "a record with an empty checkout field degrades" yes 'held by another run' "$out"
+
+# Bug caught: a holder timestamp in the future printing a negative age.
+hold 15 "$(printf '%s\tCHK/f\tfoo' "$(( $(now) + 7200 ))")"
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+ran "a record from the future counts as held for 0 min" yes "held for 0 min by 'run.sh foo' in CHK/f" "$out"
 unset HOLDER_DONE
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -66,54 +66,62 @@ for a in "$@"; do
 done
 
 lock=${RUN_SH_LOCK:-/tmp/claude-$(id -u)/tests-run.lock}
+case "$lock" in /*) ;; *) lock=$PWD/$lock ;; esac # the record is written after a cd
+
+# norm <digits>: the value in base 10 (a leading 0 would read as octal), capped so it cannot overflow.
+norm() {
+  local v=${1#"${1%%[!0]*}"}
+  [ -n "$v" ] || v=0
+  [ ${#v} -le 9 ] || v=999999999
+  echo "$v"
+}
 
 # Who holds the lock, as the clause of the waiting and giving-up lines. The record is
 # advisory: a missing, stale or unparsable one degrades to "held by another run".
 holder_clause() {
-  local ts= chk= args= age
-  [ -r "$lock.holder" ] && IFS=$'\t' read -r ts chk args <"$lock.holder"
+  local rec= ts chk args age
+  [ -r "$lock.holder" ] && IFS= read -r rec <"$lock.holder"
+  case "$rec" in
+    *$'\t'*$'\t'*)
+      ts=${rec%%$'\t'*}; rec=${rec#*$'\t'}
+      chk=${rec%%$'\t'*}; args=${rec#*$'\t'} ;;
+    *) ts= chk= ;;
+  esac
   case "$ts" in ''|*[!0-9]*) ts= ;; esac
   if [ -z "$ts" ] || [ ${#ts} -gt 12 ] || [ -z "$chk" ]; then
     echo "held by another run"
     return
   fi
-  age=$(($(date +%s) - ts)); [ "$age" -lt 0 ] && age=0
+  age=$(($(date +%s) - 10#$ts)); [ "$age" -lt 0 ] && age=0
   args=${args//$'\t'/ }
   echo "held for $((age / 60)) min by 'run.sh${args:+ $args}' in ${chk//$'\t'/ }"
 }
 
-if [ "$one" -eq 0 ] && [ "${RUN_SH_LOCKED:-}" != 1 ]; then
-  wait_max=
+# The outer runner only waits; the locked one it starts runs the suites and is the only one
+# that writes the holder record. lockf runs in the foreground, so an interrupt reaches the
+# whole chain at once, as it did before the runner reported its wait. Every exit is explicit:
+# an error inside this function returns, and the caller then exits rather than run unlocked.
+take_lock() {
+  local wait_max= poll since= waited=0 t=0 rc
   if [ -n "${RUN_SH_LOCK_WAIT+x}" ]; then
     case "$RUN_SH_LOCK_WAIT" in
       ''|*[!0-9]*) echo "run.sh: RUN_SH_LOCK_WAIT must be a non-negative integer" >&2; exit 2 ;;
     esac
-    wait_max=$RUN_SH_LOCK_WAIT
+    wait_max=$(norm "$RUN_SH_LOCK_WAIT")
   fi
   poll=${RUN_SH_LOCK_POLL:-60} # seconds between waiting lines; a seam for the tests
-  case "$poll" in ''|*[!0-9]*|0) poll=60 ;; esac
+  case "$poll" in ''|*[!0-9]*) poll=60 ;; *) poll=$(norm "$poll"); [ "$poll" -gt 0 ] || poll=60 ;; esac
   mkdir -p "$(dirname "$lock")" || exit 2
-
-  # The outer runner only waits; the locked one it starts runs the suites and is the only
-  # one that writes the holder record. lockf forwards TERM to its child.
-  run_args=("$@")
-  child= rc=0 since=
-  trap '[ -z "$child" ] || { kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; }; exit 130' INT TERM
-  attempt() { # attempt <seconds>: sets rc; 75 means the lock is still held
-    RUN_SH_LOCKED=1 RUN_SH_LOCK_OWNER=1 RUN_SH_LOCK_SINCE=$since \
-      lockf -k -t "$1" "$lock" "$self" ${run_args[@]+"${run_args[@]}"} &
-    child=$!
-    wait "$child"
-    rc=$?
-    child=
-    [ "$rc" -eq 73 ] && exit 2 # lockf could not open the lock file and said so
-    [ "$rc" -eq 75 ] && return
-    exit "$rc"
-  }
-  attempt 0
-  since=$(date +%s)
-  waited=0
   while :; do
+    RUN_SH_LOCKED=1 RUN_SH_LOCK_OWNER=1 RUN_SH_LOCK_SINCE=$since lockf -s -k -t "$t" "$lock" "$self" "$@"
+    rc=$?
+    [ "$rc" -eq 73 ] && exit 2 # lockf could not open the lock file and said so
+    [ "$rc" -eq 75 ] || exit "$rc"
+    if [ -z "$since" ]; then
+      since=$(date +%s)
+    else
+      waited=$(($(date +%s) - since)); [ "$waited" -lt 0 ] && waited=0
+    fi
     if [ -n "$wait_max" ] && [ "$waited" -ge "$wait_max" ]; then
       echo "run.sh: giving up after $waited s: $(holder_clause)" >&2
       exit 75
@@ -121,12 +129,15 @@ if [ "$one" -eq 0 ] && [ "${RUN_SH_LOCKED:-}" != 1 ]; then
     echo "run.sh: waiting for the test-run lock $lock, $(holder_clause)" >&2
     t=$poll
     [ -n "$wait_max" ] && [ $((wait_max - waited)) -lt "$t" ] && t=$((wait_max - waited))
-    attempt "$t"
-    waited=$(($(date +%s) - since))
   done
+}
+
+if [ "$one" -eq 0 ] && [ "${RUN_SH_LOCKED:-}" != 1 ]; then
+  take_lock "$@"
+  exit 2
 fi
 lock_owner=${RUN_SH_LOCK_OWNER:-} lock_since=${RUN_SH_LOCK_SINCE:-}
-unset RUN_SH_LOCK_OWNER RUN_SH_LOCK_SINCE
+unset RUN_SH_LOCK_OWNER RUN_SH_LOCK_SINCE RUN_SH_LOCK_WAIT RUN_SH_LOCK_POLL
 export RUN_SH_LOCKED=1
 if [ "$lock_owner" = 1 ] && [ -n "$lock_since" ]; then
   e=$(($(date +%s) - lock_since)); [ "$e" -lt 0 ] && e=0
