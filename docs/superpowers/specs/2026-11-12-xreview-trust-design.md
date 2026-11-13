@@ -543,6 +543,10 @@ None added. Every change is either a deny (guard or rule) or an output format. g
     (older than this line);
   - an `api` endpoint segment the CLI fills from the current branch's name (`:branch`,
     `{branch}`), on a branch named `merge_requests` or `pulls` (older than this line).
+- A `url.<base>.insteadOf` rewrite of origin to another repository. On all three forges the gate
+  checks the ledger of the configured origin and reads the head through the URL git resolves it
+  to, and only a rewrite to a helper transport is denied (older than this line). Planting one
+  takes a write to git's configuration, which the sandbox does not let an agent make unseen.
 - A gated verb's `--help` can still prompt: the ask rule `Bash(glab mr merge*)` matches it, and an
   ask rule cannot be narrowed by a hook. Two unattended implementers of this line waited on that
   prompt. Agents read the flags from the guard's allowlists instead; the rule stays.
