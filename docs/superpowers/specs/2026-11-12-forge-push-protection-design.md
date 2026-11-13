@@ -196,7 +196,7 @@ change lands when a pull request is merged.
 - Scope: the repositories agents work in (seven by the baseline of 2026-11-13). The dormant ones
   are archived or go into his exceptions file, his choice per repository.
 - Rulesets on a private repository of a personal account need GitHub Pro; on Free they exist for
-  public repositories only. A repository agents work in must reach the target: one that is
+  public repositories only. A GitHub repository agents work in must reach the target: one that is
   private on Free is made public, covered by Pro, or taken out of agent work, before merge 3. It
   is never excepted while agents still work in it, because after the retirement a hidden push
   with his key would meet no refusal there. A dormant private repository can be excepted like any
@@ -689,8 +689,10 @@ nothing about the token.
    a pull request on the scratch repository is refused, and so is a write through the Contents
    API to a branch **other than the default** (`PUT repos/<owner>/<scratch>/contents/<file>` with
    `branch=<scratch branch>`; on `main` the ruleset would refuse it whatever the token holds), the
-   permission an HTTPS push needs. A GET of the repository with the same token succeeds first, so
-   a refusal is the permission and not a token that cannot see the repository.
+   permission an HTTPS push needs. The pull request itself is created with the agent token first:
+   that needs Pull requests write on the scratch repository, so a later refusal is the missing
+   permission and not a token that does not include the repository (reading a public repository
+   would prove nothing).
 2. With his own login: `git push origin main` with a new commit on the scratch `main` is refused
    by the forge.
 3. With his own login: the pull request of test 1 merges with `gh pr merge <n> --merge`.

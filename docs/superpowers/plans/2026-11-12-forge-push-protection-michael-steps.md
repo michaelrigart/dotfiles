@@ -454,7 +454,7 @@ is what it was (the check reports it as drift again).
 
 ### Step 6. The exceptions file (needs steps 1 to 5 done as far as they go) <a id="step-6"></a>
 
-`~/.config/forge-protection/exceptions` is yours alone: it is outside this repository and outside the sandbox's writable paths. Use it only for the repositories you knowingly accept as unprotected: the GitHub repositories of other owners and the self-hosted one the check does not know (both `unreadable`), the GitLab projects that answer 404 (not yours to administer) or that you decided in step 4 not to change, any Azure repository you cannot edit or read, and your own dormant GitHub repositories (step 8). **A repository agents work in is never excepted**: see step 8. Without the file nothing is excepted. Do not add it to chezmoi: this repository is public.
+`~/.config/forge-protection/exceptions` is yours alone: it is outside this repository and outside the sandbox's writable paths. Use it only for the repositories you knowingly accept as unprotected: the GitHub repositories of other owners and the self-hosted one the check does not know (both `unreadable`), the GitLab projects that answer 404 (not yours to administer) or that you decided in step 4 not to change, any Azure repository you cannot edit or read, and your own dormant GitHub repositories (step 8). **A GitHub repository agents work in is never excepted**: see step 8. (The shared GitLab projects and the Azure repositories you cannot edit are the accepted exceptions of the spec's section 2.4 and correction 11, agents or not.) Without the file nothing is excepted. Do not add it to chezmoi: this repository is public.
 
 Format, as the script reads it: one remote URL per line, in any form git accepts. Blank lines and
 lines whose first character after leading spaces is `#` are skipped; surrounding whitespace and a
@@ -737,18 +737,12 @@ git -C "$scratch" switch -c scratch-branch
 printf 'two\n' > "$scratch/file.txt"
 git -C "$scratch" commit -am "second commit"
 git -C "$scratch" push -u origin scratch-branch
-gh pr create --repo <owner>/<scratch-repo> --head scratch-branch --base main --title scratch --body scratch
+GH_TOKEN="$(op read 'op://Private/GitHub Agent Token/token')" gh pr create --repo <owner>/<scratch-repo> --head scratch-branch --base main --title scratch --body scratch
 ```
 
-The answer ends on the pull request's URL; its last number is `<number>`.
+The pull request is created **with the agent token**: that needs Pull requests write on this repository, so it proves the scratch repository is among the token's repositories (reading a public repository would prove nothing). The answer ends on the pull request's URL; its last number is `<number>`. If it is refused, `<scratch-repo>` is not in the token's repository list or the token lacks Pull requests write (step 10): correct the token and repeat. Do not go on to test 1 without it, because a token that cannot reach the scratch repository fails every write there and would pass test 1 falsely.
 
-**Test 1, the token cannot merge or write.** A control first: the token must see the repository, or a 404 below proves nothing.
-
-```
-GH_TOKEN="$(op read 'op://Private/GitHub Agent Token/token')" gh api repos/<owner>/<scratch-repo> --jq .full_name
-```
-
-Expected: `<owner>/<scratch-repo>`. If it fails, `<scratch-repo>` is not in the token's repository list (step 10): add it and repeat. Then:
+**Test 1, the token cannot merge or write.** The pull request above is the control. Then:
 
 ```
 GH_TOKEN="$(op read 'op://Private/GitHub Agent Token/token')" gh pr merge <number> --merge --repo <owner>/<scratch-repo>
