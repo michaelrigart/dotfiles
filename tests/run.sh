@@ -99,8 +99,9 @@ holder_clause() {
 
 # The outer runner only waits; the locked one it starts runs the suites and is the only one
 # that writes the holder record. lockf runs in the foreground, so an interrupt reaches the
-# whole chain at once, as it did before the runner reported its wait. Every exit is explicit:
-# an error inside this function returns, and the caller then exits rather than run unlocked.
+# whole chain at once, as it did before the runner reported its wait. Every path out of
+# this function is an exit; the guard after the call is for an expansion error, which bash
+# answers by abandoning the whole top-level `if` (and its `exit`), not just the function.
 take_lock() {
   local wait_max= poll since= waited=0 t=0 rc
   if [ -n "${RUN_SH_LOCK_WAIT+x}" ]; then
@@ -136,6 +137,7 @@ if [ "$one" -eq 0 ] && [ "${RUN_SH_LOCKED:-}" != 1 ]; then
   take_lock "$@"
   exit 2
 fi
+[ "$one" -eq 1 ] || [ "${RUN_SH_LOCKED:-}" = 1 ] || { echo "run.sh: the lock block failed; not running unlocked" >&2; exit 2; }
 lock_owner=${RUN_SH_LOCK_OWNER:-} lock_since=${RUN_SH_LOCK_SINCE:-}
 unset RUN_SH_LOCK_OWNER RUN_SH_LOCK_SINCE RUN_SH_LOCK_WAIT RUN_SH_LOCK_POLL
 export RUN_SH_LOCKED=1

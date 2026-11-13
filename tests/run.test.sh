@@ -440,7 +440,7 @@ cat > "$T/slowint.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 trap 'echo interrupted > "$MARK/slowint.int"; exit 130' INT
 : > "$MARK/slowint.started"
-i=0; while [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+i=0; while [ ! -e "$MARK/slowint.release" ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
 echo "  ok  slowint"
 SUITE
 chmod 755 "$T/slowint.test.sh"
@@ -449,19 +449,21 @@ set -m
 "${FRESH[@]}" "$T/run.sh" slowint > "$T/int.out" 2>&1 &
 pg=$!
 set +m
-i=0; while [ ! -e "$MARK/slowint.started" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+i=0; while [ ! -e "$MARK/slowint.started" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 kill -INT -- "-$pg"
 wait "$pg"; rc=$?
 i=0; while [ ! -e "$MARK/slowint.int" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 if [ "$rc" = 130 ]; then _pass "an interrupt during a run exits 130"; else _fail "an interrupt during a run exits 130" "exit $rc"; fi
 if [ -e "$MARK/slowint.int" ]; then _pass "and the interrupt reaches the running suite"; else _fail "and the interrupt reaches the running suite" "$(cat "$T/int.out")"; fi
-ran "and the runner does not go on to report" no 'suites passed|suites run' "$(sleep 1; cat "$T/int.out")"
+# An uninterrupted orphan would leave its loop on release and its runner would report.
+touch "$MARK/slowint.release"; sleep 3
+ran "and the runner does not go on to report" no 'suites passed|suites run' "$(cat "$T/int.out")"
 hold 600
 set -m
 "${FRESH[@]}" "$T/run.sh" lockheld > "$T/intw.out" 2>&1 &
 pg=$!
 set +m
-i=0; while ! grep -q 'waiting for' "$T/intw.out" && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+i=0; while ! grep -q 'waiting for' "$T/intw.out" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 kill -INT -- "-$pg"
 wait "$pg"; rc=$?
 touch "$T/release"; wait "$holder"
@@ -494,6 +496,7 @@ fresh RUN_SH_LOCK_WAIT=30 RUN_SH_LOCK_POLL=5 "$T/run.sh" envseen >/dev/null 2>&1
 if [ "$(cat "$MARK/envseen")" = "unset unset unset unset" ]; then _pass "the lock variables do not reach the suites"; else _fail "the lock variables do not reach the suites" "$(cat "$MARK/envseen")"; fi
 
 # Bug caught: arguments with a tab or newline breaking the one-line, three-field record.
+rm -f "$MARK/holderseen.rec"
 fresh "$T/run.sh" holderseen $'a\tb' $'c\nd' >/dev/null 2>&1
 n=$(wc -l < "$MARK/holderseen.rec" | tr -d ' '); nf=$(awk -F'\t' '{print NF}' "$MARK/holderseen.rec" | tr '\n' ' ')
 if [ "$n" = 1 ] && [ "$nf" = "3 " ]; then _pass "a record from arguments with a tab and a newline is one line of three fields"; else _fail "a record from arguments with a tab and a newline is one line of three fields" "$n lines, fields: $nf"; fi
@@ -522,6 +525,16 @@ hold 15 "$(printf '%s\tCHK/f\tfoo' "$(( $(now) + 7200 ))")"
 out="$(fresh "$T/run.sh" lockheld 2>&1)"
 wait "$holder"
 ran "a record from the future counts as held for 0 min" yes "held for 0 min by 'run.sh foo' in CHK/f" "$out"
+# Bug caught: an expansion error inside the lock block abandoning the whole top-level `if`
+# and letting the script run its suites unlocked (exit 0) beside a holder.
+sed '/^  local wait_max=/a\
+  : $((08))' "$RUN" > "$T/run-inject.sh"
+chmod 755 "$T/run-inject.sh"
+if ! grep -q '^  : \$((08))$' "$T/run-inject.sh"; then _fail "the injected expansion error is in the copy" "sed did not inject"; fi
+out="$(fresh "$T/run-inject.sh" plain-alpha 2>&1)"; rc=$?
+if [ "$rc" = 2 ]; then _pass "an expansion error in the lock block exits 2"; else _fail "an expansion error in the lock block exits 2" "exit $rc: $out"; fi
+ran "and no suite runs unlocked" no 'ok +|suites' "$out"
+rm -f "$T/run-inject.sh"
 unset HOLDER_DONE
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
