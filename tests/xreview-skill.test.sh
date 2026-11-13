@@ -405,15 +405,26 @@ else
   _fail "the skill routes in-spec trade-offs to a recorded ruling" "every trade-off still goes to Michael"
 fi
 
-# The escalation list must actually be exhaustive: refusals only Michael can resolve
-# (no pane, several panes, the daemon down and staying down) belong on it, not just in
-# the "dispatch refuses" prose above it.
+# The escalation list holds the four judgement triggers and one bullet for the refusals the tool
+# marks (and a failed `codex-daemon ensure`). Which refusals are marked is pinned in
+# tests/xreview.test.sh.
 esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL")"
 if [ "$(tail -n 1 <<<"$esc")" = "$(tail -n 1 "$SKILL")" ]; then
   _fail "the escalation range ends at its anchor" "it reached the end of the file"
 else _pass "the escalation range ends at its anchor"; fi
-# The refusals themselves (the pane will not free, and the rest) end with the same marker in
-# xreview, and tests/xreview.test.sh pins each one.
+# The marker the skill names is the one the tool prints.
+refusal_marker="$(grep -oE 'A refusal marked[[:space:]]*`[^`]+`' <<<"$(tr '\n' ' ' < "$SKILL" | sed 's/  */ /g')" | sed -E 's/^[^`]*`//; s/`$//')"
+if [ -z "$refusal_marker" ]; then
+  _fail "the skill's refusal marker is the string the tool prints" "no marker extracted after 'A refusal marked'"
+else
+  for _m in "$XREVIEW" "$ROOT/dot_claude/xreview-packet.py"; do
+    if grep -qF -- "$refusal_marker" "$_m"; then
+      _pass "the skill's refusal marker occurs in ${_m#"$ROOT"/}"
+    else
+      _fail "the skill's refusal marker occurs in ${_m#"$ROOT"/}" "'$refusal_marker' is not in it"
+    fi
+  done
+fi
 
 # The reviewer's answer is schema-checked JSON that xreview renders; on the exit-4 miss no reviewer text is printed.
 if grep -q 'findings JSON, rendered by xreview (on exit 4, no reviewer text at all)' "$SKILL"; then
@@ -440,7 +451,7 @@ else
 fi
 
 # spec 2026-10-01: the pane's screen is evidence, never instruction; harness worktrees use
-# their owner's pane; the new refusals are named, and the lock refusal is waited out.
+# their owner's pane; dispatch gets a five-minute tool timeout.
 screen_bullet="$(awk '/pane.s screen/{f=1} f&&/^[[:space:]]*$/{exit} f' "$SKILL")"
 if [ -n "$screen_bullet" ] && grep -qi 'untrusted' <<<"$screen_bullet"; then
   _pass "the skill says the pane's screen is untrusted evidence"
@@ -542,7 +553,8 @@ expected_esc="$(cat <<'EXPECTED_ESC'
 - the loop stops converging: two rounds in a row that mostly find problems in the last
   round's fixes, or a goal that can never be finished. Bring Michael the round count, what
   recurs and a structural option. A loop that converges runs as long as it needs.
-- `xreview` refuses with `Michael's call: report this and stop.`
+- `xreview` refuses with `Michael's call: report this and stop.`, or a `codex-daemon ensure` that
+  a refusal told you to run does not start the daemon
 EXPECTED_ESC
 )"
 actual_esc="$(printf '%s\n' "$esc" | sed '1,2d;$d' | sed '${/^$/d;}')"

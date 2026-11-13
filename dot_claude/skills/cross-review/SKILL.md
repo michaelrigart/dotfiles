@@ -180,7 +180,8 @@ Escalate to Michael when, and only when:
 - the loop stops converging: two rounds in a row that mostly find problems in the last
   round's fixes, or a goal that can never be finished. Bring Michael the round count, what
   recurs and a structural option. A loop that converges runs as long as it needs.
-- `xreview` refuses with `Michael's call: report this and stop.`
+- `xreview` refuses with `Michael's call: report this and stop.`, or a `codex-daemon ensure` that
+  a refusal told you to run does not start the daemon
 
 That list is exhaustive. A round count alone is not on it. Converged means the reviewer returns
 no actionable findings — not that it stopped objecting, and not that you stopped asking.

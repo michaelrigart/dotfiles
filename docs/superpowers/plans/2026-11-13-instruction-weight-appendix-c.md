@@ -21,6 +21,7 @@ These supersede C.5's options and settle C.6 items 3, 4 and 6.
    behaviour, no guard deny message. The `?` rows of C.2 get no clause and keep their text.
 5. **R36 (`DIE_NOTE`) stays as it is** (controller's call: the kept skill sentence already
    resolves it, and the draft marks the change optional).
+6. **The escalation list's last bullet also names a failed `codex-daemon ensure`** (after the final review): the old skill's "the Codex daemon is down and will not start" covered it, and no message prints the marker when the agent's own `ensure` fails. This restores a rule; it is not a new condition.
 
 
 Built from `dot_claude/skills/cross-review/SKILL.md` at d88277e (rebased on main, `fix/xreview-trust`
@@ -39,7 +40,7 @@ notifications). About 40 of the 146 lines saved are drops of this kind (an estim
 can restore any of them. One row is **added** (165o): the escalation item that replaces the
 refusal items moved into the messages.
 
-261 rows: 162 kept, 38 moved, 60 dropped (31 of them [beyond-spec]), 1 added. A row lettered
+261 rows: 162 kept, 38 moved, 60 dropped (30 of them [beyond-spec]), 1 added. A row lettered
 `a`, `b`, … is one sentence of a block that the dispositions split.
 
 ## C.1 Skill table
@@ -277,7 +278,7 @@ refusal items moved into the messages.
 | 165l | 285-286 | "The cap is Michael's to raise: `cap=` in `~/.config/xreview/packets.conf`, his file, outside the sandbox." | moved to R24, R25, and still stated in row 91 (kept) |
 | 165m | 287-288 | item: "`xreview` refuses because the pane is resuming something other than a thread id (for example `codex resume --last` or a picker)." | moved to `:378` (R13), marked M |
 | 165n | 288 | "The pane is Michael's." | moved to R13 |
-| 165o | (new) | item: "`xreview` refuses with `Michael's call: report this and stop.`" | added. It replaces rows 165a-165n in the list (spec C.1); not a new trigger, since it marks exactly those refusals |
+| 165o | (new) | item: "`xreview` refuses with `Michael's call: report this and stop.`" | added. It replaces rows 165a-165n in the list (spec C.1); not a new trigger, since it marks exactly those refusals. Amended after the final review: the bullet also names a failed `codex-daemon ensure`, which restores the old list's "the Codex daemon is down and will not start" for the case where the agent ran `ensure` because a refusal named it. |
 | 166a | 289-290 | item: "the loop stops converging: two rounds in a row that mostly find problems in the last round's fixes, or a goal that can never be finished." | kept verbatim |
 | 166b | 290-291 | "Bring Michael the round count, what recurs and a structural option." | kept verbatim |
 | 166c | 291 | "A loop that converges runs as long as it needs." | kept verbatim |
@@ -473,7 +474,7 @@ so the draft does not mark them (C.6, item 4).
 | 2123, 2124, 2126 | `-C`: cannot enter / not inside a git checkout | |
 | `executable_codex-daemon:84-115` | `check`'s own lines, printed above R3/R4 (one says `Fix: codex-daemon restart`) | not xreview's. R3/R4's clause comes after and overrides it |
 
-## C.3 The proposed `SKILL.md` (235 lines, including frontmatter; 13,726 bytes, against 381 lines and 23,228 bytes)
+## C.3 The proposed `SKILL.md` (236 lines, including frontmatter; 13,813 bytes, against 381 lines and 23,228 bytes)
 
 ~~~~markdown
 ---
@@ -658,7 +659,8 @@ Escalate to Michael when, and only when:
 - the loop stops converging: two rounds in a row that mostly find problems in the last
   round's fixes, or a goal that can never be finished. Bring Michael the round count, what
   recurs and a structural option. A loop that converges runs as long as it needs.
-- `xreview` refuses with `Michael's call: report this and stop.`
+- `xreview` refuses with `Michael's call: report this and stop.`, or a `codex-daemon ensure` that
+  a refusal told you to run does not start the daemon
 
 That list is exhaustive. A round count alone is not on it. Converged means the reviewer returns
 no actionable findings — not that it stopped objecting, and not that you stopped asking.
