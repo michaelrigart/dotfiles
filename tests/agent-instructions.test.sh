@@ -133,7 +133,7 @@ lines=$(wc -l < "$FRAG/global.md" | tr -d ' ')
 too_wide=$(awk 'length($0) > 100 {print FILENAME ":" NR}' "$FRAG/global.md" | head -3)
 [ -z "$too_wide" ] && _pass "global.md has no line wider than 100 columns" || _fail "global.md has no line wider than 100 columns" "$too_wide"
 lines=$(wc -l < "$SRC/AGENTS.md" | tr -d ' ')
-[ "$lines" -le 220 ] && _pass "AGENTS.md is at most 220 lines ($lines)" || _fail "AGENTS.md is at most 220 lines" "$lines"
+[ "$lines" -le 240 ] && _pass "AGENTS.md is at most 240 lines ($lines)" || _fail "AGENTS.md is at most 240 lines" "$lines"
 lines=$(wc -l < "$FRAG/claude-code.md" | tr -d ' ')
 [ "$lines" -le 50 ] && _pass "claude-code.md is at most 50 lines ($lines)" || _fail "claude-code.md is at most 50 lines" "$lines"
 lines=$(wc -l < "$FRAG/codex.md" 2>/dev/null | tr -d ' ')

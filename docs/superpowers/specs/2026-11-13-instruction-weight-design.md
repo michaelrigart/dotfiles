@@ -32,14 +32,17 @@ lines). What is left there is small. The weight is in the dotfiles `AGENTS.md` a
 ## Goals, non-goals, anti-goals
 
 - **Goals:**
-  - dotfiles `AGENTS.md` at most 220 lines, measured 210: a guard against regrowth, no longer
-    pinned to the measurement. History of the number: 150 at sign-off, then 175, 190, 200 and
-    205 as each review (Codex's spec, plan and pre-merge reviews, the final review) correctly
-    kept one more class of text in the root: everything that binds while running suites or
-    reading a run, the runner's knobs included. No rule is cut to reach a number. Decided by
-    the driver session on Michael's delegation, 2026-11-13; part A stops here, and a later
-    finding that asks for another sentence back in the root is taken as is unless the file
-    would pass 220;
+  - dotfiles `AGENTS.md` at most 240 lines, measured 228: a guard against regrowth, not
+    pinned to the measurement. The branch's own saving is 43 lines, about 3.1 KB: main's file
+    was 254 lines when part A was measured at 210, and grew to 271 through forge protection
+    step 1 before this branch merged; none of that added text is suite-writing detail, so it
+    stays in the root. History of the number: 150 at sign-off, then 175, 190, 200 and 205 as
+    each review (Codex's spec, plan and pre-merge reviews, the final review) correctly kept one
+    more class of text in the root (everything that binds while running suites or reading a
+    run, the runner's knobs included), 220 as the first guard with headroom, and 240 on the
+    grown main. No rule is cut to reach a number. Decided by the driver session on Michael's
+    delegation, 2026-11-13; part A stops here, and a later finding that asks for another
+    sentence back in the root is taken as is unless the file would pass the cap;
   - `cross-review` skill at most 150 lines;
   - `claude-code.md` below its 50-line cap, so the next rule has room;
   - no rule lost: every sentence that leaves a file is kept elsewhere, or is named as dropped

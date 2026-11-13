@@ -29,9 +29,9 @@ chezmoi templates.
 - Execute suites (`./tests/run.sh <name>`), never `bash tests/…`. Never chain after `cd`.
 - Check `git branch --show-current` prints `chore/instruction-weight` before each commit.
 - Commits: imperative mood, no agent attribution.
-- **Cap:** the spec's goal for `AGENTS.md` is at most 220 lines, measured 210 (a regrowth
-  guard; decided by the driver on Michael's delegation). The assertion sits in
-  `tests/agent-instructions.test.sh` at 220.
+- **Cap:** the spec's goal for `AGENTS.md` is at most 240 lines, measured 228 on main 1ca66ad
+  (a regrowth guard; decided by the driver on Michael's delegation). The assertion sits in
+  `tests/agent-instructions.test.sh` at 240.
 - **Amended at pre-merge:** the two runner paragraphs (old lines 126-131 and 133-139) are back
   in the root verbatim; the rows for them in Task 1's table read "kept whole", and
   `tests/AGENTS.md` has no `## The runner` section.
@@ -255,7 +255,7 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
   If it exits 2 for a cold cache, that is not a failure of this task: say so.
 - [ ] **Step 5: Run** `./tests/run.sh agent-instructions agent-skills skill-updates`; expected:
   all pass. Then add the cap assertion to `tests/agent-instructions.test.sh`, beside the
-  fragment caps and in their shape: `AGENTS.md is at most 220 lines`, reading `$SRC/AGENTS.md`;
+  fragment caps and in their shape: `AGENTS.md is at most 240 lines`, reading `$SRC/AGENTS.md`;
   see it pass, and see it fail with the limit temporarily set to 100 (restore it). Quote the totals.
 - [ ] **Step 6: Commit**, message `Put the skill-bump procedure in the externals file`.
 
