@@ -204,9 +204,9 @@ missing. That is not a regression either.
 
 **Reading a run.** A `????` row is not a verdict: the suite asserted nothing, or its exit
 status contradicts its assertions (`INCONSISTENT`). Read the exit status the row prints and the
-line `run.sh` shows under it. Exit 2 is a suite's own guard (a missing subject, an
-`INCONCLUSIVE:` condition), never 1: 1 means an assertion failed. A kv suite (the `KEY=VALUE`
-status of `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
+line `run.sh` shows under it. On a `????` row, exit 2 is the suite's own guard (a missing
+subject, an `INCONCLUSIVE:` condition), never 1: 1 means an assertion failed. A kv suite (the
+`KEY=VALUE` status of `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
 `live-write-boundary`) encodes failures in its values and exits with the count, so it is judged
 on exit status alone. A kv suite that fails a probe closes with one `failed_keys=<key>,<key>`
 line; `run.sh` shows that line and any `INCONCLUSIVE:` lines under the FAIL row, never a

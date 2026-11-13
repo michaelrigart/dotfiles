@@ -60,10 +60,10 @@ Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	herdr-phase
 dot_agents/skills/merge-request/SKILL.md	prose	agent-skills	agent-skills
 dot_agents/skills/second-brain/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills
 dot_claude/CLAUDE.md.tmpl	data	agent-instructions	agent-instructions
-dot_claude/agents/sp-architect.md	prose	claude-settings	claude-settings,live-feedback-skill
+dot_claude/agents/sp-architect.md	prose	claude-settings	claude-settings,live-feedback-skill,agent-instructions
 dot_claude/agents/sp-mechanical.md	prose	claude-settings	claude-settings,live-feedback-skill
 dot_claude/agents/sp-reviewer.md	prose	claude-settings	claude-settings,live-feedback-skill,agent-instructions
-dot_claude/agents/sp-standard.md	prose	claude-settings	claude-settings,live-feedback-skill,review
+dot_claude/agents/sp-standard.md	prose	claude-settings	claude-settings,live-feedback-skill,review,agent-instructions
 dot_claude/agents/web-researcher.md	prose	claude-settings	claude-settings,agent-instructions
 dot_claude/executable_git-forge-guard.sh	bash	git-forge-guard	git-forge-guard,hook-path
 dot_claude/executable_path-resolution-guard.sh	bash	path-resolution-guard	path-resolution-guard,hook-path
@@ -80,6 +80,7 @@ dot_claude/skills/api-review/SKILL.md	prose	claude-settings	claude-settings
 dot_claude/skills/cross-review/SKILL.md	prose	xreview-skill	xreview-skill,agent-instructions,claude-settings,review
 dot_claude/skills/design-records/SKILL.md	prose	agent-instructions	agent-instructions,claude-settings
 dot_claude/skills/live-feedback/SKILL.md	prose	live-feedback-skill	live-feedback-skill,claude-settings
+dot_claude/skills/plan-run/SKILL.md	prose	agent-instructions	agent-instructions,claude-settings
 dot_claude/skills/symlink_clarity	data	agent-skills	agent-skills
 dot_claude/skills/symlink_merge-request	data	agent-skills	agent-skills
 dot_claude/skills/symlink_second-brain	data	agent-skills	agent-skills
