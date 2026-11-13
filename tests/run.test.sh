@@ -635,8 +635,6 @@ out="$(rr --changed)"
 ran "a change to run.sh selects one heavy suite" yes 'ok +heavya .*changed: tests/run.sh' "$out"
 ran "and the other" yes 'ok +heavyb .*changed: tests/run.sh' "$out"
 
-# Bug caught: only committed changes seen.
-reset_repo; edit lib/a.sh
 # Bug caught: a failing per-suite read of a subject map (awk failing after compute_selection
 # validated the copy) read as "no rows", so a suite whose subjects are missing is skipped as
 # unchanged. The stub awk first on PATH fails the rows program (the one using ENVIRON) when it
@@ -662,6 +660,8 @@ out="$(awk_fails map.wt)"
 both "a failing read of the working-tree map selects every heavy suite" 'subject map unreadable' "$out"
 ran "and prints nothing of that failure" no 'awk:' "$out"
 
+# Bug caught: only committed changes seen.
+reset_repo; edit lib/a.sh
 out="$(rr --changed)"
 ran "an unstaged change selects" yes 'ok +heavya' "$out"
 reset_repo; edit lib/a.sh; G add lib/a.sh
