@@ -168,7 +168,7 @@ body_main_owner_only() {
 }
 
 check_github() {  # <remote> <owner/repo>
-  local remote=$1 repo=$2 def enc rules ids id st v n want
+  local remote=$1 repo=$2 def enc rules ids id st v n want name blocks msg
   case "$repo" in
     */*/*|*/|/*) row unreadable "$remote" "not an owner/repo path"; return ;;
     */*) ;;
@@ -194,8 +194,10 @@ check_github() {  # <remote> <owner/repo>
         .bypass_actors as $b | .current_user_can_bypass as $c
         | if $b == null and $c == null then error("no bypass information")
           else $st + {($id): {
+            active: (.enforcement == "active"),
+            name: (.name | if type == "string" then . else "" end),
             closed: (.enforcement == "active" and (($b != null and ($b | length) == 0) or ($b == null and $c == "never"))),
-            owner: (.enforcement == "active" and (($b != null and ($b | length) > 0 and ($b | all(.actor_type == "RepositoryRole" and .actor_id == 5))) or ($b == null and $c == "never")))
+            owner: (.enforcement == "active" and (($b != null and ($b | length) > 0 and ($b | all(.actor_type == "RepositoryRole" and .actor_id == 5 and .bypass_mode == "always"))) or ($b == null and $c == "never")))
           }} end' 2>/dev/null); then
       row unreadable "$remote" "ruleset $id shows neither bypass_actors nor current_user_can_bypass"; return
     fi
@@ -203,8 +205,12 @@ check_github() {  # <remote> <owner/repo>
   # A rule pair is "carried" by a ruleset of any enforcement; the POST for a pair is printed only
   # when no ruleset carries it, otherwise the carrier gets a UI note. A ruleset holding update or
   # creation (the rejected merged design included) is judged as the owner-only carrier and is never
-  # told to empty its bypass list: protect-main is posted beside it. An empty bypass list is not
-  # owner-only, since Michael could then no longer push the default branch.
+  # told to empty its bypass list: protect-main is posted beside it. Owner-only means the repository
+  # admin role as the only bypass actor, with bypass mode always: an empty list, another actor or
+  # pull_requests_only leaves Michael unable to push the default branch. GitHub enforces every
+  # applicable ruleset, so every active one holding update or creation must be owner-only, not just
+  # one of them; a ruleset that is not active enforces nothing and is not judged. Protection rules
+  # only add up, so deletion and non_fast_forward need one closed carrier, not all of them.
   v=$(jq -nc --argjson r "$rules" --argjson st "$st" '
     def types($id): [$r[] | select(.ruleset_id == $id) | .type];
     def pair($id; $a; $b): (types($id) | (index($a) != null and index($b) != null));
@@ -212,12 +218,13 @@ check_github() {  # <remote> <owner/repo>
     def oo($id): pair($id; "update"; "creation");
     def uc($id): (types($id) | (index("update") != null or index("creation") != null));
     def carried($t; $k): any($r[]; .type == $t and $st[(.ruleset_id | tostring)][$k]);
+    def blocker($id): uc($id) and $st[($id | tostring)].active and ($st[($id | tostring)].owner | not);
     ([$r[].ruleset_id | select(. != null)] | unique) as $ids
-    | {ok: (carried("deletion"; "closed") and carried("non_fast_forward"; "closed") and carried("update"; "owner") and carried("creation"; "owner")),
+    | {ok: (carried("deletion"; "closed") and carried("non_fast_forward"; "closed") and carried("update"; "owner") and carried("creation"; "owner") and ([$ids[] | select(blocker(.))] | length == 0)),
        protect_post: ([$ids[] | select(pm(.) and (uc(.) | not))] | length == 0),
        owner_post: ([$ids[] | select(oo(.))] | length == 0),
        ui: ([$ids[] | select(pm(.) and (uc(.) | not) and ($st[tostring].closed | not)) | {id: ., want: "none"}]
-          + [$ids[] | select(uc(.) and ($st[tostring].owner | not)) | {id: ., want: "Repository admin"}])}')
+          + [$ids[] | select(uc(.) and ($st[tostring].owner | not)) | {id: ., want: "Repository admin with bypass mode \"always\"", name: $st[tostring].name, blocks: blocker(.)}])}')
   if [ "$(printf '%s' "$v" | jq -r '.ok')" = true ]; then
     row ok "$remote" "default branch $def"; return
   fi
@@ -233,7 +240,12 @@ check_github() {  # <remote> <owner/repo>
     n=$((n - 1))
     id=$(printf '%s' "$v" | jq -r ".ui[$n].id")
     want=$(printf '%s' "$v" | jq -r ".ui[$n].want")
-    note "in the UI: https://github.com/$repo/rules/$id: Enforcement Active, bypass list $want"
+    msg="in the UI: https://github.com/$repo/rules/$id: Enforcement Active, bypass list $want"
+    if [ "$(printf '%s' "$v" | jq -r ".ui[$n].blocks // false")" = true ]; then
+      name=$(printf '%s' "$v" | jq -r ".ui[$n].name")
+      msg="$msg; ruleset $(shq "$name") blocks the owner's direct push of the default branch until then (or drop its update and creation rules)"
+    fi
+    note "$msg"
   done
 }
 

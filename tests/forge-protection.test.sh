@@ -206,6 +206,57 @@ for mode in always pull_requests_only; do
   out_has "rules/2: Enforcement Active, bypass list Repository admin" "github main-owner-only, bypass $mode: the UI note"
 done
 
+# the admin role as bypass actor is not enough: with pull_requests_only Michael still cannot push the default branch
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rs "$R" 2 '{"id":2,"enforcement":"active","bypass_actors":[{"actor_type":"RepositoryRole","actor_id":5,"bypass_mode":"pull_requests_only"}],"current_user_can_bypass":"pull_requests_only"}'
+run check
+row_is drift "github.com/$R" "github admin bypass with pull_requests_only: drift (Michael cannot push the default branch), never ok"
+out_has 'rules/2: Enforcement Active, bypass list Repository admin with bypass mode "always"' "github admin bypass with pull_requests_only: the UI note names the mode always"
+out_hasnt 'gh api --method POST' "github admin bypass with pull_requests_only: no POST, the existing ruleset is edited in the UI"
+rc_is 1 "github admin bypass with pull_requests_only: exit 1"
+
+# a third active ruleset with update or creation and no owner bypass blocks Michael, however good the other two are
+EXTRA_RULES=$(join "$(join "$PM_RULES" "$OO_RULES")" '[{"type":"update","ruleset_id":5}]')
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$EXTRA_RULES"
+gh_rs "$R" 5 '{"id":5,"name":"extra-ruleset","enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+run check
+row_is drift "github.com/$R" "github a third active ruleset with update and no bypass: drift, never ok"
+out_has 'ruleset extra-ruleset blocks the owner' "github a third active ruleset with update and no bypass: the note names the ruleset and says the owner is blocked"
+out_has "rules/5: Enforcement Active, bypass list Repository admin" "github a third active ruleset with update and no bypass: the UI note points at it"
+out_hasnt 'gh api --method POST' "github a third active ruleset with update and no bypass: no POST, it cannot fix this"
+rc_is 1 "github a third active ruleset with update and no bypass: exit 1"
+
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$(join "$(join "$PM_RULES" "$OO_RULES")" '[{"type":"creation","ruleset_id":5}]')"
+gh_rs "$R" 5 "{\"id\":5,\"name\":\"extra-ruleset\",\"enforcement\":\"active\",\"bypass_actors\":[$BYADMIN,{\"actor_type\":\"Team\",\"actor_id\":7,\"bypass_mode\":\"always\"}],\"current_user_can_bypass\":\"always\"}"
+run check
+row_is drift "github.com/$R" "github a third active ruleset with creation and an extra bypass actor: drift"
+out_has 'ruleset extra-ruleset blocks the owner' "github a third active ruleset with creation and an extra bypass actor: the note names it"
+
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$EXTRA_RULES"
+gh_rs "$R" 5 "{\"id\":5,\"name\":\"extra-owner-only\",\"enforcement\":\"active\",\"bypass_actors\":[$BYADMIN],\"current_user_can_bypass\":\"always\"}"
+run check
+row_is ok "github.com/$R" "github a third active ruleset with update that is owner-only too: ok"
+rc_is 0 "github a third active ruleset with update that is owner-only too: exit 0"
+
+# a ruleset that is not active enforces nothing: the script judges only active ones (the rules endpoint lists only those anyway)
+for mode in evaluate disabled; do
+  reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+  gh_rules "$R" "$EXTRA_RULES"
+  gh_rs "$R" 5 "{\"id\":5,\"name\":\"extra-ruleset\",\"enforcement\":\"$mode\",\"bypass_actors\":[],\"current_user_can_bypass\":\"never\"}"
+  run check
+  row_is ok "github.com/$R" "github a third ruleset with update and no bypass in $mode mode: ok, it blocks nobody"
+done
+
+# the ruleset name is forge-supplied: one note line, quoted
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$EXTRA_RULES"
+gh_rs "$R" 5 "$(jq -nc --arg n $'a\nb\'c' '{id:5,name:$n,enforcement:"active",bypass_actors:[],current_user_can_bypass:"never"}')"
+run check
+out_has "ruleset 'ab'\\''c' blocks the owner" "github a hostile ruleset name: quoted and on one line"
+
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
 gh_rs "$R" 2 '{"id":2,"enforcement":"active","bypass_actors":[{"actor_type":"RepositoryRole","actor_id":2,"bypass_mode":"always"}],"current_user_can_bypass":"always"}'
 run check
