@@ -13,12 +13,12 @@ terminal, and he was told. Codex approved the spec in review round 5 (`xr-179452
 [spec 2026-10-29](2026-10-29-push-guard-escaped-spellings-design.md), section 7, and changes rule 4
 of [spec 2026-09-30](2026-09-30-safe-autonomy-design.md), section 1.1.
 
-**Revision 2 (2026-11-14), awaiting Michael's signature.** Michael declined the GitHub machine
+**Revision 2 (2026-11-14), signed by Michael on 2026-11-14** in the driver session ("I follow your recommendations. go"), after Codex approved it in spec round 4 (`xr-1794611710-5ee4cd19`). Michael declined the GitHub machine
 account on 2026-11-13 and chose, on 2026-11-14 in the driver session ("ok, lets go with A then"),
 that GitHub's default branches take changes only through a pull request, his own included. Sections
 1.1, 2.1, 4.3 and 6 and the lines that named the account are rewritten below; the section
 "Revision 2" at the end lists every change, what is documented, inferred and his to test, and the
-decisions he can still change at signature. The text as signed on 2026-11-12 is this file at
+decisions he took at signature. The text as signed on 2026-11-12 is this file at
 commit `1ca66ad`.
 
 This repository is public. Client organisations, groups, projects and hosts are never named here,
@@ -190,7 +190,7 @@ change lands when a pull request is merged.
   request. The author can merge it.
 - `allowed_merge_methods` is `["merge"]`: a merge commit keeps his signed commits as they are and
   adds a merge commit GitHub signs; "rebase" would rewrite them unsigned and "squash" replaces
-  them. Michael's default of 2026-11-14; he can change it at signature.
+  them. Decided by Michael on 2026-11-14.
 - An `update` rule ("Restrict updates") is not part of the target: with an empty bypass list it
   would refuse the merge of a pull request too. `main-owner-only` is never created.
 - Scope: the repositories agents work in (seven by the baseline of 2026-11-13). The dormant ones
@@ -343,8 +343,7 @@ refuses the push, his own included, and after merge 3 rule 4 denies the plain fo
   `chezmoi apply`: it deploys only from a clean `main` equal to origin's. A `!` command runs with
   the session's `GH_TOKEN`, which cannot merge.
 - The pull request is opened ready for review, not as a draft: the reviews are done when it is
-  opened, and nobody else reads the repository's pull requests. Michael can change this at
-  signature (a draft costs him `gh pr ready` first).
+  opened, and nobody else reads the repository's pull requests. Decided by Michael on 2026-11-14.
 - **No agent merges on GitHub, on his word or otherwise.** The agent token cannot (section 1.1),
   as on GitLab. The driver no longer merges a dotfiles line into `main` or pushes `main`; it
   collects the line's report and hands Michael the two commands. The local merge into the main
@@ -655,7 +654,7 @@ unchanged; each correction is listed here for Michael, and the text above stands
 
 ## Revision 2 (2026-11-14): GitHub without a second account
 
-Awaiting Michael's signature. He declined the machine account on 2026-11-13 ("I don't like that.
+Signed by Michael on 2026-11-14. He declined the machine account on 2026-11-13 ("I don't like that.
 So this is not something that I want to introduce": it would show as the pusher of feature
 branches, in the collaborator list and as a profile) and chose pull requests only on 2026-11-14
 ("ok, lets go with A then"), both in the driver session.
@@ -704,14 +703,18 @@ are wrong or the inference is. If test 3 fails, he could not land a change, so t
 design does not work as specified. In each case the line returns to Michael with what the forge
 answered; nothing real has changed.
 
-**Decisions he can still change at signature:**
+**Decided at signature (2026-11-14), each as recommended:**
 
 - the merge method, `merge` only (section 2.1);
 - the scope: the repositories agents work in, the dormant ones archived or excepted per
   repository (section 2.1);
 - the dotfiles' pull request opened ready for review, not as a draft (section 4.3);
 - three merges, with the pull-request flow starting at merge 2 and the retirement at merge 3
-  (section 6).
+  (section 6);
+- the scan's proof-only exclusion and the size of `tests/forge-protection.test.sh` stay as built.
+
+Read on 2026-11-14 with GET calls: the seven repositories in scope are all public, so the Pro
+question of section 2.1 does not arise for them.
 
 **Inventory.** Correction 9's figures are superseded by Michael's own baseline run of the check
 on 2026-11-13, the first to read Azure DevOps: 100 repositories, 1 ok, 81 drift, 18 unreadable,
