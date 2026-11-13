@@ -20,8 +20,10 @@
 # An API write that only comments, opens or resolves a thread, starts an MR's pipeline, or
 # updates a title or description (-f/-F fields, no --input) is never gated, in any position.
 # A merge of origin's default branch (origin/<name> or refs/remotes/origin/<name>) is never
-# gated where it starts a simple command of its own, in a directory the gate can read: it
-# lands only what origin's default branch already holds. Any gated verb left beside it decides.
+# gated where it is a command of its own, in a directory the gate can read: it lands only
+# what origin's default branch already holds. It must be written in plain characters (letters,
+# digits and _ . / = -), with only git's -C and the flags --ff-only, --no-edit and the like,
+# so no shell can read it as anything else. Any gated verb left beside it decides.
 #
 # glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
 # proposes a branch the forge makes itself, which no review can have seen.
@@ -653,6 +655,37 @@ def strip_redirections(cmd):
     return "".join(out)
 
 
+def split_commands(text):
+    """(segment, separator) pairs of text, split where the shell ends a command: at an unquoted
+    ;, &, | or newline, a run of them (&&, ||, |&, ;;) being one separator. Quotes and
+    backslashes are honoured as strip_redirections honours them, so a quoted or escaped
+    operator never splits. Parentheses do not split: a segment holding one is not plain. The
+    last pair's separator is empty. text has been through lex, so the only quotes left are
+    '...' and "..."."""
+    out, buf, i, n, quoting = [], [], 0, len(text), None
+    while i < n:
+        c = text[i]
+        if quoting is None and c in ";&|\n":
+            j = i
+            while j < n and text[j] in ";&|\n":
+                j += 1
+            out.append(("".join(buf), text[i:j]))
+            buf, i = [], j
+            continue
+        buf.append(c)
+        if c == "\\" and quoting != "'" and i + 1 < n:
+            buf.append(text[i + 1])
+            i += 2
+            continue
+        if quoting is None and c in "'\"":
+            quoting = c
+        elif c == quoting:
+            quoting = None
+        i += 1
+    out.append(("".join(buf), ""))
+    return out
+
+
 def tokenize(text):
     """The words and operator tokens of lexed text, its redirections dropped. Raises
     ValueError on unbalanced quotes."""
@@ -679,23 +712,19 @@ def tool_name(word):
     return "az" if name.lower() == "az" else name
 
 
-def candidate_spans(tokens):
-    """The (start, end) of each word naming git, glab, gh or az, with the words after it in its
-    simple command. Any word may be a command word - after a wrapper (timeout 30, caffeinate
-    -i, find -exec, xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc,
-    function f {) or an assignment (A+=1) - so the gate never tries to tell which word runs.
-    Whether the command is plain is parse_plain's question."""
+def candidates(tokens):
+    """Each word naming git, glab, gh or az, with the words after it in its simple command. Any
+    word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
+    xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc, function f {) or
+    an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the
+    command is plain is parse_plain's question."""
     out, end = [], len(tokens)
     for k in range(len(tokens) - 1, -1, -1):
         if is_operator(tokens[k]):
             end = k
         elif tool_name(tokens[k]) in TOOLS:
-            out.append((k, end))
+            out.append(tokens[k:end])
     return out[::-1]
-
-
-def candidates(tokens):
-    return [tokens[s:e] for s, e in candidate_spans(tokens)]
 
 
 def shell_strings(tokens):
@@ -1394,43 +1423,83 @@ def judge_git_merge(shape, ledger):
 
 ORIGIN_REF = re.compile(r"(?:refs/remotes/)?origin/.+")
 DIR_CHANGERS = {"cd", "chdir", "pushd", "popd"}
+# The options a sync may carry, whole: none takes a value, and git's abbreviations (--mess is
+# --message, taking the next word) and bundles (-qn) are not read, so no word is left for the
+# shell or for git to read another way.
+SYNC_FLAGS = {"--ff-only", "--ff", "--no-ff", "--no-edit", "--no-commit", "-q", "--quiet",
+              "--stat", "--no-stat", "-n", "--autostash", "--no-autostash", "-v", "--verbose"}
+# Characters no shell expands, quotes or ends a command at: a segment made only of these has
+# the words it splits into, whatever shell reads it.
+PLAIN_TEXT = re.compile(r"[A-Za-z0-9_./= \t-]*")
 
 
-def is_sync(tokens, start, end, cwd, ledger):
-    """Is the git merge at tokens[start:end] a merge of origin's default branch that starts a
-    simple command in a directory the gate can read? Such a merge lands only what origin's
-    default branch already holds, on any branch, so it needs no receipt and no branch lookup.
-    Never raises Deny: what the plain form would refuse is no sync."""
-    if (start and not is_operator(tokens[start - 1])) or tool_name(tokens[start]) != "git":
+def plain_words(segment):
+    """The words of a segment written in plain characters only, or None. zsh expands a word
+    that starts with = (=git is git's path), so that is not plain either."""
+    if not PLAIN_TEXT.fullmatch(segment):
+        return None
+    words = segment.split()
+    return None if any(w.startswith("=") for w in words) else words
+
+
+def is_sync(words, cwd, moved, ledger):
+    """Is this command (plain words) a merge of origin's default branch, with nothing else on
+    it? Such a merge lands only what origin's default branch already holds, on any branch, so
+    it needs no receipt and no branch lookup. cwd is the directory the segment runs in; moved
+    says an earlier command may have changed it, which leaves only an absolute -C to name the
+    repository. A Deny from what the plain form would refuse is no sync."""
+    if words[0] != "git":
         return False
-    args = tokens[start + 1:end]
+    args = words[1:]
     try:
-        _, i = merge_dir(args, cwd)
+        where, i = merge_dir(args, cwd)
     except Deny:
         return False
-    refs = parse_flags(args[i + 1:], MERGE_VALUE)[1]
-    if len(refs) != 1 or not literal(refs[0]) or not ORIGIN_REF.fullmatch(refs[0]):
+    if i >= len(args):
         return False
-    # The directory is the hook's, moved by a leading cd <literal> && as parse_plain reads it.
-    # Any other cd before the merge moves it where the gate cannot follow, and only an
-    # absolute -C names the repository then.
-    t, lead = tokens[:start], 0
-    while lead < len(t) and t[lead] == "\n":
-        lead += 1
-    before = t[lead:]
-    if len(before) >= 3 and before[0] == "cd" and before[2] == "&&" and not is_operator(before[1]):
-        target = os.path.expanduser(before[1])
-        if literal(target) and target != "-":
-            cwd, before = os.path.normpath(os.path.join(cwd, target)), before[3:]
-    if any(word in DIR_CHANGERS for word in before):
-        first = args[:i].index("-C") if "-C" in args[:i] else None
-        if first is None or not os.path.isabs(os.path.expanduser(args[first + 1])):
+    rest = args[i + 1:]
+    refs = [w for w in rest if not w.startswith("-")]
+    if any(w.startswith("-") and w not in SYNC_FLAGS for w in rest):
+        return False
+    if len(refs) != 1 or not ORIGIN_REF.fullmatch(refs[0]):
+        return False
+    if moved:
+        named = args[:i]
+        if "-C" not in named or not named[named.index("-C") + 1].startswith("/"):
             return False
     try:
-        top = toplevel(merge_dir(args, cwd)[0])
-    except Deny:
+        top = toplevel(where)
+    except Deny as d:
+        if str(d) == TIMED_OUT:
+            raise
         return False
     return names_origin_default(top, refs[0], ledger.default_branch(top))
+
+
+def without_syncs(text, cwd, ledger):
+    """text with each sync segment replaced by the word :, every separator kept, or None when
+    it holds none. The directory a segment runs in is the hook's, moved by a leading
+    cd <path> && as parse_plain reads it; a cd, chdir, pushd or popd word in any other earlier
+    segment, quoted or not, moves it where the gate cannot follow."""
+    parts = split_commands(text)
+    first = plain_words(parts[0][0])
+    lead = None
+    if first and len(first) == 2 and first[0] == "cd" and first[1] != "-" and parts[0][1] == "&&":
+        lead = os.path.normpath(os.path.join(cwd, first[1]))
+    out, found, moved = [], False, False
+    for k, (segment, separator) in enumerate(parts):
+        words = plain_words(segment)
+        if words and is_sync(words, cwd if lead is None else lead, moved, ledger):
+            out.append(" : " + separator)
+            found = True
+        else:
+            out.append(segment + separator)
+        if k or lead is None:
+            try:
+                moved = moved or any(w in DIR_CHANGERS for w in tokenize(segment))
+            except ValueError:
+                moved = True
+    return "".join(out) if found else None
 
 
 # ------------------------------------------------------------------ the forge project
@@ -2440,16 +2509,16 @@ def main():
         if not gated:
             return
         ledger = None
-        if not hidden:
-            # A sync is judged apart from the command around it, so it is dropped before the
-            # command is read as plain or compound. Whatever gated verb is left decides.
-            left = [(s, e, gated_verb(tokens[s:e])) for s, e in candidate_spans(tokens)]
-            left = [c for c in left if c[2]]
-            if any(verb["kind"] == "merge-local" for _, _, verb in left):
-                ledger = load_ledger()
-                left = [(s, e, verb) for s, e, verb in left
-                        if verb["kind"] != "merge-local" or not is_sync(tokens, s, e, cwd, ledger)]
-                if not left:
+        if not hidden and any(v and v["kind"] == "merge-local"
+                              for v in map(gated_verb, candidates(tokens))):
+            # A sync is judged apart from the command around it: its segment is replaced by
+            # a no-op, and the command that is left is read as plain or compound, so
+            # whatever gated verb remains decides.
+            ledger = load_ledger()
+            rewritten = without_syncs(strip_redirections(lex(cmd)[0]), cwd, ledger)
+            if rewritten is not None:
+                tokens = tokenize(rewritten)
+                if not gated_anywhere(tokens):
                     return
         shape = None if hidden else parse_plain(tokens, cwd)
         if shape is None:

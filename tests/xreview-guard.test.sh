@@ -462,7 +462,7 @@ is "C33 the for-merge head is checked, not the approved first line" \
    "$(reason "$W" 'git merge FETCH_HEAD' | grep -c 'no full-range pre-merge review of this change is on record')" 1
 git -C "$W" branch -q -D zbad
 
-echo "C2. a merge of origin's default branch in a compound (rows S1-S9)"
+echo "C2. a merge of origin's default branch in a compound (rows S1-S13)"
 # It lands only what origin's default branch holds, on any branch, so it is dropped from the
 # gated verbs where it starts a simple command in a directory the gate can read. W is on main
 # and origin/main is at main; feature is not on origin.
@@ -498,8 +498,8 @@ is "S4f env" "$(decision "$W" 'true && env git merge origin/main')" deny
 is "S4g a keyword" "$(decision "$W" 'if true; then git merge origin/main; fi')" deny
 # S5: a directory change the gate cannot follow leaves only an absolute -C.
 is "S5a a second cd" "$(decision "$ROOT" "cd $W && cd sub && git merge origin/main")" deny
-is "S5b pushd" "$(decision "$ROOT" "pushd $SIDE; git merge origin/main")" deny
-is "S5c a cd target in a variable" "$(decision "$ROOT" 'cd "$D" && git merge origin/main')" deny
+is "S5b pushd to another repository" "$(decision "$W" "pushd $SIDE; git merge origin/main")" deny
+is "S5c a cd target in a variable" "$(decision "$W" 'cd "$D" && git merge origin/main')" deny
 is "S5d an absolute -C after cds" "$(decision "$ROOT" "cd /tmp && cd x; git -C $W merge --ff-only origin/main")" allow
 # S6: origin's default branch is read per repository; here it is develop.
 DEV="$ROOT/work/dev"; DEVORIGIN="$ROOT/remotes/dev.git"
@@ -526,6 +526,35 @@ is "S8c a group that changes directory" "$(decision "$W" 'true && (cd sub; git m
 # its shape alone, whether or not the helper can load.
 is "S9 a compound without a merge never loads the ledger" \
    "$(XREVIEW_LEDGER="$ROOT/no-such-ledger.py" reason "$W" 'true; glab mr create --target-branch main' | grep -c 'plain command of its own')" 1
+# S10-S13: a sync is read from plain characters only, so the shell reads it as the gate does.
+# A quoted operator, a glob qualifier or an abbreviated option cannot end or reshape it.
+is "S10a a quoted ; in the message" "$(decision "$W" "git merge origin/main -m ';' feature")" deny
+is "S10b an escaped ;" "$(decision "$W" 'git merge origin/main -m \; feature')" deny
+is "S10c a quoted |" "$(decision "$W" "git merge origin/main -m '|' feature")" deny
+is "S10d a quoted &&" "$(decision "$W" "git merge origin/main -m '&&' feature")" deny
+is "S10e a quoted )" "$(decision "$W" "git merge origin/main -m ')' feature")" deny
+is "S10f an ANSI-C quoted newline" "$(decision "$W" "git merge origin/main -m \$'\\n' feature")" deny
+is "S10g a process substitution" "$(decision "$W" 'git merge origin/main -m <(echo x) feature')" deny
+is "S10h an output process substitution" "$(decision "$W" 'git merge origin/main -m >(cat) feature')" deny
+is "S10i after a fetch" "$(decision "$W" "git fetch && git merge origin/main -m ';' feature")" deny
+is "S10j a zsh glob qualifier drops the word" "$(decision "$W" 'git merge origin/main(N) feature')" deny
+is "S10k the qualifier alone" "$(decision "$W" 'git merge origin/main(N)')" deny
+is "S11a an abbreviated --message takes the ref as its value" "$(decision "$W" 'git fetch && git merge --mess origin/main')" deny
+is "S11b an abbreviated --into-name" "$(decision "$W" 'git fetch && git merge --into origin/main')" deny
+is "S11c -m takes the ref as its message" "$(decision "$W" 'git fetch && git merge -m msg origin/main')" deny
+is "S11d a bundle of flags" "$(decision "$W" 'git fetch && git merge -qn origin/main')" deny
+is "S11e --" "$(decision "$W" 'git fetch && git merge -- origin/main')" deny
+is "S11f a value-taking option" "$(decision "$W" 'git fetch && git merge -s ours origin/main')" deny
+is "S12a a quoted ref" "$(decision "$W" 'git fetch && git merge "origin/main"')" deny
+is "S12b a glob" "$(decision "$W" 'git fetch && git merge origin/mai?')" deny
+is "S12c a brace expansion" "$(decision "$W" 'git fetch && git merge origin/{main,feature}')" deny
+is "S12d zsh's =git" "$(decision "$W" 'true && =git merge origin/main')" deny
+is "S12e a ~ in a -C path" "$(decision "$W" 'git fetch && git -C ~/x merge origin/main')" deny
+is "S12f a group" "$(decision "$W" '(git merge origin/main)')" deny
+is "S13a quotes and operators in the other segments do not matter" \
+   "$(decision "$W" "git fetch -q origin && git merge --ff-only -q origin/main 2>&1 | tail -2; git log --format='%h %s' -1")" allow
+is "S13b a quoted ; in a segment that follows" \
+   "$(decision "$W" 'git merge --no-ff --no-commit origin/main >/dev/null 2>&1 || echo "conflict; see status"')" allow
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
