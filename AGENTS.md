@@ -189,8 +189,9 @@ Two suite-specific gotchas worth keeping: `codex-config` drives the `modify_` **
 via `chezmoi execute-template --with-stdin --file` — without `--with-stdin` every case dies
 on "map has no entry for key stdin", and its empty-input fixture is `''`, not `'{}'`,
 because that file is TOML. `herdr-phase` stubs `herdr`, `glab` and `gh` on `PATH`; the script it
-tests is not runnable sandboxed, since `phase.sh` wraps `herdr` and fails silently when the
-socket is denied.
+tests is not runnable sandboxed, since it cannot create its run lock in `~/.cache` and exits 2.
+The script itself needs `/usr/bin/jq` and `/usr/bin/timeout` (and
+`/usr/bin/lockf`); the stubs do not replace them, and `refresh` exits 2 when any of them is missing.
 
 While chezmoi's external cache is cold (after adding or bumping an external, before the
 warm-up), `codex-config`, `claude-settings` and `live-feedback-skill` exit 2 with an

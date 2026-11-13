@@ -196,15 +196,10 @@ CALLS="$T/calls"; : > "$CALLS"
 cat > "$BIN/herdr" <<'H'
 #!/usr/bin/env bash
 echo "herdr $*" >> "$CALLS"
+# The run lock is fd 9 of the script: a herdr it starts must not inherit it.
+{ : >&9; } 2>/dev/null && echo "herdr-fd9-open" >> "$CALLS"
 if [ "${1:-}" = "workspace" ] && [ "${2:-}" = "list" ]; then
-  [ -z "${TSLOG:-}" ] || echo "$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.3f", time') list" >> "$TSLOG"
   cat "$WSJSON"
-fi
-# KILLJOB_WS=<id>: the report for that workspace kills its caller, the repository's job. With
-# KILLJOB_LINGER naming a file, that report then writes its PID there and stays 5 s in the job's group.
-if [ "${2:-}" = "report-metadata" ] && [ -n "${KILLJOB_WS:-}" ] && [ "${3:-}" = "$KILLJOB_WS" ]; then
-  kill -9 "$PPID"
-  [ -z "${KILLJOB_LINGER:-}" ] || { echo "$$" > "$KILLJOB_LINGER"; exec /bin/sleep 5; }
 fi
 exit 0
 H
@@ -228,6 +223,7 @@ glab_stub() {
 cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
+{ : >&9; } 2>/dev/null && echo "glab-fd9-open" >> "$CALLS"
 [ -z "${PWDS:-}" ] || echo "$PWD" >> "$PWDS"
 if [ "${1:-}" = "api" ]; then
   if [ -e "${PIPEFAIL:-}" ]; then
@@ -268,6 +264,7 @@ cat > "$T/gh.stub" <<'G'
 #!/usr/bin/env bash
 GHDIR=@GHDIR@
 echo "gh $*" >> @CALLS@
+{ : >&9; } 2>/dev/null && echo "gh-fd9-open" >> @CALLS@
 echo "$PWD" >> @PWDS@
 env >> @GHENV@
 mode=""; [ -r "$GHDIR/mode" ] && mode="$(cat "$GHDIR/mode")"
@@ -348,11 +345,22 @@ run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call 
   # KEEPLOG=1 keeps the log, for a run that follows another one in the same case.
   if [ -z "${KEEPLOG:-}" ]; then : > "$CALLS"; : > "$PWDS"; fi
   OUT=$(cd "${RUNDIR:-$PWD}" && PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" \
-        HERDR_PHASE_CACHE_DIR="$T/cache" \
-        HERDR_PHASE_TTL="${TTL:-120}" \
-        HERDR_PHASE_LOCK_WAIT="${LOCK_WAIT:-30}" \
-        HERDR_PHASE_RUN_DEADLINE="${DEADLINE:-40}" \
+        XDG_CACHE_HOME="$T/cache" \
+        HERDR_PHASE_LOCK_WAIT="${LOCK_WAIT-10}" \
+        HERDR_PHASE_RUN_DEADLINE="${DEADLINE-40}" \
         /bin/bash "$PHASE" "$@" 2>&1); RC=$?
+}
+
+# Expires the cached tables and pipeline statuses (older than the 120 s TTL), so the next default
+# refresh looks up again; the lookup stamps keep their age. A case that expires nothing tests nothing,
+# so that fails the suite.
+expire() {
+  local f old n=0; old="$(date -v-5M +%Y%m%d%H%M.%S)"
+  for f in "$T/cache/herdr-phase"/*.tsv "$T/cache/herdr-phase"/*.pipeline; do
+    [ -e "$f" ] && { touch -t "$old" "$f"; n=$((n + 1)); }
+  done
+  [ "$n" -gt 0 ] || _fail "expire found no cache file to age, so the case after it tests nothing"
+  return 0
 }
 
 # The report line for one workspace, so assertions read as "what did w4 get told".
@@ -464,7 +472,7 @@ glab_calls() { grep -c '^glab mr list' "$CALLS"; }
 glab_api_calls() { grep -c '^glab api ' "$CALLS"; }
 glab_repos() { grep '^glab mr list' "$CALLS" | sed -E 's/.*--repo ([^ ]+).*/\1/' | sort -u | wc -l | tr -d ' '; }
 
-rm -rf "$T/cache"   # section B already warmed it; these assertions count from cold
+rm -rf "$T/cache/herdr-phase"   # section B already warmed it; these assertions count from cold
 run refresh
 check "$(glab_calls)" "4" "a cold refresh makes two glab calls per repo, for two repos"
 check "$(glab_repos)" "2" "both repos are looked up"
@@ -480,9 +488,60 @@ check "$(glab_calls)" "0" "second refresh inside the TTL makes no glab call"
 run refresh --force
 check "$(glab_calls)" "4" "--force bypasses the cache"
 
-TTL=0 run refresh
+expire; run refresh
 check "$(glab_calls)" "4" "an expired cache is refetched"
-unset TTL
+
+# A glab that exits 0 with something that is not a list (an error body, null, a number, a string)
+# is a failed lookup, not an empty answer. Open: the cached badges stand and the table file is left
+# alone (same bytes, same mtime). Merged: the open rows badge, no merged state is invented and
+# nothing is cached. Bug caught: the non-list read as "no MRs", which cached an empty table and
+# wiped every MR badge of the repository for a TTL.
+GL_TSV="$T/cache/herdr-phase/test%2Fproj.tsv"
+for ans in '{"message":"x"}' null 5 '"[]"'; do
+  rm -rf "$T/cache/herdr-phase"; run refresh
+  cp "$GL_TSV" "$T/tsv.before"; expire; m1="$(stat -f %m "$GL_TSV")"
+  printf '%s\n' "$ans" > "$T/mr-open-nonlist.json"
+  MROPEN="$T/mr-open-nonlist.json" run refresh
+  case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "an open answer $ans: the cached review badge stands";;
+    *) _fail "an open answer $ans: the cached review badge stands (got: $(report_for w4))";; esac
+  check "$(cmp -s "$GL_TSV" "$T/tsv.before" && echo same || echo changed)" "same" "an open answer $ans: the table is byte for byte what it was"
+  check "$(stat -f %m "$GL_TSV")" "$m1" "an open answer $ans: nothing new is cached"
+done
+for ans in null '{"message":"x"}' garbage; do
+  rm -rf "$T/cache/herdr-phase"
+  printf '%s\n' "$ans" > "$T/mr-merged-nonlist.json"
+  MRMERGED="$T/mr-merged-nonlist.json" run refresh
+  case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "a merged answer $ans: the open MRs still badge";;
+    *) _fail "a merged answer $ans: the open MRs still badge (got: $(report_for w4))";; esac
+  case "$(report_for w6)" in *"--token merged"*) _fail "a merged answer $ans: no merged state is invented";;
+    *) _pass "a merged answer $ans: no merged state is invented";; esac
+  [ ! -e "$GL_TSV" ] && _pass "a merged answer $ans: the half answer is not cached" || _fail "a merged answer $ans: the half answer is not cached"
+done
+
+# A row a forge could forge. The table is tab-separated lines, so a tab or newline in a branch or a
+# state would add rows or shift columns: here a branch that smuggles a row for feature/nomr (w7), a
+# state that smuggles an iid and a row for feature/unpushed (w3), and a branch holding a lone
+# surrogate (jq turns it into U+FFFD). Such a row is skipped: no badge for the smuggled branches, the
+# table has only whole four-column rows, and the honest rows still badge. An iid that is not a whole
+# number printing as plain digits (1e300) is left empty; 13.0 prints as 13. Bug caught: a forged
+# MR badging a worktree it does not belong to.
+printf '%s\n' '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false},' \
+  ' {"iid":30,"source_branch":"b\nfeature/nomr\topened\t5\t0","state":"opened","draft":false},' \
+  ' {"iid":31,"source_branch":"feature/unpushed","state":"opened\t7\t0\nx","draft":false},' \
+  ' {"iid":32,"source_branch":"x\udcffy","state":"opened","draft":false},' \
+  ' {"iid":1e300,"source_branch":"feature/draft","state":"opened","draft":false},' \
+  ' {"iid":13.0,"source_branch":"feature/dirty-review","state":"opened","draft":false}]' > "$T/mr-open-forged.json"
+rm -rf "$T/cache/herdr-phase"
+MROPEN="$T/mr-open-forged.json" run refresh
+case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "forged rows: the honest MR still badges";;
+  *) _fail "forged rows: the honest MR still badges (got: $(report_for w4))";; esac
+phase_check w7 active "$ICON_BRANCH" "a branch that smuggles a row gives feature/nomr no badge"
+phase_check w3 active "$ICON_BRANCH" "a state that smuggles a row gives feature/unpushed no badge"
+check "$(grep -c . "$GL_TSV")" "5" "the table holds the three honest open rows and two merged ones, nothing smuggled"
+check "$(awk -F'\t' 'NF != 4' "$GL_TSV" | wc -l | tr -d ' ')" "0" "every GitLab row has four columns"
+check "$(grep -c "$(printf '\xef\xbf\xbd')" "$GL_TSV")" "0" "a branch holding a lone surrogate is not in the GitLab table"
+check "$(awk -F'\t' '$1 == "feature/draft" {print "[" $3 "]"}' "$GL_TSV")" "[]" "an iid of 1e300 is left empty"
+check "$(awk -F'\t' '$1 == "feature/dirty-review" {print $3}' "$GL_TSV")" "13" "an iid written 13.0 is 13"
 
 echo
 echo "F. a single space can be refreshed on its own"
@@ -494,7 +553,7 @@ case "$(report_for w4)" in *"--token review="*) _pass "refresh --workspace repor
 echo
 echo "G. a repo Herdr cannot resolve to GitLab or GitHub degrades to git-only"
 q git -C "$REPO" remote set-url origin git@codeberg.org:test/proj.git
-rm -rf "$T/cache"   # a cached table would answer for the repo that no longer resolves
+rm -rf "$T/cache/herdr-phase"   # a cached table would answer for the repo that no longer resolves
 run refresh
 check "$(grep -c -- 'gitlab.com/test/proj ' "$CALLS")" "0" "no glab call for a remote on neither forge"
 check "$(grep -c '^gh ' "$CALLS")" "0" "no gh call for a remote on neither forge"
@@ -513,7 +572,7 @@ echo "H. failure of the MR lookup is not failure of the refresh"
 # Warm the cache with a working glab first — the interesting case is a lookup that fails while
 # a previous answer is on disk, which is every network blip on a machine that was working a
 # minute ago.
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 run refresh
 case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) ;;
   *) _fail "PRECONDITION: the cache did not warm (got: $(report_for w4))";; esac
@@ -526,7 +585,7 @@ exit 1
 G
 chmod 755 "$BIN/glab"
 
-TTL=0 run refresh
+expire; run refresh
 check "$RC" "0" "refresh survives glab failing"
 # A failed lookup is not evidence that the MRs went away. Falling through with an empty table
 # repaints every worktree in the repo as `active`, so one blocked request wipes every review
@@ -538,7 +597,6 @@ case "$(report_for w6)" in *"--token merged=$ICON_MERGE !12"*) _pass "the merged
   *) _fail "the merged badge survives a failed lookup too (got: $(report_for w6))";; esac
 case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "git-derived phases survive glab failing";;
   *) _fail "git-derived phases survive glab failing (got: $(report_for w2))";; esac
-unset TTL
 
 # Only the merged half failing is its own case: the open rows are good, so the run uses them,
 # but the table must NOT be cached — caching it would persist "nothing ever merged" for a whole
@@ -551,7 +609,7 @@ case " $* " in *" --repo https://gitlab.com/test/proj "*) ;; *) echo '[]'; exit 
 cat "$MROPEN"
 G
 chmod 755 "$BIN/glab"
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 run refresh
 check "$RC" "0" "refresh survives only the merged lookup failing"
 case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "open MRs still badge when the merged lookup fails";;
@@ -569,7 +627,7 @@ echo "error: could not reach gitlab.com" >&2
 exit 1
 G
 chmod 755 "$BIN/glab"
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 run refresh
 check "$RC" "0" "refresh survives glab failing with a cold cache"
 case "$(report_for w4)" in *"--token review="*) _fail "a cold cache plus a failed lookup invents no MR state";;
@@ -640,7 +698,7 @@ check "$(glab_api_calls)" "0" "an MR number holding U+2185 makes no api call und
 ci_check w4 none "and gives no pipeline badge"
 
 # Per-MR cache with the MR-table TTL.
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 set_pipe 10 success 11 success 13 failed 14 running
 run refresh
 check "$(glab_api_calls)" "4" "a cold refresh makes one api call per open MR"
@@ -656,55 +714,55 @@ check "$(glab_api_calls)" "4" "--force refetches the pipelines"
 # still warm when the table says 17.
 set_pipe 10 success 17 failed 11 success 13 failed 14 running
 sed 's/"iid":10,/"iid":17,/' "$MROPEN" > "$MROPEN.new" && mv "$MROPEN.new" "$MROPEN"
-rm -f "$T/cache"/*.tsv
+rm -f "$T/cache/herdr-phase"/*.tsv
 run refresh --workspace w4
 check "$(glab_api_calls)" "1" "a new MR iid refetches at once"
 ci_check w4 fail "the new MR's status shows, never iid 10's"
 case "$(report_for w4)" in *"!17 "*) _pass "the report carries the new iid";; *) _fail "the report carries the new iid (got: $(report_for w4))";; esac
 sed 's/"iid":17,/"iid":10,/' "$MROPEN" > "$MROPEN.new" && mv "$MROPEN.new" "$MROPEN"
-rm -f "$T/cache"/*.tsv
+rm -f "$T/cache/herdr-phase"/*.tsv
 
 # A failed call is not evidence that the pipeline went away. With a warm cache the cached class
 # stands; with nothing cached there is nothing to show, and the phase token still goes out.
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 set_pipe 10 success
 run refresh --workspace w4
 ci_check w4 ok "PRECONDITION: the pipeline cache warms"
 : > "$PIPEFAIL"
-TTL=0 run refresh --workspace w4
+expire; run refresh --workspace w4
 check "$(glab_api_calls)" "1" "an expired pipeline cache is refetched"
 ci_check w4 ok "a failed api call keeps the cached class"
 # glab prints an API error's JSON body on stdout (the stub does); parsed as if it were the MR it
 # would read as "no pipeline" and overwrite the warm cache for a whole TTL.
-check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "an error body does not overwrite the cached status"
+check "$(cat "$T/cache/herdr-phase/test%2Fproj.mr10.pipeline")" "success" "an error body does not overwrite the cached status"
 echo 200 > "$PIPEFAIL"
-TTL=0 run refresh --workspace w4
+expire; run refresh --workspace w4
 ci_check w4 ok "a 200 body that is not the MR keeps the cached class"
-check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "a body without the MR's iid does not overwrite the cached status"
+check "$(cat "$T/cache/herdr-phase/test%2Fproj.mr10.pipeline")" "success" "a body without the MR's iid does not overwrite the cached status"
 # The exit status is read on its own: a valid body for this MR with a non-zero exit (a gateway
 # error that still carried a body) must not be taken as an answer and overwrite the cache.
 echo body-rc1 > "$PIPEFAIL"
-TTL=0 run refresh --workspace w4
+expire; run refresh --workspace w4
 ci_check w4 ok "a valid body with exit 1 keeps the cached class"
-check "$(cat "$T/cache/test%2Fproj.mr10.pipeline")" "success" "a valid body with exit 1 does not overwrite the cached status"
+check "$(cat "$T/cache/herdr-phase/test%2Fproj.mr10.pipeline")" "success" "a valid body with exit 1 does not overwrite the cached status"
 
 # The stale fallback has an age limit: within 1800 s a failed call keeps the cached class, past it
 # the pipeline tokens are cleared (the cached status stays on disk, a later good call replaces it).
-aged() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$T/cache/test%2Fproj.mr10.pipeline"; }
+aged() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$T/cache/herdr-phase/test%2Fproj.mr10.pipeline"; }
 : > "$PIPEFAIL"
 aged 29
-TTL=0 run refresh --workspace w4
+run refresh --workspace w4
 ci_check w4 ok "a failed call keeps a cached status 29 minutes old"
 aged 31
-TTL=0 run refresh --workspace w4
+run refresh --workspace w4
 ci_check w4 none "a failed call clears the pipeline tokens once the cache is 31 minutes old"
 case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase token survives the cleared pipeline tokens";;
   *) _fail "the phase token survives the cleared pipeline tokens (got: $(report_for w4))";; esac
 rm -f "$PIPEFAIL"
-TTL=0 run refresh --workspace w4
+run refresh --workspace w4
 ci_check w4 ok "a good call after the limit shows the pipeline again"
 : > "$PIPEFAIL"
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 run refresh --workspace w4
 check "$RC" "0" "refresh survives a failing api call with a cold cache"
 ci_check w4 none "a cold cache plus a failed api call invents no pipeline"
@@ -713,14 +771,14 @@ case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "the phase to
 rm -f "$PIPEFAIL"
 
 # A cached GitLab row with no iid still refreshes cleanly: no unbound variable, no pipeline badge.
-rm -rf "$T/cache"; mkdir -p "$T/cache"
-printf 'feature/review\topened\t\t0\n' > "$T/cache/test%2Fproj.tsv"
+rm -rf "$T/cache/herdr-phase"; mkdir -p "$T/cache/herdr-phase"
+printf 'feature/review\topened\t\t0\n' > "$T/cache/herdr-phase/test%2Fproj.tsv"
 set_pipe 10 success
 run refresh --workspace w4
 check "$RC" "0" "a GitLab row with an empty iid refreshes with exit 0"
 case "$OUT" in *"unbound variable"*) _fail "an empty iid leaves stderr clean (got: $OUT)";; *) _pass "an empty iid leaves stderr clean";; esac
 ci_check w4 none "an empty iid shows no pipeline badge"
-rm -rf "$T/cache"; set_pipe
+rm -rf "$T/cache/herdr-phase"; set_pipe
 
 # glab reads its configuration from the current directory's repository and runs git there, and a
 # key command or plugin hook starts phase.sh wherever the caller was. Started from inside a
@@ -745,7 +803,7 @@ check "$over" "0" "no report carries more than 16 token keys"
 # whose remote is untouched, still makes its two).
 for bad in 'a/../b' 'a/b?x=1' 'a/b%2Fc' 'a/b c'; do
   q git -C "$REPO" remote set-url origin "git@gitlab.com:$bad.git"
-  rm -rf "$T/cache"
+  rm -rf "$T/cache/herdr-phase"
   run refresh
   check "$(grep -c '^glab ' "$CALLS")" "2" "remote slug '$bad': no glab call for it"
   check "$(grep -c 'proj2' "$CALLS")" "2" "remote slug '$bad': only the untouched repo is queried"
@@ -754,7 +812,7 @@ done
 # The same under a UTF-8 locale, for GitLab's slug check (see section M).
 for bad in 'é/b' 'a/ẞ' 'a/ｂ'; do
   q git -C "$REPO" remote set-url origin "git@gitlab.com:$bad.git"
-  rm -rf "$T/cache"
+  rm -rf "$T/cache/herdr-phase"
   LC_ALL=en_US.UTF-8 run refresh
   check "$(grep -c '^glab ' "$CALLS")" "2" "remote slug '$bad' under a UTF-8 locale: no glab call for it"
   check "$(grep -c 'proj2' "$CALLS")" "2" "remote slug '$bad' under a UTF-8 locale: only the untouched repo is queried"
@@ -791,13 +849,13 @@ cat > "$T/ws-collide.json" <<J
  {"workspace_id":"wA","label":"two-one","worktree":{"checkout_path":"$T/repo2-one","is_linked_worktree":true,"repo_root":"$REPO2"}}
 ]}}
 J
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 WSJSON="$T/ws-collide.json" run refresh
 ci_check w4 ok "slug a/b_c shows its own pipeline (success)"
 ci_check wA fail "slug a_b/c shows its own pipeline (failed), not a/b_c's"
 case "$(report_for wA)" in *"--token review=$ICON_MR !10 "*) _pass "slug a_b/c finds its own MR table, not a/b_c's";;
   *) _fail "slug a_b/c finds its own MR table, not a/b_c's (got: $(report_for wA))";; esac
-check "$(ls "$T/cache" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.lock a%2Fb_c.lookup a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lock a_b%2Fc.lookup a_b%2Fc.mr10.pipeline a_b%2Fc.tsv " "cache names encode the slug's / as %2F"
+check "$(ls "$T/cache/herdr-phase" | LC_ALL=C sort | tr '\n' ' ')" "a%2Fb_c.lookup a%2Fb_c.mr10.pipeline a%2Fb_c.tsv a_b%2Fc.lookup a_b%2Fc.mr10.pipeline a_b%2Fc.tsv run.lock " "cache names encode the slug's / as %2F"
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
 glab_stub
@@ -850,7 +908,7 @@ cat > "$T/ws-gh.json" <<J
 J
 gh_calls() { grep -c '^gh pr list' "$CALLS"; }
 ghrun() { WSJSON="$T/ws-gh.json" run "$@"; }
-rm -f "$GHDIR/mode"; rm -rf "$T/cache"
+rm -f "$GHDIR/mode"; rm -rf "$T/cache/herdr-phase"
 
 ghrun refresh
 check "$RC" "0" "a GitHub refresh exits 0"
@@ -862,13 +920,13 @@ phase_check wG4 active "$ICON_BRANCH" "a branch whose only PR is cross-repositor
 phase_check wG5 review "$ICON_MR #26" "a branch with a merged #25 and an open #26 reports #26"
 
 # The table the parse produced: five columns, no row for what it must drop.
-GH_TSV="$T/cache/github@test%2Fproj3.tsv"
+GH_TSV="$T/cache/herdr-phase/github@test%2Fproj3.tsv"
 check "$(grep -c . "$GH_TSV")" "4" "the table keeps four rows: three open and one merged, nothing dropped by mistake"
 check "$(awk -F'\t' 'NF != 5' "$GH_TSV" | wc -l | tr -d ' ')" "0" "every GitHub row has five columns"
 check "$(grep -c 'tab\|badnum\|gh-cross' "$GH_TSV")" "0" "cross-repository, tab-in-branch and non-integer rows are dropped"
 
 # Calls: two per repository, host named, run from /, no rollup on the merged query.
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 ghrun refresh
 check "$(gh_calls)" "2" "a cold refresh makes two gh pr list calls for the repository"
 check "$(grep -c -- '--state open ' "$CALLS")" "1" "one of them asks for open PRs"
@@ -882,9 +940,8 @@ ghrun refresh
 check "$(gh_calls)" "0" "a second refresh inside the TTL makes no gh call"
 ghrun refresh --force
 check "$(gh_calls)" "2" "--force bypasses the GitHub cache"
-TTL=0 ghrun refresh
+expire; ghrun refresh
 check "$(gh_calls)" "2" "an expired GitHub cache is refetched"
-unset TTL
 
 # gh runs under env -i with HOME and PATH only: a Herdr server started under direnv or mise carries
 # these into its hooks, and none may reach the token's lookup.
@@ -915,7 +972,7 @@ roll() { # roll <rollup json> -> the open list with #21 carrying it; #22 always 
 }
 gh_ci() { # gh_ci <ok|fail|run|none> <label> <rollup json>
   roll "$3" > "$GH_OPEN"
-  rm -rf "$T/cache"; ghrun refresh --force --workspace wG1
+  rm -rf "$T/cache/herdr-phase"; ghrun refresh --force --workspace wG1
   ci_check wG1 "$1" "$2"
 }
 gh_ci none "an empty rollup shows no CI" '[]'
@@ -938,31 +995,65 @@ gh_ci none "a rollup that is not a list shows no CI" '{"state":"SUCCESS"}'
 gh_ci none "a null rollup shows no CI" 'null'
 
 roll "[$(cr COMPLETED SUCCESS)]" > "$GH_OPEN"
-rm -rf "$T/cache"; ghrun refresh --force
+rm -rf "$T/cache/herdr-phase"; ghrun refresh --force
 ci_check wG1 ok "the ready PR shows its CI"
 ci_check wG2 fail "the draft PR shows its CI too"
 ci_check wG3 none "a merged PR shows no CI"
 check "$(gh_calls)" "2" "CI costs no extra gh call"
 
+# A PR number is a whole number of 1 or more that prints as plain digits. It is compared with its
+# floor and printed as that, so 12.0 and 12e0 are the PR #12 (spec section 6, item 12), while 1.5, a
+# string, true, 0, a negative and 1e300 (which would print as 1e+300) are dropped and the space is
+# left active. Each case carries a second, valid PR, which must still badge: a row dropped is not a
+# lookup failed (a failed lookup leaves every space active too). Bug caught: a number printed as
+# parsed ("12.0" in the badge and the table), a fractional, string or exponent number let through, or
+# one odd row taking the whole answer down.
+numcase() { # numcase <number as written>
+  printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":%s,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},\n' "$1" > "$GH_OPEN"
+  printf ' {"headRefName":"feature/gh-draft","state":"OPEN","number":22,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' >> "$GH_OPEN"
+  rm -rf "$T/cache/herdr-phase"; ghrun refresh --force
+}
+for n in 12.0 12e0; do
+  numcase "$n"
+  phase_check wG1 review "$ICON_MR #12" "a PR number written $n badges #12"
+  check "$(grep -c "^feature/gh-ready	opened	12	0	" "$GH_TSV")" "1" "and the table row carries 12, not $n"
+done
+for n in 1.5 '"7"' true 0 -3 1e300; do
+  numcase "$n"
+  phase_check wG1 active "$ICON_BRANCH" "a PR number written $n is dropped: the space stays active"
+  phase_check wG2 review "$ICON_MR #22" "and the valid PR beside it still badges"
+done
+
+# jq puts U+FFFD in place of an invalid byte or a lone surrogate (the "\udcff" escape here), so a
+# branch holding it could be another branch's name with the damage hidden, and a branch literally
+# named with U+FFFD would collect that badge. A row whose branch holds one is dropped; the others
+# still badge. Bug caught: a damaged branch name entering the table.
+printf '[{"headRefName":"x\\udcffy","state":"OPEN","number":31,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},\n' > "$GH_OPEN"
+printf ' {"headRefName":"feature/gh-draft","state":"OPEN","number":22,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' >> "$GH_OPEN"
+rm -rf "$T/cache/herdr-phase"; ghrun refresh --force
+check "$(grep -c "$(printf '\xef\xbf\xbd')" "$GH_TSV")" "0" "a branch holding a lone surrogate is not in the GitHub table"
+phase_check wG2 review "$ICON_MR #22" "and the valid PR beside it still badges"
+roll "[$(cr COMPLETED SUCCESS)]" > "$GH_OPEN"
+
 # A failed lookup keeps the cached CI for 30 minutes, then clears it and keeps the phase.
-rm -rf "$T/cache"; ghrun refresh
+rm -rf "$T/cache/herdr-phase"; ghrun refresh
 echo fail > "$GHDIR/mode"
 aged_gh() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$GH_TSV"; }
 aged_gh 29
-TTL=0 ghrun refresh --workspace wG1
+ghrun refresh --workspace wG1
 ci_check wG1 ok "a failed lookup keeps GitHub CI from a cache 29 minutes old"
 aged_gh 31
-TTL=0 ghrun refresh --workspace wG1
+ghrun refresh --workspace wG1
 ci_check wG1 none "a failed lookup clears GitHub CI from a cache 31 minutes old"
 phase_check wG1 review "$ICON_MR #21" "the review phase survives the cleared CI"
-rm -f "$GHDIR/mode"; unset TTL
+rm -f "$GHDIR/mode"
 cp "$GH_OPEN.orig" "$GH_OPEN"
 
 # Failures. A warm cache stands in for a failed lookup, whatever shape the failure has.
-rm -rf "$T/cache"; ghrun refresh
+rm -rf "$T/cache/herdr-phase"; ghrun refresh
 for m in fail garbage object empty open-empty; do
   echo "$m" > "$GHDIR/mode"
-  TTL=0 ghrun refresh
+  expire; ghrun refresh
   check "$RC" "0" "refresh survives gh answering '$m'"
   phase_check wG1 review "$ICON_MR #21" "gh answering '$m' keeps the cached review badge"
   phase_check wG3 merged "$ICON_MERGE #23" "gh answering '$m' keeps the cached merged badge"
@@ -972,7 +1063,7 @@ rm -f "$GHDIR/mode"
 # The merged half alone failing (an error exit, or an answer that is not a list): the open rows
 # stand, merged state is not invented, and the table is not cached.
 for m in merged-fail merged-garbage merged-empty; do
-  rm -rf "$T/cache"; echo "$m" > "$GHDIR/mode"
+  rm -rf "$T/cache/herdr-phase"; echo "$m" > "$GHDIR/mode"
   ghrun refresh
   phase_check wG1 review "$ICON_MR #21" "$m: open PRs still badge"
   phase_check wG3 active "$ICON_BRANCH" "$m: no merged state is invented"
@@ -982,17 +1073,52 @@ done
 rm -f "$GHDIR/mode"
 
 # Nothing cached and nothing answered: no PR state at all.
-rm -rf "$T/cache"; echo fail > "$GHDIR/mode"
+rm -rf "$T/cache/herdr-phase"; echo fail > "$GHDIR/mode"
 ghrun refresh
 check "$RC" "0" "refresh survives gh failing with a cold cache"
 phase_check wG1 active "$ICON_BRANCH" "a cold cache plus a failed lookup invents no PR state"
 rm -f "$GHDIR/mode"
 
+# An answer about 1.5 MB (one PR's title padded) is parsed like any other: the answers reach jq as
+# files, not as arguments, and the argument list is about 1 MB. Bug caught: an answer passed with
+# --arg, which makes the exec fail, so a repository with a large rollup is never looked up again.
+printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":21,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[],"title":"%s"}]\n' \
+  "$(head -c 1500000 /dev/zero | tr '\0' a)" > "$GH_OPEN"
+check "$(wc -c < "$GH_OPEN" | tr -d ' ' | awk '$1 > 1400000 {print "big"}')" "big" "PRECONDITION: the open answer is over 1.4 MB"
+rm -rf "$T/cache/herdr-phase"; ghrun refresh --force --workspace wG1
+phase_check wG1 review "$ICON_MR #21" "a 1.5 MB open answer still badges its space"
+cp "$GH_OPEN.orig" "$GH_OPEN"
+
+# jq exits 3 on a program that does not compile (2 and 5 for usage and runtime errors), the status
+# the GitHub parser uses for "open rows only"; the parsers signal that with 10, which jq never uses.
+# A copy of the script has one parser broken (a syntax error sed puts into its first definition): the
+# lookup counts as failed, so the cached table stands and nothing new is cached. Bug caught: a jq
+# status read as a parser's own, which on GitHub made a compile error an empty table that replaced
+# every badge (the GitLab parser failed on any non-zero status already, so its case guards a change).
+brokenjq_case() { # brokenjq_case <forge> <runner> <marker> <broken> <table> <ws> <badge>
+  local f="$T/phase-brokenjq.sh" m1
+  sed "s|^$3|$4|" "$PHASE" > "$f"; chmod 755 "$f"
+  check "$(grep -c -F "$4" "$f")" "1" "PRECONDITION: the $1 parser is broken in the copy"
+  rm -rf "$T/cache/herdr-phase"; "$2" refresh
+  cp "$5" "$T/tsv.before"
+  expire
+  m1="$(stat -f %m "$5")"
+  PHASE_SAVE="$PHASE"; PHASE="$f"; "$2" refresh; PHASE="$PHASE_SAVE"
+  check "$RC" "0" "$1: a refresh survives a parser that does not compile"
+  phase_check "$6" review "$7" "$1: a parser that does not compile keeps the cached badge"
+  check "$(cmp -s "$5" "$T/tsv.before" && echo same || echo changed)" "same" "$1: the cached table is byte for byte what it was"
+  check "$(stat -f %m "$5")" "$m1" "$1: nothing new is cached"
+}
+brokenjq_case GitHub ghrun 'def pend:' 'def pend ?:' "$GH_TSV" wG1 "$ICON_MR #21"
+glab_stub
+brokenjq_case GitLab run 'def falsy:' 'def falsy ?:' "$T/cache/herdr-phase/test%2Fproj.tsv" w4 "$ICON_MR !10"
+rm -rf "$T/cache/herdr-phase"
+
 # A valid empty answer is an answer: a closed PR's badge must go, not linger from the cache.
-rm -rf "$T/cache"; ghrun refresh
+rm -rf "$T/cache/herdr-phase"; ghrun refresh
 phase_check wG1 review "$ICON_MR #21" "PRECONDITION: the cache warms"
 echo '[]' > "$GH_OPEN"; echo '[]' > "$GH_MERGED"
-TTL=0 ghrun refresh
+expire; ghrun refresh
 phase_check wG1 active "$ICON_BRANCH" "an empty open list replaces the table: #21 goes back to active"
 phase_check wG3 active "$ICON_BRANCH" "an empty merged list replaces the table too"
 cp "$GH_OPEN.orig" "$GH_OPEN"; cp "$GH_MERGED.orig" "$GH_MERGED"
@@ -1002,14 +1128,14 @@ cp "$GH_OPEN.orig" "$GH_OPEN"; cp "$GH_MERGED.orig" "$GH_MERGED"
 for good in git@github.com:test/proj3.git https://github.com/test/proj3 \
             https://github.com/test/proj3.git ssh://git@github.com/test/proj3.git; do
   q git -C "$REPO3" remote set-url origin "$good"
-  rm -rf "$T/cache"; ghrun refresh
+  rm -rf "$T/cache/herdr-phase"; ghrun refresh
   check "$(grep -c -- '^gh pr list -R github.com/test/proj3 ' "$CALLS")" "2" "remote '$good' is looked up as test/proj3"
 done
 for bad in git@github.com:a/b/c.git 'https://github.com/a/../b' 'https://github.com/a/b?x=1' \
            git@github.com.evil.com:a/b.git https://evil.com/github.com/a/b \
            'https://github.com/a/b c' 'https://github.com/a/' 'https://github.com//b' 'https://github.com/a/b%2Fc'; do
   q git -C "$REPO3" remote set-url origin "$bad"
-  rm -rf "$T/cache"; ghrun refresh
+  rm -rf "$T/cache/herdr-phase"; ghrun refresh
   check "$(grep -c '^gh ' "$CALLS")" "0" "remote '$bad': no gh call"
   phase_check wG1 active "$ICON_BRANCH" "remote '$bad': no PR state"
 done
@@ -1018,7 +1144,7 @@ done
 # check names its characters one by one instead.
 for bad in 'https://github.com/é/b' 'git@github.com:a/ẞ.git' 'https://github.com/a/ｂ'; do
   q git -C "$REPO3" remote set-url origin "$bad"
-  rm -rf "$T/cache"; LC_ALL=en_US.UTF-8 ghrun refresh
+  rm -rf "$T/cache/herdr-phase"; LC_ALL=en_US.UTF-8 ghrun refresh
   check "$(grep -c '^gh ' "$CALLS")" "0" "remote '$bad' under a UTF-8 locale: no gh call"
 done
 q git -C "$REPO3" remote set-url origin git@github.com:test/proj3.git
@@ -1045,41 +1171,42 @@ cat > "$T/ws-both.json" <<J
  {"workspace_id":"wL1","label":"gl3","worktree":{"checkout_path":"$REPO4-gl3","is_linked_worktree":true,"repo_root":"$REPO4"}}
 ]}}
 J
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 WSJSON="$T/ws-both.json" run refresh
 phase_check wG1 review "$ICON_MR #21" "the GitHub test/proj3 space shows its own PR, with a # prefix"
 phase_check wL1 review "$ICON_MR !31" "the GitLab test/proj3 space shows its own MR, with a ! prefix"
-check "$(ls "$T/cache" | grep '\.tsv$' | LC_ALL=C sort | tr '\n' ' ')" "github@test%2Fproj3.tsv test%2Fproj3.tsv " \
+check "$(ls "$T/cache/herdr-phase" | grep '\.tsv$' | LC_ALL=C sort | tr '\n' ' ')" "github@test%2Fproj3.tsv test%2Fproj3.tsv " \
   "the two forges' tables live in separate cache files"
-check "$(grep -c 'feature/gl3' "$T/cache/test%2Fproj3.tsv")" "1" "the GitLab file holds the GitLab table"
-check "$(grep -c 'gh-ready' "$T/cache/github@test%2Fproj3.tsv")" "1" "the GitHub file holds the GitHub table"
+check "$(grep -c 'feature/gl3' "$T/cache/herdr-phase/test%2Fproj3.tsv")" "1" "the GitLab file holds the GitLab table"
+check "$(grep -c 'gh-ready' "$T/cache/herdr-phase/github@test%2Fproj3.tsv")" "1" "the GitHub file holds the GitHub table"
 glab_stub
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 
 echo
-echo "N. each repository is its own job"
-# A refresh runs one job per repository, side by side, and a repository's job holds its lock
-# (Ruling 11) from the lookup to the last report. The glab stub below answers per repository from
-# files in $GLD (open-<repo>.json, merged-<repo>.json, <repo> being the slug with / as __), and:
+echo "N. one run: repositories side by side, one lock, one deadline"
+# `refresh` replaces itself with /usr/bin/timeout -s KILL running the worker (`_refresh`), which takes
+# one run lock and starts one background job per repository. The glab stub below answers per
+# repository from files in $GLD (open-<repo>.json, merged-<repo>.json, <repo> being the slug with /
+# as __), and:
 #   sleep-<repo>       seconds every mr list call sleeps
+#   overlap            the first open list of each repository creates up-<repo>, waits up to 5 s for
+#                      the other repository's up- file and logs `overlap` or `timeout` to the call log
 #   fail-<repo>        every call exits 1
-#   wait-<repo>        the open list blocks until a report line matching the file's text is in
-#                      the call log, and logs `overlap`; after 5 s it gives up and logs `timeout`
 #   first-open-<repo>.json
-#                      the first open list answers this, creates started-<repo> and stalls until
-#                      a second `herdr workspace list` is in the call log (a second refresh has
-#                      started), 10 s at most, then 2 s more
+#                      the first open list creates started-<repo>, stalls 2 s, then answers this
 #   hang-<repo>        every list call records its PID in pid-<repo> and sleeps 30 s; when the file
 #                      says ignore-term, it ignores TERM first, before the PID is written (the
-#                      ignore survives the exec)
+#                      ignore survives the exec); when it says grandchild, a TERM-ignoring child
+#                      records its PID in gpid-<repo> and shares the call's stdout first
 #   api-fail           every api call fails
-# With $TSLOG set, the stubs log `<seconds.millis> list|open|merged` for workspace lists and list calls.
 # Every wait is bounded, so a regression fails the case and never hangs the suite.
 GLD="$T/gld"; export GLD
+CACHE="$T/cache/herdr-phase"
 glab_job_stub() {
 cat > "$BIN/glab" <<'G'
 #!/usr/bin/env bash
 echo "glab $*" >> "$CALLS"
+{ : >&9; } 2>/dev/null && echo "glab-fd9-open" >> "$CALLS"
 if [ "${1:-}" = "api" ]; then
   [ ! -e "$GLD/api-fail" ] || { echo "glab: HTTP 502" >&2; exit 1; }
   echo "{\"iid\":${4##*/},\"head_pipeline\":null}"; exit 0
@@ -1090,30 +1217,28 @@ for a in "$@"; do
 done
 [ ! -e "$GLD/fail-$repo" ] || { echo "glab: HTTP 502" >&2; exit 1; }
 state=open; case " $* " in *" --merged "*) state=merged ;; esac
-[ -z "${TSLOG:-}" ] || echo "$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.3f", time') $state" >> "$TSLOG"
 if [ -e "$GLD/hang-$repo" ]; then
-  [ "$(cat "$GLD/hang-$repo")" != ignore-term ] || trap '' TERM
+  mode="$(cat "$GLD/hang-$repo")"
+  # grandchild: a child that ignores TERM, shares this call's stdout and records its PID, as a
+  # credential helper or git run by gh would
+  case "$mode" in *grandchild*) ( trap '' TERM; exec /bin/sleep 30 ) & echo "$!" > "$GLD/gpid-$repo" ;; esac
+  case "$mode" in *ignore-term*) trap '' TERM ;; esac
   echo "$$" > "$GLD/pid-$repo"
   exec /bin/sleep 30
 fi
-if [ "$state" = open ]; then
-  if [ -r "$GLD/wait-$repo" ]; then
-    pat="$(cat "$GLD/wait-$repo")"; got=timeout
-    for ((i = 0; i < 50; i++)); do
-      if grep -q "$pat" "$CALLS"; then got=overlap; break; fi
-      sleep 0.1
-    done
-    echo "$got" >> "$CALLS"
-  fi
-  if [ -r "$GLD/first-open-$repo.json" ] && mkdir "$GLD/first-taken-$repo" 2>/dev/null; then
-    : > "$GLD/started-$repo"
-    for ((i = 0; i < 100; i++)); do
-      [ "$(grep -c '^herdr workspace list' "$CALLS")" -lt 2 ] || break
-      sleep 0.1
-    done
-    sleep 2
-    cat "$GLD/first-open-$repo.json"; exit 0
-  fi
+if [ "$state" = open ] && [ -e "$GLD/overlap" ]; then
+  : > "$GLD/up-$repo"; got=timeout
+  for ((i = 0; i < 50; i++)); do
+    for f in "$GLD"/up-*; do [ "$f" = "$GLD/up-$repo" ] || got=overlap; done
+    [ "$got" = overlap ] && break
+    sleep 0.1
+  done
+  echo "$got" >> "$CALLS"
+fi
+if [ "$state" = open ] && [ -r "$GLD/first-open-$repo.json" ] && mkdir "$GLD/first-taken-$repo" 2>/dev/null; then
+  : > "$GLD/started-$repo"
+  sleep 2
+  cat "$GLD/first-open-$repo.json"; exit 0
 fi
 [ ! -r "$GLD/sleep-$repo" ] || sleep "$(cat "$GLD/sleep-$repo")"
 f="$GLD/$state-$repo.json"; if [ -r "$f" ]; then cat "$f"; else echo '[]'; fi
@@ -1121,77 +1246,69 @@ G
 chmod 755 "$BIN/glab"
 }
 job_reset() { # job_reset -> a cold cache and test/proj answering with section B's fixtures
-  rm -rf "$GLD" "$T/cache" "$T/held"; mkdir -p "$GLD"
+  rm -rf "$GLD" "$CACHE" "$T/held" "$T/release"; mkdir -p "$GLD"
   cp "$MROPEN" "$GLD/open-test__proj.json"; cp "$MRMERGED" "$GLD/merged-test__proj.json"
 }
-now_s() { /usr/bin/python3 -I -c 'import time; print(time.time())'; }
+now_s() { /usr/bin/perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
+secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; } # secs <t0> <t1>
+within() { awk -v e="$1" -v m="$2" 'BEGIN { print (e < m) ? "yes" : "no" }'; } # within <seconds> <limit>
 waitfor() { # waitfor <file> -> 0 once the file exists, 1 after 5 s
   local i=0
   while [ ! -e "$1" ]; do i=$((i + 1)); [ "$i" -le 50 ] || return 1; sleep 0.1; done
 }
 bg_phase() { # bg_phase <args...> -> BGPID: phase.sh in the background, as run() starts it
-  PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" HERDR_PHASE_CACHE_DIR="$T/cache" HERDR_PHASE_TTL=120 \
-    HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" "$@" >/dev/null 2>/dev/null &
+  PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" \
+    HERDR_PHASE_LOCK_WAIT="${LOCK_WAIT-10}" HERDR_PHASE_RUN_DEADLINE="${DEADLINE-40}" \
+    /bin/bash "$PHASE" "$@" >/dev/null 2>/dev/null &
   BGPID=$!
 }
-lock_busy() { # lock_busy -> how many lock files in the cache dir are still held
-  local f n=0
-  for f in "$T/cache"/*.lock; do
-    [ -e "$f" ] || continue
-    ( exec 9>>"$f"; /usr/bin/lockf -s -t 0 9 ) || n=$((n + 1))
-  done
-  echo "$n"
+# The lock file is mode 0200, so the probe opens it for append: 0 free, 1 held.
+lock_busy() {
+  [ -e "$CACHE/run.lock" ] || { echo 0; return 0; }
+  if ( exec 9>>"$CACHE/run.lock"; /usr/bin/lockf -s -t 0 9 ); then echo 0; else echo 1; fi
+}
+hold_lock() { # hold_lock <release file> -> HPID: the suite holds the run lock until that file exists (5 s at most)
+  mkdir -p "$CACHE"; rm -f "$T/held"
+  ( exec 9>>"$CACHE/run.lock"; /usr/bin/lockf -s -t 5 9 && { : > "$T/held"; waitfor "$1"; } ) &
+  HPID=$!
+  waitfor "$T/held"
 }
 nreports() { grep -c -E "^herdr workspace report-metadata $1 " "$CALLS"; }
 last_report() { grep -E "^herdr workspace report-metadata $1 " "$CALLS" | tail -1; }
+herdr_calls() { grep -c '^herdr ' "$CALLS"; }
 # The order of workspace lists (S), lookups (L) and w5 reports (R) in the call log.
 order_w5() {
   grep -E '^(glab mr list|herdr workspace list|herdr workspace report-metadata w5 )' "$CALLS" \
     | sed -E 's/^glab.*/L/; s/^herdr workspace list.*/S/; s/^herdr workspace report-metadata.*/R/' | tr '\n' ' '
 }
-# A logging mv: the atomic-write case reads which file was renamed onto which.
+# A logging mv: the atomic-write cases read which file was renamed onto which.
 export MVLOG="$T/mv.log"; : > "$MVLOG"
 # With $MVHANG naming a file, a mv whose arguments contain that file's text sleeps 30 s first.
 printf '#!/bin/sh\necho "mv $*" >> "$MVLOG"\nif [ -n "${MVHANG:-}" ] && [ -r "$MVHANG" ]; then\n  case "$*" in *"$(cat "$MVHANG")"*) /bin/sleep 30 ;; esac\nfi\nexec /bin/mv "$@"\n' > "$BIN/mv"; chmod 755 "$BIN/mv"
 LINKED="w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 wA wB"
 glab_job_stub
 
-# No repository waits for another: test/proj's open list blocks until a test/proj2 space has been
-# reported. `spaces` sorts test/proj first, so a sequential run gives up after 5 s.
+# Side by side: each repository's first open list waits (5 s at most) until the other repository's has
+# started, and logs `overlap` or `timeout`. That is proof the two jobs run at once, with no clock in
+# it; one space each keeps the git work out of the way. Bug caught: a worker that runs repositories in
+# turn, where the first job's wait ends in `timeout`.
+cat > "$T/ws-two.json" <<J
+{"id":"x","result":{"type":"workspace_list","workspaces":[
+ {"workspace_id":"w4","label":"review","worktree":{"checkout_path":"$T/repo-review","is_linked_worktree":true,"repo_root":"$REPO"}},
+ {"workspace_id":"wA","label":"two-one","worktree":{"checkout_path":"$T/repo2-one","is_linked_worktree":true,"repo_root":"$REPO2"}}
+]}}
+J
 job_reset
-printf '%s' '^herdr workspace report-metadata w[AB] ' > "$GLD/wait-test__proj"
-run refresh --force
+: > "$GLD/overlap"
+WSJSON="$T/ws-two.json" run refresh --force
 check "$RC" "0" "a refresh with per-repository jobs exits 0"
-check "$(grep -c '^overlap$' "$CALLS")" "1" "test/proj's lookup saw test/proj2's report while it was still running"
+check "$(grep -c '^overlap$' "$CALLS")" "2" "each repository's lookup saw the other's started while it was still running"
 check "$(grep -c '^timeout$' "$CALLS")" "0" "no repository waited for another"
-counts=""; for w in $LINKED; do counts="$counts$(nreports $w) "; done
-check "$counts" "1 1 1 1 1 1 1 1 1 1 1 1 1 1 " "every linked space is reported exactly once"
-check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "14" "and nothing else is reported"
-shape=0
-while IFS= read -r line; do
-  case "$line" in *" --source herdr-phase "*) ;; *) shape=$((shape + 1)); continue ;; esac
-  keys=$(printf '%s\n' "$line" | grep -o -E -- '--(clear-)?token ' | wc -l | tr -d ' ')
-  phases=$(printf '%s\n' "$line" | grep -o -E -- '--token (active|draft|review|merged)=' | wc -l | tr -d ' ')
-  [ "$keys" = 7 ] && [ "$phases" = 1 ] || shape=$((shape + 1))
-done < <(grep -E '^herdr workspace report-metadata ' "$CALLS")
-check "$shape" "0" "each report keeps --source herdr-phase, 7 keys and exactly one phase token"
-phase_check w2 active "$ICON_BRANCH" "per-repository jobs: a dirty worktree is active"
-phase_check w3 active "$ICON_BRANCH" "per-repository jobs: unpushed commits are active"
-phase_check w4 review "$ICON_MR !10" "per-repository jobs: an open ready MR is review"
-phase_check w5 draft "$ICON_DRAFT !11" "per-repository jobs: an open draft MR is draft"
-phase_check w6 merged "$ICON_MERGE !12" "per-repository jobs: a merged MR is merged"
-phase_check w10 review "$ICON_MR !13" "per-repository jobs: a dirty worktree with an open MR is review"
-phase_check w12 active "$ICON_BRANCH" "per-repository jobs: a merged MR does not outrank local work"
-phase_check w7 active "$ICON_BRANCH" "per-repository jobs: a pushed branch with no MR is active"
-phase_check w8 active "$ICON_BRANCH" "per-repository jobs: a fresh worktree is active"
-phase_check w9 active "$ICON_BRANCH" "per-repository jobs: a prefix branch does not inherit an MR"
-phase_check w11 review "$ICON_MR !14" "per-repository jobs: unpushed commits with an open MR are review"
-phase_check w13 active "$ICON_BRANCH" "per-repository jobs: a suffix branch does not inherit an MR"
-phase_check wA active "$ICON_BRANCH" "per-repository jobs: the other repository's space is active"
-phase_check wB active "$ICON_BRANCH" "per-repository jobs: the other repository's second space is active"
+check "$(nreports w4)$(nreports wA)" "11" "each repository reported its space once"
 check "$(lock_busy)" "0" "no lock outlives the run"
 
 # A failing lookup stays in its own repository: test/proj has nothing cached to fall back on.
+# Bug caught: one repository's failure wiping or skipping another's badges.
 job_reset
 printf '[{"iid":20,"source_branch":"feature/one","state":"opened","draft":false},\n {"iid":21,"source_branch":"feature/two","state":"opened","draft":false}]\n' > "$GLD/open-test__proj2.json"
 : > "$GLD/fail-test__proj"
@@ -1218,386 +1335,382 @@ case "$(report_for wA)" in *"--token review=$ICON_MR !20 "*) _pass "test/proj2's
   *) _fail "test/proj2's wA reports !20, not test/proj's !90 (got: $(report_for wA))";; esac
 case "$(report_for wB)" in *"--token review=$ICON_MR !22 "*) _pass "test/proj2's wB reports !22, not test/proj's !92";;
   *) _fail "test/proj2's wB reports !22, not test/proj's !92 (got: $(report_for wB))";; esac
-check "$(lock_busy)" "0" "no lock outlives the run with two tables"
+counts=""; for w in $LINKED; do counts="$counts$(nreports $w) "; done
+check "$counts" "1 1 1 1 1 1 1 1 1 1 1 1 1 1 " "every linked space of the interleaved list is reported exactly once"
+check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "14" "and nothing else is reported"
+# Bug caught: a herdr call that inherits the run lock, so a server the CLI starts holds it for ever.
+check "$(grep -c '^herdr workspace' "$CALLS")" "15" "PRECONDITION: the stubs saw the list and every report"
+check "$(grep -c '^glab mr list' "$CALLS")" "4" "PRECONDITION: the stubs saw the glab calls"
+check "$(grep -c -- '-fd9-open$' "$CALLS")" "0" "no herdr or glab call inherits the run lock (fd 9)"
 
-# The run takes as long as its slowest repository: three repositories, 1 s per list call and two
-# calls each. Sequentially that is 6 s or more.
-cat > "$T/ws-three.json" <<J
-{"id":"x","result":{"type":"workspace_list","workspaces":[
- {"workspace_id":"w4","label":"review","worktree":{"checkout_path":"$T/repo-review","is_linked_worktree":true,"repo_root":"$REPO"}},
- {"workspace_id":"wA","label":"two-one","worktree":{"checkout_path":"$T/repo2-one","is_linked_worktree":true,"repo_root":"$REPO2"}},
- {"workspace_id":"wL1","label":"gl3","worktree":{"checkout_path":"$REPO4-gl3","is_linked_worktree":true,"repo_root":"$REPO4"}}
-]}}
-J
-job_reset
-for _r in test__proj test__proj2 test__proj3; do echo 1 > "$GLD/sleep-$_r"; done
-t0="$(now_s)"
-WSJSON="$T/ws-three.json" run refresh --force
-t1="$(now_s)"
-elapsed="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
-check "$(grep -c '^glab mr list' "$CALLS")" "6" "each of the three repositories made its two list calls"
-check "$(awk -v e="$elapsed" 'BEGIN { print (e < 5.5) ? "fast" : "slow" }')" "fast" \
-  "three repositories at 2 s each finish in under 5.5 s (took ${elapsed} s; sequential is at least 6 s)"
-check "$(nreports w4)$(nreports wA)$(nreports wL1)" "111" "each of the three repositories reported its space"
-check "$(lock_busy)" "0" "no lock outlives the three-repository run"
-
-# A single space is still one report.
+# A single space is still one report, and a workspace id that matches nothing is none and no forge call.
 job_reset
 run refresh --workspace w4
-check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "1" "refresh --workspace makes exactly one report with per-repository jobs"
+check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "1" "refresh --workspace makes exactly one report"
 check "$(nreports w4)" "1" "and it is the asked space's"
-check "$(lock_busy)" "0" "no lock outlives a single-space run"
+# Bugs caught: 'w4 x' an unquoted expansion of the id that reports w4, 'w*' a pattern comparison that
+# reports every space.
+for _id in 'w4 x' 'w*'; do
+  job_reset
+  run refresh --workspace "$_id"
+  check "$RC" "0" "workspace id '$_id', which matches no space, exits 0"
+  check "$(grep -c -E '^herdr workspace report-metadata ' "$CALLS")" "0" "workspace id '$_id': reports nothing"
+  check "$(grep -c -E '^(glab|gh) ' "$CALLS")" "0" "workspace id '$_id': makes no forge call"
+done
 
-# An older lookup never lands last. A's first open list answers the draft and stalls until B has
-# started (B's `herdr workspace list` is in the log); B's lookup answers ready. B must wait for A's
-# job to publish, so the last badge is B's. B's list before A's report shows B started while A was
-# running, but not that B waited: B's lookup must also start at least 1.5 s after B's list line,
-# because A's stub holds on for 2 s more after B's list appears. A B that skipped the lock would
-# look up at once.
+# An older lookup never lands last (the reason for the lock). A's first open list answers the draft
+# after a 2 s stall; B's lookup answers ready. B must wait at the lock for A's whole run, so B's
+# workspace list comes after A's report and the last badge is B's. Bug caught: a missing lock, where B
+# finishes first and A's older answer is published over it.
 job_ready() { # job_ready -> test/proj answers ready from the first call on, but A's first answer is a draft
   sed 's/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":true/"iid":11,"source_branch":"feature\/draft","state":"opened","draft":false/' \
     "$MROPEN" > "$GLD/open-test__proj.json"
   cp "$MROPEN" "$GLD/first-open-test__proj.json"
 }
-# gap_b -> seconds from B's `workspace list` (the second) to B's open list call (the second).
-gap_b() { awk '$2=="list" {n++; if (n==2) l=$1} $2=="open" {o++; if (o==2) q=$1} END {printf "%.1f", q - l}' "$TSLOG"; }
-gap_ok() { awk -v g="$1" 'BEGIN { print (g >= 1.5) ? "waited" : "did not wait" }'; }
-export TSLOG="$T/ts.log"
-job_reset; job_ready; : > "$TSLOG"
+job_reset; job_ready
 : > "$CALLS"
 bg_phase refresh --force --workspace w5; apid=$BGPID
 waitfor "$GLD/started-test__proj" && _pass "A's lookup started and is stalled" || _fail "A's lookup started and is stalled"
+kill -0 "$apid" 2>/dev/null && _pass "A is still running when B starts" || _fail "A is still running when B starts"
 KEEPLOG=1 run refresh --force --workspace w5
-wait "$apid" 2>/dev/null   # A ends on its own once B has started
+wait "$apid" 2>/dev/null
 check "$(nreports w5)" "2" "A and B each reported w5"
 case "$(last_report w5)" in *"--token review=$ICON_MR !11 "*) _pass "the last report for w5 is B's review !11";;
   *) _fail "the last report for w5 is B's review !11 (got: $(last_report w5))";; esac
-check "$(awk -F'\t' '$1=="feature/draft" {print $4}' "$T/cache/test%2Fproj.tsv")" "0" "the cached table holds B's answer: draft 0"
-check "$(order_w5)" "S L S L R L L R " "B started while A held the lock, and B's lookups followed A's report"
-gap="$(gap_b)"; check "$(gap_ok "$gap")" "waited" "B's lookup began at least 1.5 s after B's list line (${gap} s)"
+check "$(awk -F'\t' '$1=="feature/draft" {print $4}' "$CACHE/test%2Fproj.tsv")" "0" "the cached table holds B's answer: draft 0"
+check "$(order_w5)" "S L L R S L L R " "B listed the spaces only after A had reported, and B's lookups followed A's report"
 check "$(lock_busy)" "0" "no lock outlives the reversed-order run"
 
-# A held lock is waited for, then skipped: the suite holds test/proj's lock until it has seen the
-# run return (5 s at most) and the refresh waits 1 s. The holder reports the repository's spaces;
-# this run reports none of them and says so on stderr.
-job_reset; mkdir -p "$T/cache"; rm -f "$T/release"
-( exec 9>>"$T/cache/test%2Fproj.lock"; /usr/bin/lockf -s -t 5 9 && { : > "$T/held"; waitfor "$T/release"; } ) &
-hpid=$!
-waitfor "$T/held" && _pass "the suite holds test/proj's lock" || _fail "the suite holds test/proj's lock"
+# A held lock is skipped once LOCK_WAIT is up. The suite holds the run lock while the run waits 1 s.
+# Bug caught: a run that goes on without the lock (two refreshes overlapping), or that waits for ever.
+job_reset
+hold_lock "$T/release" && _pass "the suite holds the run lock" || _fail "the suite holds the run lock"
 LOCK_WAIT=1 run refresh --force
-: > "$T/release"
-check "$RC" "0" "a refresh that cannot take a lock exits 0"
-check "$(for w in w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13; do nreports $w; done | tr -d '\n')" "000000000000" "no test/proj space is reported while its lock is held"
-check "$(grep -c 'gitlab.com/test/proj ' "$CALLS")" "0" "and test/proj is not looked up"
-check "$(nreports wA)$(nreports wB)" "11" "test/proj2's spaces are still reported"
-check "$(printf '%s\n' "$OUT" | grep -c 'skipped test%2Fproj: its lock is held')" "1" "the skipped repository is named once on stderr"
-check "$(printf '%s\n' "$OUT" | grep -c 'skipped')" "1" "and nothing else is skipped"
-wait "$hpid" 2>/dev/null
+: > "$T/release"; wait "$HPID" 2>/dev/null
+check "$RC" "0" "a refresh that cannot take the lock exits 0"
+check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: skipped: another refresh holds the lock$')" "1" "and says so once on stderr"
+check "$(herdr_calls)" "0" "and makes no herdr call"
+check "$(grep -c -E '^(glab|gh) ' "$CALLS")" "0" "and no forge call"
 check "$(lock_busy)" "0" "no lock is left once the holder ends"
 
-# A dead parent does not free its job's lock: A's top-level bash is killed while its job is in the
-# stalled lookup. The job lives on, so B waits for it and its lookup starts after A's report.
-job_reset; job_ready; : > "$TSLOG"
-: > "$CALLS"
-bg_phase refresh --force --workspace w5; apid=$BGPID
-waitfor "$GLD/started-test__proj" && _pass "A's lookup started before its parent is killed" || _fail "A's lookup started before its parent is killed"
-kill -9 "$apid" 2>/dev/null; wait "$apid" 2>/dev/null
-LOCK_WAIT=10 KEEPLOG=1 run refresh --force --workspace w5
-check "$(nreports w5)" "2" "A's orphaned job and B each reported w5"
-check "$(order_w5)" "S L S L R L L R " "B started while the orphaned job held the lock, and B's lookups followed its report"
-gap="$(gap_b)"; check "$(gap_ok "$gap")" "waited" "B's lookup began at least 1.5 s after B's list line, the parent being dead (${gap} s)"
-unset TSLOG
-case "$(last_report w5)" in *"--token review=$ICON_MR !11 "*) _pass "the last report for w5 is B's review !11 after the parent died";;
-  *) _fail "the last report for w5 is B's review !11 after the parent died (got: $(last_report w5))";; esac
-check "$(lock_busy)" "0" "no lock outlives the dead-parent case"
-
-# Cache writes are atomic: a replaced file is a new file, and no temporary one is left behind.
+# A held lock is waited for within LOCK_WAIT: the holder lets go after 1 s and the run, which waits
+# up to 10, reports as usual. Bug caught: a run that skips at the first sign of a held lock, so a hook
+# that fires during the timer's run is lost.
 job_reset
-run refresh --force
-ino1="$(stat -f %i "$T/cache/test%2Fproj.tsv")"; pino1="$(stat -f %i "$T/cache/test%2Fproj.mr10.pipeline")"
-run refresh --force
-ino2="$(stat -f %i "$T/cache/test%2Fproj.tsv")"; pino2="$(stat -f %i "$T/cache/test%2Fproj.mr10.pipeline")"
-[ "$ino1" != "$ino2" ] && _pass "a forced lookup replaces the table file (inode $ino1 -> $ino2)" \
-  || _fail "a forced lookup replaces the table file (inode $ino1 -> $ino2)"
-[ "$pino1" != "$pino2" ] && _pass "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)" \
-  || _fail "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)"
-check "$(ls "$T/cache" | grep -Ec '\.(tsv|pipeline)\.')" "0" "no temporary file is left in the cache directory"
-check "$({ ls "$T/cache/.tmp/test%2Fproj"; ls "$T/cache/.tmp/test%2Fproj2"; } | grep -c .)" "0" "and none is left in a repository's staging directory"
-check "$(grep -c . "$T/cache/test%2Fproj.tsv")" "7" "the replaced table is whole"
+hold_lock "$T/release" && _pass "the suite holds the run lock again" || _fail "the suite holds the run lock again"
+( /bin/sleep 1; : > "$T/release" ) &
+t0="$(now_s)"; LOCK_WAIT=10 run refresh --force --workspace w4; t1="$(now_s)"
+wait 2>/dev/null
+check "$RC" "0" "a refresh that waited for the lock exits 0"
+check "$(nreports w4)" "1" "and reports its space"
+check "$(within "$(secs "$t0" "$t1")" 0.8)" "no" "and it did wait for the holder ($(secs "$t0" "$t1") s)"
+check "$(lock_busy)" "0" "no lock outlives the run that waited"
 
-# The replacement is a rename onto the target of a temporary file in the repository's staging
-# directory, for both forges (a delete-then-write would change the inode too, and leave a gap a
-# reader could fall into).
-: > "$MVLOG"; job_reset
-run refresh --force
-check "$(grep -cE "^mv -f $T/cache/\.tmp/test%2Fproj/test%2Fproj\.tsv\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.tsv\$" "$MVLOG")" "1" \
-  "the GitLab table is renamed into place from a temporary file in the repository's staging directory"
-check "$(grep -cE "^mv -f $T/cache/\.tmp/test%2Fproj/test%2Fproj\.mr10\.pipeline\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.mr10\.pipeline\$" "$MVLOG")" "1" \
-  "the GitLab pipeline status is renamed into place from a temporary file in the repository's staging directory"
-: > "$MVLOG"; rm -rf "$T/cache"
-ghrun refresh --force
-check "$(grep -cE "^mv -f $T/cache/\.tmp/github@test%2Fproj3/github@test%2Fproj3\.tsv\.[A-Za-z0-9]{6} $T/cache/github@test%2Fproj3\.tsv\$" "$MVLOG")" "1" \
-  "the GitHub table is renamed into place from a temporary file in the repository's staging directory"
-
-# A job sweeps its repository's staging directory (stray temporary files of a refresh killed
-# mid-write, a dotfile among them: a key, and so a temporary file's name, can start with a dot) under
-# the lock, and nothing else: no name pattern over the shared cache directory exists, so a sibling
-# key's real files (test/proj.tsv.a's lock, test/proj.tsv.ab's table, and so on) and a sibling key's
-# staging directory (test/proj.tsv.a's, whose name starts with this key) are never touched.
-job_reset; mkdir -p "$T/cache/.tmp/test%2Fproj" "$T/cache/.tmp/test%2Fproj.tsv.a"
-: > "$T/cache/.tmp/test%2Fproj/test%2Fproj.tsv.ABCDEF"; : > "$T/cache/.tmp/test%2Fproj/test%2Fproj.mr10.pipeline.ABCDEF"
-: > "$T/cache/.tmp/test%2Fproj/.ABCDEF"
-: > "$T/cache/.tmp/test%2Fproj.tsv.a/test%2Fproj.tsv.a.tsv.ABCDEF"
-: > "$T/cache/test%2Fproj.tsv.a.lock"; : > "$T/cache/test%2Fproj.tsv.ab.tsv"
-: > "$T/cache/test%2Fproj.lookup.a.lock"; : > "$T/cache/test%2Fproj.mr5.pipeline.lookup"
-: > "$T/cache/test%2Fproj.tsv.lookup"; : > "$T/cache/test%2Fproj.mrx.mr5.pipeline.ABCDEF"
-run refresh --force
-check "$(ls -A "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "a refresh sweeps its repository's staging directory, a dotfile included"
-check "$(ls -A "$T/cache/.tmp/test%2Fproj.tsv.a" | tr '\n' ' ')" "test%2Fproj.tsv.a.tsv.ABCDEF " "and leaves a sibling key's staging directory alone"
-check "$(ls "$T/cache" | grep -E '^test%2Fproj\.(tsv\.a\.lock|tsv\.ab\.tsv|lookup\.a\.lock|mr5\.pipeline\.lookup|tsv\.lookup|mrx\.mr5\.pipeline\.ABCDEF)$' | wc -l | tr -d ' ')" "6" \
-  "and never deletes a sibling key's real files from the shared cache directory"
-
-# A job that dies abnormally is not folded into a clean exit: it is named on stderr, the other
-# repository's job is unaffected, and the refresh still exits 0.
-job_reset
-KILLJOB_WS=w4 run refresh --force
-check "$RC" "0" "a refresh whose job was killed still exits 0"
-check "$(printf '%s\n' "$OUT" | grep -c 'a refresh job ended abnormally')" "1" "the killed job is reported once on stderr"
-check "$(nreports wA)$(nreports wB)" "11" "the other repository's spaces are still reported"
-check "$(lock_busy)" "0" "no lock outlives the killed job"
-
-# Only a job the deadline ended is named as killed at the run deadline. One whose first process died
-# of a signal on its own is named as ended abnormally, even while its group still has a member when
-# the wait ends: here the report that killed it stays 5 s, so end_jobs has that group to end too.
-job_reset; rm -f "$T/linger.pid"
-KILLJOB_WS=w4 KILLJOB_LINGER="$T/linger.pid" run refresh --force
-check "$RC" "0" "a job killed by a signal of its own, its group still alive: the refresh exits 0"
-check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: a refresh job ended abnormally (status 137)$')" "1" \
-  "and the job is named once as ended abnormally (status 137)"
-check "$(printf '%s\n' "$OUT" | grep -c 'killed at the run deadline')" "0" "and not as killed at the run deadline"
-lpid="$(cat "$T/linger.pid" 2>/dev/null)"
-if [ -z "$lpid" ]; then _fail "and its group's lingering process is ended (it never started)"
-elif kill -0 "$lpid" 2>/dev/null; then _fail "and its group's lingering process is ended"; kill -9 "$lpid" 2>/dev/null
-else _pass "and its group's lingering process is ended"; fi
-check "$(lock_busy)" "0" "no lock outlives the job killed by a signal of its own"
-
-# The lock wait is 30 s and the run deadline 40 s unless the suite lowers them.
-check "$(grep -c '^LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT:-30}"' "$PHASE")" "1" "the lock wait defaults to 30 s"
-check "$(grep -c '^RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE:-40}"' "$PHASE")" "1" "the run deadline defaults to 40 s"
-
-# A run deadline of 0 ends every job at once, and the refresh still exits 0 and names each
-# repository it ended (06a0b8b died here under set -u, silently, its stderr on /dev/null). Both
-# repositories hang in glab, so neither job can finish on its own before the deadline sample.
-job_reset
-: > "$GLD/hang-test__proj"; : > "$GLD/hang-test__proj2"
-DEADLINE=0 run refresh --force
-check "$RC" "0" "a run deadline of 0: the refresh exits 0"
-check "$(printf '%s\n' "$OUT" | grep -c -E '^phase.sh: test%2Fproj2?: killed at the run deadline$')" "2" \
-  "a run deadline of 0: each repository is named once as killed at the run deadline"
-for _r in test__proj test__proj2; do
-  _p="$(cat "$GLD/pid-$_r" 2>/dev/null)"
-  if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then _fail "a run deadline of 0: $_r's hung forge call is gone"; kill -9 "$_p" 2>/dev/null
-  else _pass "a run deadline of 0: $_r's hung forge call is gone"; fi
+# lockf takes the wait as it is; a value it refuses ends the run before any herdr call, and nothing
+# in it is run by the shell. 0 is a wait of none, which a free lock does not need.
+for _v in abc "x[\$(touch $T/pwned)]"; do
+  job_reset; rm -f "$T/pwned"
+  LOCK_WAIT="$_v" run refresh --force
+  check "$RC" "2" "a lock wait of '$_v' is refused (exit 2)"
+  check "$(herdr_calls)" "0" "a lock wait of '$_v': and no herdr call is made"
+  [ ! -e "$T/pwned" ] && _pass "a lock wait of '$_v': and nothing in it runs" || _fail "a lock wait of '$_v': and nothing in it runs"
 done
-check "$(lock_busy)" "0" "a run deadline of 0: no lock outlives the run"
-# Any other value that is not a whole number of seconds is refused before a job starts: wait_jobs
-# does arithmetic with it, which would run PATH[$(cmd)] and end the shell silently on 1.5 or 08. The
-# runs use a UTF-8 locale, under which bash 3.2's range [0-9] lets U+2185 through (1ↅ).
-for _v in 1.5 08 "PATH[\$(touch $T/pwned)]" "1$(printf '\xe2\x86\x85')"; do
+rm -f "$T/pwned"
+job_reset
+LOCK_WAIT=0 run refresh --force --workspace w4
+check "$RC$(nreports w4)" "01" "a lock wait of 0 takes a free lock"
+
+# A first run, with no cache directory at all, makes it and the lock file, which only the owner can
+# write: a lock file a sandboxed command can open for reading is a lock it can hold (spec section 3).
+# Bug caught: a lock created with the caller's umask.
+rm -rf "$T/cache"; job_reset
+run refresh --force
+check "$RC" "0" "a first run with no cache directory exits 0"
+check "$(nreports w4)" "1" "and reports"
+[ -e "$CACHE/run.lock" ] && _pass "and creates the run lock" || _fail "and creates the run lock"
+check "$(stat -f %Lp "$CACHE/run.lock")" "200" "the lock file is mode 0200"
+
+# The defaults: a 10 s lock wait and a 40 s run deadline unless the suite lowers them. The default
+# applies when the variable is unset, so an empty one reaches the check below.
+check "$(grep -c '^LOCK_WAIT="${HERDR_PHASE_LOCK_WAIT-10}"' "$PHASE")" "1" "the lock wait defaults to 10 s"
+check "$(grep -c '^RUN_DEADLINE="${HERDR_PHASE_RUN_DEADLINE-40}"' "$PHASE")" "1" "the run deadline defaults to 40 s"
+# The cache directory and the TTL are not overridable: the suite points the cache at XDG_CACHE_HOME and ages files.
+check "$(grep -c 'HERDR_PHASE_CACHE_DIR\|HERDR_PHASE_TTL' "$PHASE")" "0" "the cache directory and TTL overrides are gone"
+
+# A run deadline that is not a positive whole number is refused before timeout runs: timeout reads 0
+# as no limit at all (a run must never be unbounded), and a value it cannot read would run with none.
+# The runs use a UTF-8 locale, under which bash 3.2's range [0-9] lets U+2185 through (1ↅ).
+for _v in 0 "" 08 1.5 "x[\$(touch $T/pwned)]" "1$(printf '\xe2\x86\x85')"; do
   job_reset; rm -f "$T/pwned"
   LC_ALL=en_US.UTF-8 DEADLINE="$_v" run refresh --force
-  case "$_v" in PATH*) _l="a run deadline holding a command substitution" ;; 1.5|08) _l="a run deadline of $_v" ;;
-    *) _l="a run deadline of 1 and U+2185, a digit to a UTF-8 range" ;; esac
+  _l="a run deadline of '$_v'"
   check "$RC" "2" "$_l is refused (exit 2)"
-  check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: HERDR_PHASE_RUN_DEADLINE is not a whole number of seconds$')" "1" "$_l: and the refusal is on stderr"
-  check "$(grep -c 'report-metadata' "$CALLS")" "0" "$_l: and nothing is reported"
+  check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: HERDR_PHASE_RUN_DEADLINE is not a positive whole number of seconds$')" "1" "$_l: and the refusal is on stderr"
+  check "$(herdr_calls)" "0" "$_l: and no herdr call is made"
   [ ! -e "$T/pwned" ] && _pass "$_l: and nothing in it runs" || _fail "$_l: and nothing in it runs"
 done
 rm -f "$T/pwned"
-# The lock wait and the TTL are taken the same way, before any job starts: an invalid wait made
-# lockf exit 64 and every repository log "its lock is held", and an invalid TTL erred in `[ -lt ]`
-# and always looked up. 0 is allowed for both (the suite's TTL=0, and a wait that skips at once).
-for _n in LOCK_WAIT TTL; do
-  for _v in 1.5 08 -1 "PATH[\$(touch $T/pwned)]" "1$(printf '\xe2\x86\x85')"; do
-    job_reset; rm -f "$T/pwned"
-    case "$_v" in PATH*) _l="a $_n holding a command substitution" ;; 1.5|08|-1) _l="a $_n of $_v" ;;
-      *) _l="a $_n of 1 and U+2185, a digit to a UTF-8 range" ;; esac
-    if [ "$_n" = LOCK_WAIT ]; then LC_ALL=en_US.UTF-8 LOCK_WAIT="$_v" run refresh --force; else LC_ALL=en_US.UTF-8 TTL="$_v" run refresh --force; fi
-    check "$RC" "2" "$_l is refused (exit 2)"
-    check "$(printf '%s\n' "$OUT" | grep -c "^phase.sh: HERDR_PHASE_$_n is not a whole number of seconds\$")" "1" "$_l: and the refusal names it on stderr"
-    check "$(grep -c 'report-metadata' "$CALLS")" "0" "$_l: and nothing is reported"
-    [ ! -e "$T/pwned" ] && _pass "$_l: and nothing in it runs" || _fail "$_l: and nothing in it runs"
-  done
-done
-rm -f "$T/pwned"
-job_reset
-LOCK_WAIT=0 run refresh --force
-check "$RC" "0" "a lock wait of 0 is allowed"
-job_reset
-TTL=0 run refresh
-check "$RC" "0" "a TTL of 0 is allowed"
 
 # A file dated in the future (the clock stepped back) is expired, not fresh: a table from the
 # future is looked up again by a default refresh, and a pipeline status from the future does not
 # stand in for a failed call.
 job_reset
 run refresh
-touch -t "$(date -v+1H +%Y%m%d%H%M.%S)" "$T/cache/test%2Fproj.tsv"
+touch -t "$(date -v+1H +%Y%m%d%H%M.%S)" "$CACHE/test%2Fproj.tsv"
 run refresh
 check "$(grep -c '^glab mr list' "$CALLS" | awk '$1 >= 1 {print "refetched"}')" "refetched" "a table dated an hour ahead is looked up again by a default refresh"
-job_reset; mkdir -p "$T/cache"; : > "$GLD/api-fail"
-printf 'success\n' > "$T/cache/test%2Fproj.mr10.pipeline"
-touch -t "$(date -v+1H +%Y%m%d%H%M.%S)" "$T/cache/test%2Fproj.mr10.pipeline"
-TTL=0 run refresh --workspace w4
+job_reset; mkdir -p "$CACHE"; : > "$GLD/api-fail"
+printf 'success\n' > "$CACHE/test%2Fproj.mr10.pipeline"
+touch -t "$(date -v+1H +%Y%m%d%H%M.%S)" "$CACHE/test%2Fproj.mr10.pipeline"
+run refresh --workspace w4
 ci_check w4 none "a pipeline status dated an hour ahead gives no CI badge when the call fails"
 
-# The run deadline (Ruling 12). A repository whose forge call never returns is ended at the
-# deadline, with its process group: the other repository is reported as usual, the run returns
-# within the deadline and a little more, the hung call's process is gone, the script says which
-# repository it ended, and the shell's own "Terminated" notice does not reach stderr.
-hung_check() { # hung_check <label> <elapsed> -> the assertions shared by the hung-repository cases
-  check "$(awk -v e="$2" 'BEGIN { print (e < 6) ? "bounded" : "unbounded" }')" "bounded" "$1: the run returned in under 6 s (took $2 s)"
-  check "$RC" "0" "$1: the refresh exits 0"
-  check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: test%2Fproj: killed at the run deadline$')" "1" "$1: the ended repository is named once on stderr"
-  check "$(printf '%s\n' "$OUT" | grep -c -E 'Terminated|Killed')" "0" "$1: no shell notice about the signalled job reaches stderr"
-  kill -0 "$(cat "$GLD/pid-test__proj" 2>/dev/null || echo 0)" 2>/dev/null && { _fail "$1: the hung forge call is gone"; kill -9 "$(cat "$GLD/pid-test__proj")" 2>/dev/null; } \
-    || _pass "$1: the hung forge call is gone"
-  check "$(lock_busy)" "0" "$1: no lock outlives the run"
-}
+# The per-call bound. Every glab, gh and herdr call runs under its own timeout, measured from the
+# run's start, in a process group of its own and without fd 9; forge calls are cut CALL_MARGIN (5 s)
+# before the deadline and herdr calls at the deadline. With a deadline of 8 s the forge call is cut 2 to
+# 4 s in (whole-second arithmetic). The stub ignores TERM, sleeps 30 s and starts a TERM-ignoring
+# grandchild that shares its stdout: both are dead after the cut (KILL cannot be ignored, and it takes
+# the call's whole group), the job falls back to its cached table and reports, the other repository is
+# reported, the hung repository's table is byte for byte what it was, the run exits 0 before its outer
+# deadline and the lock is free. Bugs caught: a call with no bound of its own, which survives until the
+# run's outer KILL (exit 137); a cut that kills the call's own process and not its children (the
+# grandchild holds the stdout pipe, so the job waits for it, and the lock with it).
 job_reset
 printf '[{"iid":20,"source_branch":"feature/one","state":"opened","draft":false},\n {"iid":21,"source_branch":"feature/two","state":"opened","draft":false}]\n' > "$GLD/open-test__proj2.json"
-: > "$GLD/hang-test__proj"
-t0="$(now_s)"; DEADLINE=2 run refresh --force; t1="$(now_s)"
-hung_check "a hung repository" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
-case "$(report_for wA)" in *"--token review=$ICON_MR !20 "*) _pass "a hung repository: test/proj2's wA is reported with its phase";;
-  *) _fail "a hung repository: test/proj2's wA is reported with its phase (got: $(report_for wA))";; esac
-case "$(report_for wB)" in *"--token review=$ICON_MR !21 "*) _pass "a hung repository: test/proj2's wB is reported with its phase";;
-  *) _fail "a hung repository: test/proj2's wB is reported with its phase (got: $(report_for wB))";; esac
-check "$(nreports w4)" "0" "a hung repository: its own spaces are not reported"
+run refresh --force
+cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
+printf 'ignore-term grandchild' > "$GLD/hang-test__proj"
+t0="$(now_s)"; DEADLINE=8 run refresh --force; t1="$(now_s)"
+elapsed="$(secs "$t0" "$t1")"
+check "$(within "$elapsed" 8)" "yes" "a hung forge call: the run ended before its deadline (took $elapsed s)"
+check "$RC" "0" "a hung forge call: the run exits 0, not killed at the deadline"
+for _f in pid gpid; do
+  _p="$(cat "$GLD/$_f-test__proj" 2>/dev/null)"
+  if [ -z "$_p" ]; then _fail "a hung forge call: the TERM-ignoring $_f process is dead (it never started)"
+  elif kill -0 "$_p" 2>/dev/null; then _fail "a hung forge call: the TERM-ignoring $_f process is dead"; kill -9 "$_p" 2>/dev/null
+  else _pass "a hung forge call: the TERM-ignoring $_f process is dead"; fi
+done
+check "$(lock_busy)" "0" "a hung forge call: the lock is free"
+case "$(report_for wA)" in *"--token review=$ICON_MR !20 "*) _pass "a hung forge call: test/proj2's wA was reported with its phase";;
+  *) _fail "a hung forge call: test/proj2's wA was reported with its phase (got: $(report_for wA))";; esac
+case "$(report_for wB)" in *"--token review=$ICON_MR !21 "*) _pass "a hung forge call: test/proj2's wB was reported with its phase";;
+  *) _fail "a hung forge call: test/proj2's wB was reported with its phase (got: $(report_for wB))";; esac
+counts=""; for w in $LINKED; do counts="$counts$(nreports $w) "; done
+check "$counts" "1 1 1 1 1 1 1 1 1 1 1 1 1 1 " "a hung forge call: every space, the hung repository's included, was reported once"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "a hung forge call: test/proj's w4 was reported from its cached table";;
+  *) _fail "a hung forge call: test/proj's w4 was reported from its cached table (got: $(report_for w4))";; esac
+check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "a hung forge call: the hung repository's table is byte for byte what it was"
 
+# INT to the run (a ^C on a terminal): bash ignores INT in `&` jobs when job control is off, so the jobs
+# go on after timeout and the worker end, and a hung forge call would hold the lock for good. The
+# run is started through perl, which puts INT back to its default (a job the suite starts with `&`
+# would otherwise inherit INT ignored and the INT would do nothing). With a 12 s deadline the forge
+# call and its grandchild are cut 6 to 8 s in whatever happened to the run, so the INT and the checks
+# after it fit inside that with room under load. Right after the run exits the orphaned job still holds
+# the lock (a job that did not hold it would free it at once); then both are dead and the lock free
+# before the deadline (12 s, and whole seconds can add one). Pins the bound, not the signal's
+# delivery. Bug caught: a call with no bound of its own, or one that leaves its children behind.
+job_reset
+printf 'grandchild' > "$GLD/hang-test__proj"
+t0="$(now_s)"
+PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" HERDR_PHASE_RUN_DEADLINE=12 \
+  /usr/bin/perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' /bin/bash "$PHASE" refresh --force >/dev/null 2>&1 &
+mpid=$!
+waitfor "$GLD/gpid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
+kill -INT "$mpid" 2>/dev/null
+i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
+check "$(lock_busy)" "1" "after INT the orphaned job still holds the lock"
+_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"; _g="$(cat "$GLD/gpid-test__proj" 2>/dev/null)"
+i=0; while { kill -0 "$_p" 2>/dev/null || kill -0 "$_g" 2>/dev/null || [ "$(lock_busy)" != 0 ]; } && [ "$i" -lt 150 ]; do i=$((i + 1)); sleep 0.1; done
+t1="$(now_s)"
+check "$(within "$(secs "$t0" "$t1")" 12.5)" "yes" "after INT the forge call and its child are dead and the lock free by the deadline ($(secs "$t0" "$t1") s)"
+for _x in "$_p" "$_g"; do
+  if [ -z "$_x" ]; then _fail "after INT the hung forge process is dead (it never started)"
+  elif kill -0 "$_x" 2>/dev/null; then _fail "after INT the hung forge process $_x is dead"; kill -9 "$_x" 2>/dev/null
+  else _pass "after INT the hung forge process is dead"; fi
+done
+check "$(lock_busy)" "0" "after INT the lock is free"
+wait "$mpid" 2>/dev/null
+
+# The deadline counts the wait for the lock: the run starts its clock before it asks for the lock, so
+# a run that waits for a lock held throughout still ends at the deadline. Bug caught: a deadline that
+# starts after the lock is taken (the run lasts the deadline plus the wait).
+job_reset
+hold_lock "$T/release" && _pass "the suite holds the run lock throughout" || _fail "the suite holds the run lock throughout"
+t0="$(now_s)"; DEADLINE=2 LOCK_WAIT=10 run refresh --force; t1="$(now_s)"
+: > "$T/release"; wait "$HPID" 2>/dev/null
+check "$(within "$(secs "$t0" "$t1")" 4)" "yes" "a run waiting for a held lock ended in under 4 s with a 2 s deadline ($(secs "$t0" "$t1") s)"
+check "$RC" "137" "and was killed at the deadline, not skipped (exit 137)"
+check "$(herdr_calls)" "0" "and made no herdr call"
+
+# TERM to the run (launchd's bootout, a kill): timeout is the run's process and forwards it to the
+# worker's group, so the run exits 143 at once and its job shells die with it, which frees the lock
+# within a second. The hung forge call is in a group of its own (out of reach of that TERM) and ends by
+# its own bound, which the per-call and INT cases pin; it is killed here. Bug caught: jobs that
+# survive a TERM, so the lock stays held until their forge calls end.
 job_reset
 : > "$GLD/hang-test__proj"
-t0="$(now_s)"; DEADLINE=2 run refresh --force --workspace w4; t1="$(now_s)"
-hung_check "a hung --workspace refresh" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
+bg_phase refresh --force; mpid=$BGPID
+waitfor "$GLD/pid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
+t1="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
+i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
+t2="$(now_s)"
+if kill -0 "$mpid" 2>/dev/null; then _fail "the run exits within 2 s of TERM"; kill -9 "$mpid" 2>/dev/null
+else _pass "the run exits within 2 s of TERM ($(secs "$t1" "$t2") s)"; fi
+wait "$mpid" 2>/dev/null; mrc=$?
+check "$mrc" "143" "and exits with status 143"
+i=0; while [ "$(lock_busy)" != 0 ] && [ "$i" -lt 10 ]; do i=$((i + 1)); sleep 0.1; done
+check "$(lock_busy)" "0" "and the lock is free within a second of that"
+_p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"; [ -z "$_p" ] || kill -9 "$_p" 2>/dev/null
 
-# A forge call that ignores TERM is KILLed after the grace: the first process of a job always dies
-# on TERM, so only a check of the whole process group sees the survivor.
-job_reset
-printf 'ignore-term' > "$GLD/hang-test__proj"
-t0="$(now_s)"; DEADLINE=2 run refresh --force; t1="$(now_s)"
-hung_check "a TERM-ignoring forge call" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
-
-# The deadline is read on a clock that follows the wall clock ($SECONDS in bash 3.2), so a clock
-# stepped back must not stretch the wait, and the 0.1 s ticks cap it whichever way the clock moves.
-# The suite cannot step the real clock: it sources phase.sh in a subshell, replaces `clock` with a
-# fake and runs wait_jobs on a stand-in job (an 8 s sleep in a process group of its own).
-# The source runs without run()'s isolation: the suite's own environment, no PINNED_PATH, cache
-# directory or HERDR_PHASE_* override. That holds only while nothing called here reads them:
-# wait_jobs, end_jobs and job_key on a root that is no repository.
-fake_wait() { # fake_wait <deadline> <stepback|frozen> -> FW_SECS (wall time), FW_ERR (stderr), FW_PID (stand-in)
-  local t0 t1 dl="$1" how="$2"
-  t0="$(now_s)"
-  FW_ERR="$( (
-    set --; . "$PHASE" >/dev/null 2>&1
-    reads=0
-    case "$how" in
-      stepback) clock() { reads=$((reads + 1)); if [ "$reads" -eq 1 ]; then NOW=1000; else NOW=900; fi; } ;;
-      frozen) clock() { NOW=1000; } ;;
-    esac
-    RUN_DEADLINE="$dl"
-    set -m; /bin/sleep 8 >/dev/null 2>&1 & set +m
-    echo "stand-in $!" >&2
-    JOB_PIDS=" $!"; JOB_ROOTS="$!"$'\t'"$T/no-repository"$'\n'
-    exec 8>&2; wait_jobs 2>/dev/null
-  ) 2>&1 )"
-  t1="$(now_s)"
-  FW_SECS="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')"
-  FW_PID="$(printf '%s\n' "$FW_ERR" | sed -n 's/^stand-in //p')"
-}
-fake_wait_gone() { # fake_wait_gone <label> -> the stand-in job was ended and named
-  check "$(printf '%s\n' "$FW_ERR" | grep -c '^phase.sh: (no forge): killed at the run deadline$')" "1" "$1: the stand-in job is named as killed at the run deadline"
-  if [ -z "$FW_PID" ]; then _fail "$1: the stand-in job is gone (it never started)"
-  elif kill -0 "$FW_PID" 2>/dev/null; then _fail "$1: the stand-in job is gone"; kill -9 "$FW_PID" 2>/dev/null
-  else _pass "$1: the stand-in job is gone"; fi
-}
-# Stepped back 100 s after the first reading: the elapsed time is negative, so the deadline (5 s) has
-# passed at once.
-fake_wait 5 stepback
-check "$(awk -v e="$FW_SECS" 'BEGIN { print (e < 2.5) ? "at once" : "late" }')" "at once" \
-  "a clock stepped back ends the wait at once, as expired (took $FW_SECS s; the deadline is 5 s)"
-fake_wait_gone "a clock stepped back"
-# A clock that stands still never reaches the deadline (1 s): the ticks end the wait after 20 (10 for
-# each second of the deadline, and 10 of margin), so not before 2 s, and well before the stand-in's 8 s.
-fake_wait 1 frozen
-check "$(awk -v e="$FW_SECS" 'BEGIN { print (e >= 1.9 && e < 6) ? "capped" : "not capped" }')" "capped" \
-  "a clock that stands still is ended by the tick cap, after 2 s and well before 8 s (took $FW_SECS s)"
-fake_wait_gone "a clock that stands still"
-
-# TERM to the main shell (launchd's bootout): the jobs sit in groups of their own, out of reach of
-# launchd's group kill, so the main shell ends them itself and exits, well inside launchd's 20 s
-# ExitTimeOut. The deadline is left at its default, so only the trap can have ended them, and the
-# forge call ignores TERM, so only the KILL after the grace ends it (about 2.3 to 2.7 s). A second
-# signal during the grace (HUP 0.5 s after the TERM) is ignored: the abort still runs to its end.
-abort_case() { # abort_case <label> [<second signal>]
-  local i n=50 mrc spid
-  job_reset
-  printf 'ignore-term' > "$GLD/hang-test__proj"
-  bg_phase refresh --force; mpid=$BGPID
-  waitfor "$GLD/pid-test__proj" && _pass "$1: the hung forge call started" || _fail "$1: the hung forge call started"
-  t0="$(now_s)"; kill -TERM "$mpid" 2>/dev/null
-  if [ -n "${2:-}" ]; then sleep 0.5; kill -"$2" "$mpid" 2>/dev/null; n=45; fi
-  i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt "$n" ]; do i=$((i + 1)); sleep 0.1; done
-  t1="$(now_s)"
-  if kill -0 "$mpid" 2>/dev/null; then _fail "$1: the main shell exits within 5 s of TERM"; kill -9 "$mpid" 2>/dev/null
-  else _pass "$1: the main shell exits within 5 s of TERM ($(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }') s)"; fi
-  wait "$mpid" 2>/dev/null; mrc=$?
-  check "$mrc" "143" "$1: and exits with status 143"
-  check "$(lock_busy)" "0" "$1: and its repository's lock is free"
-  spid="$(cat "$GLD/pid-test__proj" 2>/dev/null)"
-  if [ -z "$spid" ]; then _fail "$1: the hung forge call is dead once the main shell is gone (it never started)"
-  elif kill -0 "$spid" 2>/dev/null; then _fail "$1: the hung forge call is dead once the main shell is gone"; kill -9 "$spid" 2>/dev/null
-  else _pass "$1: the hung forge call is dead once the main shell is gone"; fi
-}
-abort_case "TERM to the main shell"
-abort_case "TERM, then HUP during the grace" HUP
-
-# The grace between TERM and KILL has to fit inside launchd's ExitTimeOut (20 s).
-kg="$(sed -n 's/^KILL_GRACE=\([0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p' "$PHASE")"
-check "$([ -n "$kg" ] && [ "$kg" -le 5 ] && echo ok || echo "bad (${kg:-none})")" "ok" "the TERM-to-KILL grace is at most 5 s (${kg:-none})"
-
-# A job killed in the middle of a cache write leaves the previous table, byte for byte, and the
-# next run sweeps the temporary file: the write is a rename, so there is no half-written table.
+# Cache writes are atomic: a replaced file is a new file, made beside its target with a fixed prefix,
+# and no temporary one is left behind. Bug caught: a write straight onto the target, which a run
+# killed mid-write leaves half written and which a reader can fall into.
 job_reset
 run refresh --force
-cp "$T/cache/test%2Fproj.tsv" "$T/tsv.before"
+ino1="$(stat -f %i "$CACHE/test%2Fproj.tsv")"; pino1="$(stat -f %i "$CACHE/test%2Fproj.mr10.pipeline")"
+run refresh --force
+ino2="$(stat -f %i "$CACHE/test%2Fproj.tsv")"; pino2="$(stat -f %i "$CACHE/test%2Fproj.mr10.pipeline")"
+[ "$ino1" != "$ino2" ] && _pass "a forced lookup replaces the table file (inode $ino1 -> $ino2)" \
+  || _fail "a forced lookup replaces the table file (inode $ino1 -> $ino2)"
+[ "$pino1" != "$pino2" ] && _pass "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)" \
+  || _fail "a forced lookup replaces the pipeline file (inode $pino1 -> $pino2)"
+check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "0" "no temporary file is left in the cache directory"
+check "$(grep -c . "$CACHE/test%2Fproj.tsv")" "7" "the replaced table is whole"
+: > "$MVLOG"; job_reset
+run refresh --force
+for _f in tsv mr10.pipeline; do
+  check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.$_f\$" "$MVLOG")" "1" \
+    "the GitLab .$_f is renamed into place from a +tmp.XXXXXX file in the cache directory"
+done
+# The stamp is written before the table's lookup and before each pipeline's: five times here.
+check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
+  "the GitLab .lookup is renamed into place from a +tmp.XXXXXX file in the cache directory"
+: > "$MVLOG"; rm -rf "$CACHE"
+ghrun refresh --force
+check "$(gh_calls)" "2" "PRECONDITION: the gh stub saw both calls"
+check "$(grep -c -- '-fd9-open$' "$CALLS")" "0" "no gh call inherits the run lock (fd 9)"
+for _f in tsv lookup; do
+  check "$(grep -cE "^mv -f $CACHE/[+]tmp\.[A-Za-z0-9]{6} $CACHE/github@test%2Fproj3\.$_f\$" "$MVLOG")" "1" \
+    "the GitHub .$_f is renamed into place from a +tmp.XXXXXX file in the cache directory"
+done
+
+# The outer backstop. The logging mv is not under a call bound, so a mv that hangs on the lookup stamp
+# (written before any forge call) is ended by timeout's KILL at the run deadline: exit 137 at 2 s with
+# the lock free and the previous table byte for byte. Bug caught: no outer KILL, so the run hangs on
+# whatever is not a forge or herdr call.
+job_reset
+run refresh --force
+cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
+printf 'test%%2Fproj.lookup' > "$T/mvhang"
+t0="$(now_s)"; MVHANG="$T/mvhang" DEADLINE=2 run refresh --force --workspace w4; t1="$(now_s)"
+check "$(within "$(secs "$t0" "$t1")" 3.5)" "yes" "a run held up by a hung mv ended at its 2 s deadline ($(secs "$t0" "$t1") s)"
+check "$RC" "137" "a run held up by a hung mv exits 137"
+check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was"
+check "$(lock_busy)" "0" "no lock outlives the killed run"
+
+# A write cut in the middle. The mv that hangs is the table's: once the stub has logged it, TERM to the
+# run ends the run (143) in the middle of that write. The previous table is left byte for byte, with the
+# write's temporary file. Bug caught: a half-written table that later reads as a valid, shorter one.
+job_reset
+run refresh --force
+cp "$CACHE/test%2Fproj.tsv" "$T/tsv.before"
 printf '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false}]\n' > "$GLD/open-test__proj.json"
 printf 'test%%2Fproj.tsv' > "$T/mvhang"
-MVHANG="$T/mvhang" DEADLINE=2 run refresh --force
-check "$RC" "0" "a refresh killed inside a cache write exits 0"
-check "$(printf '%s\n' "$OUT" | grep -c 'test%2Fproj: killed at the run deadline')" "1" "the job killed inside the write is named on stderr"
-check "$(cmp -s "$T/cache/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the killed write"
-check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -Ec '^test%2Fproj\.tsv\.[A-Za-z0-9]{6}$')" "1" "the killed write left its temporary file in the staging directory"
-run refresh --force
-check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "the next run sweeps the temporary file"
-check "$(grep -c . "$T/cache/test%2Fproj.tsv")" "3" "and replaces the table with the new answer (1 open row, 2 merged)"
-check "$(lock_busy)" "0" "no lock outlives the killed write"
+: > "$MVLOG"
+MVHANG="$T/mvhang" bg_phase refresh --force --workspace w4; mpid=$BGPID
+i=0; while ! grep -q '^mv .*test%2Fproj\.tsv$' "$MVLOG" && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done
+grep -q '^mv .*test%2Fproj\.tsv$' "$MVLOG" && _pass "the table's write started" || _fail "the table's write started"
+kill -TERM "$mpid" 2>/dev/null
+wait "$mpid" 2>/dev/null; mrc=$?
+check "$mrc" "143" "a run ended inside a cache write exits 143"
+check "$(cmp -s "$CACHE/test%2Fproj.tsv" "$T/tsv.before" && echo same || echo changed)" "same" "the table is byte for byte what it was before the cut write"
+check "$(ls -A "$CACHE" | grep -c '^[+]tmp\.')" "1" "the cut write left its one temporary file"
+i=0; while [ "$(lock_busy)" != 0 ] && [ "$i" -lt 10 ]; do i=$((i + 1)); sleep 0.1; done
+check "$(lock_busy)" "0" "no lock outlives the cut write"
+
+# The worker sweeps the temporary files of runs killed mid-write: those older than a minute, and
+# nothing else (a younger one may be a live run's, and the name must start with +tmp.). Bug caught: a
+# pattern that matches other files, a cache key's among them, or no sweep at all.
+job_reset; mkdir -p "$CACHE"
+: > "$CACHE/+tmp.old"; : > "$CACHE/+tmp.new"; : > "$CACHE/x.tmp.y"
+# A GitLab slug may start with ".tmp." (a repository named .tmp.x/y), and its cache files are named
+# after it: the sweep's prefix is one no cache key can start with, so these old files stay.
+for _k in tsv lookup mr5.pipeline; do : > "$CACHE/.tmp.x%2Fy.$_k"; done
+touch -t "$(date -v-5M +%Y%m%d%H%M.%S)" "$CACHE/+tmp.old" "$CACHE/x.tmp.y" "$CACHE"/.tmp.x%2Fy.*
+run refresh --force --workspace w4
+check "$(ls -A "$CACHE" | grep -c '^\.tmp\.x%2Fy\.')" "3" "old cache files of a repository whose key starts with .tmp. are not swept"
+[ ! -e "$CACHE/+tmp.old" ] && _pass "a temporary file aged 5 minutes is swept" || _fail "a temporary file aged 5 minutes is swept"
+[ -e "$CACHE/+tmp.new" ] && _pass "a temporary file made just now is left" || _fail "a temporary file made just now is left"
+[ -e "$CACHE/x.tmp.y" ] && _pass "an old file whose name does not start with +tmp. is left" || _fail "an old file whose name does not start with +tmp. is left"
+
+# The worker is this script run again by $0, and the script has done `cd /` by then: a relative $0 is
+# refused with a message and no herdr call, while --help by a relative path still works. Bug caught: a
+# run that starts timeout on a path that no longer exists and so badges nothing, silently.
+job_reset
+PHASE_SAVE="$PHASE"; PHASE="dot_config/herdr/executable_phase.sh"
+RUNDIR="$ROOT" run refresh --force
+check "$RC" "2" "a run by a relative path exits 2"
+check "$(printf '%s\n' "$OUT" | grep -c '^phase.sh: run phase.sh by its absolute path$')" "1" "and says why on stderr"
+check "$(herdr_calls)" "0" "and makes no herdr call"
+RUNDIR="$ROOT" run --help
+check "$RC" "0" "--help by a relative path still works"
+PHASE="$PHASE_SAVE"
+
+# The script needs /usr/bin/timeout (and /usr/bin/lockf): without it a run ends with a message and
+# no work. Bug caught: a missing tool that lets the run start with no deadline.
+sed 's|/usr/bin/timeout|/nonexistent/timeout|g' "$PHASE" > "$T/phase-notimeout.sh"; chmod 755 "$T/phase-notimeout.sh"
+job_reset
+PHASE_SAVE="$PHASE"; PHASE="$T/phase-notimeout.sh"; run refresh --force; PHASE="$PHASE_SAVE"
+check "$RC" "2" "a script without /usr/bin/timeout exits 2"
+check "$(printf '%s\n' "$OUT" | grep -c .)" "1" "and says why in one line"
+check "$(herdr_calls)" "0" "and makes no herdr call"
+# The same for /usr/bin/jq, which parses every forge answer and the workspace list: without it a run
+# would find no space and badge nothing, silently. Bug caught: a missing jq that lets the run start.
+sed 's|/usr/bin/jq|/nonexistent/jq|g' "$PHASE" > "$T/phase-nojq.sh"; chmod 755 "$T/phase-nojq.sh"
+job_reset
+PHASE_SAVE="$PHASE"; PHASE="$T/phase-nojq.sh"; run refresh --force; PHASE="$PHASE_SAVE"
+check "$RC" "2" "a script without /usr/bin/jq exits 2"
+check "$(printf '%s\n' "$OUT" | grep -c .)" "1" "and says why in one line"
+check "$(herdr_calls)" "0" "and makes no herdr call"
+
+# The supervision is timeout's and the kernel's: none of it is written in the script. Comments are not
+# code, so only the lines that run are read.
+_code="$(grep -v '^[[:space:]]*#' "$PHASE")"
+for _p in 'set -m' 'trap ' 'command herdr' 'kill ' 'python'; do
+  case "$_code" in *"$_p"*) _fail "the script has no '$_p'";; *) _pass "the script has no '$_p'";; esac
+done
+# A herdr call outside `bounded "$RUN_END"` has no bound of its own, and in an orphaned job it would hold
+# the run lock until herdr answered. herdr_unbounded prints the code lines where `herdr` is a command
+# word that does not sit directly after that prefix (names such as herdr-phase and paths are not), and
+# fails when the script has no bounded herdr call at all. Bug caught: a herdr call, with or without
+# --session, that bypasses the bound.
+herdr_unbounded() { # herdr_unbounded <script> -> unbounded lines on stdout; 1 when there is no bounded call
+  local code rest
+  code="$(grep -v '^[[:space:]]*#' "$1")"
+  printf '%s\n' "$code" | grep -q -E 'bounded "\$RUN_END" herdr([[:space:]]|$)' || return 1
+  rest="$(printf '%s\n' "$code" | sed -E 's/bounded "\$RUN_END" herdr([[:space:]]|$)/\1/g')"
+  printf '%s\n' "$rest" | grep -E '(^|[[:space:];&|(])herdr([[:space:]]|$)' || true
+}
+_unbounded="$(herdr_unbounded "$PHASE")"; _hrc=$?
+[ "$_hrc" = 0 ] && [ -z "$_unbounded" ] && _pass "every herdr call runs under bounded" || _fail "every herdr call runs under bounded (rc $_hrc, unbounded: $_unbounded)"
 
 glab_stub
-rm -rf "$T/cache" "$GLD" "$T/held"
+rm -rf "$CACHE" "$GLD" "$T/held" "$T/release"
 
 echo
 echo "O. a focus refresh looks the space up fresh, at most once per FRESH_GAP"
 # `refresh --fresh` looks a repository up whatever the TTL, unless a lookup of it started less than
-# 10 s ago: every forge lookup writes the stamp <key>.lookup first, under the repository's lock, and
+# 10 s ago: every forge lookup writes the stamp <key>.lookup first, under the run lock, and
 # inside the gap a --fresh answers from the cache as a failed lookup would. --force ignores the
 # stamp, the TTL path does not read it.
 glab_stub
 rm -f "$PIPEFAIL" "$GHDIR/mode"
-STAMP="$T/cache/test%2Fproj.lookup"
+STAMP="$T/cache/herdr-phase/test%2Fproj.lookup"
 age_stamp() { touch -t "$(date -v-"$1"S +%Y%m%d%H%M.%S)" "$STAMP"; } # age_stamp <seconds>
 mr_calls() { grep -c -E '^(glab mr list|gh pr list)' "$CALLS"; }
 calls_of() { echo "$(glab_calls) $(glab_api_calls)"; } # "<mr list calls> <api calls>"
-rm -rf "$T/cache"; set_pipe 10 success
+rm -rf "$T/cache/herdr-phase"; set_pipe 10 success
 run refresh --workspace w4
 check "$(calls_of)" "2 1" "PRECONDITION: a cold refresh looks the repository up (2 mr list, 1 api)"
 [ -e "$STAMP" ] && _pass "a lookup writes the repository's stamp" || _fail "a lookup writes the repository's stamp"
@@ -1625,7 +1738,7 @@ run refresh --force --workspace w4
 check "$(calls_of)" "2 1" "--force right after a lookup makes its calls"
 run refresh --fresh --workspace w4
 check "$(calls_of)" "0 0" "--fresh right after --force makes no call"
-TTL=0 run refresh --workspace w4
+expire; run refresh --workspace w4
 check "$(calls_of)" "2 1" "a default refresh with an expired cache looks up inside the gap"
 run refresh --workspace w4
 check "$(calls_of)" "0 0" "a default refresh keeps the TTL rule inside the TTL"
@@ -1653,7 +1766,7 @@ case "$(report_for w4)" in *"--token review=$ICON_MR !10 "*) _pass "and the cach
   *) _fail "and the cached badge still stands (got: $(report_for w4))";; esac
 
 # The pipeline cache keeps its age limit under --fresh, inside the gap (no lookup) and after a failed one.
-aged_pipe() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$T/cache/test%2Fproj.mr10.pipeline"; }
+aged_pipe() { touch -t "$(date -v-"$1"M +%Y%m%d%H%M.%S)" "$T/cache/herdr-phase/test%2Fproj.mr10.pipeline"; }
 : > "$STAMP"
 aged_pipe 29; run refresh --fresh --workspace w4
 check "$(calls_of)" "0 0" "a gated --fresh makes no call"
@@ -1669,7 +1782,7 @@ ci_check w4 none "a failed --fresh lookup clears the pipeline tokens at 31 minut
 
 # A focus right after a failed lookup, with no cache at all: no PR state is invented and no second
 # call is made inside the gap; after the gap, one.
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 run refresh --fresh --workspace w4
 check "$(calls_of)" "1 0" "glab failing, nothing cached: a --fresh makes one call"
 case "$(report_for w4)" in *"--token review"*) _fail "no PR state is invented from nothing (got: $(report_for w4))";; *) _pass "no PR state is invented from nothing";; esac
@@ -1681,7 +1794,7 @@ run refresh --fresh --workspace w4
 check "$(calls_of)" "1 0" "after the gap, one call"
 
 # A cold cache with a fresh stamp (a lookup that just failed elsewhere): no PR state and no call.
-glab_stub; rm -rf "$T/cache"; mkdir -p "$T/cache"; : > "$STAMP"
+glab_stub; rm -rf "$T/cache/herdr-phase"; mkdir -p "$T/cache/herdr-phase"; : > "$STAMP"
 run refresh --fresh --workspace w4
 check "$(calls_of)" "0 0" "a cold cache with a fresh stamp makes no call"
 case "$(report_for w4)" in *"--token review"*) _fail "a cold cache with a fresh stamp has no PR state (got: $(report_for w4))";; *) _pass "a cold cache with a fresh stamp has no PR state";; esac
@@ -1689,31 +1802,31 @@ check "$RC" "0" "and the refresh exits 0"
 
 # A GitHub space: two calls, then none inside the gap, and the stamp is its own repository's.
 cp "$GH_OPEN.orig" "$GH_OPEN"; cp "$GH_MERGED.orig" "$GH_MERGED"
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 ghrun refresh --fresh --workspace wG1
 check "$(gh_calls)" "2" "a GitHub --fresh with no stamp makes two gh calls"
 phase_check wG1 review "$ICON_MR #21" "and reports the PR"
 ghrun refresh --fresh --workspace wG1
 check "$(gh_calls)" "0" "a GitHub --fresh again at once makes no gh call"
 phase_check wG1 review "$ICON_MR #21" "and the report is unchanged"
-[ -e "$T/cache/github@test%2Fproj3.lookup" ] && _pass "a GitHub lookup writes github@<key>.lookup" || _fail "a GitHub lookup writes github@<key>.lookup"
+[ -e "$T/cache/herdr-phase/github@test%2Fproj3.lookup" ] && _pass "a GitHub lookup writes github@<key>.lookup" || _fail "a GitHub lookup writes github@<key>.lookup"
 
 # The stamp is replaced atomically, never touched in place (Ruling 12): a rename onto it of a
-# temporary file in the repository's staging directory, so its inode changes, and none is left behind.
+# temporary file in the cache directory, so its inode changes, and none is left behind.
 job_reset
 : > "$MVLOG"
 run refresh --force
-ino1="$(stat -f %i "$T/cache/test%2Fproj.lookup")"
-check "$(grep -cE "^mv -f $T/cache/\.tmp/test%2Fproj/test%2Fproj\.lookup\.[A-Za-z0-9]{6} $T/cache/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
-  "the stamp is renamed into place from a temporary file in the repository's staging directory"
+ino1="$(stat -f %i "$T/cache/herdr-phase/test%2Fproj.lookup")"
+check "$(grep -cE "^mv -f $T/cache/herdr-phase/[+]tmp\.[A-Za-z0-9]{6} $T/cache/herdr-phase/test%2Fproj\.lookup\$" "$MVLOG" | awk '$1 >= 1 {print "yes"}')" "yes" \
+  "the stamp is renamed into place from a +tmp.XXXXXX file in the cache directory"
 run refresh --force
-ino2="$(stat -f %i "$T/cache/test%2Fproj.lookup")"
+ino2="$(stat -f %i "$T/cache/herdr-phase/test%2Fproj.lookup")"
 [ "$ino1" != "$ino2" ] && _pass "a lookup replaces the stamp file (inode $ino1 -> $ino2)" \
   || _fail "a lookup replaces the stamp file (inode $ino1 -> $ino2)"
-check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "no temporary stamp file is left in the staging directory"
-mkdir -p "$T/cache/.tmp/test%2Fproj"; : > "$T/cache/.tmp/test%2Fproj/test%2Fproj.lookup.ABCDEF"
+check "$(ls -A "$T/cache/herdr-phase" | grep -c '^[+]tmp\.')" "0" "no temporary stamp file is left in the cache directory"
+: > "$T/cache/herdr-phase/+tmp.ABCDEF"; touch -t "$(date -v-5M +%Y%m%d%H%M.%S)" "$T/cache/herdr-phase/+tmp.ABCDEF"
 run refresh --force
-check "$(ls "$T/cache/.tmp/test%2Fproj" | grep -c .)" "0" "a refresh sweeps its repository's stray temporary stamp"
+check "$(ls -A "$T/cache/herdr-phase" | grep -c '^[+]tmp\.')" "0" "a refresh sweeps a stray temporary stamp"
 
 # A stamp whose mtime is in the future (the clock stepped back) is not evidence of a recent lookup:
 # trusted, it would hold --fresh off the forge until the clock caught up.
@@ -1723,17 +1836,17 @@ check "$(calls_of)" "2 1" "--fresh looks up when the stamp's mtime is in the fut
 run refresh --fresh --workspace w4
 check "$(calls_of)" "0 0" "and the lookup's own stamp holds the next one off"
 
-# Two --fresh refreshes of one repository at once: the lock serialises them, the second waits, sees
+# Two --fresh refreshes of one repository at once: the run lock serialises them, the second waits, sees
 # the stamp the first wrote and answers from its cache. One lookup's worth of calls is made. Only
 # glab_job_stub sleeps (1 s per mr list call, from $GLD/sleep-<repo>), so A's lookup holds the lock
 # long enough for B to be waiting on it.
 glab_job_stub
-job_reset; mkdir -p "$T/cache"; : > "$STAMP"; age_stamp 15
+job_reset; mkdir -p "$T/cache/herdr-phase"; : > "$STAMP"; age_stamp 15
 echo 1 > "$GLD/sleep-test__proj"
 rm -f "$T/conc-a.rc" "$T/conc-b.rc"; : > "$CALLS"
 conc_start() { # conc_start <tag> -> CONCPID: a --fresh refresh of w4 in the background; its status goes to conc-<tag>.rc
-  ( PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" HERDR_PHASE_CACHE_DIR="$T/cache" HERDR_PHASE_TTL=120 \
-      HERDR_PHASE_LOCK_WAIT=30 /bin/bash "$PHASE" refresh --fresh --workspace w4 >"$T/conc-$1.out" 2>&1
+  ( PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" XDG_CACHE_HOME="$T/cache" \
+      /bin/bash "$PHASE" refresh --fresh --workspace w4 >"$T/conc-$1.out" 2>&1
     echo $? > "$T/conc-$1.rc" ) &
   CONCPID=$!
 }
@@ -1748,7 +1861,7 @@ check "$(grep -c -E "^herdr workspace report-metadata w4 .*--token review=$ICON_
 check "$(lock_busy)" "0" "no lock outlives the concurrent refreshes"
 rm -rf "$GLD" "$T/held" "$T/conc-"*
 glab_stub
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 
 echo
 echo "I. the wiring that makes the badges appear and persist"
@@ -1825,7 +1938,7 @@ else
     _fail "the refresh interval is between 30 and 60 seconds (got '${ival:-none}')"
   fi
   # The agent must run at normal scheduling priority. ProcessType=Background puts every one of
-  # the ~100 forks a refresh makes — git, python3, glab, herdr — in the lowest band, and
+  # the ~100 forks a refresh makes — git, jq, glab, herdr — in the lowest band, and
   # LowPriorityIO throttles them further. Measured 2026-09-11 on the live session, same script,
   # same arguments: 13 s at normal priority, and under `taskpolicy -b` still unfinished after
   # 4 minutes; a real `launchctl kickstart` of the agent took ~6 minutes. launchd never overlaps
@@ -1842,8 +1955,9 @@ else
     && _fail "the agent does not ask for low-priority I/O" \
     || _pass "the agent does not ask for low-priority I/O"
   # launchd ends a job's whole process group when its main process exits, unless told to abandon
-  # it. That covers only the main shell's own group: phase.sh's repository jobs sit in groups of
-  # their own, which it ends itself (at the run deadline, and from its TERM, HUP and INT trap).
+  # it. phase.sh's run is timeout and its worker's shells, in one group (each glab, gh and herdr call
+  # has a group of its own), so that group kill is the backstop for a TERM that timeout forwards to
+  # a descendant which ignores it.
   grep -q '<key>AbandonProcessGroup</key>' "$PLIST" \
     && _fail "the agent does not abandon its process group" \
     || _pass "the agent does not abandon its process group"
@@ -1866,7 +1980,7 @@ echo "J. a repository's own configuration runs nothing"
 # fires, from core.hooksPath and from a git 2.54+ config hook (hook.<name>.event); and, from the
 # rev-list over a dangling remote-tracking ref, a promisor remote's uploadpack. Each is a marker
 # script that touches a file. Reproduced 2026-10-18 on git 2.54 and 2.56.
-rm -rf "$T/cache"
+rm -rf "$T/cache/herdr-phase"
 glab_stub
 
 # mkmarkers <name> -> $T/<name>/{repo,wt1,wt2,marks}. wt1 (feature/merged) is clean apart from the
@@ -1938,7 +2052,7 @@ launchd_run() { # launchd_run [VAR=value ...]
   OUT=$(env -i HOME="$T" PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
         PINNED_PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
         WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
-        HERDR_PHASE_CACHE_DIR="$T/cache" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        XDG_CACHE_HOME="$T/cache" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         "$@" /bin/bash "$PHASE" refresh 2>&1); RC=$?
 }
 launchd_run
@@ -1973,7 +2087,7 @@ echo "C. the pinned PATH"
 HOSTILE="$T/hostile"; HM="$T/hostile-marks"; mkdir -p "$HOSTILE" "$HM"
 printf '#!/bin/sh\necho "${0##*/}" >> "%s/marker"\nexit 0\n' "$HM" > "$HOSTILE/.marker"
 chmod 755 "$HOSTILE/.marker"
-for _t in git herdr bash zsh python3 jq glab gh awk cut tr sort stat date mktemp mv lockf; do ln -s .marker "$HOSTILE/$_t"; done
+for _t in git herdr bash zsh jq glab gh awk cut tr sort stat date mktemp mv lockf timeout find; do ln -s .marker "$HOSTILE/$_t"; done
 marked() { if [ -e "$HM/marker" ]; then tr '\n' ' ' < "$HM/marker"; else printf clean; fi; }
 cp "$PHASE" "$T/phase-pinned.sh"; chmod 755 "$T/phase-pinned.sh"
 
@@ -1987,13 +2101,13 @@ OUT=$(env -i HOME="$T" PATH="$HOSTILE:/usr/bin:/bin" "$T/phase-pinned.sh" --help
 check "$RC" "0" "--help runs with a hostile PATH and no PINNED_PATH"
 check "$(marked)" "clean" "a hostile PATH runs none of the hostile tools, bash included"
 
-# A whole refresh, through the status, the MR lookup, herdr and both Python calls, with the
+# A whole refresh, through the status, the MR lookup, herdr and the jq parses, with the
 # hostile directory first on the caller's PATH and the suite's stubs behind PINNED_PATH.
 rm -f "$M"/* "$HM/marker"; : > "$CALLS"
 OUT=$(env -i HOME="$T" PATH="$HOSTILE:$BIN:/usr/bin:/bin" \
       PINNED_PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
       WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
-      HERDR_PHASE_CACHE_DIR="$T/cache-hostile" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      XDG_CACHE_HOME="$T/cache-hostile" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
       "$T/phase-pinned.sh" refresh 2>&1); RC=$?
 check "$RC" "0" "refresh exits 0 with a hostile directory first on the caller's PATH"
 case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the refresh still derived and reported a phase";;
@@ -2004,30 +2118,38 @@ check "$(marked)" "clean" "a refresh runs none of the hostile tools"
 rm -f "$HM/marker"; : > "$CALLS"
 OUT=$(env -i HOME="$T" PATH="$HOSTILE:$BIN:/usr/bin:/bin" \
       PINNED_PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
-      WSJSON="$T/ws-gh.json" HERDR_PHASE_CACHE_DIR="$T/cache-hostile-gh" \
+      WSJSON="$T/ws-gh.json" XDG_CACHE_HOME="$T/cache-hostile-gh" \
       GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
       "$T/phase-pinned.sh" refresh 2>&1); RC=$?
 check "$RC" "0" "a GitHub refresh exits 0 with a hostile directory first on the caller's PATH"
 phase_check wG1 review "$ICON_MR #21" "the GitHub refresh still reached the pinned gh and reported a phase"
 check "$(marked)" "clean" "a GitHub refresh runs none of the hostile tools, gh included"
 
-# The two Python calls run isolated: the current directory (a repository) is not on sys.path.
-# The fixture must bite first, or "no import" proves nothing.
-PYH="$T/pyhostile"; mkdir -p "$PYH"
-printf 'open("%s/imported", "a").close()\n' "$HM" > "$PYH/json.py"
-rm -f "$HM/imported"
-( cd "$PYH" && /usr/bin/python3 -c 'import json' >/dev/null 2>&1 )
-[ -e "$HM/imported" ] && _pass "fixture: a bare python3 imports a json.py from the current directory" \
-  || _fail "fixture: a bare python3 imports a json.py from the current directory"
-rm -f "$HM/imported" "$HM/marker"; rm -rf "$T/cache-hostile"; : > "$CALLS"
-( cd "$PYH" && env -i HOME="$T" PATH="$BIN:/usr/bin:/bin" PINNED_PATH="$BIN:/usr/bin:/bin" CALLS="$CALLS" \
-    WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
-    HERDR_PHASE_CACHE_DIR="$T/cache-hostile" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    "$T/phase-pinned.sh" refresh >/dev/null 2>&1 )
-[ -e "$HM/imported" ] && _fail "a module in the current directory is not imported" \
-  || _pass "a module in the current directory is not imported"
-case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the isolated Python calls still produce the report";;
-  *) _fail "the isolated Python calls still produce the report (got: $(report_for w20))";; esac
+# jq reads ~/.jq at start, and a sandboxed command can write it: a `def fromjson: error(...)` there
+# would replace the builtin every parse calls. The script runs jq with HOME=/var/empty, so the file is
+# never read. The fixture must bite first, or "still badged" proves nothing. Bug caught: a jq run with
+# the caller's HOME, which fails every parse (the MR and PR badges vanish) or runs whatever the file
+# defines.
+JH="$T/jqhome"; mkdir -p "$JH"
+printf 'def fromjson: error("hijacked");\n' > "$JH/.jq"
+[ "$(HOME="$JH" /usr/bin/jq -n '"1" | fromjson' 2>/dev/null || echo hijacked)" = "hijacked" ] \
+  && _pass "fixture: a bare jq loads ~/.jq, and its fromjson fails" \
+  || _fail "fixture: a bare jq loads ~/.jq, and its fromjson fails"
+rm -rf "$T/cache-jq" "$T/cache-jq-gh"; : > "$CALLS"
+OUT=$(env -i HOME="$JH" PATH="$BIN:/usr/bin:/bin" PINNED_PATH="$BIN:/usr/bin:/bin" CALLS="$CALLS" \
+      WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
+      XDG_CACHE_HOME="$T/cache-jq" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      "$T/phase-pinned.sh" refresh 2>&1); RC=$?
+check "$RC" "0" "a GitLab refresh exits 0 with a ~/.jq that hijacks fromjson"
+case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the GitLab MR badge is still reported beside a hostile ~/.jq";;
+  *) _fail "the GitLab MR badge is still reported beside a hostile ~/.jq (got: $(report_for w20); $OUT)";; esac
+: > "$CALLS"
+OUT=$(env -i HOME="$JH" PATH="$BIN:/usr/bin:/bin" PINNED_PATH="$BIN:/usr/bin:/bin" CALLS="$CALLS" \
+      WSJSON="$T/ws-gh.json" XDG_CACHE_HOME="$T/cache-jq-gh" \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      "$T/phase-pinned.sh" refresh 2>&1); RC=$?
+check "$RC" "0" "a GitHub refresh exits 0 with a ~/.jq that hijacks fromjson"
+phase_check wG1 review "$ICON_MR #21" "the GitHub PR badge is still reported beside a hostile ~/.jq"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
