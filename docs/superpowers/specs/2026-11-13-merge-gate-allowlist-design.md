@@ -82,41 +82,48 @@ branch it is a sync; on any other branch it is a merge into a non-default branch
 a receipt, and the answer does not depend on the current branch. So the gate can decide it in a
 compound, where it cannot know the branch.
 
-A `git merge` is a **sync** when all of this holds:
+A `git merge` is a **sync** when all of this holds (rules 1 to 3 were tightened during
+execution, §10):
 
-1. **It starts a simple command.** The word before `git` is an operator (`&&`, `||`, `;`, `|`,
-   a newline), or nothing, or the `&&` of the one leading `cd <literal path> &&`. So an
-   assignment (`GIT_DIR=x git merge …`), a wrapper, `sudo`, a keyword (`then git merge …`) and a
-   mention (`echo git merge …`) are not syncs.
-2. **Its global options are the plain form's:** `-C <literal path>` and the flags in
-   `GIT_FLAGS`. `-c`, `--git-dir`, `--work-tree` and the rest are not syncs.
-3. **It names one ref, spelled `origin/<name>` or `refs/remotes/origin/<name>`.** The merge's
-   own options are read as today (`MERGE_VALUE`); an unknown option that takes a value leaves two
-   positional words, which is no sync. `@{u}`, `FETCH_HEAD` and `HEAD`-relative names depend on
-   the branch or on the last fetch, so in a compound they are not syncs. As a plain command
-   they are judged as today.
-4. **The directory is known.** It is the hook's working directory, moved by the leading `cd`
-   and by the command's own `-C` paths. If the word `cd`, `chdir`, `pushd` or `popd` stands
-   anywhere else before the merge, the directory is unknown, and only a merge whose first `-C`
-   path is absolute can be a sync.
+1. **It is a simple command of its own, written in plain characters.** The command is split at
+   its unquoted `;`, `&`, `|` and newlines, redirections dropped. The merge's own part may hold
+   only letters, digits, `_`, `.`, `/`, `=`, `-` and blanks: no quote, backslash, parenthesis,
+   `$`, glob character, brace or `~`. Its words are then exactly what any shell passes to git.
+   Its first word is `git`. So an assignment (`GIT_DIR=x git merge …`), a wrapper, `sudo`, a
+   keyword (`then git merge …`), a subshell and a mention (`echo git merge …`) are not syncs.
+2. **Its global options are the plain form's:** `-C <path>` and the flags in `GIT_FLAGS`. `-c`,
+   `--git-dir`, `--work-tree` and the rest are not syncs.
+3. **It names one ref, spelled `origin/<name>` or `refs/remotes/origin/<name>`, and carries
+   only listed flags:** `--ff-only`, `--ff`, `--no-ff`, `--no-edit`, `--no-commit`, `-q`,
+   `--quiet`, `--stat`, `--no-stat`, `-n`, `--autostash`, `--no-autostash`, `-v`, `--verbose`,
+   each as an exact word. No option that takes a value is listed: git accepts a unique prefix
+   of a long option (`--mess` is `--message`), so the gate cannot tell an unknown option's value
+   from the ref. `@{u}`, `FETCH_HEAD` and `HEAD`-relative names depend on the branch or on the
+   last fetch, so in a compound they are not syncs. As a plain command they are judged as today.
+4. **The directory is known.** It is the hook's working directory, moved by one leading
+   `cd <path> &&` in plain characters and by the command's own `-C` paths. If the word `cd`,
+   `chdir`, `pushd` or `popd` stands anywhere else before the merge, the directory is unknown,
+   and only a merge whose first `-C` path is absolute can be a sync.
 5. **The ref resolves to origin's default branch of that repository:**
    `git rev-parse --symbolic-full-name <ref>` prints `refs/remotes/origin/<default>`, with
    `<default>` from the ledger's `default_branch`, as the plain form checks today. A local
    branch named `origin/main` makes the name resolve elsewhere, so it is no sync.
 
-**The decision.** After reading the command, the gate drops every sync from its list of gated
-verbs. Then:
+**The decision.** After reading the command, the gate replaces every sync with a no-op and reads
+what is left as it does today. Then:
 - no gated verb left: the command is allowed, whatever else it holds;
 - otherwise: as today. One plain gated verb is judged; anything else is denied as a compound.
 
 So `git fetch -q origin && git switch -q main && git merge --ff-only origin/main && git branch -d
-feature` passes, and `git merge --ff-only origin/main && git merge feature` is denied.
+feature` passes, and `git merge --ff-only origin/main && git merge feature` is denied. A sync
+with a message (`-m "…"`), a quoted ref or a `~` path is denied as a compound, as before this
+change; the agent runs it as a plain command.
 
-**Why a compound adds no hole.** The plain sync is allowed today, and a command before it in
-another Bash call can already do anything a command before it in the same call can. What a
-compound adds is that the gate reads the directory and the ref before the earlier commands run.
-Rule 4 covers the directory. For the ref, a fetch from origin moves `origin/<default>` to a newer
-commit that is equally on origin's default branch.
+**What a compound adds.** The plain sync is allowed today. In a compound the gate reads the
+directory and the ref before the earlier commands run. Rule 4 covers a plain change of
+directory, and a fetch from origin moves `origin/<default>` to a newer commit that is equally on
+origin's default branch. An earlier command that deliberately changes either is an accepted
+limit (§6).
 
 ### 4.2 Writes to an MR/PR sub-resource are not gated
 
@@ -225,9 +232,11 @@ None added or removed.
 New with this change:
 - A command earlier in the same compound that deliberately changes what `origin/<default>`
   names or where git runs: `git update-ref refs/remotes/origin/main …`, a fetch with a refspec
-  into that ref, `git remote set-url origin …` before a fetch, `export GIT_DIR=…`, a function or
-  a sourced script that changes directory. Each already works today as one call before a plain
-  sync, and none reaches origin without the push guard's ask.
+  into that ref, `git remote set-url origin …` before a fetch, a local branch created under the
+  name `origin/main`, `export GIT_DIR=…`, an `eval` or a sourced script that changes directory,
+  a shell function named `git`. Most already work today as one call before a plain sync; the
+  ones that need the same shell (`eval`, a function, the shadowing branch) are new with the
+  compound. None reaches origin without the push guard's ask.
 - A comment, a thread or a pipeline start on any project the agent's token reaches, through the
   API. The CLI verbs already allow the same.
 - A sub-resource a forge later gives a landing meaning under one of the names in §4.2.
@@ -267,6 +276,10 @@ exact decision. Not heavy; inferred growth about 5 s.
 | S6 | in a repository whose default branch is `develop`, `git fetch && git merge origin/main` on `develop` is denied | the default read per repository |
 | S7 | with a local branch named `origin/main`, the chain is denied | a ref that resolves elsewhere |
 | S8 | `echo "$(git merge origin/main)"` and `sh -c 'git merge origin/main'` are denied | nothing hidden passes |
+| S10 | `git merge origin/main -m ';' feature`, the same with `\;`, `'|'`, `'&&'`, `')'` and a process substitution, and `git merge origin/main(N) feature` are denied | a quoted operator or a glob qualifier hiding a second ref |
+| S11 | in a chain, `--mess origin/main`, `--into origin/main`, `-m msg origin/main`, `-qn`, `--` and `-s ours` are denied | an option that takes the ref as its value |
+| S12 | in a chain, a quoted ref, a glob, a brace list, `=git`, a `~` path and a subshell are denied | a word the shell rewrites |
+| S13 | a sync with a redirection, beside segments that hold quotes and quoted operators, is allowed | the plain-character rule reaching past the merge's own part |
 | O7 rewritten | a note, a discussion reply, a resolve (PUT) and a pipeline start are allowed, plain and piped; so are gh's review comment, reply and comment edit | §4.2 |
 | R0 | a pipeline start inside `$( )` and inside `sh -c '…'` is allowed; `sh -c 'glab api -X PUT …/7/merge'` and an endpoint `projects/$P/merge_requests/7/notes` are denied | the exemption holding where it stands, and only for literal words |
 | R1 | `…/7/merge` (still judged), `…/7/rebase`, `…/7/approve`, `pulls/9/reviews`, `pulls/9/update-branch` are denied | the table growing by accident |
@@ -308,6 +321,10 @@ reported to him):**
 - Quick actions that need no SHA are an accepted limit (§6).
 - A GraphQL call naming `mergeRequestDiffHeadSha` is denied (§4.4): a hole in the deployed gate,
   older than this line, fixed here.
+- §4.1's rules 1 to 3 are tightened: a sync is read from plain characters only, with a list of
+  exact flags. The second task's review found that the first form read the command from words
+  that had lost their quoting, so `git merge origin/main -m ';' feature` passed as a sync while
+  git merged `feature`.
 
 - **D1, a merge of another ref into a non-default branch, in a compound** (the third part of
   item 23's second class; 4 denials).
