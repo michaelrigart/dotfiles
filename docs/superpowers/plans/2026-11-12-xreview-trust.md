@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented (branch `fix/xreview-trust`; no MR, a dotfiles line)
+
+> **Completed 2026-11-13.** Executed on `fix/xreview-trust`; do not run it again. Its banners and execution notes bind that run only.
 
 **Goal:** `xreview collect` prints a bounded rendering of the reviewer's answer instead of relaying
 it, and the last plain landing shapes (Azure PRs, `glab stack`, `gh agent-task create`) are gated

@@ -1,6 +1,6 @@
 # xreview trust: bound the reviewer's answer, gate the last landing shapes
 
-**Status:** In progress
+**Status:** Implemented (branch `fix/xreview-trust`; no MR, a dotfiles line)
 **Date:** 2026-11-12
 **Sign-off:** Michael, 2026-11-12, with every recommendation in §11. Codex spec review: approve in
 round 2 (`xr-1794517286-16a621e6`; round 1 `xr-1794517148-bd35c4a7`, four P2 findings, all fixed).
