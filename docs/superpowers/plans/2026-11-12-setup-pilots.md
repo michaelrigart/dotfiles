@@ -358,6 +358,29 @@ Running total, 13 reviews: Sonnet raised 14 of Opus's 32 findings (Critical 2 of
 3 of 6, Minor 9 of 21); same verdict on 9 of 13; Opus 230 tool calls and 2,241 s, Sonnet 246
 and 1,687 s.
 
+**Reviews 14 and 15: Task 8.**
+
+| # | Review | Opus verdict | Sonnet verdict | Opus findings (C/I/M) | Sonnet raised | Opus tools, time | Sonnet tools, time |
+|---|---|---|---|---|---|---|---|
+| 14 | Task 8 (`b2a51fc`) | needs fixes | approved with minor fixes | 1/1/4 | 3 | 32, 326 s | 14, 195 s |
+| 15 | Task 8 fix round 1 (`24a2249`) | passed | passed | 0/0/0 | 0 | 8, 91 s | 12, 151 s |
+
+- Review 14, Critical (pre-existing, outside the task's diff, verified by Opus against the
+  guard): `glab api --placeholder seg=merge_requests` hides a merge from the gate. Sonnet
+  **missed** it.
+- Review 14, Important: the line-782 comment claims a check of the `api` options on the new
+  CLI versions. Sonnet raised it as an unverified claim; Opus read the help output and showed
+  the claim false (`--placeholder` is missing), which is what led to the Critical.
+- Review 14, Minor: Sonnet raised the incomplete "sandboxed is fine" header and the
+  `installed:` line without the extension version. It missed the possible hidden hang, and it
+  stated that the pins are here-documents where Opus found assignments.
+- Review 14, Sonnet only, two Minor, not hand-checked: a missing extension gets the generic
+  "listed no commands" message; the AGENTS.md paragraph does not name the extension.
+
+Running total, 15 reviews: Sonnet raised 17 of Opus's 38 findings (Critical 2 of 6, Important
+4 of 7, Minor 11 of 25); same verdict on 10 of 15; Opus 270 tool calls and 2,658 s, Sonnet 272
+and 2,033 s.
+
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
 
