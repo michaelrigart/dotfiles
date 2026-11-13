@@ -318,6 +318,27 @@ Sonnet-only findings in reviews 4 to 9, hand-checked where a static read settles
 
 None of the checked ones changes an allow or a deny.
 
+**Reviews 10 and 11: the round-2 re-reviews of Tasks 6 and 2.**
+
+| # | Review | Opus verdict | Sonnet verdict | Opus findings (C/I/M) | Sonnet raised | Opus tools, time | Sonnet tools, time |
+|---|---|---|---|---|---|---|---|
+| 10 | Task 6 fix round 2 (`427a954`) | findings open | findings open | 1/1/1 | 1 | 13, 204 s | 26, 241 s |
+| 11 | Task 2 fix round 2 (`9495a80`) | passed | passed | 0/0/1 | 1 | 13, 139 s | 18, 112 s |
+
+- Review 10, Critical: a word mixing quoted and unquoted parts with a substitution splits into
+  a completing option, through the whitespace exemption. Sonnet **missed** it and called the
+  exemption sound. The host line's loop stopped on this finding after three rounds.
+- Review 10, Important: globs led by `?` or `[` are not treated as unreadable. Sonnet raised
+  it, with an extglob form (`@(--status)`) Opus did not list; that is what keeps its verdict
+  open.
+- Review 10, Minor: the row that pins the exemption. Sonnet missed it.
+- Review 11, Minor: no row pins an empty-file skip claimed for a non-empty file. Sonnet raised
+  the same gap.
+
+Running total, 11 reviews: Sonnet raised 13 of Opus's 29 findings (Critical 2 of 5, Important
+2 of 5, Minor 9 of 19); same verdict on 7 of 11; Opus 202 tool calls and 2,090 s, Sonnet 216
+and 1,549 s.
+
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
 
