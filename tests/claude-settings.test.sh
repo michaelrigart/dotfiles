@@ -71,6 +71,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(~/.local/share/tagteam/rescue/**)","Edit(~/.local/share/tagteam/rescue/**)",
  "Read(~/.local/share/tagteam/displaced/**)","Edit(~/.local/share/tagteam/displaced/**)",
  "Read(~/.local/share/tagteam/sessions/*/.credentials.json)","Edit(~/.local/share/tagteam/sessions/*/.credentials.json)",
+ "Edit(~/.config/forge-protection/**)","Edit(~/.config/git/hooks/**)",
  "Bash(tagteam *export*)",
  "Bash(gh gist create*)","Bash(gh gist edit*)","Bash(gh repo create*)","Bash(glab repo create*)",
  "Bash(glab snippet create*)","Bash(gh api *gists*)","Bash(glab api *snippets*)",
@@ -256,6 +257,12 @@ for p in '**/secrets.*.yml' '**/.env.production*' '**/*.key' '**/*.pem' \
          '~/.aws/credentials' '~/.config/op/config'; do
   jq_is ".permissions.deny | (index(\"Read($p)\") != null) and (index(\"Edit($p)\") != null)" \
         true "Read+Edit both denied for $p"
+done
+
+echo "B2. layer 1 — the owner's forge protection exceptions and the deployed global hook are not agent-editable"
+for p in '~/.config/forge-protection/**' '~/.config/git/hooks/**'; do
+  jq_is ".permissions.deny | index(\"Edit($p)\") != null" true "Edit denied for $p (a deny, so no prompt can let it through)"
+  jq_is ".permissions.ask | index(\"Edit($p)\") == null" true "no Edit() ask rule for $p"
 done
 
 echo "C. layer 1 — no Write()/Glob() rules (2.1.210 warns on these)"
