@@ -545,9 +545,10 @@ G() { git -C "$R" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@";
 commit() { G add -A && G commit -q -m "$1"; }
 rr() { fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run.sh" "$@" 2>&1; }
 row() { printf '%s\t%s\t%s\t%s' "$1" sh '' "$2"; }
+# The tab-less comment line is the real map's shape: a comment read as a row is malformed.
 write_map() { # write_map [extra row]...: the fixture map, then the rows given
   mkdir -p "$R/.scripts/test-audit"
-  { printf '# file\tlang\town_suite\tloaded_by\n\n'
+  { printf '# Subject map\n# file\tlang\town_suite\tloaded_by\n\n'
     row lib/a.sh heavya; echo; row lib/b.sh heavyb; echo; row "lib/has space.sh" heavya; echo; row "$NAIVE" heavyb; echo
     [ $# -eq 0 ] || printf '%s\n' "$@"
   } > "$R/$MAP"
@@ -603,8 +604,15 @@ out="$(rr --changed)"
 ran "a changed subject selects its heavy suite and names it" yes 'ok +heavya .*\[needs: heavy; changed: lib/a.sh\]' "$out"
 ran "the other heavy suite stays skipped" yes 'skip +heavyb +needs: heavy \(no subject changed since [0-9a-f]+\)' "$out"
 ran "--changed does not lift another gate" yes 'skip +gatedlive2 +needs: a live herdr$' "$out"
+# Bug caught: the repository root taken from the current directory, so a run started inside
+# another repository (here a copy where nothing changed) reads that repository's diff.
+cp -R "$T/repo.tpl" "$T/other"
+out="$(cd "$T/other/lib" && rr --changed)"
+ran "started inside another repository the runner reads its own" yes 'ok +heavya .*changed: lib/a.sh\]' "$out"
+rm -rf "$T/other"
 
-# Bug caught: any commit selecting every heavy suite; an unrelated file counted as a subject.
+# Bug caught: any commit selecting every heavy suite; an unrelated file counted as a subject; a
+# comment or blank line of the map read as a malformed row.
 reset_repo; echo hi > "$R/README"; commit "readme"
 out="$(rr --changed)"
 neither "an unrelated change selects no heavy suite" "$out"
@@ -683,6 +691,24 @@ both "a missing map selects every heavy suite" 'subject map missing' "$out"
 reset_repo; printf 'lib/x.sh\tsh\theavya\n' >> "$R/$MAP"; commit "bad row"
 out="$(rr --changed)"
 both "a malformed row selects every heavy suite" 'subject map malformed' "$out"
+# Bug caught: whitespace or an empty name in a row taken as part of a name that never matches,
+# so the suite the row names is skipped unseen. One shape per row; each case rewrites the whole
+# working-tree map, so no shape outlives its case. A space inside a file name stays valid ("a
+# name with a space selects" above).
+malformed() { # malformed <label> <row>
+  write_map "$2"
+  out="$(rr --changed)"
+  both "$1" 'subject map malformed' "$out"
+}
+reset_repo
+malformed "a file name with a leading space is malformed"      " $(row lib/x.sh heavya)"
+malformed "a file name with a trailing space is malformed"     "$(row 'lib/x.sh ' heavya)"
+malformed "another field with a trailing space is malformed"   "$(printf 'lib/x.sh\tsh \t\theavya')"
+malformed "whitespace inside loaded_by is malformed"           "$(row lib/x.sh 'heavya, heavyb')"
+malformed "an empty name inside loaded_by is malformed"        "$(row lib/x.sh heavya,,heavyb)"
+malformed "a leading comma in loaded_by is malformed"          "$(row lib/x.sh ,heavya)"
+malformed "a trailing comma in loaded_by is malformed"         "$(row lib/x.sh heavya,)"
+malformed "a CR inside a row is malformed"                     "$(row "lib/x"$'\r'".sh" heavya)"
 reset_repo; printf 'lib/x.sh\tsh\theavya\n' >> "$R/$MAP"; on_main "bad row on main"
 write_map; commit "row fixed on the branch"
 out="$(rr --changed)"
@@ -704,15 +730,32 @@ write_map; echo hi > "$R/README"; commit "map and readme on the branch"
 out="$(rr --changed)"
 neither "a base without a map reads only the working tree" "$out"
 ran "and gives no fail-safe reason" no 'needs: heavy;' "$out"
-# Bug caught: a git command's failure read as "nothing changed".
+# Bug caught: a git command's failure read as "nothing changed", or a merge-base failure other
+# than its "no merge base" (exit 1) read as that. The stub first on PATH logs every argument to
+# STUB_LOG and fails, with STUB_RC, the call carrying the argument STUB_FAIL. The stubbed runs
+# only read the repository, so they share one reset.
 mkdir -p "$T/gitstub"; REAL_GIT="$(command -v git)"
-printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "$STUB_FAIL" ] && exit 1; done\nexec "$REAL_GIT" "$@"\n' > "$T/gitstub/git"
+cat > "$T/gitstub/git" <<'STUB'
+#!/bin/sh
+[ -z "${STUB_LOG:-}" ] || printf '%s\n' "$@" >> "$STUB_LOG"
+[ -z "${STUB_FAIL:-}" ] || for a in "$@"; do [ "$a" = "$STUB_FAIL" ] && exit "${STUB_RC:-1}"; done
+exec "$REAL_GIT" "$@"
+STUB
 chmod 755 "$T/gitstub/git"
-for sub in diff ls-files ls-tree; do
-  reset_repo
-  out="$(PATH="$T/gitstub:$PATH" REAL_GIT="$REAL_GIT" STUB_FAIL=$sub rr --changed)"
-  both "a failing git $sub selects every heavy suite" 'git failed' "$out"
-done
+failing() { # failing <argument> <exit status> <label>
+  out="$(PATH="$T/gitstub:$PATH" REAL_GIT="$REAL_GIT" STUB_FAIL=$1 STUB_RC=$2 rr --changed)"
+  both "$3" 'git failed' "$out"
+}
+reset_repo
+failing diff 1 "a failing git diff selects every heavy suite"
+failing ls-files 1 "a failing git ls-files selects every heavy suite"
+failing ls-tree 1 "a failing git ls-tree selects every heavy suite"
+failing --short 1 "a failing git rev-parse --short selects every heavy suite"
+failing merge-base 128 "a merge-base error other than exit 1 is git failed, not no merge base"
+# Bug caught: a base starting with "-" handed to git, which reads it as an option.
+out="$(PATH="$T/gitstub:$PATH" REAL_GIT="$REAL_GIT" STUB_LOG="$T/git.log" rr --changed=-x)"
+both "a base that starts with - selects every heavy suite" 'base -x does not resolve' "$out"
+if grep -q '^-x' "$T/git.log" 2>/dev/null; then _fail "and never reaches git" "$(tr '\n' ' ' < "$T/git.log")"; else _pass "and never reaches git"; fi
 
 # Bug caught: a suite the map does not mention being skipped as "unchanged".
 reset_repo; drop_rows 4 heavyb; commit "heavyb has no rows on the branch"
@@ -735,11 +778,9 @@ ran "--all still runs one heavy suite" yes 'ok +heavya' "$out"
 ran "and the other" yes 'ok +heavyb' "$out"
 out="$(rr --changed plainc)"
 ran "a filter that excludes the heavy suites lists none" no 'heavy' "$out"
-
-# Bug caught: the repository root taken from the current directory.
-reset_repo; edit lib/a.sh; commit "edit a"
-out="$(cd "$R/lib" && rr --changed)"
-ran "started from a subdirectory the branch diff is still read" yes 'ok +heavya' "$out"
+# Bug caught: an earlier --changed=<ref> outliving a later bare --changed, which means main.
+out="$(rr --changed=nosuchref --changed)"
+neither "a later bare --changed resets the base to main" "$out"
 
 # Bug caught: an unexpected shell error in the selection leaving "nothing changed" in force,
 # which would skip a heavy suite nobody decided about.
@@ -750,15 +791,31 @@ chmod 755 "$R/tests/run-inject.sh"
 if ! grep -q '^  : \$((08))$' "$R/tests/run-inject.sh"; then _fail "the injected expansion error is in the copy" "sed did not inject"; fi
 out="$(fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run-inject.sh" --changed 2>&1)"
 both "an expansion error while selecting runs every heavy suite" 'git failed' "$out"
-# Bug caught: the same error in the per-suite decision ending in a green report that skipped a
-# heavy suite (bash abandons the whole loop, so the run must end non-zero without a verdict).
+# Bug caught: the same error in the per-suite decision abandoning both suite loops at the first
+# heavy suite, so the suites sorted before it ran and the run ended green with the heavy suites
+# dropped. aplain sorts before them.
 sed '/^changed_subjects() {$/a\
   : $((08))' "$RUN" > "$R/tests/run-inject.sh"
 if ! grep -q '^  : \$((08))$' "$R/tests/run-inject.sh"; then _fail "the injected expansion error is in the copy" "sed did not inject"; fi
+printf '#!/usr/bin/env bash\necho "  ok  aplain ran"\n' > "$R/tests/aplain.test.sh"
+chmod 755 "$R/tests/aplain.test.sh"
 out="$(fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run-inject.sh" --changed 2>&1)"; rc=$?
-if [ "$rc" != 0 ]; then _pass "an expansion error in the per-suite decision fails the run"; else _fail "an expansion error in the per-suite decision fails the run" "exit $rc: $out"; fi
+if [ "$rc" = 2 ]; then _pass "an expansion error in the per-suite decision exits 2"; else _fail "an expansion error in the per-suite decision exits 2" "exit $rc: $out"; fi
 ran "and prints no passing verdict" no 'suites passed' "$out"
-rm -f "$R/tests/run-inject.sh"
+ran "and says the selection failed" yes '^run.sh: selecting the suites failed; running none$' "$out"
+# Bug caught: a selection that stopped partway still running the suites it had picked (a heavy
+# one takes minutes) for a run that cannot pass.
+ran "and starts none of the suites it picked" no 'ok +aplain' "$out"
+# Bug caught: an error in the report loop after the first suite was counted ending in a green
+# verdict on the suites before it. Run without --changed: the guard is not tied to it.
+sed '/^  suites=\$((suites + 1))$/a\
+  [ "$suites" -lt 2 ] || : $((08))' "$RUN" > "$R/tests/run-inject.sh"
+if ! grep -qF '|| : $((08))' "$R/tests/run-inject.sh"; then _fail "the injected expansion error is in the copy" "sed did not inject"; fi
+out="$(fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run-inject.sh" 2>&1)"; rc=$?
+if [ "$rc" = 2 ]; then _pass "an expansion error in the report exits 2"; else _fail "an expansion error in the report exits 2" "exit $rc: $out"; fi
+ran "and gives no passing verdict" no 'suites passed' "$out"
+ran "and says the report stopped" yes '^run.sh: the report stopped partway; no verdict$' "$out"
+rm -f "$R/tests/run-inject.sh" "$R/tests/aplain.test.sh"
 unset HOLDER_DONE
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

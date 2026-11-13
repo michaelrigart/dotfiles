@@ -74,7 +74,7 @@ filters=()
 for a in "$@"; do
   case "$a" in
     --all) all=1 ;;
-    --changed) changed=1 ;;
+    --changed) changed=1 base=main ;;
     --changed=?*) changed=1 base=${a#--changed=} ;;
     --run-one) one=1 ;; # internal: the xargs driver runs a single suite, named by the filter
     -h|--help) sed -n '2,/^set /p' "$self" | sed '$d; s/^#\{0,1\} \{0,1\}//'; exit 0 ;;
@@ -194,10 +194,15 @@ show_inconclusive() {
     { keep = 0 }' | sed 's/^/          /'
 }
 
-# map_check <file>: 0 when every row has four tab-separated fields (comment and empty lines
-# are skipped), 1 when one has not, 2 when awk cannot read the file.
+# map_check <file>: 0 when every row has four tab-separated fields, none with whitespace at
+# either end, no CR, and a loaded_by of comma-separated names with no whitespace and no empty
+# name (comment and empty lines are skipped); 1 when one has not, 2 when awk cannot read the
+# file. Whitespace would otherwise become part of a name that never matches.
 map_check() {
-  awk -F'\t' '/^#/ || $0 == "" { next } NF != 4 { bad = 1 } END { exit bad }' "$1"
+  awk -F'\t' '/^#/ || $0 == "" { next }
+    NF != 4 || /\r/ || $4 ~ /[[:space:]]|^,|,,|,$/ { bad = 1; next }
+    { for (i = 1; i <= 4; i++) if ($i ~ /^[[:space:]]|[[:space:]]$/) bad = 1 }
+    END { exit bad }' "$1"
 }
 
 # map_rows <suite> <file>: the files of the rows whose loaded_by lists the suite, one per line.
@@ -246,7 +251,7 @@ compute_selection() {
 
 # changed_subjects <suite> sets why; returns 0 to run the heavy suite, 2 to skip it.
 changed_subjects() {
-  local subjects i c
+  local subjects i c hits
   if [ -n "$sel_reason" ]; then why=$sel_reason; return 0; fi
   subjects=$(map_rows "$1" "$map_wt")
   if [ -z "$subjects" ]; then why="no subject-map row"; return 0; fi
@@ -319,22 +324,27 @@ fi
 
 sel_reason="git failed" # the safe state; compute_selection clears it only when it ran to the end
 [ "$changed" -eq 0 ] || compute_selection
-parallel=() serial=()
-for f in ./*.test.sh; do
+# A shell error in a loop (an expansion error, say) abandons the whole top-level command, not
+# just the loop, and the script goes on with what it had. Each suite loop is therefore a group
+# whose last command records that it ran to the end: a selection that stopped partway runs no
+# suite, and a report that stopped partway gives no verdict.
+parallel=() serial=() dispatch_done=0
+{ for f in ./*.test.sh; do
   select_suite "$f" || continue
   if grep -qE '^# test-serial([[:space:]]|$)' "$f" || { [ -n "$req" ] && [ "$req" != heavy ]; }; then
     serial+=("$name")
   else
     parallel+=("$name")
   fi
-done
+done; dispatch_done=1; }
+[ "$dispatch_done" = 1 ] || { echo "run.sh: selecting the suites failed; running none" >&2; exit 2; }
 [ ${#parallel[@]} -gt 0 ] && printf '%s\0' "${parallel[@]}" | xargs -0 -n1 -P "$jobs" "$self" --run-one
 [ ${#serial[@]} -gt 0 ] && printf '%s\0' "${serial[@]}" | xargs -0 -n1 -P 1 "$self" --run-one
 
-suites=0 green=0 red=0 broken=0 skipped=0
+suites=0 green=0 red=0 broken=0 skipped=0 report_done=0
 declare -a problems=()
 
-for f in ./*.test.sh; do
+{ for f in ./*.test.sh; do
   select_suite "$f"
   case $? in
     1) continue ;;
@@ -412,7 +422,8 @@ for f in ./*.test.sh; do
     fi
     red=$((red + p))
   fi
-done
+done; report_done=1; }
+[ "$report_done" = 1 ] || { echo "run.sh: the report stopped partway; no verdict" >&2; exit 2; }
 
 echo
 printf '%s suites run' "$suites"
