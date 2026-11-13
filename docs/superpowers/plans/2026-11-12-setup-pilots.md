@@ -381,6 +381,40 @@ Running total, 15 reviews: Sonnet raised 17 of Opus's 38 findings (Critical 2 of
 4 of 7, Minor 11 of 25); same verdict on 10 of 15; Opus 270 tool calls and 2,658 s, Sonnet 272
 and 2,033 s.
 
+**Reviews 16 and 17: Task 9 (added to the host plan during the run) and Task 4.** The host
+controller changed its brief here: the reviewer reads one commit by SHA from git. Each shadow
+got a scratch repository holding that commit and its ancestors only, so later fix commits
+were not readable.
+
+| # | Review | Opus verdict | Sonnet verdict | Opus findings (C/I/M) | Sonnet raised | Opus tools, time | Sonnet tools, time |
+|---|---|---|---|---|---|---|---|
+| 16 | Task 9 (`2dcb342`) | changes | changes | 0/1/3 | 2 | 17, 162 s | 15, 122 s |
+| 17 | Task 4 (`f43edaa`) | changes | approve | 0/1/3 | 2 | 22, 214 s | 21, 225 s |
+
+- Review 16, Important: a decoy `--method=GET` inside a field value makes a placeholder call
+  read as a read. Sonnet raised it with the same fix, ranked Minor.
+- Review 16, Minor: Sonnet raised the single commit where the plan asked for two; it missed
+  the AZ-A4c row name and the missing G1 rows.
+- Review 16, Sonnet only, Important: the shell fast path has no trigger word for a
+  placeholder, so `projects/:id/:a:b` with `a=mer`, `b=ge_requests` never reaches the helper.
+  Hand-checked on the guard files of `f43edaa`: that payload is allowed silently, the unsplit
+  form is denied. Not verified: that glab expands `:a:b` as two placeholders. Sent to the host
+  line to rule on; Opus did not list it.
+- Review 16, Sonnet only, Minor, not hand-checked: SKILL.md wording, comment damage, a
+  redundant ask pattern in `git-forge-guard.sh`.
+- Review 17, Important: no row for render's exit-4 arm through collect. Sonnet raised it.
+- Review 17, Minor: W3 passes on the old code (Sonnet raised it, ranked Important); F3 and
+  SL8 never assert the exit-4 detail and the `turns/` comment misleads (Sonnet missed both).
+  Sonnet approved with two Important findings open, so its verdict differs.
+- Review 17, Sonnet only, Minor, not hand-checked: merged sliced answers over the render
+  bounds can never finish, SL1's narrowed "waits on nothing" check, no gitleaks guard in the
+  suite, an unlocked `.merged` read.
+
+Running total, 17 reviews, at least one per task of the nine: Sonnet raised 21 of Opus's 46
+findings (Critical 2 of 6, Important 6 of 9, Minor 13 of 31); same verdict on 11 of 17; Opus
+309 tool calls and 3,034 s, Sonnet 308 and 2,380 s. The comparison against the host line's
+final review and Codex's pre-merge review is still open.
+
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
 
