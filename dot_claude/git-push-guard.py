@@ -2847,7 +2847,7 @@ SCAN = os.environ.get("PUSH_GUARD_SCAN") or os.path.join(
     os.path.expanduser("~"), ".config", "git", "hooks", "secret-scan")
 
 
-def run_scan(root, remote, sources):
+def run_scan(root, remote, destination, sources):
     """secret-scan over the commits a push that would ask sends. Returns on a clean scan and
     raises Deny otherwise, with the scan's own reason: a scan that cannot run is a deny, never
     a pass. The scan gets what is left of the budget less a second, so its own timeout reason
@@ -2861,7 +2861,8 @@ def run_scan(root, remote, sources):
     if remaining <= 0:
         raise Deny(TIMED_OUT)
     cmd = [sys.executable, "-I", SCAN, "--repo", root, "--remote", remote,
-           "--budget", str(max(remaining - 1, 0.1)), "--"] + list(sources)
+           "--destination", destination, "--budget", str(max(remaining - 1, 0.1)),
+           "--"] + list(sources)
     could_not = ("Push guard: the secret scan ({}) could not run ({}), so the push is refused. "
                  "Restore it with chezmoi apply, or push by hand.")
     if not os.path.isfile(SCAN):
@@ -3071,10 +3072,10 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
         if "-n" in flags or "--dry-run" in flags:
             raise Deny(dry_run_deny(asks, args, root, session))
         if scan_sources:
-            run_scan(root, remote, scan_sources)
+            run_scan(root, remote, fetch_url, scan_sources)
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."
     if scan_sources and not hook_will_run(repo, root, flags, assigns, wrapped):
-        run_scan(root, remote, scan_sources)
+        run_scan(root, remote, fetch_url, scan_sources)
     return None
 
 

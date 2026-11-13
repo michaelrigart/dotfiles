@@ -684,6 +684,38 @@ else
   git -C "$PIOBCTL" branch -q sec backup/held
   expect_push pass "without the rewrite, fetch and push URL are equal and A's history is excluded" "$PIOBCTL" backup sec
 
+  echo "== the destination is what git sends to, not what the push is named =="
+  # origin fetches from A and normally pushes to A, so its tracking refs hold A's secret-bearing
+  # commit. A -c pushurl on the command line sends the same push by name to B; the scan drops
+  # command-line configuration, so only the hook's destination ($2) can tell that B is not A.
+  CMDURL=$(clone cmdline-pushurl)
+  git -C "$CMDURL" remote set-url origin "$REMOTES/dist-a.git"
+  git -C "$CMDURL" fetch -q origin 2>/dev/null
+  git -C "$CMDURL" branch -q sec origin/feat
+  [ "$(git -C "$CMDURL" rev-parse sec)" = "$(git -C "$SRCA" rev-parse feat)" ] \
+    || { echo "the command-line pushurl fixture is not what it claims" >&2; exit 2; }
+  expect_push pass "origin pushed by name to A, which holds the history: excluded, so it passes" "$CMDURL" origin sec
+  GOPTS=(-c "remote.origin.pushurl=$REMOTES/dist-b.git")
+  expect_push block "origin pushed by name to B through a command-line pushurl: A's history is scanned" "$CMDURL" origin sec
+  needle "and the block names the rule" "$NEEDLE_RULE"
+  GOPTS=()
+  # insteadOf on the fetch side: the remote is configured with a short form that url.<base>.insteadOf
+  # expands. The tracking refs were populated through the expanded URL, which is also the
+  # destination git hands the hook, so the ordinary push still excludes the remote's history.
+  INSTEAD=$(clone instead-of)
+  git -C "$INSTEAD" config "url.$REMOTES/.insteadOf" "short:"
+  git -C "$INSTEAD" remote set-url origin short:dist-a.git
+  [ "$(git -C "$INSTEAD" remote get-url origin)" = "$REMOTES/dist-a.git" ] \
+    || { echo "the insteadOf fixture is not what it claims" >&2; exit 2; }
+  git -C "$INSTEAD" fetch -q origin 2>/dev/null
+  git -C "$INSTEAD" branch -q sec origin/feat
+  expect_push pass "a remote written in an insteadOf short form still excludes its own history" "$INSTEAD" origin sec
+  # Without a destination the scan attributes nothing, however the push is named.
+  rc=0; out=$(/usr/bin/python3 -I "$HOOKS/secret-scan" --repo "$CMDURL" --remote origin -- sec 2>&1) || rc=$?
+  if [ "$rc" -eq 1 ]; then ok "secret-scan without --destination scans the whole history"; else bad "secret-scan without --destination scans the whole history (rc $rc: $out)"; fi
+  rc=0; out=$(/usr/bin/python3 -I "$HOOKS/secret-scan" --repo "$CMDURL" --remote origin --destination "$REMOTES/dist-a.git" -- sec 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then ok "and with --destination A the history A holds is excluded"; else bad "and with --destination A the history A holds is excluded (rc $rc: $out)"; fi
+
   echo "== the repository's own hook =="
   OWN=$(clone own-hook); OWNLOG="$TMP/own.log"
   mkdir -p "$OWN/.git/hooks"

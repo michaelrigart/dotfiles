@@ -34,14 +34,14 @@ if [ "${#shas[@]}" -gt 0 ]; then
     exit 1
   fi
   # $1 is the remote's name, or the URL as typed; $2 is where git sends (a pushurl, or a
-  # pushInsteadOf rewrite of the URL). A URL git did not rewrite says what the destination holds
-  # through the remotes that fetch from it; a rewritten URL is scanned in full, under the address
-  # git really uses. A name counts only when its fetch and push URL are the same (the scan checks).
-  dest="${1:-}"
-  if [ "$dest" != "${2:-}" ] && ! git remote 2>/dev/null | grep -Fxq -- "$dest"; then
-    dest="${2:-} (rewritten from $dest)"
+  # pushInsteadOf rewrite of the URL). The scan attributes history to the remotes that fetch from
+  # exactly $2 and to nothing else, so it gets $2 as --destination; the shown form only names the
+  # push in its reasons.
+  shown="${1:-}"
+  if [ "$shown" != "${2:-}" ] && ! git remote 2>/dev/null | grep -Fxq -- "$shown"; then
+    shown="${2:-} (rewritten from $shown)"
   fi
-  /usr/bin/python3 -I "$scan" --repo "$root" --remote "$dest" -- "${shas[@]}" || exit 1
+  /usr/bin/python3 -I "$scan" --repo "$root" --remote "$shown" --destination "${2:-}" -- "${shas[@]}" || exit 1
 fi
 
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
