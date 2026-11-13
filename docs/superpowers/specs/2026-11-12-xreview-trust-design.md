@@ -4,6 +4,9 @@
 **Date:** 2026-11-12
 **Sign-off:** Michael, 2026-11-12, with every recommendation in §11. Codex spec review: approve in
 round 2 (`xr-1794517286-16a621e6`; round 1 `xr-1794517148-bd35c4a7`, four P2 findings, all fixed).
+**Amended:** Michael, 2026-11-13, during execution (§11, "Amended during execution"): the Azure
+update check leaves the gate for a deny rule (§5.1, §5.2), a writing `glab api --placeholder` is
+denied (§5.6), and the prompt on a gated verb's `--help` is an accepted limit (§7).
 **Branch:** `fix/xreview-trust`, in the `wt` checkout `~/.local/share/chezmoi-fix-xreview-trust`, from
 `main` at `b77ff57`
 **Related:** `2026-10-02-xreview-receipt-binding-design.md` (P1-A, implemented; its §8 "spec-level
@@ -164,7 +167,8 @@ How agents use az today:
 - **The apply window protects less than the note says.** It covers only Edit, Write and
   NotebookEdit, it fails open, and any Bash write passes it (security locks 2, item 6).
 - **The guards fail closed** (security locks §1).
-- **The CLI drift has happened, but has opened no flag gap.**
+- **The CLI drift has happened, but has opened no flag gap on the create and merge verbs.** It did
+  open one on `glab api`, found during execution (§5.6).
   - The allowlists' comments say glab 1.120 and gh 2.102.
   - The installed glab 1.130.0 and gh 2.103.3 add no flag that the gated verbs' allowlists miss
     (each verb's `--help` was compared) and no verb in `glab mr` or `gh pr` (cobra's `__complete`
@@ -311,7 +315,7 @@ suite's pinned sentence (`tests/xreview-skill.test.sh:468`) moves with them.
 **The guard freeze.** The guards have been frozen since security locks §9 (2026-11-01). A guard
 may change only for a rule a deny rule cannot express:
 - a receipt check (§5.1);
-- telling an option from a word inside a description (§5.1, the Azure update);
+- an option that changes what a gated path names (§5.6);
 - a condition on the current branch (§5.3).
 
 Everything else goes to `permissions.deny` (§5.2).
@@ -384,27 +388,29 @@ origin/<target>...<source>`.
 **Fallback.** The CRUDE fallbacks (`xreview-guard.sh:84`, `xreview-guard.py:1999`) add `az`
 together with `repos` and `pr`.
 
-**Update.** `az repos pr update` is read with the same option rule, and denied when it carries
-`--auto-complete`, `--bypass-policy`, `--bypass-policy-reason` or `--status` as an option: each
-completes the PR or changes its state, which is Michael's to do in the web UI. Every other update
-passes with no receipt check, so the real `az repos pr update --id <n> --description …` (§3.3) is
-untouched. This is in the gate, not in `permissions.deny`, because a deny pattern such as
-`Bash(az repos pr *--auto-complete*)` also matches a description that only mentions the option.
-The fast path adds `update` only together with `az`.
+**Update.** `az repos pr update` is not read by the gate. It is denied whole by a rule (§5.2), and
+agents hand Michael the command. The check first built here read the update's options and denied
+the completing ones (`--auto-complete`, `--bypass-policy`, `--bypass-policy-reason`, `--status`).
+Its review did not converge: in three rounds, rounds 2 and 3 mostly found shell spellings that put
+such an option past the previous round's fix, the last being
+`--title "a b"$(printf ' --status=completed')`. Judging which shell words reach az is the open
+class, so the check was removed (amended 2026-11-13).
 
-**Size.** About 140 lines, reusing `check`, `remote_head`, `one` and `current_source`.
+**Size.** Measured: about 230 lines in `xreview-guard.py` for creation, against an estimate of 140.
+It reuses `check`, `remote_head`, `one` and `current_source`.
 
 ### 5.2 Never-rules go to `permissions.deny`
 
-Two silent denies go beside the publishing verbs (`modify_private_settings.json:171-178`):
+Three silent denies go beside the publishing verbs (`modify_private_settings.json:171-178`):
 
 | Rule | Why |
 |---|---|
 | `Bash(glab stack*)` | `sync` force-pushes past the push guard and opens MRs past the gate. The group is experimental ("might be unstable or removed at any time"), so all of it is denied. The transcripts on this Mac hold 0 such commands. |
 | `Bash(gh agent-task create*)` | A PR made by the forge, of the kind `gh pr revert` and `glab mr for` produce. The gate already denies those. |
+| `Bash(az repos pr update*)` | An update can complete a PR or change its state (`--status`, `--auto-complete`, `--bypass-policy`). The transcripts hold one real update, a description edit; Michael runs the next one himself. |
 
-Both are prefix patterns, the form the publishing verbs already use, and they match plain forms
-only (§7). Under D2 option B, `Bash(az repos pr create*)` and `Bash(az repos pr update*)` join them.
+All are prefix patterns, the form the publishing verbs already use, and they match plain forms
+only (§7). Under D2 option B, `Bash(az repos pr create*)` would join them.
 
 ### 5.3 A pull of another ref (D1; built only under option A)
 
@@ -456,7 +462,8 @@ measured against. The suite holds the pin, with the versions. It is not heavy (i
 - cobra's own listing: `glab __complete <group> ''` and `gh __complete <group> ''`, for the `mr` and
   `pr` verbs and, under D4, the top-level groups of both;
 - the command list of `az repos pr --help`, with `AZURE_CONFIG_DIR` set to a temporary directory
-  (the sandbox denies `~/.azure/az.sess`). Measured: this works sandboxed.
+  (the sandbox denies `~/.azure/az.sess`) and `AZURE_EXTENSION_DIR` pointing at the installed
+  extensions, which a fresh configuration directory does not hold. Measured: this works sandboxed.
 
 **Outcomes:**
 
@@ -473,6 +480,22 @@ line's suite red.
 the installed versions, §3.4), and a removed flag shows up as a deny.
 
 **Version comments.** The guard's version comments are updated to the measured versions.
+
+### 5.6 A writing `glab api` call with `--placeholder` is denied
+
+Found by the Task 8 review, in the deployed gate. glab 1.130.0's `api` takes
+`--placeholder <key>=<value>`, which fills a `:key` segment of the endpoint. The gate's option table
+(`GLAB_API_VALUE`) lacks it, and the gate reads the endpoint as written. So
+`glab api --method PUT projects/:id/:seg/7/merge --placeholder seg=merge_requests` merges an MR
+with no receipt: the path the gate sees does not name `merge_requests`.
+
+- `--placeholder` joins `GLAB_API_VALUE`, so the words after it are read in the right place.
+- A `glab api` call that carries `--placeholder`, in either spelling (`--placeholder x=y`,
+  `--placeholder=x=y`), and may write (`may_write`) is denied by name. The message says to write
+  the path out.
+- A read with `--placeholder` passes.
+- Resolving placeholders before matching was rejected: it copies glab's substitution rules into a
+  frozen guard, for an option no transcript uses.
 
 ## 6. Prompts
 
@@ -498,6 +521,11 @@ None added. Every change is either a deny (guard or rule) or an output format. g
     `glab -R x stack sync`;
   - `az rest` or `az devops invoke` to the PR API;
   - gh and glab extensions, and another agent started from a CLI (`glab duo cli`).
+  - a global option before `az`'s group names, which the update rule misses:
+    `az --debug repos pr update`.
+- A gated verb's `--help` can still prompt: the ask rule `Bash(glab mr merge*)` matches it, and an
+  ask rule cannot be narrowed by a hook. Two unattended implementers of this line waited on that
+  prompt. Agents read the flags from the guard's allowlists instead; the rule stays.
 - Rewrites of the local default branch (§5.4), and a branch whose configured upstream is not
   origin's default.
 - Push equivalents on the forge: `gh repo sync <dest> --force`, ref updates through REST or
@@ -548,15 +576,16 @@ Tests are table-driven, with one row per rule class, and each row names the bug 
 | `xreview-guard` (about +5 s) | A1: an approved az creation in the observed form is allowed | The gate refusing the reviewed flow |
 | | A2: an unapproved creation is denied, and the message gives the dispatch | The hole itself |
 | | A3: no `--target-branch` is denied | An implicit destination |
-| | A4: `--auto-complete` or `--bypass-policy` is denied on create; on update those and `--status` are denied, and an update whose description only mentions them is allowed | Completion at creation or by update; a false deny on prose |
+| | A4: `--auto-complete` or `--bypass-policy` is denied on create; an `az repos pr update` is not a gated verb | Completion at creation; update logic left in the gate |
 | | A5: another project, or only some of the three, is denied | Proposing elsewhere, against the wrong ledger |
 | | A6: an unknown flag is denied by name | The allowlist class |
 | | A7: none named, with origin not on Azure or its push URL not equal to its fetch URL, is denied | Detection landing elsewhere |
 | | A8: `az --debug repos pr create` is denied | The order class |
 | | A9: quoted mentions, and words like "lazy" or "azure" beside `create`, are allowed | Fast-path false denies |
+| | G1: a writing `glab api` call with `--placeholder`, in both spellings, is denied; the same call as a GET is allowed | A placeholder spelling a gated path |
 | | P1 (D1 option A only): on the default branch, `git pull origin feature` and `git pull . feature` are denied with the redirect | The merge-class gap |
 | | P2 (D1 option A only): `git pull`, `--rebase` and `origin <default>` on it are allowed, alone and in a pipe or chain, and so is `git pull origin feature` elsewhere | False denies on syncs |
-| `claude-settings` (0 s) | `EXP_DENY` gains the two rules, as an exact list | A rule lost |
+| `claude-settings` (0 s) | `EXP_DENY` gains the three rules, as an exact list | A rule lost |
 | `xreview-guard-cli` (new, about 4 s) | The installed surface equals the pin | Drift adding an ungated verb |
 
 `git-forge-guard` (heavy, 242 s) is unchanged: `git-forge-guard.sh` is not touched. The heavy
@@ -612,6 +641,13 @@ line, and the new code deploys only after merge and apply. No step needs `XREVIE
 **Decided at sign-off (2026-11-12):** D1 B (`pull` is an accepted limit; §5.3 and rows P1 and P2
 are not built), D2 A, D3 yes, D4 the wide scope, D5 bounded and closed. The options are kept below
 as the record.
+
+**Amended during execution (Michael, 2026-11-13):**
+- D2 becomes A for creation only. The update check is removed from the gate and
+  `Bash(az repos pr update*)` is denied by rule (§5.1, §5.2). Its review ran 3 rounds without
+  converging, and Azure repositories are going out of use.
+- A writing `glab api --placeholder` is denied by name (§5.6).
+- A prompt on a gated verb's `--help` is an accepted limit; no gate or rule changes for it (§7).
 
 - **D1, `git pull` on the default branch.**
   - A: gate the forms that pull another ref, as a redirect to `git merge` (§5.3, about 40 lines

@@ -444,6 +444,46 @@ named, and no other sentence.
 - [ ] **Step 5: Run** `./tests/run.sh xreview-guard-cli xreview-guard agent-instructions` — expected: all PASS.
 - [ ] **Step 6: Commit** (`Add a canary for the CLI commands the pre-merge gate was measured on`).
 
+### Task 9: Take the Azure update out of the gate; deny a writing `glab api --placeholder`
+
+Added 2026-11-13 by the spec's amendment (§5.1 Update, §5.2, §5.6). It supersedes Task 6's update
+check and its rulings R8, R10 and R11.
+
+**Depends on:** Tasks 6, 7 and 8.
+
+**Files:**
+- Modify: `dot_claude/xreview-guard.py`, `dot_claude/executable_xreview-guard.sh`,
+  `dot_claude/modify_private_settings.json`
+- Test: `tests/xreview-guard.test.sh`, `tests/claude-settings.test.sh`
+
+**Interfaces:**
+- `gated_verb` returns None for every `az repos pr update`, plain or reordered. `AZ_VERBS` holds
+  `create` only. `az_completing` stays for creation; `az_unreadable`, `az_update_harmless`, the
+  `az-update` kind and its arm in the judge are removed, with every comment that describes them.
+- The fast path (`xreview-guard.sh`) no longer starts the helper for `update`.
+- `GLAB_API_VALUE` gains `--placeholder` (and its short form, if `glab api --help` shows one). A
+  `glab api` call carrying it, as `--placeholder x=y` or `--placeholder=x=y`, for which `may_write`
+  holds, is denied wherever the option stands, with a reason naming `--placeholder` and telling to
+  write the path out. A read passes.
+- `Bash(az repos pr update*)` joins the two rules of Task 7, on the same line, and the comment
+  above them says an update can complete a PR.
+
+- [ ] **Step 1: Tests first.** In `tests/xreview-guard.test.sh`: remove the update rows (AZ-A4c to
+  A4j, AZ-A8d, AZ-N3 and every other row that pins the update check); add one row that
+  `az repos pr update --id 7 --status completed` is not this gate's (allow, since the rule denies
+  it) and keep one fast-path row that an update does not start the helper; add G1: the writing
+  placeholder call in both spellings and with the option before the endpoint is denied naming
+  `--placeholder`, the percent-encoded project form too, and the same call as a GET is allowed. In
+  `tests/claude-settings.test.sh`, add the rule to `EXP_DENY`. The suite must not grow: the removed
+  update rows outnumber the added ones.
+- [ ] **Step 2: Run** `./tests/run.sh xreview-guard claude-settings` — expected: the new rows FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `./tests/run.sh xreview-guard claude-settings xreview-guard-cli` — expected:
+  all PASS. Record `xreview-guard`'s time against 2:24.
+- [ ] **Step 5:** Report; the controller commits the two concerns separately
+  (`Deny az repos pr update by rule and take it out of the gate`,
+  `Deny a writing glab api call that carries --placeholder`).
+
 ---
 
 ## Finishing
