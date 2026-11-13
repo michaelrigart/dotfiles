@@ -186,7 +186,7 @@ is "B5 an environment assignment on the verb" "$(decision "$W" 'GH_REPO=o/r gh p
 is "B6 GIT_DIR on a merge" "$(decision "$W" 'GIT_DIR=/tmp/x git merge feature')" deny
 is "B7 an env wrapper" "$(decision "$W" 'env GITLAB_HOST=x glab mr merge 7')" deny
 is "B8 a subshell" "$(decision "$W" '(git merge feature)')" deny
-is "B9 a merge in a chain on a feature branch is denied too" "$(decision "$SIDE" 'git fetch origin && git merge origin/main')" deny
+is "B9 a sync of origin's main in a chain, on a feature branch, is allowed" "$(decision "$SIDE" 'git fetch origin && git merge origin/main')" allow
 is "B10 an API merge piped to jq" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/merge | jq .state')" deny
 is "B12 a leading redirection hides no verb" "$(decision "$W" '>merge.log git merge feature')" deny
 is "B13 nor does a descriptor redirection" "$(decision "$W" '2>err git merge feature')" deny
@@ -461,6 +461,71 @@ fetch_head "$W" "$FEAT\tnot-for-merge\tbranch 'feature' of x\n$(git -C "$W" rev-
 is "C33 the for-merge head is checked, not the approved first line" \
    "$(reason "$W" 'git merge FETCH_HEAD' | grep -c 'no full-range pre-merge review of this change is on record')" 1
 git -C "$W" branch -q -D zbad
+
+echo "C2. a merge of origin's default branch in a compound (rows S1-S9)"
+# It lands only what origin's default branch holds, on any branch, so it is dropped from the
+# gated verbs where it starts a simple command in a directory the gate can read. W is on main
+# and origin/main is at main; feature is not on origin.
+is "S1a a sync after a switch, piped" "$(decision "$W" 'git switch main && git merge --ff-only origin/main | tail -1')" allow
+is "S1b -C <abs> from another directory, then a read" \
+   "$(decision / "git -C $W merge -q --ff-only origin/main && git -C $W log -1")" allow
+is "S1c cd <abs> && fetch && a sync by its full name, then a status" \
+   "$(decision "$ROOT" "cd $W && git fetch -q origin && git merge refs/remotes/origin/main; git status -sb")" allow
+is "S1d a sync with its output piped, from a feature branch" "$(decision "$SIDE" 'git merge --no-edit origin/main 2>&1 | tail -3')" allow
+is "S1e two syncs" "$(decision "$W" 'git merge --ff-only origin/main && git merge --ff-only origin/main')" allow
+# S2: what only looks like a sync. feature is moved onto origin's main for the first row, and
+# published for the second; both are undone.
+FEAT_NOW="$(git -C "$W" rev-parse feature)"
+git -C "$W" branch -q -f feature main
+is "S2a a branch at origin's main commit is no sync" "$(decision "$W" 'git fetch origin && git merge feature')" deny
+git -C "$W" branch -q -f feature "$FEAT_NOW"
+publish feature
+is "S2b nor is another branch of origin" "$(decision "$W" 'git fetch && git merge origin/feature')" deny
+git -C "$ORIGIN" update-ref -d refs/heads/feature; git -C "$W" fetch -q --prune origin
+git -C "$W" branch -q --set-upstream-to=origin/main main
+is "S2c nor @{u}, which names the branch's upstream" "$(decision "$W" 'git fetch && git merge --ff-only @{u}')" deny
+git -C "$W" branch -q --unset-upstream main
+is "S2d nor FETCH_HEAD" "$(decision "$W" 'git fetch origin main && git merge FETCH_HEAD')" deny
+is "S2e nor two words after the options" "$(decision "$W" 'git fetch && git merge origin/main feature')" deny
+is "S3a a sync does not cover a merge beside it" "$(decision "$W" 'git merge --ff-only origin/main && git merge feature')" deny
+is "S3b nor a creation beside it" "$(decision "$W" 'git merge --ff-only origin/main && glab mr create --target-branch main')" deny
+is "S4a an assignment on the merge" "$(decision "$W" 'GIT_DIR=/tmp/x git merge origin/main && true')" deny
+is "S4b git -c" "$(decision "$W" 'git -c merge.ff=only merge origin/main && true')" deny
+is "S4c git --git-dir" "$(decision "$W" 'git --git-dir .git merge origin/main && true')" deny
+is "S4d sudo" "$(decision "$W" 'sudo git merge origin/main && true')" deny
+is "S4e a -C path in a variable the guard cannot expand" "$(decision "$W" "R=$W; git -C \"\$R\" merge origin/main")" deny
+is "S4f env" "$(decision "$W" 'true && env git merge origin/main')" deny
+is "S4g a keyword" "$(decision "$W" 'if true; then git merge origin/main; fi')" deny
+# S5: a directory change the gate cannot follow leaves only an absolute -C.
+is "S5a a second cd" "$(decision "$ROOT" "cd $W && cd sub && git merge origin/main")" deny
+is "S5b pushd" "$(decision "$ROOT" "pushd $SIDE; git merge origin/main")" deny
+is "S5c a cd target in a variable" "$(decision "$ROOT" 'cd "$D" && git merge origin/main')" deny
+is "S5d an absolute -C after cds" "$(decision "$ROOT" "cd /tmp && cd x; git -C $W merge --ff-only origin/main")" allow
+# S6: origin's default branch is read per repository; here it is develop.
+DEV="$ROOT/work/dev"; DEVORIGIN="$ROOT/remotes/dev.git"
+git init -q --bare "$DEVORIGIN"
+git init -q -b develop "$DEV"
+printf 'x\n' > "$DEV/x.txt"; git -C "$DEV" add x.txt && git -C "$DEV" commit -q -m init
+git -C "$DEV" branch main
+git -C "$DEV" remote add origin 'git@forge.example:acme/dev.git'
+git -C "$DEV" config "url.$DEVORIGIN.insteadOf" 'git@forge.example:acme/dev.git'
+git -C "$DEVORIGIN" fetch -q "$DEV" '+refs/heads/*:refs/heads/*'
+git -C "$DEV" fetch -q origin
+git -C "$DEV" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+is "S6a origin/main is not its default branch" "$(decision "$DEV" 'git fetch && git merge origin/main')" deny
+is "S6b origin/develop is" "$(decision "$DEV" 'git fetch && git merge origin/develop')" allow
+# S7: a local branch named origin/main makes the name resolve to it.
+git -C "$W" branch -q origin/main feature
+is "S7 a local branch named origin/main" "$(decision "$W" 'git fetch && git merge origin/main')" deny
+git -C "$W" branch -q -D origin/main
+# S8: nothing run some other way passes, nor a sync in a group whose directory it may change.
+is "S8a a substitution" "$(decision "$W" 'echo "$(git merge origin/main)"')" deny
+is "S8b a nested shell" "$(decision "$W" "sh -c 'git merge origin/main'")" deny
+is "S8c a group that changes directory" "$(decision "$W" 'true && (cd sub; git merge origin/main)')" deny
+# The ledger is read only for a compound holding a merge: a creation in a chain is denied for
+# its shape alone, whether or not the helper can load.
+is "S9 a compound without a merge never loads the ledger" \
+   "$(XREVIEW_LEDGER="$ROOT/no-such-ledger.py" reason "$W" 'true; glab mr create --target-branch main' | grep -c 'plain command of its own')" 1
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny

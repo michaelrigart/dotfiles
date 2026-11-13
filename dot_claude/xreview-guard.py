@@ -19,6 +19,9 @@
 #
 # An API write that only comments, opens or resolves a thread, starts an MR's pipeline, or
 # updates a title or description (-f/-F fields, no --input) is never gated, in any position.
+# A merge of origin's default branch (origin/<name> or refs/remotes/origin/<name>) is never
+# gated where it starts a simple command of its own, in a directory the gate can read: it
+# lands only what origin's default branch already holds. Any gated verb left beside it decides.
 #
 # glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
 # proposes a branch the forge makes itself, which no review can have seen.
@@ -676,19 +679,23 @@ def tool_name(word):
     return "az" if name.lower() == "az" else name
 
 
-def candidates(tokens):
-    """Each word naming git, glab, gh or az, with the words after it in its simple command. Any
-    word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
-    xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc, function f {) or
-    an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the command
-    is plain is parse_plain's question."""
+def candidate_spans(tokens):
+    """The (start, end) of each word naming git, glab, gh or az, with the words after it in its
+    simple command. Any word may be a command word - after a wrapper (timeout 30, caffeinate
+    -i, find -exec, xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc,
+    function f {) or an assignment (A+=1) - so the gate never tries to tell which word runs.
+    Whether the command is plain is parse_plain's question."""
     out, end = [], len(tokens)
     for k in range(len(tokens) - 1, -1, -1):
         if is_operator(tokens[k]):
             end = k
         elif tool_name(tokens[k]) in TOOLS:
-            out.append(tokens[k:end])
+            out.append((k, end))
     return out[::-1]
+
+
+def candidates(tokens):
+    return [tokens[s:e] for s, e in candidate_spans(tokens)]
 
 
 def shell_strings(tokens):
@@ -1312,10 +1319,10 @@ def fetch_heads(top):
             if line.strip() and line.split("\t")[1:2] != ["not-for-merge"]]
 
 
-def judge_git_merge(shape, ledger):
-    """git [-C <path>]... merge <ref>: gated only while the repository's current branch is its
-    default branch; the change is <ref>, landing on that branch's HEAD."""
-    args, cwd, i = shape["args"], shape["cwd"], 0
+def merge_dir(args, cwd):
+    """(directory, index of merge) of git's arguments up to merge: the plain form's -C paths,
+    each relative to the one before, and the flags in GIT_FLAGS. Any other option is Deny."""
+    i = 0
     while i < len(args) and args[i] != "merge":
         if args[i] == "-C" and i + 1 < len(args):
             if not literal(args[i + 1]):
@@ -1326,6 +1333,21 @@ def judge_git_merge(shape, ledger):
             i += 1
         else:
             raise Deny(PLAIN)
+    return cwd, i
+
+
+def names_origin_default(top, ref, dest):
+    """Does ref, as git resolves the name (origin/main, refs/remotes/origin/main, @{u}), name
+    origin's own default branch dest?"""
+    full = run(["git", "-C", top, "rev-parse", "--symbolic-full-name", ref])
+    return (full or "").strip() == "refs/remotes/origin/" + dest
+
+
+def judge_git_merge(shape, ledger):
+    """git [-C <path>]... merge <ref>: gated only while the repository's current branch is its
+    default branch; the change is <ref>, landing on that branch's HEAD."""
+    args = shape["args"]
+    cwd, i = merge_dir(args, shape["cwd"])
     top = toplevel(cwd)
     dest = ledger.default_branch(top)
     branch = ledger.current_branch(top)
@@ -1346,8 +1368,7 @@ def judge_git_merge(shape, ledger):
     # Syncing with origin's own default branch lands work that is already there. The ref must
     # name it, as git resolves the name (origin/main, refs/remotes/origin/main, @{u}): another
     # ref at the same commit is still a change of its own.
-    full = run(["git", "-C", top, "rev-parse", "--symbolic-full-name", ref])
-    if (full or "").strip() == "refs/remotes/origin/" + dest:
+    if names_origin_default(top, ref, dest):
         return
     tip = ref
     if ref == "FETCH_HEAD":
@@ -1358,6 +1379,47 @@ def judge_git_merge(shape, ledger):
         tip = heads[0]          # what git merges; FETCH_HEAD as a ref is the file's first line
     source = ref[len("origin/"):] if ref.startswith("origin/") else ref
     check(ledger, top, source, dest, "HEAD", tip, "{}...{}".format(dest, tip), None)
+
+
+ORIGIN_REF = re.compile(r"(?:refs/remotes/)?origin/.+")
+DIR_CHANGERS = {"cd", "chdir", "pushd", "popd"}
+
+
+def is_sync(tokens, start, end, cwd, ledger):
+    """Is the git merge at tokens[start:end] a merge of origin's default branch that starts a
+    simple command in a directory the gate can read? Such a merge lands only what origin's
+    default branch already holds, on any branch, so it needs no receipt and no branch lookup.
+    Never raises Deny: what the plain form would refuse is no sync."""
+    if (start and not is_operator(tokens[start - 1])) or tool_name(tokens[start]) != "git":
+        return False
+    args = tokens[start + 1:end]
+    try:
+        _, i = merge_dir(args, cwd)
+    except Deny:
+        return False
+    refs = parse_flags(args[i + 1:], MERGE_VALUE)[1]
+    if len(refs) != 1 or not literal(refs[0]) or not ORIGIN_REF.fullmatch(refs[0]):
+        return False
+    # The directory is the hook's, moved by a leading cd <literal> && as parse_plain reads it.
+    # Any other cd before the merge moves it where the gate cannot follow, and only an
+    # absolute -C names the repository then.
+    t, lead = tokens[:start], 0
+    while lead < len(t) and t[lead] == "\n":
+        lead += 1
+    before = t[lead:]
+    if len(before) >= 3 and before[0] == "cd" and before[2] == "&&" and not is_operator(before[1]):
+        target = os.path.expanduser(before[1])
+        if literal(target) and target != "-":
+            cwd, before = os.path.normpath(os.path.join(cwd, target)), before[3:]
+    if any(word in DIR_CHANGERS for word in before):
+        first = args[:i].index("-C") if "-C" in args[:i] else None
+        if first is None or not os.path.isabs(os.path.expanduser(args[first + 1])):
+            return False
+    try:
+        top = toplevel(merge_dir(args, cwd)[0])
+    except Deny:
+        return False
+    return names_origin_default(top, refs[0], ledger.default_branch(top))
 
 
 # ------------------------------------------------------------------ the forge project
@@ -2366,10 +2428,22 @@ def main():
         gated = hidden or gated_anywhere(tokens)
         if not gated:
             return
+        ledger = None
+        if not hidden:
+            # A sync is judged apart from the command around it, so it is dropped before the
+            # command is read as plain or compound. Whatever gated verb is left decides.
+            left = [(s, e, gated_verb(tokens[s:e])) for s, e in candidate_spans(tokens)]
+            left = [c for c in left if c[2]]
+            if any(verb["kind"] == "merge-local" for _, _, verb in left):
+                ledger = load_ledger()
+                left = [(s, e, verb) for s, e, verb in left
+                        if verb["kind"] != "merge-local" or not is_sync(tokens, s, e, cwd, ledger)]
+                if not left:
+                    return
         shape = None if hidden else parse_plain(tokens, cwd)
         if shape is None:
             raise Deny(PLAIN)
-        judge(shape, load_ledger())
+        judge(shape, ledger or load_ledger())
     except Deny as d:
         print(decision(str(d)))
     except Exception as e:                             # a bug here must not open the gate
