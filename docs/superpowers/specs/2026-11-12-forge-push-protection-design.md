@@ -196,11 +196,12 @@ change lands when a pull request is merged.
 - Scope: the repositories agents work in (seven by the baseline of 2026-11-13). The dormant ones
   are archived or go into his exceptions file, his choice per repository.
 - Rulesets on a private repository of a personal account need GitHub Pro; on Free they exist for
-  public repositories only. A private repository on Free reads `unreadable` in the check and
-  stays in the exceptions file, with rule 4's plain deny as its only refusal, unless Michael makes
-  it public or takes Pro. The baseline read every repository of his account, so either none is
-  private or his plan covers them (or the read works where the write would not); he confirms
-  which before the first ruleset.
+  public repositories only. A repository agents work in must reach the target: one that is
+  private on Free is made public, covered by Pro, or taken out of agent work, before merge 3. It
+  is never excepted while agents still work in it, because after the retirement a hidden push
+  with his key would meet no refusal there. A dormant private repository can be excepted like any
+  other dormant one. Michael confirms which of his repositories are private before the first
+  ruleset.
 
 ### 2.2 GitLab (28 projects)
 
@@ -460,9 +461,9 @@ follow the apply of merge 2, from the commands the new check prints.
   count);
 - `gh api repos/<owner>/<repo>/rules/branches/<default> --jq '[.[].type] | sort'` prints
   `["deletion","non_fast_forward","pull_request"]` for each GitHub repository in scope;
-- with the agent's GitHub token (a new agent session): `gh api user --jq .login` prints his
-  login, a GET of one repository's rules succeeds, and the three tests of "Revision 2" below have
-  been run once by Michael;
+- in a new agent session `gh auth status` names `GH_TOKEN` as the source of the active GitHub
+  login (so `gh` is not on his keyring login), a GET of one repository's rules succeeds, and the
+  three tests of "Revision 2" below have been run once;
 - with the agent's GitLab token, a GET of one project's protected branches succeeds (the check
   depends on it) and `glab api personal_access_tokens/self` lists no merge, approve, protect or
   project-update permission.
@@ -484,8 +485,16 @@ as waiting on him.
    the projects where he alone pushes the default branch (in place, never unprotecting).
 2. Azure DevOps: set what section 2.3 names on the repositories the check reports as drift, or
    report which he cannot edit.
-3. After the apply of merge 2, GitHub: create the fine-grained token of section 1.1; create the
-   ruleset the check prints on each repository agents work in; run the three tests once.
+3. After the apply of merge 2, GitHub, in this order:
+   1. create the scratch repository and give it the ruleset of section 2.1;
+   2. create the fine-grained token of section 1.1, with the scratch repository among its
+      repositories, and store it in 1Password;
+   3. `chezmoi apply` again (the tokens are rendered only at apply; the same holds for the GitLab
+      token of action 1) and start a new agent session; `gh auth status` there names `GH_TOKEN`;
+   4. run the three tests on the scratch repository. Any failure stops here, before a real
+      repository is touched;
+   5. create the ruleset the check prints on each repository agents work in;
+   6. delete the scratch repository.
 4. Write `~/.config/forge-protection/exceptions` with the remotes he accepts as unprotected.
 
 ## 7. Rollback
@@ -669,18 +678,19 @@ SSH pin is removed). Sections 1.2, 1.3, 2.2 to 2.4, 4.1, 4.4 and 5 stand.
 | `allowed_merge_methods` is a parameter of the `pull_request` rule | from the REST schema, not checked against a live answer: the POST of test 2's ruleset shows it |
 | Rulesets on a private personal repository need GitHub Pro | documented for Pro, and for public repositories on Free |
 
-The three tests, once (his steps give the commands). Tests 2 and 3 run on a scratch public
-repository he creates for it, gives the ruleset of section 2.1 and deletes afterwards, **before**
-any real repository gets the ruleset: a push the forge failed to refuse would otherwise stay on a
-real `main`, where the force push that removes it is refused.
+The three tests, once (his steps give the commands). All three run on a scratch public repository
+he creates for it, gives the ruleset of section 2.1 and deletes afterwards, **before** any real
+repository gets the ruleset: a merge or push the forge failed to refuse would otherwise stay on a
+real `main`, where the force push that removes it is refused. He runs them from his own terminal;
+in an agent session the local merge gate would refuse test 1 before it reached GitHub and prove
+nothing about the token.
 
-1. On the dotfiles, in a new agent session: `gh pr merge` of a throwaway pull request with the
-   agent token is refused, and so is a `git push` of a scratch branch over HTTPS with that token.
-   The pull request is closed and its branch deleted afterwards.
-2. On the scratch repository, from his own terminal: `git push origin main` with a new commit on
-   `main` is refused by the forge.
-3. On the scratch repository, from his own terminal: a pull request with that commit merges with
-   `gh pr merge <n> --merge`.
+1. With the agent token read from 1Password into `GH_TOKEN` for the one command: `gh pr merge` of
+   a pull request on the scratch repository is refused, and so is a write through the Contents
+   API (`PUT repos/<owner>/<scratch>/contents/<file>`), the permission an HTTPS push needs.
+2. With his own login: `git push origin main` with a new commit on the scratch `main` is refused
+   by the forge.
+3. With his own login: the pull request of test 1 merges with `gh pr merge <n> --merge`.
 
 If test 2 fails (the admin gets through), the boundary does not hold and the line stops before
 merge 3. If test 1 fails, the token gets fewer permissions or the line stops. If test 3 fails, the
