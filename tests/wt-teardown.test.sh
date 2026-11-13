@@ -465,10 +465,18 @@ echo
 echo "T. indeterminate is not the same as gone"
 # Y3. kill -0 fails both for a process that does not exist and for one owned by another user.
 # Only the first is proof of death. Find a real live process we cannot signal — on macOS there
-# are always root-owned ones — rather than hardcoding a pid.
+# are always root-owned ones — rather than hardcoding a pid. Sandboxed, lsof lists only the
+# processes the sandboxed command started, all of them signalable; the parent of the outermost
+# one (lsof's R field) is outside the sandbox, alive, and answers the same EPERM. Parents lsof
+# does not list go first, so a full run's many listed processes cannot crowd that one out of
+# the 60. Pids 0 and 1 are left out: the subject refuses them as pidfile content before it ever
+# probes.
 unreadable=""
-for cand in $(LC_ALL=C lsof -w -d cwd -F0p 2>/dev/null | tr '\0' '\n' \
-              | grep '^p[0-9]' | sed 's/^p//' | sort -u | head -60); do
+for cand in $(LC_ALL=C lsof -w -d cwd -F0pR 2>/dev/null | tr '\0' '\n' \
+              | awk '/^p[0-9]/ { listed[substr($0, 2)] = 1 }
+                     /^R[0-9]/ { parent[substr($0, 2)] = 1 }
+                     END { for (p in parent) if (!(p in listed) && p > 1) print p
+                           for (p in listed) if (p > 1) print p }' | head -60); do
   LC_ALL=C kill -0 "$cand" 2>/dev/null && continue
   case "$(LC_ALL=C kill -0 "$cand" 2>&1)" in
     # Wording differs by shell: bash's builtin says "Operation not permitted", zsh's says
