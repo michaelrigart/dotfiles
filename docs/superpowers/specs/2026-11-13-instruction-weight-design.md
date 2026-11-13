@@ -100,9 +100,9 @@ reading a run's result, or changing a file outside `tests/` stays in the root.
   missing-subject guard a new suite must carry and its `missing-subject` row; the two output
   idioms and `failed_keys`; `write-boundary-probe`'s seams; the `codex-config` and
   `herdr-phase` suite gotchas; the history behind the `HERDR_SESSION` rule.
-- **Dropped where the runner already prints it:** what an `INCONCLUSIVE:` or `????` row means
-  when the runner shows the line and the warm-up command itself. Each drop is listed in the
-  plan's table with the output that replaces it.
+- **Nothing in Testing is dropped** (amended at plan review): what a `????` row, an
+  `INCONCLUSIVE:` line, a cold external cache and a `KEY=VALUE` suite's result mean is read
+  from a run, so it stays in the root, as do the prerequisites for running a gated suite.
 
 The same test applies to Rules:
 
