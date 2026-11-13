@@ -900,6 +900,21 @@ first=$(printf '%s\n' "$rowlist" | head -n 1)
 case "$first" in "github.com/aaa-owner/aaa-repo") _pass "rows start with the remote that sorts first, not the first one walked" ;; *) _fail "rows start with the remote that sorts first, not the first one walked (got $first)" ;; esac
 if [ "$rowlist" = "$(printf '%s\n' "$rowlist" | sort)" ]; then _pass "rows are in sorted order"; else _fail "rows are in sorted order"; fi
 
+reset
+mkrepo "$H/Code/depth-one" "https://github.com/depth-owner/depth-one.git"
+mkrepo "$H/Code/ExampleOrg/group/depth-three" "https://github.com/depth-owner/depth-three.git"
+mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
+mkrepo "$H/Code/ExampleOrg/example-repo/vendor/nested" "https://github.com/nested-owner/nested.git"
+mkrepo "$H/Code/depth-one/inner" "https://github.com/nested-owner/inner.git"
+mkrepo "$H/Code/ExampleOrg/group/depth-three/deeper" "https://github.com/nested-owner/deeper.git"
+mkrepo "$H/Code/ExampleOrg/group/too/deep/beyond" "https://github.com/nested-owner/beyond.git"
+gh_michael depth-owner/depth-one; gh_michael depth-owner/depth-three; gh_michael "$R"
+run check
+row_is ok "depth-owner/depth-one" "walk: a repository directly under Code is read"
+row_is ok "depth-owner/depth-three" "walk: a repository three levels under Code is read"
+rows_are ok 3 "walk: a repository inside another, or deeper than three levels, gets no row of its own"
+out_hasnt "nested-owner" "walk: no nested checkout is read"
+
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://github.com/$R.git" "git@gh-alias:$R.git"
 run check
 row_is unreadable "gh-alias/$R" "the remote is where pushes go (pushurl wins over url)"

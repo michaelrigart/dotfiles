@@ -434,16 +434,25 @@ load_exceptions() {
   done < "$f"
 }
 
+collect() {  # <dir> <levels still to descend>: records a repository, never looks inside one
+  local d=$1 left=$2 e url
+  [ -d "$d" ] || return 0
+  if [ -e "$d/.git" ]; then
+    url=$(git -C "$d" remote get-url --push origin 2>/dev/null) || url=
+    if [ -z "$url" ]; then skipped=$((skipped + 1)); return 0; fi
+    normalize_remote "$url" >> "$WORK/remotes"; echo >> "$WORK/remotes"
+    return 0
+  fi
+  [ "$left" -gt 0 ] || return 0
+  for e in "$d"/*; do collect "$e" $((left - 1)); done
+}
+
 cmd_check() {
-  local d url n total skipped=0
+  local d n total skipped=0
   load_exceptions
   : > "$WORK/remotes"
-  for d in "$HOME/.local/share/chezmoi" "$HOME"/Code/*/*; do
-    [ -e "$d/.git" ] || continue
-    url=$(git -C "$d" remote get-url --push origin 2>/dev/null) || url=
-    if [ -z "$url" ]; then skipped=$((skipped + 1)); continue; fi
-    normalize_remote "$url" >> "$WORK/remotes"; echo >> "$WORK/remotes"
-  done
+  collect "$HOME/.local/share/chezmoi" 0
+  for d in "$HOME"/Code/*; do collect "$d" 2; done
   sort -u "$WORK/remotes" | grep -v '^$' > "$WORK/sorted"
   total=$(wc -l < "$WORK/sorted" | tr -d ' ')
   echo "# This output names repositories: never commit it or paste it into a tracked file."
