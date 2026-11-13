@@ -61,10 +61,11 @@ Verified in the code at `4c35ad4`:
   receipt it needs today.
 - **No bypass by another spelling.** Each exemption matches one strict form. A command that
   misses the form by anything falls through to today's decision, which is a deny.
-- **Nothing hidden passes.** A substitution, a nested shell or a here-document that runs a gated
-  verb is denied as today, a sync included: a sync depends on the directory it runs in, which
-  the gate reads only at the top level. An exempt API call (§4.2, §4.3) is not a gated verb
-  anywhere, since its own words decide what it does.
+- **Nothing hidden passes.** A substitution, a nested shell, a subshell or a here-document that
+  runs a gated verb is denied as today, a sync and an exempt API call included: an exemption
+  holds only for a top-level command of its own (§4.1 rule 1).
+- **The gate reads an exempt command as the shell does.** An exemption is decided from the
+  command's own text, in a grammar that leaves the shell nothing to expand or split.
 - **The guards are frozen** (security locks §9). This change adds no rule a deny rule could
   express: it removes false denies inside the gate, which only the gate can do. No guard is
   retired and no never-rule is added.
@@ -85,11 +86,18 @@ compound, where it cannot know the branch.
 A `git merge` is a **sync** when all of this holds (rules 1 to 3 were tightened during
 execution, §10):
 
-1. **It is a simple command of its own, written in plain characters.** The command is split at
-   its unquoted `;`, `&`, `|` and newlines, redirections dropped. The merge's own part may hold
-   only letters, digits, `_`, `.`, `/`, `=`, `-` and blanks: no quote, backslash, parenthesis,
-   `$`, glob character, brace or `~`. Its words are then exactly what any shell passes to git.
-   Its first word is `git`. So an assignment (`GIT_DIR=x git merge …`), a wrapper, `sudo`, a
+1. **It is a simple command of its own, written in plain words.** The command is split at
+   its unquoted `;`, `&`, `|` and newlines. The merge's own part is read in one grammar, shared
+   with the API exemptions (§4.2):
+   - blank-separated words of letters, digits and `_ . / : @ % + , = -`, never starting with
+     `=`; no backslash, parenthesis, `$`, backtick, glob character, brace, `~` or `<`;
+   - for an API call also `'…'` strings, and `"…"` strings holding no `$`, backtick or
+     backslash; a sync takes no quotes at all;
+   - output redirections from a closed set, dropped: `>`, `>>` or `&>`, with at most the one
+     descriptor digit `1` or `2`, to `&1`, `&2` or a plain word (`2>&1`, `>/dev/null`).
+
+   A part that fits has exactly the words zsh and bash pass to the program; a part that does
+   not fit is no exemption. A sync's first word is `git`. So an assignment (`GIT_DIR=x git merge …`), a wrapper, `sudo`, a
    keyword (`then git merge …`), a subshell and a mention (`echo git merge …`) are not syncs.
 2. **Its global options are the plain form's:** `-C <path>` and the flags in `GIT_FLAGS`. `-c`,
    `--git-dir`, `--work-tree` and the rest are not syncs.
@@ -159,8 +167,12 @@ these paths, matched whole, after the scheme, host and `api/v3` or `api/v4` pref
   string's included, is `body`, `resolved`, `commit_id` or `position[…]`. A field's value may
   still come from a file. Without the SHA field `/merge` does nothing; the discussions, note-edit
   and MR-update endpoints do not accept it.
-- An option word holding `$`, a backtick or `{` makes the call not exempt, and so does a `;` in
-  the endpoint: either could carry a field or an option the gate does not read.
+- **The call is a top-level command of its own, in the grammar of §4.1 rule 1**, its first two
+  words exactly `glab api` or `gh api`. So a `$`, a brace list, a glob or a backslash outside
+  single quotes, a `-R` before `api`, and a call inside `$( )`, `sh -c` or a subshell are not
+  exempt: zsh could turn any of them into an option or a field the gate did not read
+  (`-f body=$(cat n.txt)` can expand to the SHA field). A body with such characters goes in
+  single quotes or in a file. A `;` in the endpoint is refused too.
 - The project and the host are not checked. A comment or a pipeline start proposes and lands
   nothing, on any project.
 
@@ -169,12 +181,9 @@ denial), `approve`, `unapprove`, `approvals`, `reset_approvals`, GitHub's `revie
 `requested_reviewers` and `update-branch`, and anything new a forge adds. The CLIs' own
 `glab mr approve`, `glab mr rebase` and `gh pr review` stay as they are (trust spec §7).
 
-An exempt call is not a gated verb, so it also passes in a pipe or a chain
-(`glab api -X POST …/pipelines | jq .id`), and inside a substitution or a nested shell
-(`ID=$(glab api -X POST …/pipelines | jq .id)`, `sh -c 'glab api …/notes -f body=x'`). That is
-deliberate: the exemption reads nothing but the call's own literal words, which are the same
-words wherever the call stands, and a word holding `$` or a backtick fails the path match. The
-same holds for §4.3.
+An exempt call passes in a pipe or a chain (`glab api -X POST …/pipelines | jq .id`). Inside a
+substitution or a nested shell it is denied like any MR/PR write, as on main (amended during
+execution, §10; the first form of this spec exempted it there). The same holds for §4.3.
 
 ### 4.3 A title or description update through the API is not gated
 
@@ -200,6 +209,9 @@ The same fact reaches the deployed gate, apart from this line: GitLab's GraphQL 
 mutation takes `mergeRequestDiffHeadSha` (gitlab-org/gitlab issue 354091), so a GraphQL note
 with `/merge` merges with no receipt, and the gate's mutation list does not name it. A GraphQL
 call whose text holds `mergeRequestDiffHeadSha` is now denied with the existing GraphQL message.
+`createDiffNote` is denied by name as well, on an unverified report that it runs `/merge` from
+its position's head SHA (gitlab-org/gitlab issue 359844): a false deny of a GraphQL diff note
+costs little.
 This tightens the receipt rule the gate exists for; a deny rule cannot read a GraphQL body.
 
 ### 4.5 Where it goes in the code
@@ -208,14 +220,20 @@ All of it is in `dot_claude/xreview-guard.py`. The shell front, its fast path, t
 the ledger are untouched.
 
 - `parse_api` records `--input` apart from a field read from a file.
-- A new `api_exempt(args, tool)` holds §4.2 and §4.3. `api_gated` and `api_unplaced` both treat
-  an exempt call as not gated; `api_placeholder` is checked first, as now.
+- A new `api_exempt(args, tool)` holds §4.2 and §4.3.
 - `judge_git_merge`'s walk over the global options, and its "names origin's default" test, move
-  into two helpers that the sync test shares. The plain form's behaviour does not change.
-- `main` drops syncs before it decides between "not gated", "plain" and "compound".
+  into two helpers that the sync test shares.
+- `main` splits the command into its top-level parts, reads each in the grammar of §4.1, and
+  replaces every sync and every exempt API call with a no-op. What is left is read exactly as
+  before: "not gated", "plain" or "compound". The word-level reading of gated verbs is not
+  changed, so it still treats every MR/PR write as gated.
+- Two older defects of the plain form are fixed with it (§10): a `-C` path is resolved
+  physically, as git changes directory, and a redirection's descriptor is one digit, as zsh
+  reads it.
 - The header comments of both guard files say what is exempt.
 
-Estimate: about 90 lines of non-test code. Inferred, not measured.
+Estimate at sign-off: about 90 lines of non-test code. The grammar added during execution makes
+it more; the final figure is in the plan's completion note.
 
 ### 4.6 Cost
 
@@ -281,7 +299,12 @@ exact decision. Not heavy; inferred growth about 5 s.
 | S12 | in a chain, a quoted ref, a glob, a brace list, `=git`, a `~` path and a subshell are denied | a word the shell rewrites |
 | S13 | a sync with a redirection, beside segments that hold quotes and quoted operators, is allowed | the plain-character rule reaching past the merge's own part |
 | O7 rewritten | a note, a discussion reply, a resolve (PUT) and a pipeline start are allowed, plain and piped; so are gh's review comment, reply and comment edit | §4.2 |
-| R0 | a pipeline start inside `$( )` and inside `sh -c '…'` is allowed; `sh -c 'glab api -X PUT …/7/merge'` and an endpoint `projects/$P/merge_requests/7/notes` are denied | the exemption holding where it stands, and only for literal words |
+| R0 | a pipeline start inside `$( )`, inside `sh -c '…'` and in a subshell, `sh -c 'glab api -X PUT …/7/merge'` and an endpoint `projects/$P/merge_requests/7/notes` are denied | an exemption outside a top-level command |
+| R5 | a note with `-f body=$(cat n.txt)`, with backticks, with `${=X}`, with `--hostname {forge.example,--input=n.json}`, with `<n.txt`, with `-R` before `api`, and an update with `-f title=$(cat t)` are denied | a word zsh expands into an option or a field |
+| R6 | a comment whose single-quoted body holds `$`, backticks and braces, a quoted `{owner}/{repo}` endpoint, a quoted `position[…]` field, and a call with `> out.json` or `2>&1 \| jq` are allowed | the grammar refusing ordinary calls |
+| S14 | `git merge origin/main 81788>/dev/null` (plain and in a chain), `… <->`, `… <<<x`, `… 2>&1feature` and `… >log feature` are denied | a redirection zsh reads as a ref |
+| S15 | `git -C link/.. merge --ff-only origin/main`, with `link` a symlink into another repository, is denied | a `-C` path resolved logically |
+| O12 | a GraphQL `createDiffNote` is denied | §4.4 |
 | R1 | `…/7/merge` (still judged), `…/7/rebase`, `…/7/approve`, `pulls/9/reviews`, `pulls/9/update-branch` are denied | the table growing by accident |
 | R2 | `…/7/notes/../merge`, `…/7/notes%2F..%2Fmerge`, `…/:branch/notes`, a second word naming an MR path, and a writing call with `--placeholder` are denied | a path the forge reads differently |
 | R3 | a GitLab note with `-f merge_request_diff_head_sha=…`, with the same name in the query string, with `--input`, and with an unknown field is denied; a diff note with `position[…]` fields and `-F body=@f` is allowed; gh's comment with `--input` stays allowed | a note that merges |
@@ -321,6 +344,21 @@ reported to him):**
 - Quick actions that need no SHA are an accepted limit (§6).
 - A GraphQL call naming `mergeRequestDiffHeadSha` is denied (§4.4): a hole in the deployed gate,
   older than this line, fixed here.
+- One grammar for every exempt command (§4.1 rule 1, §4.2), and no exemption inside `$( )`,
+  `sh -c` or a subshell. Two review rounds each found a command the gate read differently from
+  zsh: a quoted `;`, a glob qualifier, `-f body=$(cat n.txt)`, a brace list, a multi-digit
+  descriptor. The gate must not read an exempt command's words differently from the shell, so
+  the exemption is now decided from text the shell cannot rewrite.
+- Two defects of the deployed gate's plain form, older than this line, are fixed here: a `-C`
+  path through a symlink (`git -C link/.. merge …`) made the gate check one repository while git
+  merged in another, and `git merge origin/main 81788>/dev/null` hid a second ref in a
+  multi-digit descriptor.
+- `createDiffNote` is denied by name (§4.4).
+- Recorded as limits of the plain form, older than this line, not fixed: `git merge origin/main
+  <->` (a zsh numeric glob that names a file) and `git merge --mess origin/main` (git's option
+  prefix takes the ref as its value and merges the upstream). A GitLab issue note with
+  `/create_merge_request` makes an MR from a branch the forge creates; it proposes an empty
+  change and is not gated.
 - §4.1's rules 1 to 3 are tightened: a sync is read from plain characters only, with a list of
   exact flags. The second task's review found that the first form read the command from words
   that had lost their quoting, so `git merge origin/main -m ';' feature` passed as a sync while
