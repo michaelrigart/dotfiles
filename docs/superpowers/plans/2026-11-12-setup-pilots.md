@@ -425,6 +425,29 @@ findings (Critical 2 of 6, Important 6 of 9, Minor 13 of 31); same verdict on 11
 309 tool calls and 3,034 s, Sonnet 308 and 2,380 s. The comparison against the host line's
 final review and Codex's pre-merge review is still open.
 
+**Against the host line's final whole-branch review** (`sp-architect` on `3d65954`: changes,
+0 Critical, 3 Important, 6 Minor). Read by me against both sets of per-task reports; a
+finding counts for a per-task reviewer only if it raised the same defect.
+
+| Final-review finding | Task it sat in | Opus per-task | Sonnet shadow |
+|---|---|---|---|
+| Important: az `@file` expansion passes the az gate and the update rule | 6, 9 | missed | missed |
+| Important: the built-in `:branch` / `{branch}` placeholder hides a gated segment | 9 | missed | missed (it raised the split-placeholder sibling) |
+| Important: the canary pins no `api` flags | 8 | missed | missed |
+| Minor: `gh agent` aliases pass the deny rule | 7 | missed | missed |
+| Minor: tool-name case (`GH`, `GLAB`, `Git`) | 6 | missed | missed |
+| Minor: U+2028 and others unescaped by render | 3 | residual risk only | raised (review 12) |
+| Minor: pane excerpt cut before the secret scan | 4 | missed | missed |
+| Minor: missed labels printed unescaped | 4 | missed | missed |
+| Minor: a merged sliced round over the text bound never finishes | 4 | missed | raised (review 17) |
+| Minor (text): SKILL.md "It denies the rest" | 9 | missed | raised (review 16) |
+
+So the final review confirms three Sonnet-only Minor findings, and the host line fixed
+Sonnet's split-placeholder finding (`2255c23`, not confirmed against real glab). It confirms
+no Opus-only finding that was still open, since those were fixed in their rounds. Neither
+per-task reviewer raised any of the three Important findings. Codex's pre-merge review of
+`44db1df` is still running.
+
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
 
