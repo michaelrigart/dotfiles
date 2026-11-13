@@ -17,6 +17,9 @@
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
 #   [cd <literal path> &&] [sudo] az repos pr create [options]
 #
+# An API write that only comments, opens or resolves a thread, starts an MR's pipeline, or
+# updates a title or description (-f/-F fields, no --input) is never gated, in any position.
+#
 # glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
 # proposes a branch the forge makes itself, which no review can have seen.
 #
@@ -779,6 +782,23 @@ MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAc
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
                        r"enablePullRequestAutoMerge|mergeBranch)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
+# The API writes that are never gated: a comment, a thread, a pipeline start, and an update of
+# a title or description. Each is a whole-path match on literal words, so a path the forge could
+# read otherwise (a %, a :branch segment) misses it and is gated as before.
+NAME = r"[A-Za-z0-9._-]+"      # .github is a name; a .. anywhere is refused apart
+GITLAB_PROJECT = r"(?:\d+|:id|:fullpath|{0}(?:%2[Ff]{0})+)".format(NAME)
+GITHUB_PROJECT = r"(?:\{{owner\}}/\{{repo\}}|{0}/{0})".format(NAME)
+EXEMPT_PATH = {
+    "glab": re.compile(r"projects/{}/merge_requests/\d+/(?:notes(?:/\d+)?|discussions"
+                       r"(?:/[0-9a-f]+(?:/notes(?:/\d+)?)?)?|pipelines)".format(GITLAB_PROJECT)),
+    "gh": re.compile(r"repos/{}/pulls/(?:\d+/comments(?:/\d+/replies)?|comments/\d+)"
+                     .format(GITHUB_PROJECT)),
+}
+UPDATE_PATH = {
+    "glab": (re.compile(r"projects/{}/merge_requests/\d+".format(GITLAB_PROJECT)), "PUT",
+             {"title", "description"}),
+    "gh": (re.compile(r"repos/{}/pulls/\d+".format(GITHUB_PROJECT)), "PATCH", {"title", "body"}),
+}
 # The api options that take a value, per CLI (gh 2.102's and glab 1.130's --help), and -R/--repo,
 # which glab takes before api, after it and after the endpoint. Every other option is a boolean.
 GH_API_VALUE = {"-F", "--field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-X",
@@ -841,10 +861,11 @@ def parse_api(args, tool):
     """The parts of a glab/gh api call the gate reads, its options read as the CLI reads them
     (api_options): endpoint, method (the CLIs' default: POST once a field or a body is given,
     GET otherwise), fields (name -> last value), body (True when the body or a typed field
-    comes from a file or stdin), hostname and repo (an -R/--repo, wherever it stands: glab
-    takes it before api, after it and after the endpoint)."""
-    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None,
-            "repo": None}
+    comes from a file or stdin), input (True for --input alone: a body whose field names the
+    gate cannot read), hostname and repo (an -R/--repo, wherever it stands: glab takes it
+    before api, after it and after the endpoint)."""
+    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "input": False,
+            "hostname": None, "repo": None}
     opts, pos = api_options(args, GLAB_API_VALUE if tool == "glab" else GH_API_VALUE)
     if pos:
         call["endpoint"] = pos[0]
@@ -857,7 +878,7 @@ def parse_api(args, tool):
                 call["body"] = True
             call["fields"][key] = val
         elif name == "--input":
-            call["body"] = True
+            call["body"] = call["input"] = True
         elif name == "--hostname":
             call["hostname"] = value
         elif name in ("-R", "--repo"):
@@ -958,6 +979,45 @@ def api_placeholder(args, tool):
     return any(name == "--placeholder" for name, _ in api_options(args, GLAB_API_VALUE)[0])
 
 
+def api_exempt(args, tool):
+    """Is the call a write the gate lets through whatever else it holds: its one endpoint, a
+    literal word, is a comment, thread or pipeline path (EXEMPT_PATH), or the MR/PR itself
+    updated with a title or description alone (UPDATE_PATH)? No other word of the call may name
+    an MR/PR path, and the path holds no .. (the forge would resolve it to another endpoint).
+    The body may come from anywhere, except for an update, whose field names must be readable:
+    --input hides them."""
+    pos = api_options(args, GLAB_API_VALUE if tool == "glab" else GH_API_VALUE)[1]
+    if len(pos) != 1 or not names_gated_path(pos[0]) or sum(map(names_gated_path, args)) != 1:
+        return False
+    call = parse_api(args, tool)
+    endpoint = call["endpoint"]
+    if not literal(endpoint) or call["method"] not in ("POST", "PUT", "PATCH"):
+        return False
+    path, query = endpoint_parts(endpoint)
+    if ".." in path:
+        return False
+    if EXEMPT_PATH[tool].fullmatch(path):
+        return True
+    pattern, method, names = UPDATE_PATH[tool]
+    if not pattern.fullmatch(path) or call["method"] != method or call["input"]:
+        return False
+    if tool == "gh" and "?" in endpoint:
+        return False
+    given = set(call["fields"])
+    if tool == "glab":
+        given |= set(query)
+    return bool(given) and given <= names
+
+
+def api_is_gated(args, tool):
+    """Does the api call count as a gated verb? A --placeholder write always does; otherwise
+    one the parse reads as a gated write, or the net beside it catches, unless it is exempt."""
+    if api_placeholder(args, tool):
+        return True
+    return not api_exempt(args, tool) and (api_gated(parse_api(args, tool))
+                                           or api_unplaced(args, tool))
+
+
 def only_options(words):
     """Could cobra read words as options alone: each word an option, or the value of the
     option before it?"""
@@ -997,8 +1057,7 @@ def reordered(tool, rest):
             continue
         if word == "api":
             args = rest[:k] + rest[k + 1:]
-            if (api_gated(parse_api(args, tool)) or api_unplaced(args, tool)
-                    or api_placeholder(args, tool)):
+            if api_is_gated(args, tool):
                 return "api", ""
         if word != noun:
             continue
@@ -1069,8 +1128,7 @@ def gated_verb(words):
     if i == 0 and rest[:1] == ["api"]:
         if rest[1:2] and rest[1] in HELP:
             return None
-        if (api_gated(parse_api(rest[1:], tool)) or api_unplaced(rest[1:], tool)
-                or api_placeholder(rest[1:], tool)):
+        if api_is_gated(rest[1:], tool):
             return {"tool": tool, "kind": "api", "args": rest[1:]}
         return None
     found = reordered(tool, rest)

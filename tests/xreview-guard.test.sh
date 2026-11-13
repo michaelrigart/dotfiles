@@ -977,11 +977,54 @@ is "O4 mergePullRequest, mergeRequestCreate and mergeRequestSetAutoMerge too" \
    "1 1 1"
 is "O5 a GraphQL read is allowed" "$(decision "$W" "gh api graphql -f query='query { viewer { login } }'")" allow
 is "O6 a GraphQL query from a file is denied" "$(denies "$W" 'gh api graphql -F query=@q.graphql' 'this GraphQL call')" 1
-is "O7 an MR note through the API is an unresolved write" "$(denies "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=hi' 'this glab api call writes to an MR/PR path whose source, head or destination')" 1
+is "O7a an MR note through the API is allowed" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=hi')" allow
+is "O7b a reply in a discussion, the project path-encoded" "$(decision "$W" 'glab api -X POST projects/acme%2Fapp/merge_requests/7/discussions/0a1b2c/notes -f body=hi')" allow
+is "O7c resolving a discussion, with a query string" "$(decision "$W" 'glab api -X PUT "projects/4242/merge_requests/7/discussions/0a1b2c?resolved=true"')" allow
+is "O7d a pipeline start, piped" "$(decision "$W" 'glab api -X POST projects/:fullpath/merge_requests/7/pipelines | jq .id')" allow
+is "O7e a note from a file, by absolute URL" "$(decision "$W" 'glab api --method POST https://forge.example/api/v4/projects/4242/merge_requests/7/notes --input note.json')" allow
+is "O7f a GitHub review comment" "$(decision "$W" 'gh api repos/acme/app/pulls/9/comments -f body=hi')" allow
+is "O7g a GitHub reply, the repository by placeholder" "$(decision "$W" 'gh api repos/{owner}/{repo}/pulls/9/comments/55/replies -f body=hi --jq .html_url')" allow
+is "O7h editing a GitHub review comment" "$(decision "$W" 'gh api -X PATCH repos/acme/app/pulls/comments/55 -f body=hi')" allow
+is "O7i a repository whose name starts with a dot" "$(decision "$W" 'gh api repos/acme/.github/pulls/9/comments -f body=hi')" allow
 is "O8 a PATCH of a pull request (a retarget) is denied" "$(denies "$W" 'gh api -X PATCH repos/acme/app/pulls/9 -f base=release' 'this gh api call writes to an MR/PR path whose source, head or destination')" 1
 is "O9 a REST create whose body comes from a file is denied" "$(denies "$W" 'glab api -X POST projects/:id/merge_requests --input mr.json' 'this glab api call writes to an MR/PR path whose source, head or destination')" 1
 is "O10 an absolute GraphQL endpoint carrying a merge mutation is denied" \
    "$(denies "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
+# An exempt call reads nothing but its own literal words, so it passes wherever it stands.
+is "R0a a pipeline start inside a substitution" "$(decision "$W" 'ID=$(glab api -X POST projects/:id/merge_requests/7/pipelines | jq .id)')" allow
+is "R0b a note inside a nested shell" "$(decision "$W" "sh -c 'glab api -X POST projects/:id/merge_requests/7/notes -f body=x'")" allow
+is "R0c a merge inside a nested shell is still denied" "$(decision "$W" "sh -c 'glab api -X PUT projects/:id/merge_requests/7/merge'")" deny
+is "R0d an endpoint holding a variable is denied" "$(decision "$W" 'glab api -X POST projects/$P/merge_requests/7/notes -f body=x')" deny
+# What the table leaves out stays gated: it lands, rewrites or approves a change.
+is "R1a a rebase is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/rebase')" deny
+is "R1b an approval is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/approve')" deny
+is "R1c an award emoji on a note is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes/5/award_emoji')" deny
+is "R1d a GitHub review with a verdict is denied" "$(decision "$W" 'gh api -X POST repos/acme/app/pulls/9/reviews -f event=APPROVE')" deny
+is "R1e a GitHub update-branch is denied" "$(decision "$W" 'gh api -X PUT repos/acme/app/pulls/9/update-branch')" deny
+is "R1f the REST merge still reaches the ledger" \
+   "$(denies "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$UNREVIEWED" 'no full-range pre-merge review of this change is on record')" 1
+# A path the forge may read differently is not matched.
+is "R2a a .. segment is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/notes/../merge')" deny
+is "R2b an encoded .. is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/notes%2F..%2Fmerge')" deny
+is "R2c a :branch segment is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/:branch/notes')" deny
+is "R2d an encoded .. in the project is denied" "$(decision "$W" 'glab api -X POST projects/a%2F..%2Fb/merge_requests/7/notes')" deny
+is "R2e a second word naming an MR path is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes projects/:id/merge_requests/7/merge')" deny
+is "R2f a second path inside --input is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes --input x/merge_requests/b.json')" deny
+is "R2g a writing call with --placeholder is denied" "$(decision "$W" 'glab api -X POST projects/:id/:seg/7/notes --placeholder seg=merge_requests')" deny
+# A title or description update is exempt only with fields that cannot retarget it.
+is "U1a a description from a file" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -F description=@d.md --silent')" allow
+is "U1b a title and a description, piped" "$(decision "$W" 'glab api --method PUT projects/acme%2Fapp/merge_requests/7 -f title=x -F description=@d.md | jq .iid')" allow
+is "U1c a title in the query string" "$(decision "$W" 'glab api -X PUT "projects/:id/merge_requests/7?title=x"')" allow
+is "U1d a GitHub title and body" "$(decision "$W" 'gh api -X PATCH repos/acme/app/pulls/9 -f body=x -f title=y')" allow
+is "U2a a description beside a retarget is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -f description=x -f target_branch=release')" deny
+is "U2b a state change is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -f description=x -f state_event=close')" deny
+is "U2c an --input body is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 --input body.json')" deny
+is "U2d a description from a file beside --input is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -F description=@d.md --input b.json')" deny
+is "U2e an update with no field is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7')" deny
+is "U2f a retarget in the query string is denied" "$(decision "$W" 'glab api -X PUT "projects/:id/merge_requests/7?target_branch=release" -f title=x')" deny
+is "U2g a POST to the MR itself is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7 -f title=x')" deny
+is "U2h a GitHub update with a query string is denied" "$(decision "$W" 'gh api -X PATCH "repos/acme/app/pulls/9?base=release" -f body=x')" deny
+is "U2i a GitHub PUT to the pull request is denied" "$(decision "$W" 'gh api -X PUT repos/acme/app/pulls/9 -f body=x')" deny
 
 echo "P. a forge merge reaches only origin's own project, and merges at once"
 export MR_SHA="$REBASED" PR_SHA="$REBASED"
