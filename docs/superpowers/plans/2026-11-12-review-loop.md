@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to
 > implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Approved
+**Status:** Implemented (branch `feat/review-loop`; the dotfiles have no MR). Run completed 2026-11-13; do not run again.
 
 **Goal:** Ship the signed-off review-loop rules: triage of Claude-side findings, a narrowed per-task
 review, the full suite once per plan run, the routing cells, one Codex lens sentence, and

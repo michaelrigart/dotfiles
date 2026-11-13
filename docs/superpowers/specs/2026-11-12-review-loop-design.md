@@ -1,6 +1,6 @@
 # Review loop: triage Claude's own findings, review per task only where it pays
 
-**Status:** Approved
+**Status:** Implemented (branch `feat/review-loop`; the dotfiles have no MR)
 **Date:** 2026-11-12
 **Branch:** `feat/review-loop`, in the `wt` checkout `~/.local/share/chezmoi-feat-review-loop`
 **Depends on:** `chore/test-audit` merging first (see Merge order)
@@ -164,7 +164,7 @@ outside a batch surfaces at the end of the run instead of at the task that cause
 
 The rule exists; the gaps are superpowers' escalation ("one tier above", `…/SKILL.md:157-158`), its
 "always specify the model" (`:160-162`), and the absence of a named reviewer type for task reviews.
-Two cells of the `claude-code.md` table change, and the skill (§6) carries the rest. The
+Three cells of the `claude-code.md` table change, and the skill (§6) carries the rest. The
 `sp-standard` cell is shown as amended: the final review found its "scoped review" overlapping the
 `sp-reviewer` cell.
 
@@ -368,7 +368,7 @@ regression:
 | `pr-tests` | `plan-run/SKILL.md`, `never the full suite` | no | per-task full runs returning, or no full run before the final review |
 | `pr-real-run` | `plan-run/SKILL.md`, `Run the change once the way its user will` | yes | the run leaving the sandbox (escapes, prompts) or what needs Michael being run by the agent; its terms are every sentence of the block |
 | `pr-triage` | `plan-run/SKILL.md`, `A spec-compliance gap is never triaged` | yes | a finding that gets code skipping the fix loop, or a spec-compliance gap being triaged instead of fixed or taken to Michael as a spec change; the terms are the two sentences |
-| `cc-table-standard` (terms updated) | `claude-code.md`, the `sp-standard` table row | no | "scoped review" back in the `sp-standard` cell, so two types take the same dispatch |
+| `cc-table-standard` (terms updated) | `claude-code.md`, the `sp-standard` table row | no | integration, debugging, fix rounds, plan-run controllers or merges leaving the `sp-standard` cell (a term's return, such as "scoped review", is not checked: rows test presence only) |
 | `sp-reviewer-caller` | `sp-reviewer.md`, `Every finding carries` | no | findings arriving without a caller, so the controller cannot triage |
 | `g-wt` (terms updated) | `global.md`, `` **`wt` worktrees.** `` | yes | the same-turn briefing or the session's ownership of the spec dropped, so the driver writes specs again; the `wt-rm` clause is kept as it is |
 | `cc-dispatch-wt` (terms updated) | `claude-code.md`, `` **Dispatching a `wt` line.** `` | no | "In the turn that ran `wt`" or "spec included" dropped |
