@@ -779,7 +779,7 @@ MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAc
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
                        r"enablePullRequestAutoMerge|mergeBranch)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
-# The api options that take a value, per CLI (gh 2.102's and glab 1.120's --help), and -R/--repo,
+# The api options that take a value, per CLI (gh 2.103.3's and glab 1.130.0's --help), and -R/--repo,
 # which glab takes before api, after it and after the endpoint. Every other option is a boolean.
 GH_API_VALUE = {"-F", "--field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-X",
                 "--method", "-p", "--preview", "-f", "--raw-field", "-t", "--template", "--cache",
@@ -1457,7 +1457,7 @@ GH_CREATE_VALUE = {"-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assi
                    "--attach", "-b", "--body", "-F", "--body-file", "-l", "--label", "-m",
                    "--milestone", "-p", "--project", "--recover", "-r", "--reviewer", "-T",
                    "--template", "-t", "--title"}
-# The flags creation allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# The flags creation allows, per CLI (glab 1.130.0, gh 2.103.3); any other is denied by name. Denied
 # on purpose: --recover (replays options from a file), -w/--web (the browser finishes the
 # creation), glab's -i/--related-issue (the issue can supply the branch) and
 # --create-source-branch (only acts on a branch origin lacks, which the gate denies anyway).
@@ -2016,7 +2016,7 @@ def judge_create_github_api(shape, ledger, owner, repo, fields):
 GLAB_MERGE_VALUE = {"-m", "--message", "--sha", "--squash-message", "-R", "--repo"}
 GH_MERGE_VALUE = {"-A", "--author-email", "-b", "--body", "-F", "--body-file",
                   "--match-head-commit", "-t", "--subject", "-R", "--repo"}
-# The flags a merge allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# The flags a merge allows, per CLI (glab 1.130.0, gh 2.103.3); any other is denied by name. Denied
 # on purpose: gh's --admin (it merges past required reviews and checks) and glab's hidden
 # --when-pipeline-succeeds. glab's --auto-merge is read by the deferred-merge check, which
 # allows it only when it is off.

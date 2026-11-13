@@ -210,6 +210,11 @@ warm-up), `codex-config`, `claude-settings` and `live-feedback-skill` exit 2 wit
 `INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
 That is not a regression.
 
+`xreview-guard-cli` does the same after a glab, gh or az upgrade changes the commands the
+pre-merge gate was measured against: it exits 2 with an `INCONCLUSIVE:` line naming what was
+added or removed. That is not a regression either; the pin in the suite is updated in the change
+that weighs the new command (gate it, deny it or leave it).
+
 A suite whose subject has moved must fail loudly, not silently pass: each one checks its
 target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard
 is missing otherwise reports every "must allow" case as a pass. Exit 2, never 1: 1 means an
