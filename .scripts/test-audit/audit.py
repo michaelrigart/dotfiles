@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -696,41 +697,52 @@ def stale_outcome():
             "suites": {}, "flaky": False, "attempts": 0, "seconds": 0.0}
 
 
-STATE_QUERIES = (["status", "--porcelain", "--branch", "--ignored"], ["rev-parse", "HEAD"],
-                 ["for-each-ref"], ["config", "--local", "--list"], ["worktree", "list", "--porcelain"],
-                 ["stash", "list"])
+INDEX_QUERY = ["ls-files", "-s", "-v"]
 
 
-def empty_dirs(copy):
-    """The copy's empty directories outside .git, which git status does not see. A directory that
-    cannot be read raises: that copy is dirty."""
-    def fail(err):
-        raise err
-    out = []
-    for path, dirs, files in os.walk(copy, onerror=fail):
-        if Path(path) == Path(copy):
-            dirs[:] = [d for d in dirs if d != ".git"]
-        if not dirs and not files:
-            out.append(os.path.relpath(path, copy))
-    return sorted(out)
+def entry_line(copy, path):
+    """One path's record: relative path, type, permission mode, and a file's content hash or a
+    symlink's target."""
+    rel = os.path.relpath(path, copy)
+    info = os.lstat(path)
+    mode = f"{stat.S_IMODE(info.st_mode):o}"
+    if stat.S_ISLNK(info.st_mode):
+        return f"{rel}\0l\0{mode}\0{os.readlink(path)}"
+    if stat.S_ISDIR(info.st_mode):
+        return f"{rel}\0d\0{mode}"
+    if not stat.S_ISREG(info.st_mode):
+        return f"{rel}\0o{stat.S_IFMT(info.st_mode):o}\0{mode}"
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return f"{rel}\0f\0{mode}\0{digest.hexdigest()}"
 
 
 def copy_state(copy):
-    """What a suite can change in the copy: `git status`, the HEAD, refs, local config, worktrees and
-    stash, and the empty directories. None when git or the walk fails (no copy, no .git): that is
-    dirty. Nothing here is a timestamp or something `git status` rewrites (.git/index). A mode change
-    on a directory is not seen."""
-    parts = []
-    for query in STATE_QUERIES:
-        out = subprocess.run(["git", "-C", str(copy), *query], capture_output=True, text=True)
-        if out.returncode != 0:
-            return None
-        parts.append(out.stdout)
+    """What a suite or mutant can change in the copy, as one digest: every path under it, .git
+    included, with its type, permission mode and, for a file, its content hash or, for a symlink,
+    its target, plus what .git/index holds (staged entries, assume-unchanged and skip-worktree
+    flags). No timestamps, and not the index file itself, which `git status` rewrites. A directory's
+    mode change is seen. None when the walk, a file or git fails (no copy, no .git): that is dirty."""
+    def fail(err):
+        raise err
+    index = Path(copy) / ".git" / "index"
+    lines = []
     try:
-        parts.append("\n".join(empty_dirs(copy)))
+        for path, dirs, files in os.walk(copy, onerror=fail):
+            dirs.sort()
+            lines.append(entry_line(copy, path))
+            lines.extend(entry_line(copy, os.path.join(path, name))
+                         for name in sorted(dirs + files) if os.path.join(path, name) != str(index))
     except OSError:
         return None
-    return "\0".join(parts)
+    out = subprocess.run(["git", "-C", str(copy), *INDEX_QUERY], capture_output=True)
+    if out.returncode != 0:
+        return None
+    digest = hashlib.sha256("\n".join(lines).encode("utf-8", "surrogateescape"))
+    digest.update(b"\0" + out.stdout)
+    return digest.hexdigest()
 
 
 class Runner:

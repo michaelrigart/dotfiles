@@ -942,6 +942,110 @@ rc_is 0 "Q14: inventory runs"
 eq "$(printf '%s\n' "$OUT" | grep -cx 'copy rebuilt after the baseline of s')" 1 "Q14: a branch a suite created in the copy forces a rebuild"
 eq "$(printf '%s\n' "$OUT" | grep -cx 'copy rebuilt after the baseline of s2')" 1 "Q14: an empty directory a suite created forces a rebuild"
 
+# Q15-Q19: what lives inside .git or in a mode, which git status cannot see. residue <s> <s2> makes
+# suite s run the first snippet and s2 the second, both just before their RESULT line, and commits.
+residue(){
+  python3 - "$T/repo/tests/s.test.sh" "$T/repo/tests/s2.test.sh" "$1" "$2" <<'PY'
+import sys
+s, s2, first, second = sys.argv[1:]
+for path, snippet in ((s, first), (s2, second)):
+    t = open(path).read()
+    open(path, "w").write(t.replace('echo "RESULT:', snippet + '\necho "RESULT:', 1))
+PY
+  "${GIT[@]}" -C "$T/repo" add -A
+  "${GIT[@]}" -C "$T/repo" commit -q -m residue
+}
+rebuilt(){ printf '%s\n' "$OUT" | grep -cx "copy rebuilt after the baseline of $1"; }
+suite_failed(){ python3 -c 'import json,sys
+print({r["suite"]: (r["rc"], r["failed"]) for r in map(json.loads, open(sys.argv[1]))})' "$T/state/inventory.jsonl"; }
+
+mk Q15
+residue 'mkdir -p "$here/../.git/hooks"; printf "#!/bin/sh\nexit 1\n" > "$here/../.git/hooks/pre-commit"; chmod +x "$here/../.git/hooks/pre-commit"' \
+  '[ -e "$here/../.git/hooks/pre-commit" ] && bad "pre-commit hook present at start"'
+run inventory s s2
+rc_is 0 "Q15: inventory runs"
+eq "$(rebuilt s)" 1 "Q15: an executable pre-commit hook a suite planted in .git forces a rebuild"
+eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q15: the next suite sees no hook"
+
+mk Q16
+residue 'mkdir -p "$here/../.git/info"; echo "bin/" >> "$here/../.git/info/exclude"' \
+  '[ -e "$here/../.git/info/exclude" ] && bad "exclude rule present at start"'
+run inventory s s2
+rc_is 0 "Q16: inventory runs"
+eq "$(rebuilt s)" 1 "Q16: an exclude rule a suite added in .git/info forces a rebuild"
+eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q16: the next suite sees no exclude rule"
+
+mk Q17
+residue 'git -C "$here/.." update-index --assume-unchanged bin/s.sh' \
+  'git -C "$here/.." update-index --skip-worktree docs/rules.md; [ "$(git -C "$here/.." ls-files -v bin/s.sh | cut -c1)" = h ] && bad "assume-unchanged flag present at start"'
+run inventory s s2
+rc_is 0 "Q17: inventory runs"
+eq "$(rebuilt s)" 1 "Q17: an assume-unchanged flag on a tracked file, which only changes .git/index, forces a rebuild"
+eq "$(rebuilt s2)" 1 "Q17: a skip-worktree flag on a tracked file forces a rebuild"
+eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q17: the next suite sees neither flag"
+
+mk Q18
+residue 'chmod 750 "$here/../bin"' \
+  '[ "$(stat -f %Lp "$here/../bin" 2>/dev/null || stat -c %a "$here/../bin")" = 750 ] && bad "bin mode changed at start"'
+run inventory s s2
+rc_is 0 "Q18: inventory runs"
+eq "$(rebuilt s)" 1 "Q18: a mode change on a directory forces a rebuild"
+eq "$(suite_failed)" "{'s': (0, 0), 's2': (0, 0)}" "Q18: the next suite sees the directory's original mode"
+
+mk Q19
+residue 'sleep 1; touch "$here/../docs/rules.md"; git -C "$here/.." status --ignored >/dev/null; git -C "$here/.." diff >/dev/null; git -C "$here/.." ls-files -s -v >/dev/null; cat "$here/../bin/s.sh" >/dev/null; ls -lR "$here/.." >/dev/null' \
+  'git -C "$here/.." status >/dev/null'
+run inventory s s2
+rc_is 0 "Q19: inventory runs"
+lacks "copy rebuilt after" "Q19: runs that only read, git status and git diff among them, rebuild nothing" "$OUT"
+
+# Q20: copy_state itself, on a plain checkout: stable across reads, and moved by each kind of change
+mk Q20
+cp -R "$T/repo" "$T/direct"
+OUT=$(python3 - "$SRC/.scripts/test-audit" "$T/direct" <<'PY'
+import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import audit
+copy = sys.argv[2]
+state = lambda: audit.copy_state(copy)
+git = lambda *a: subprocess.run(["git", "-C", copy, *a], capture_output=True, check=True)
+base = state()
+out = {"stable": base is not None and base == state()}
+git("status"); git("diff")
+out["after git status and diff"] = state() == base
+os.symlink("bin/s.sh", copy + "/link")
+linked = state()
+out["new symlink"] = linked != base
+os.remove(copy + "/link"); os.symlink("bin/p.py", copy + "/link")
+out["symlink retargeted"] = state() != linked
+os.remove(copy + "/link")
+out["symlink removed"] = state() == base
+with open(copy + "/docs/stray", "w") as f: f.write("aaaa")
+stray = state()
+with open(copy + "/docs/stray", "w") as f: f.write("bbbb")
+out["same-size content change"] = state() != stray
+os.remove(copy + "/docs/stray")
+os.chmod(copy + "/bin/s.sh", 0o700)
+out["file mode"] = state() != base
+os.chmod(copy + "/bin/s.sh", 0o755)
+out["mode restored"] = state() == base
+git("tag", "residue")
+out["tag"] = state() != base
+git("tag", "-d", "residue")
+os.makedirs(copy + "/.git/hooks", exist_ok=True)
+out["empty directory in .git"] = state() != base
+os.rmdir(copy + "/.git/hooks")
+os.chmod(copy + "/.git", 0o000)
+out["unreadable directory"] = state() is None
+os.chmod(copy + "/.git", 0o755)
+out["unreadable restored"] = state() == base
+os.rename(copy + "/.git", copy + "/.gitaway")
+out["no .git"] = state() is None
+print(sorted(k for k, v in out.items() if not v))
+PY
+)
+eq "$OUT" "[]" "Q20: copy_state is stable across reads and git status, and moves on a symlink, a same-size content change, a file mode, a tag, an empty directory in .git; None for an unreadable directory and for no .git"
+
 echo "R. rule mutants"
 mk R
 TAB=$(printf '\t')
