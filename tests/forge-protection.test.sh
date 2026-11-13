@@ -35,6 +35,10 @@ exit "$rc"
 STUB
 chmod +x "$BIN/stub"
 for t in gh glab az; do ln -s stub "$BIN/$t"; done
+# The first jq that is not a mise shim: the script runs jq a dozen times a run, and a shim costs about 70 ms each.
+REAL_JQ=$(type -ap jq | grep -v '/shims/' | head -1); REAL_JQ=${REAL_JQ:-$(command -v jq)}
+ln -s "$REAL_JQ" "$BIN/jq"
+export PATH="$BIN:$PATH"
 
 # ans <tool> <argv string> <out> [rc] [err] [sleep]
 ans() {
