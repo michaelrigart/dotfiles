@@ -677,7 +677,7 @@ neither "a map edit about another suite selects no heavy suite" "$out"
 
 # Bug caught: each fail-safe path skipping a heavy suite it could not decide about.
 reset_repo; rm -rf "$R/.git"
-out="$(rr --changed)"
+out="$(GIT_CEILING_DIRECTORIES="$(cd "$T" && pwd -P)" rr --changed)"
 both "not a git work tree selects every heavy suite" 'not a git work tree' "$out"
 reset_repo
 out="$(rr --changed=nosuchref)"
