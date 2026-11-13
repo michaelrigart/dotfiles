@@ -16,7 +16,7 @@
 # (xreview-ledger.py beside this file).
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
-# names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
+# names none of create, new, merge, accept, pulls, graphql, revert or placeholder (nor mr together with
 # for, nor api together with a percent-escape such as m%65rge, nor create in any letter case
 # together with az, repos and pr), or none of glab, gh, git or az, costs no subprocess at all. It matches each
 # word as the raw JSON payload can spell it, with quotes, backslashes and line continuations
@@ -68,7 +68,7 @@ spells_i() {
 }
 case "$payload" in
   *"\$'"*) ;;
-  *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } \
+  *) spells create new merge accept pulls graphql revert placeholder || { spells mr && spells for; } \
        || { spells api && [[ $payload =~ $pct ]]; } \
        || { spells_i az && spells_i repos && spells_i pr && spells_i create; } || exit 0
      spells glab gh git || spells_i az || exit 0 ;;
