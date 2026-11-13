@@ -1133,6 +1133,12 @@ Recorded so you can overrule any of them; none is a code change in merge 1.
   strips group and world access, as for every `.pub` template in `private_dot_ssh/`.
 - **An archived repository is not `ok`.** The check does not read the archived flag, so an archived
   repository needs an exceptions line until a later change reads it.
+- **The scan skips history by tracking refs, which are evidence and not proof.** A remote's
+  tracking refs are skipped only for a push whose destination is that remote's one fetch address.
+  If you point a remote at another repository without pruning its tracking refs
+  (`git remote set-url` and no `git fetch --prune`), a push to the new address still skips the old
+  history, as the guard on main did. Parked for you: skipping only what the push handshake proves
+  would close this, and would scan the whole history on each first push of a branch.
 
 ## What stays owed after these steps
 

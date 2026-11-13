@@ -867,6 +867,14 @@ Accepted limits of merge 1, recorded for Michael to overrule. None is code.
   repository needs an exceptions line.
 - A remote's tracking refs are attributed only to a push whose destination URL is its one fetch
   URL (Decisions row "Which history is excluded"); any other push scans the whole history.
+- Tracking refs are evidence, not proof, of what a destination holds. A remote whose URL was
+  changed to another repository without pruning its tracking refs still has them excluded for a
+  push to the new address, as on main, where the guard excluded by remote name. The question of
+  whose history the scan may skip was raised in four review rounds, each with a new variant; it is
+  closed here at one rule. The structural alternative is parked for Michael: exclude only what the
+  push handshake proves (the remote object id git hands the hook for each updated ref) and scan
+  every new ref's whole history, at the cost of a full scan, and possibly the timeout refusal, on
+  each first push of a branch.
 
 ## Owed
 
