@@ -125,14 +125,20 @@ docs/superpowers/         # design records (tracked, ignored by chezmoi)
 ./tests/run.sh forge worktree  # only suites whose name contains one of these
 ```
 
-Suites run in parallel and print in name order, so the verdicts do not depend on load; a
-load-sensitive suite's assertion count can differ between runs (`xreview-packet` F7 slices a
-20,000-file case into 8 or 9).
+Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; an explicit
+`RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the verdicts are
+the same either way; a load-sensitive suite's assertion count can differ (`xreview-packet`
+F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
+`# test-serial` line and runs alone after the parallel ones (today only `xreview`), and so does
+every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
 
-**The runner locks itself:** one per machine. A runner that has to wait prints on stderr who
-holds the lock (arguments, checkout, minutes held), again each minute, and once it has the lock
-how long it waited (`run.sh: waited 9 min for the test-run lock`). Never wrap it in `lockf`
-yourself.
+**The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,
+`RUN_SH_LOCK` overrides the path). A runner that has to wait prints on stderr who holds the lock
+(arguments, checkout, minutes held), again each minute, and once it has the lock how long it
+waited (`run.sh: waited 9 min for the test-run lock`). `RUN_SH_LOCK_WAIT=<seconds>` bounds the
+wait (`0` does not wait): past it the runner prints `giving up`, runs no suite, prints no totals
+and exits 75; a value that is not a non-negative integer exits 2. A nested runner sees
+`RUN_SH_LOCKED=1` and does not lock again. Never wrap it in `lockf` yourself.
 
 **Execute suites, never prefix an interpreter.** Every suite carries a correct shebang (most
 bash; `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `op-edit` and
@@ -212,7 +218,7 @@ line; `run.sh` shows that line and any `INCONCLUSIVE:` lines under the FAIL row,
 `KEY=VALUE` line, so no value is echoed.
 
 **Before adding or changing a suite, a fixture or the runner, read `tests/AGENTS.md`:** it
-holds the suite conventions, the runner's knobs and the suite-specific gotchas. Claude Code
+holds the suite conventions and the suite-specific gotchas. Claude Code
 loads it when it reads a file under `tests/`; a subagent and Codex read it by hand.
 
 ## Troubleshooting

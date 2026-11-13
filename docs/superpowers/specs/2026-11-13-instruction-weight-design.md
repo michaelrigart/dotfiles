@@ -32,11 +32,14 @@ lines). What is left there is small. The weight is in the dotfiles `AGENTS.md` a
 ## Goals, non-goals, anti-goals
 
 - **Goals:**
-  - dotfiles `AGENTS.md` at most 205 lines, measured 201, and 204 once rebased onto main's
-    `xreview-guard-cli` paragraph (the goal at sign-off was 150.
-    Codex's spec and plan reviews kept in the root everything that binds while running suites
-    or reading a run, and no rule is cut to reach a number. Decided by the driver session on
-    Michael's delegation, 2026-11-13, once the moves were measured);
+  - dotfiles `AGENTS.md` at most 220 lines, measured 210: a guard against regrowth, no longer
+    pinned to the measurement. History of the number: 150 at sign-off, then 175, 190, 200 and
+    205 as each review (Codex's spec, plan and pre-merge reviews, the final review) correctly
+    kept one more class of text in the root: everything that binds while running suites or
+    reading a run, the runner's knobs included. No rule is cut to reach a number. Decided by
+    the driver session on Michael's delegation, 2026-11-13; part A stops here, and a later
+    finding that asks for another sentence back in the root is taken as is unless the file
+    would pass 220;
   - `cross-review` skill at most 150 lines;
   - `claude-code.md` below its 50-line cap, so the next rule has room;
   - no rule lost: every sentence that leaves a file is kept elsewhere, or is named as dropped
@@ -95,8 +98,8 @@ reading a run's result, or changing a file outside `tests/` stays in the root.
   suite loads gets its subject-map row in the same commit; and the `HERDR_SESSION` rule (no
   bare `command herdr` in `layout.sh`, `tab-goto.sh` or `phase.sh`), which binds when those
   scripts change and moves from Testing to Rules, shortened to the rule and its one-line reason.
-- **Moves to `tests/AGENTS.md`:** the lock's environment variables and exit codes; how suites
-  are scheduled (`RUN_JOBS`, `# test-serial`); how to write a `# test-requires:` line; the
+- **Moves to `tests/AGENTS.md`:** (the lock's variables and exit codes and how suites are
+  scheduled went back to the root at pre-merge: they bind while running); how to write a `# test-requires:` line; the
   missing-subject guard a new suite must carry and its `missing-subject` row; the two output
   idioms and `failed_keys`; `write-boundary-probe`'s seams; the `codex-config` and
   `herdr-phase` suite gotchas; the history behind the `HERDR_SESSION` rule.

@@ -1,21 +1,7 @@
 # Writing and changing suites
 
-What binds only while a file under `tests/` is written or changed. Running suites, the gated
-suites and reporting: the root `AGENTS.md`, Testing.
-
-## The runner
-
-Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; an explicit
-`RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name
-order, so the verdicts are the same either way. A suite that cannot share the machine carries a
-`# test-serial` line and runs alone after the parallel ones (today only `xreview`), and so does
-every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
-
-The runner takes one lock per machine: `lockf` on `/tmp/claude-$(id -u)/tests-run.lock`;
-`RUN_SH_LOCK` overrides the path. `RUN_SH_LOCK_WAIT=<seconds>` bounds the wait (`0` does not
-wait): past it the runner prints `giving up`, runs no suite, prints no totals and exits 75; a
-value that is not a non-negative integer exits 2. A nested runner sees `RUN_SH_LOCKED=1` and
-does not lock again.
+What binds only while a file under `tests/` is written or changed. Running suites, the runner's
+knobs, the gated suites and reporting: the root `AGENTS.md`, Testing.
 
 ## A new suite
 

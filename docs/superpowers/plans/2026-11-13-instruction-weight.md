@@ -29,9 +29,12 @@ chezmoi templates.
 - Execute suites (`./tests/run.sh <name>`), never `bash tests/…`. Never chain after `cd`.
 - Check `git branch --show-current` prints `chore/instruction-weight` before each commit.
 - Commits: imperative mood, no agent attribution.
-- **Cap:** the spec's goal for `AGENTS.md` is at most 205 lines, measured 201 (decided by the
-  driver on Michael's delegation once Tasks 1 and 2 were measured). The assertion is added
-  after Task 2, at 205.
+- **Cap:** the spec's goal for `AGENTS.md` is at most 220 lines, measured 210 (a regrowth
+  guard; decided by the driver on Michael's delegation). The assertion sits in
+  `tests/agent-instructions.test.sh` at 220.
+- **Amended at pre-merge:** the two runner paragraphs (old lines 126-131 and 133-139) are back
+  in the root verbatim; the rows for them in Task 1's table read "kept whole", and
+  `tests/AGENTS.md` has no `## The runner` section.
 
 ## Review Focus
 
@@ -70,8 +73,8 @@ chezmoi templates.
 |---|---|---|
 | 116 | intro sentence | dropped in Task 2: it repeats the Rules bullet "`tests/` holds every test suite, one `<subject>.test.sh` per script under test" |
 | 118-124 | command block | kept |
-| 126-131 | parallel runs | kept, as the first paragraph of the kept text below; moved: `RUN_JOBS` and its default, "an explicit `RUN_JOBS=1` … sequential order", the `# test-serial` sentence |
-| 133-139 | runner lock | kept: "one per machine", who-holds-the-lock sentence, "Never wrap it in `lockf` yourself."; moved: the lock path and `RUN_SH_LOCK`, `RUN_SH_LOCK_WAIT` with exits 75 and 2, `RUN_SH_LOCKED` |
+| 126-131 | parallel runs | kept whole (amended at pre-merge: the knobs bind while running) |
+| 133-139 | runner lock | kept whole (amended at pre-merge: the knobs and exit 75 bind while running) |
 | 141-146 | execute suites | kept, as the text below; moved: "because it stubs zsh builtins", "`run.sh` executes them for this reason" |
 | 148-154 | gates, exact name | kept whole |
 | 156-166 | gated-suite table | kept whole |
@@ -252,7 +255,7 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
   If it exits 2 for a cold cache, that is not a failure of this task: say so.
 - [ ] **Step 5: Run** `./tests/run.sh agent-instructions agent-skills skill-updates`; expected:
   all pass. Then add the cap assertion to `tests/agent-instructions.test.sh`, beside the
-  fragment caps and in their shape: `AGENTS.md is at most 205 lines`, reading `$SRC/AGENTS.md`;
+  fragment caps and in their shape: `AGENTS.md is at most 220 lines`, reading `$SRC/AGENTS.md`;
   see it pass, and see it fail with the limit temporarily set to 100 (restore it). Quote the totals.
 - [ ] **Step 6: Commit**, message `Put the skill-bump procedure in the externals file`.
 
