@@ -30,7 +30,7 @@ chezmoi templates.
 - Commits: imperative mood, no agent attribution.
 - **Cap deviation:** the spec's goal for `AGENTS.md` is 150 lines. The move test Codex tightened
   at spec review keeps more in the root; the table in Task 1 yields about 172. The cap pinned
-  here is 175, and the spec carries the amendment, which waits for Michael's confirmation. If
+  here is 175, and the spec carries the amendment (decided by the driver on Michael's delegation). If
   Task 1 or 2 lands above 175, stop and report; do not cut a rule to fit.
 
 ## Review Focus
