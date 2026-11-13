@@ -4,11 +4,12 @@
 #   file       repository-relative path.
 #   lang       bash|zsh|sh|py|prose|data|deployed.
 #   own_suite  the suite that exercises the file most directly (test file basename without .test.sh), or -.
+#              - also marks a file the audit must not mutate, such as a fixture input: audit.py plan samples no mutants of it.
 #   loaded_by  comma list of every suite that sources, executes, renders, copies or greps the file; includes own_suite.
 # Non-goal suites are listed in loaded_by for completeness; the harness never runs them.
 # Files no suite loads are absent.
 .chezmoidata/machines.toml	data	provision	provision
-.chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill
+.chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard
 .chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard
 .chezmoitemplates/agents/claude-code.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/codex.md	prose	agent-instructions	agent-instructions

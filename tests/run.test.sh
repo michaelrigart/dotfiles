@@ -821,8 +821,9 @@ rm -f "$R/tests/run-inject.sh" "$R/tests/aplain.test.sh"
 # when there is any: for each suite tagged heavy, a path it names with no row listing it, a row
 # listing it whose file is gone, or no row at all. A named path is a dot_…, .scripts/…, .chezmoi…
 # or tests/… token, bare or after a $VAR/, ${VAR}/ or $(…)/ root, with {a,b} expanded: a file
-# counts, a directory counts as every tracked file under it, anything else not at all. A floor,
-# not a proof: a file the suite reaches through a computed path is the map author's to list.
+# counts, a directory counts as every file under it that is tracked or untracked and not ignored
+# (the files --changed reads), anything else not at all. A floor, not a proof: a file the suite
+# reaches through a computed path is the map author's to list.
 IFS= read -r -d '' DRIFT_AWK <<'AWK'
 function expand(t,    pre, n, parts, i) {
   if (!match(t, /\{[^{}]*,[^{}]*\}/)) { print t; return }
@@ -852,7 +853,7 @@ drift_loaded() {
       printf '%s\n' "$p"
     elif [ -d "$1/$p" ]; then
       case " $DRIFT_PART_DIRS " in *" $2:$p "*) continue ;; esac
-      git -C "$1" ls-files -z -- "$p" 2>/dev/null | tr '\0' '\n' || printf '%s\n' "$p"
+      git -C "$1" ls-files -z --cached --others --exclude-standard -- "$p" 2>/dev/null | tr '\0' '\n' || printf '%s\n' "$p"
     fi
   done | LC_ALL=C sort -u
 }
@@ -893,23 +894,33 @@ drifts "a file a heavy suite names with no row is reported" "heavya: dot_x/b.sh 
 reset_repo; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"; write_map "$(row dot_x/c.sh heavya)"
 names heavya 'cat "$SRC/dot_x/{b,c}.sh"'
 drifts "a file named through a brace list is reported" "heavya: dot_x/b.sh is loaded but has no subject-map row"
-# Bug caught: a new file in a directory a heavy suite loads whole (a fixture tree) selecting nothing.
-reset_repo; mkdir -p "$R/dot_d/sub"; echo e > "$R/dot_d/sub/e.sh"; echo f > "$R/dot_d/f.sh"
+# Bug caught: a new file in a directory a heavy suite loads whole (a fixture tree) selecting nothing,
+# committed or not yet; or an ignored file there (bytecode, say) failing the check.
+reset_repo; mkdir -p "$R/dot_d/sub"; echo e > "$R/dot_d/sub/e.sh"; echo f > "$R/dot_d/f.sh"; echo 'dot_d/*.pyc' > "$R/.gitignore"
 write_map "$(row dot_d/f.sh heavya)"; commit "a directory"
+echo u > "$R/dot_d/u.sh"; echo x > "$R/dot_d/x.pyc"
 names heavya 'cp -R "$SRC/dot_d" "$T/d"'
-drifts "a tracked file under a directory a heavy suite names is reported" "heavya: dot_d/sub/e.sh is loaded but has no subject-map row"
-# Bug caught: a directory the check cannot list read as empty.
+drifts "a tracked or untracked file under a directory a heavy suite names is reported, an ignored one not" \
+  "$(printf '%s\n' 'heavya: dot_d/sub/e.sh is loaded but has no subject-map row' 'heavya: dot_d/u.sh is loaded but has no subject-map row')"
+# Bug caught: a directory the check cannot list read as empty. The ceiling keeps git from finding a
+# repository the temporary directory may sit in.
 rm -rf "$R/.git"
-drifts "a directory the check cannot list is reported" "heavya: dot_d is loaded but has no subject-map row"
+GIT_CEILING_DIRECTORIES="$(cd "$T" && pwd -P)" drifts "a directory the check cannot list is reported" "heavya: dot_d is loaded but has no subject-map row"
 # Bug caught: a row left behind for a file that was moved or deleted.
 reset_repo; rm "$R/lib/a.sh"
 drifts "a row naming a missing file is reported" "heavya: subject-map row for lib/a.sh names a missing file"
-# Bug caught: a heavy suite the map does not mention, which every --changed run then selects.
-reset_repo; drop_rows 4 heavyb
-drifts "a heavy suite with no row is reported" "heavyb: no subject-map row"
-# Bug caught: a path that does not exist, or a suite that is not heavy, reported as drift.
+# Bug caught: a heavy suite the map does not mention, which every --changed run then selects; a path
+# after a ${VAR}/ or $(…)/ root not read.
+reset_repo; drop_rows 4 heavyb; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"
+names heavyb 'cat "${SRC}/dot_x/b.sh"'
+names heavyb 'cat "$(cd x && pwd)/dot_x/c.sh"'
+drifts "a heavy suite with no row is reported, with the files it names after any root" \
+  "$(printf '%s\n' 'heavyb: dot_x/b.sh is loaded but has no subject-map row' 'heavyb: dot_x/c.sh is loaded but has no subject-map row' 'heavyb: no subject-map row')"
+# Bug caught: a path that does not exist, a suite that is not heavy, or a root left on a path,
+# reported as drift.
 reset_repo; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"; write_map "$(row dot_x/b.sh heavya)"
 names heavya 'cat "$SRC/dot_x/b.sh" "$SRC/dot_x/gone.sh"'
+names heavya 'cat "${SRC}/dot_x/b.sh" "$(cd x && pwd)/dot_x/b.sh"'
 names plainc 'cat "$SRC/dot_x/c.sh"'
 drifts "a fixture whose heavy suites' files all have rows passes" ""
 got="$(drift_check "$SRC")"; rc=$?
