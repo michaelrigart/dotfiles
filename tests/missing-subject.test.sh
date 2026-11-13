@@ -23,21 +23,28 @@ mkdir "$COPY" || exit 2
 git -C "$SRC" ls-files -z | (cd "$SRC" && tar --null -T - -cf - 2>/dev/null) | tar -xf - -C "$COPY"
 
 # bounded <command>...: run it for at most 20 s, so a suite with no guard fails its row here
-# instead of running to its end under the machine-wide test lock. Sets OUT and RC.
+# instead of running to its end under the machine-wide test lock. The suite leads its own
+# process group and each run has its own output file, so nothing a killed suite started can
+# outlive its row or write into the next one's output. Sets OUT and RC.
+runs=0
 bounded() {
-  "$@" </dev/null >"$T/out" 2>&1 & local pid=$!
-  ( sleep 20; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 & local watcher=$!
+  runs=$((runs + 1))
+  perl -e 'setpgrp(0, 0); exec @ARGV' "$@" </dev/null >"$T/out.$runs" 2>&1 & local pid=$!
+  ( sleep 20; kill -TERM -- "-$pid" 2>/dev/null ) >/dev/null 2>&1 & local watcher=$!
   wait "$pid" 2>/dev/null; RC=$?
   kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
-  OUT=$(<"$T/out")
+  kill -TERM -- "-$pid" 2>/dev/null
+  OUT=$(<"$T/out.$runs")
 }
 
-# verdict <label>: exit 2, and no assertion passed on the way there.
+# verdict <label> <name>: exit 2, saying what is missing, and no assertion passed on the way
+# there. The name keeps another exit 2 (a cold cache, a broken fixture) from passing the row.
 verdict() {
-  local passed
+  local passed named=no
   passed=$(printf '%s\n' "$OUT" | grep -cE '^[[:space:]]*(ok|PASS)([[:space:]]|:)')
-  if [ "$RC" -eq 2 ] && [ "$passed" -eq 0 ]; then _pass "$1"
-  else _fail "$1" "exit=$RC, $passed assertions passed"; fi
+  printf '%s\n' "$OUT" | grep -qF -- "$2" && named=yes
+  if [ "$RC" -eq 2 ] && [ "$passed" -eq 0 ] && [ "$named" = yes ]; then _pass "$1"
+  else _fail "$1" "exit=$RC, $passed assertions passed, names $2: $named"; fi
 }
 
 # missing <suite> <path>: the suite, run in the copy without that file.
@@ -49,7 +56,7 @@ missing() {
   mv "$file" "$file.hidden"
   bounded "$suite"
   mv "$file.hidden" "$file"
-  verdict "$1 stops with exit 2 when ${2##*/} is missing"
+  verdict "$1 stops with exit 2 when ${2##*/} is missing" "$2"
 }
 
 RELAY="Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay"
@@ -58,6 +65,7 @@ missing alfred-relay          "$RELAY/From Codex.json"
 missing alfred-relay          "$RELAY/From Claude Code.json"
 missing codex-code-mode-host  dot_local/bin/executable_codex-code-mode-host
 missing codex-code-mode-host  dot_local/bin/executable_codex
+missing codex-code-mode-host  dot_local/bin/executable_codex-daemon
 missing codex-config          dot_codex/modify_private_config.toml
 missing codex-config          dot_codex/modify_private_hooks.json
 missing dev                   dot_config/zsh/functions
@@ -74,7 +82,7 @@ missing xreview-skill         .chezmoitemplates/agents/global.md
 # A missing tool is the same case: the suite cannot decide. /usr/bin and /bin hold bash but
 # no chezmoi.
 bounded env PATH=/usr/bin:/bin "$COPY/tests/codex-config.test.sh"
-verdict "codex-config stops with exit 2 when chezmoi is not on PATH"
+verdict "codex-config stops with exit 2 when chezmoi is not on PATH" chezmoi
 
 echo
 echo "RESULT: $pass passed, $fail failed"

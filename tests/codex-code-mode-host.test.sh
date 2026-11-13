@@ -21,8 +21,9 @@ _pass() { echo "  ok  $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1 (got '$2', want '$3')"; fi; }
 
-# Without the launcher, section D installs the shim alone and passes on nothing.
-for f in "$SHIM" "$ROOT/dot_local/bin/executable_codex"; do
+# Without the launcher, section D installs the shim alone and passes on nothing; without the
+# daemon script, the "is an error" cases fail for the wrong reason.
+for f in "$SHIM" "$ROOT/dot_local/bin/executable_codex" "$ROOT/dot_local/bin/executable_codex-daemon"; do
   [ -r "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
 done
 
