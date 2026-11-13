@@ -1,6 +1,6 @@
 # Test audit findings
 
-**Status:** In progress (phase 3: cuts made, validation recorded below)  
+**Status:** Implemented (branch `chore/test-audit`; the dotfiles have no MR)  
 **Measured at:** `523a95d` (main) for phase 1; the refresh at `eb60a84`; the phase 3 validation at `21563e5` and `0c14b64` (R37, R39); the whole runs at `5debd73`  
 **Spec:** `docs/superpowers/specs/2026-11-11-test-audit-design.md`  
 **Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R39)  

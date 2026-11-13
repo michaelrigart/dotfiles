@@ -1,6 +1,6 @@
 # Test audit: fewer, stronger tests
 
-**Status:** In progress (branch `chore/test-audit`; the dotfiles have no MR)
+**Status:** Implemented (branch `chore/test-audit`; the dotfiles have no MR)
 **Date:** 2026-11-11
 **Sign-off:** Michael, 2026-11-11 (Codex spec review approved in round 3, `xr-1794362121-2ad56b13`)
 **Branch:** `chore/test-audit`, in the `wt` checkout `~/.local/share/chezmoi-chore-test-audit` (a

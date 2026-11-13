@@ -1,6 +1,6 @@
 # Test Audit Implementation Plan
 
-**Status:** In progress (branch `chore/test-audit`; the dotfiles have no MR)
+**Status:** Implemented (branch `chore/test-audit`; the dotfiles have no MR). Completed 2026-11-13; do not run this plan again.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
