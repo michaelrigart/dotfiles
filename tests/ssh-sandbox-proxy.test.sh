@@ -186,7 +186,7 @@ FIX
 COPY="$T/agent-copy"
 sed "s|~/.ssh/config|$FIXTURE|" "$CFG_SRC" > "$COPY"
 g() { /usr/bin/ssh -G -F "$COPY" "$1" 2>&1; }
-for h in github.com GitHub.com ssh.github.com SSH.GitHub.com; do
+for h in github.com GitHub.com ssh.github.com SSH.GitHub.com github.com. ssh.github.com.; do
   out=$(g "$h")
   n=$(printf '%s\n' "$out" | grep -c '^identityfile ')
   last=$(printf '%s\n' "$out" | grep '^identityfile ' | head -1)
