@@ -94,6 +94,9 @@ tests/
 !.claude/skills/cross-review/
 .claude/skills/cross-review/*
 !.claude/skills/cross-review/SKILL.md
+!.claude/skills/plan-run/
+.claude/skills/plan-run/*
+!.claude/skills/plan-run/SKILL.md
 !.claude/skills/live-feedback/
 .claude/skills/live-feedback/*
 !.claude/skills/live-feedback/SKILL.md

@@ -24,10 +24,10 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
   plain branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt`
   as declared, without asking. The driver runs `wt --no-focus <branch> <local-branch>` (a remote
   start point sets an upstream) before the line's first file and names the checkout in its report;
-  if `wt` fails, it stops and tells Michael. It writes and commits the spec in that checkout, then
-  hands the line to its session (a small change at once), which rules on trade-offs inside the spec
-  and escalates spec changes to the driver; the driver keeps only briefing and collecting the
-  report, never the line's work. Never run `wt-rm` or `git worktree remove`: the line's final report
+  if `wt` fails, it stops and tells Michael. In the same turn it briefs the checkout's session,
+  which does the recon, writes the spec, asks Michael for sign-off in its own pane and runs the
+  line, taking spec changes to him; the driver keeps only briefing and collecting the report,
+  never the line's work. Never run `wt-rm` or `git worktree remove`: the line's final report
   (the driver's, if dropped before hand-off) gives Michael the `wt-rm <branch>` command to run once
   it is merged or abandoned. Harness worktrees follow their tool's lifecycle.
 - **Backups:** Borg skips uncommitted `wt` work (the vault's Backups note); commit at checkpoints.

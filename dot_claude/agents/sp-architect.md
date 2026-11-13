@@ -23,6 +23,8 @@ it is large.
   abstraction, a workaround where a refactor belongs, a test that pins wording instead of
   behaviour, a test added for a review finding whose bug could not plausibly return, or a test
   that would still pass with the bug back is a finding, with its concrete cost as the failure scenario.
+- Give each finding the caller that reaches it, as Claude review findings defines one, or say
+  there is none.
 - Never chain commands after a leading `cd`, and never give a recursive `grep` or `rg` a bare
   `.`: the path guard denies both. In a subagent a lone `cd` does not carry over to the next
   call either, so use absolute paths, `git -C <dir>`, and name the directories to search.
