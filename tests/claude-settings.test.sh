@@ -19,6 +19,38 @@ jq_is() { # jq_is <filter> <expected> <label>
   if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
 }
 
+# The modify script asks op for the agent tokens, so every apply here runs with a stub op first on
+# PATH: no suite may start the real one (unsandboxed it asks for Touch ID). The stub answers
+# `item list --vault Private --format json` with $OP_ITEMS (default []) or fails when OP_DOWN=1,
+# and `read op://Private/<title>/token` with $OP_GH or $OP_GL, or fails when OP_READ_FAIL=1;
+# any other call is logged and exits 99. The jq shim logs its argv, so a token that ever reached
+# a command line would show in the log.
+# The first jq that is not a mise shim: a shim exec-ed through the logging shim resolves back to it.
+REAL_JQ=$(type -ap jq | grep -v '/shims/' | head -1); REAL_JQ=${REAL_JQ:-/usr/bin/jq}
+OPD="$(mktemp -d "${TMPDIR:-/tmp}/claude-settings-op.XXXXXX")"; trap 'rm -rf "$OPD" "${MT:-}"' EXIT
+export OP_LOG="$OPD/op.log" JQ_LOG="$OPD/jq.log"
+: > "$OP_LOG"; : > "$JQ_LOG"
+cat > "$OPD/op" <<'STUB'
+#!/bin/sh
+if [ "$*" = "item list --vault Private --format json" ]; then
+  [ "${OP_DOWN:-}" = 1 ] && exit 1
+  printf '%s' "${OP_ITEMS:-[]}"; exit 0
+fi
+if [ "$1" = read ]; then
+  [ "${OP_READ_FAIL:-}" = 1 ] && exit 1
+  case "$2" in
+    "op://Private/GitHub Agent Token/token") printf '%s\n' "$OP_GH"; exit 0 ;;
+    "op://Private/GitLab Agent Token/token") printf '%s\n' "$OP_GL"; exit 0 ;;
+  esac
+fi
+echo "$*" >> "$OP_LOG"; exit 99
+STUB
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$JQ_LOG"\nexec "%s" "$@"\n' "$REAL_JQ" > "$OPD/jq"
+chmod 755 "$OPD/op" "$OPD/jq"
+mkdir "$OPD/noop"; ln -s "$OPD/jq" "$OPD/noop/jq"
+PATH="$OPD:$PATH"
+unset OP_ITEMS OP_DOWN OP_READ_FAIL OP_GH OP_GL
+
 echo "A. layer 1 — permission rules match the approved set exactly"
 emit '{}'
 
@@ -374,7 +406,8 @@ EXP_ALLOW_READ='[
   "~/.ssh/huginn.pub",
   "~/.ssh/michael.pub",
   "~/.ssh/michael_rsa.pub",
-  "~/.ssh/viumore_rsa.pub"
+  "~/.ssh/viumore_rsa.pub",
+  "~/.ssh/github-agent.pub"
 ]'
 jq_is '.env.SSH_AUTH_SOCK' "$AGENT_SOCKET" "Claude uses the stable 1Password agent socket"
 jq_is '.env.PATH | split(":")[0]' "$HOME/.local/bin" "Claude resolves XDG executables first"
@@ -990,7 +1023,7 @@ echo "X. every wired hook script is actually managed by chezmoi"
 # hook pointed at a file chezmoi never deployed. Derive the hook list from the emitted
 # settings rather than hardcoding it, so a future third hook is covered automatically.
 if command -v chezmoi >/dev/null 2>&1; then
-  MT="$(mktemp -d "${TMPDIR:-/tmp}/claude-settings.XXXXXX")"; trap 'rm -rf "$MT"' EXIT
+  MT="$(mktemp -d "${TMPDIR:-/tmp}/claude-settings.XXXXXX")"
   if ! managed=$(chezmoi --source "$SRC" managed 2>"$MT/managed.err"); then
     printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' "$(awk 'NF { print; exit }' "$MT/managed.err" | grep . || echo '(no stderr)')" "$SRC" >&2
     exit 2
@@ -1107,6 +1140,83 @@ jq_is '.skillOverrides | length' 17     "a malformed live skillOverrides is repl
 emit '{}'
 SECOND=$(printf '%s' "$OUT" | /bin/bash "$MOD")
 if [ "$SECOND" = "$OUT" ]; then _pass "applying twice is a no-op"; else _fail "applying twice is a no-op" "second pass differs"; fi
+
+echo "Z. agent identity tokens (spec 2026-11-12-forge-push-protection, section 1.4)"
+# 1Password is the source at apply. Listed: the variable is set. Not listed: absent (the inert
+# state and the rollback). op missing or failing: the live values are carried, so a sandboxed
+# preview neither drops nor diffs them. Listed but unreadable: the apply fails with no output.
+# Values are compared inside jq ($ENV) and only a boolean is printed.
+export OP_GH=fixture-gh-0001 OP_GL=fixture-gl-0001 LIVE_GH=live-gh-0001 LIVE_GL=live-gl-0001
+ITEMS_BOTH='[{"title":"GitHub Agent SSH Key"},{"title":"GitHub Agent Token"},{"title":"GitLab Agent Token"}]'
+ITEMS_GH='[{"title":"GitHub Agent SSH Key"},{"title":"GitHub Agent Token"}]'
+LIVE_BOTH=$(printf '{"env":{"GH_TOKEN":"%s","GITLAB_TOKEN":"%s","STALE":"1"}}' "$LIVE_GH" "$LIVE_GL")
+ERRS="$OPD/stderr.all"; : > "$ERRS"
+emit_op() { # emit_op <live-json> [VAR=value ...]: one apply with a stub-op scenario; sets OUT and RC
+  local live=$1; shift
+  if OUT=$(printf '%s' "$live" | env "$@" HOME="$HOME" /bin/bash "$MOD" 2>>"$ERRS"); then RC=0; else RC=$?; fi
+}
+emit_op '{}' OP_ITEMS="$ITEMS_BOTH"
+jq_is '.env.GH_TOKEN == $ENV.OP_GH' true "a listed GitHub token is rendered into env"
+jq_is '.env.GITLAB_TOKEN == $ENV.OP_GL' true "a listed GitLab token is rendered into env"
+jq_is '.env | has("EDITOR") and has("SSL_CERT_FILE")' true "the tokens are added to the owned env, not instead of it"
+jq_is '.env | has("GITHUB_TOKEN") or has("GLAB_TOKEN")' false "no other token variable is rendered"
+emit_op '{}' OP_ITEMS="$ITEMS_BOTH"; FIRST=$OUT
+emit_op "$FIRST" OP_ITEMS="$ITEMS_BOTH"
+if [ "$OUT" = "$FIRST" ]; then _pass "a second apply with both tokens changes nothing"
+else _fail "a second apply with both tokens changes nothing" "second pass differs"; fi
+emit_op "$LIVE_BOTH" OP_ITEMS="$ITEMS_BOTH"
+jq_is '.env.GH_TOKEN == $ENV.OP_GH and .env.GITLAB_TOKEN == $ENV.OP_GL' true "1Password wins over a stale live token"
+jq_is '.env | has("STALE")' false "an unknown live env key does not linger"
+emit_op '{}' OP_ITEMS="$ITEMS_GH"
+jq_is '.env.GH_TOKEN == $ENV.OP_GH' true "only the GitHub item listed: its token is rendered"
+jq_is '.env | has("GITLAB_TOKEN")' false "only the GitHub item listed: no GitLab token"
+emit_op "$LIVE_BOTH" OP_ITEMS='[]'
+jq_is '.env | has("GH_TOKEN") or has("GITLAB_TOKEN")' false "no item listed: both tokens absent (the rollback)"
+emit_op "$LIVE_BOTH" OP_ITEMS="$ITEMS_GH"
+jq_is '.env | has("GITLAB_TOKEN")' false "an unlisted item drops its live token while another is listed"
+# 1Password unreachable: carry, never drop and never diff.
+emit_op "$LIVE_BOTH" OP_DOWN=1
+jq_is '.env.GH_TOKEN == $ENV.LIVE_GH and .env.GITLAB_TOKEN == $ENV.LIVE_GL' true "op failing: the live tokens are carried unchanged"
+jq_is '.env | has("STALE")' false "op failing: only the two token keys are carried"
+emit_op '{}' OP_DOWN=1
+jq_is '.env | has("GH_TOKEN") or has("GITLAB_TOKEN")' false "op failing with no live tokens: both absent"
+emit_op "$LIVE_BOTH" PATH="$OPD/noop:/usr/bin:/bin"
+if [ -z "$(env PATH="$OPD/noop:/usr/bin:/bin" /bin/sh -c 'command -v op')" ]; then _pass "the no-op scenario really has no op on PATH"
+else _fail "the no-op scenario really has no op on PATH" "op resolved"; fi
+jq_is '.env.GH_TOKEN == $ENV.LIVE_GH and .env.GITLAB_TOKEN == $ENV.LIVE_GL' true "no op on PATH: the live tokens are carried unchanged"
+emit_op '{}' PATH="$OPD/noop:/usr/bin:/bin"
+jq_is '.env | has("GH_TOKEN") or has("GITLAB_TOKEN")' false "no op on PATH and no live tokens: both absent"
+emit_op '{"env":{"GH_TOKEN":7,"GITLAB_TOKEN":"live-gl-0001"}}' OP_DOWN=1
+jq_is '.env | has("GH_TOKEN")' false "op failing: a live value that is not a string is not carried"
+jq_is '.env.GITLAB_TOKEN == $ENV.LIVE_GL' true "op failing: the string value beside it is carried"
+emit_op "$LIVE_BOTH" OP_ITEMS='not json'
+jq_is '.env.GH_TOKEN == $ENV.LIVE_GH and .env.GITLAB_TOKEN == $ENV.LIVE_GL' true "an unparsable item list counts as unreachable: carried"
+# Listed but unreadable: fail, so chezmoi keeps the old file.
+emit_op "$LIVE_BOTH" OP_ITEMS="$ITEMS_BOTH" OP_READ_FAIL=1
+if [ "$RC" -ne 0 ] && [ -z "$OUT" ]; then _pass "a listed but unreadable token fails the apply with no stdout"
+else _fail "a listed but unreadable token fails the apply with no stdout" "rc=$RC stdout=${#OUT} bytes"; fi
+if grep -qF '1Password lists "GitHub Agent Token" but its token cannot be read' "$ERRS"; then _pass "the failure names the item"
+else _fail "the failure names the item" "message missing"; fi
+emit_op '{}' OP_ITEMS="$ITEMS_GH" OP_GH=
+if [ "$RC" -ne 0 ] && [ -z "$OUT" ]; then _pass "a listed item whose token reads empty fails the apply"
+else _fail "a listed item whose token reads empty fails the apply" "rc=$RC stdout=${#OUT} bytes"; fi
+# No value reaches a diagnostic or a command line, and op is only asked the two known questions.
+if grep -qF -e "$OP_GH" -e "$OP_GL" -e "$LIVE_GH" -e "$LIVE_GL" "$ERRS" "$JQ_LOG"; then
+  _fail "no token appears in stderr or in jq argv" "a value was found"
+else _pass "no token appears in stderr or in jq argv"; fi
+if [ -s "$OP_LOG" ]; then _fail "op is only asked to list items and read the two tokens" "$(cat "$OP_LOG")"
+else _pass "op is only asked to list items and read the two tokens"; fi
+# The agent SSH configuration must stay readable in the sandbox: no deny rule, credential entry
+# or allowRead gap hides ~/.config/agent-identity/ssh_config (its Match block is what pins the key).
+emit '{}'
+jq_is '[.permissions.deny[]? | select(startswith("Read(")) | .[5:-1]
+        | gsub("\\."; "\\.") | gsub("\\*\\*/"; "(.*/)?") | gsub("/\\*\\*"; "/.*") | gsub("\\*"; "[^/]*")
+        | . as $re | select("~/.config/agent-identity/ssh_config" | test("^" + $re + "$"))] | length' 0 \
+      "no Read deny rule covers the agent SSH configuration"
+jq_is '[.sandbox.credentials.files[].path | . as $c | select("~/.config/agent-identity/ssh_config" | startswith($c))] | length' 0 \
+      "no credential path covers the agent SSH configuration"
+jq_is '.sandbox.filesystem.allowRead | index("~/.ssh/github-agent.pub") != null' true \
+      "the agent public key is readable through allowRead"
 
 # --- agent definitions must declare a frontmatter name ----------------------
 #

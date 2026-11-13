@@ -182,7 +182,10 @@ if [ -e "$MARKS/fsmonitor" ] && [ -e "$MARKS/ext" ] && [ -e "$MARKS/ssh" ] \
 else _fail "the fixture repositories run their configured commands under plain git" "$live"; fi
 rm -f "$MARKS"/*
 
-SETTINGS=$(printf '{}'| HOME="$T" /bin/bash "$MOD") || { echo "settings did not render" >&2; exit 2; }
+# The settings script asks op for the agent tokens: a stub that fails keeps the real op (a Touch ID
+# prompt when unsandboxed) out of this suite; the script then carries the live values.
+mkdir "$T/opstub" && printf '#!/bin/sh\nexit 1\n' > "$T/opstub/op" && chmod 755 "$T/opstub/op"
+SETTINGS=$(printf '{}'| PATH="$T/opstub:$PATH" HOME="$T" /bin/bash "$MOD") || { echo "settings did not render" >&2; exit 2; }
 total=$(printf '%s' "$SETTINGS" | jq '[.hooks[][]?.hooks[]?.command, .statusLine.command]
   | map(select(type == "string")) | length')
 n=0; skipped=0; NOSCAN_ALL=""
