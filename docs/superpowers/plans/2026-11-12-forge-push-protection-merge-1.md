@@ -161,9 +161,11 @@ against them.
 **Interfaces:**
 - Produces, in `.scripts/forge-protection.sh`:
   - CLI `forge-protection.sh check` and `--help`. Exit 0 only when every row is `ok` or
-    `excepted`; 1 when any row is `drift` or `unreadable`; 2 on usage, or when `git` or `jq` is
-    missing.
-  - Inputs: `HOME` (walk `$HOME/.local/share/chezmoi` and `$HOME/Code/*/*`; exceptions file
+    `excepted`; 1 when any row is `drift` or `unreadable`, or when the walk finds no repository
+    (it then prints that instead of a summary); 2 on usage, or when `git` or `jq` is missing.
+  - Inputs: `HOME` (walk `$HOME/.local/share/chezmoi` itself and every checkout one to three levels
+    under `$HOME/Code` (`~/Code/*`, `~/Code/*/*`, `~/Code/*/*/*`), recording a repository and
+    never descending into it; exceptions file
     `$HOME/.config/forge-protection/exceptions`), `PATH`, `FORGE_PROTECTION_TIMEOUT` (seconds per
     forge call, default 20).
   - `normalize_remote <url>` prints `<host>/<path>`: lower case; scheme, user, port and a trailing
@@ -380,7 +382,10 @@ against them.
 - Produces the hook `pre-push <remote> <url>`, git's lines on stdin. It saves stdin to a temp file
   (never `$(cat)`, which drops the last newline), collects each line's local sha that is not all
   zeros, and when there is one runs `/usr/bin/python3 -I "$(dirname "$0")/secret-scan" --repo
-  "$(git rev-parse --show-toplevel)" --remote "$1" -- <shas>`; a non-zero exit blocks (exit 1).
+  "$(git rev-parse --show-toplevel)" --remote "$dest" -- <shas>`, where `$dest` is `$1` (the
+  remote's name, or the URL as typed) unless git rewrote the URL (`$2` differs from `$1` and `$1`
+  is not in `git remote`), when it is `<$2> (rewritten from <$1>)` (as
+  `dot_config/git/hooks/executable_pre-push` builds it); a non-zero exit blocks (exit 1).
   A missing `secret-scan` blocks with `Push guard: the secret scan (<path>) is missing, so the push
   is refused. Restore it with chezmoi apply.`; a work tree that cannot be resolved blocks too. Then
   it runs `$(git rev-parse --path-format=absolute --git-common-dir)/hooks/pre-push` when that is
@@ -680,7 +685,7 @@ suite counts a FAIL when gitleaks is not installed rather than skipping its rows
 - Produces: one ordered, paste-ready list, the outline under "Michael's steps" below expanded: each
   step is what to do (a command in its own code block, or a click path) followed by the command or
   click path that verifies it and the expected result. Placeholders only, written as
-  `<machine-account>`, `<second-repo>`, `<project-id>`, `<branch>`, `<org-url>`, `<project>`,
+  `<machine-account>`, `<repo-a>`, `<project-id>`, `<branch>`, `<org-url>`, `<project>`,
   `<repo-id>`; real values come from the check's output, which stays on his screen. Every
   verification prints booleans, logins or public keys, never a token.
 
@@ -735,8 +740,11 @@ measures heavy (below).
 ## Michael's steps
 
 Not tasks: each is a forge write, an account, a token or a reading of his own forms. This is the
-outline Task 9 expands into the paste-ready file; the order is §6's. "Verify" is what Task 9 writes
-after each step.
+outline Task 9 expands into the paste-ready file; the order is §6's, except that the apply follows
+the GitHub steps (the check needs no apply). "Verify" is what Task 9 writes after each step. The file
+opens with "Three decisions first" (GitHub identity reach and authorship, GitLab on shared projects,
+the scan staying partly in the guard), which the spec's "Corrections from planning" records for
+Michael to overrule.
 
 1. **Machine account.** Create the GitHub machine account, two-factor authentication on, its login
    in 1Password. Verify: as that account, `https://github.com/settings/security` shows two-factor
@@ -745,12 +753,14 @@ after each step.
    Agent SSH Key`; add the public key at `https://github.com/settings/keys` as the machine account.
    Verify: `op read "op://Private/GitHub Agent SSH Key/public key"` prints one `ssh-ed25519` line
    (a public key), and the same key is listed on that page.
-3. **Its token.** As the machine account: Settings > Developer settings > Personal access tokens >
-   Tokens (classic), scope `public_repo` only; into 1Password, vault Private, item `GitHub Agent
-   Token`, field `token`. On the fine-grained form, check that "Resource owner" offers only the
-   machine account (§1.1's reason for a classic token). Verify: `GH_TOKEN="$(op read
-   'op://Private/GitHub Agent Token/token')" gh api user --jq .login` prints `<machine-account>`, and
-   the same with `gh api -i user | grep -i '^x-oauth-scopes'` prints `public_repo`.
+3. **Its token** (decision a, below). Recommended: a fine-grained token of his own account, only
+   Contents read, Pull requests read and write, Issues read and write, Metadata read, on the
+   repositories agents work in; into 1Password, vault Private, item `GitHub Agent Token`, field
+   `token`. Verify: `GH_TOKEN="$(op read 'op://Private/GitHub Agent Token/token')" gh api user --jq
+   .login` prints `<owner>`, and a merge call on a test pull request in a scratch repository is
+   refused. If he declines the decision: a classic `public_repo` token of the machine account
+   (§1.1's reason: a fine-grained token's resource owner offers only the machine account), verified
+   as before.
 4. **GitLab token.** On his own account: Edit profile > Access tokens > Add new token, fine-grained.
    Allow reading projects, repositories, branches and protected branches, pipelines, jobs, issues
    and merge requests, and creating and updating merge requests and their notes (the pre-merge gate
@@ -759,35 +769,47 @@ after each step.
    `token`. Verify: `GITLAB_TOKEN="$(op read 'op://Private/GitLab Agent Token/token')" glab api
    personal_access_tokens/self` lists none of merge, approve, protect or project update; the exact
    permission names go into the spec's Implementation notes.
-5. **Apply.** Merge 1 merged, `chezmoi apply`, `brew bundle --file ~/.config/homebrew/Brewfile` if
-   gitleaks is missing, a new Claude Code session. Verify, own terminal: `git config --global --get
+5. **Merge 1** into the main checkout and publish `main` from his own terminal. The hook and the
+   identity are not deployed yet.
+6. **The check** (no apply needed), into a file outside the repository:
+   `~/.local/share/chezmoi/.scripts/forge-protection.sh check`. Its output names repositories.
+   Verify: one row per repository, `drift` with commands where nothing is set yet. Read on
+   2026-11-13: 86 repositories (GitHub 43 own `drift` and 14 others' `unreadable`; gitlab.com 22
+   `drift` and 3 `unreadable`; Azure 3 `unreadable` from an agent session; 1 self-hosted host the
+   check does not know, `unreadable`).
+7. **GitHub rulesets**, own terminal, on the repositories agents work in (a chosen few, not all 43):
+   the `gh api --method POST …/rulesets` lines the check prints, filtered out of its saved output for
+   those repositories, read, then run (`main-owner-only` on `dotfiles`, both rulesets elsewhere).
+   Verify: `gh api repos/michaelrigart/<repo>/rules/branches/<branch> --jq '[.[].type] | sort'`
+   prints `["creation","deletion","non_fast_forward","update"]` for each; the ruleset page the check
+   names shows "Repository admin" as the only bypass of `main-owner-only` (this confirms `actor_id
+   5`). The 14 repositories of other owners and the self-hosted one go in the exceptions file
+   (step 13), with his unchosen dormant repositories.
+8. **Collaborator.** Own terminal, a loop over the same repositories: `gh api --method PUT
+   repos/michaelrigart/<repo>/collaborators/<machine-account> -f permission=push`; accept as the
+   machine account in the browser. Verify: `gh api
+   repos/michaelrigart/<repo>/collaborators/<machine-account>/permission --jq .permission` prints
+   `write` for each.
+9. **Apply.** `chezmoi apply`, `brew bundle --file ~/.config/homebrew/Brewfile` if gitleaks is
+   missing, a new Claude Code session. Verify, own terminal: `git config --global --get
    core.hooksPath` prints `~/.config/git/hooks`; `ls ~/.config/git/hooks` lists `pre-push` and
    `secret-scan`; `test -s ~/.ssh/github-agent.pub && echo present`; `jq '.env | has("GH_TOKEN"),
    has("GITLAB_TOKEN")' ~/.claude/settings.json` prints `true` twice; `ssh -T git@github.com` greets
-   `michaelrigart`. In the session: `gh api user --jq .login` and `$GIT_SSH_COMMAND -T
-   git@github.com` both name `<machine-account>`.
-6. **The check.** `~/.local/share/chezmoi/.scripts/forge-protection.sh check`. Its output names
-   repositories: it stays on screen. Verify: one row per repository, `drift` with commands where
-   nothing is set yet.
-7. **GitHub rulesets**, own terminal: the `gh api --method POST …/rulesets` lines the check prints
-   (`main-owner-only` on `dotfiles` and `<second-repo>`, `protect-main` on `<second-repo>`). Verify:
-   `gh api repos/michaelrigart/<repo>/rules/branches/<branch> --jq '[.[].type] | sort'` prints
-   `["creation","deletion","non_fast_forward","update"]` for both; the ruleset page the check
-   names shows "Repository admin" as the only bypass of `main-owner-only` (this confirms `actor_id
-   5`).
-8. **Collaborator.** Own terminal, for both repositories: `gh api --method PUT
-   repos/michaelrigart/<repo>/collaborators/<machine-account> -f permission=push`; accept as the
-   machine account in the browser (`https://github.com/notifications`). Verify: `gh api
-   repos/michaelrigart/<repo>/collaborators/<machine-account>/permission --jq .permission` prints
-   `write`.
-9. **GitLab protection.** First one project of his choosing: its printed PATCH (or POST) line.
-   Verify: `glab api projects/<project-id>/protected_branches/<branch> --jq '{id, push:
-   [.push_access_levels[].access_level], force: .allow_force_push}'` shows push `[0]`, force
-   `false`, and an unchanged id. If GitLab refuses the fields, use the printed UI path (Settings >
-   Repository > Protected branches) for every project, and tell the line which form worked, so the
-   printed form is corrected before merge 2. Then the rest. Verify: a new check shows every GitLab
-   row `ok` except the projects without access.
-10. **Azure DevOps**, per repository: `az repos policy list --org <org-url> --project <project>
+   `michaelrigart`. In the session: `$GIT_SSH_COMMAND -T git@github.com` names `<machine-account>`
+   and `gh api user --jq .login` names the owner of the token (`michaelrigart` with the
+   recommended token). The step lists what the hook does to his own pushes (budget, the
+   `.gitleaksignore` rule, agent-worded messages, bare repositories).
+10. **GitLab protection, one project.** A project of his choosing: record its protected branches
+    first, then its printed PATCH (or POST) line. Verify: `glab api projects/<project-id>/protected_branches/<branch>
+    --jq '{id, push: [.push_access_levels[].access_level], force: .allow_force_push}'` shows push
+    `[0]`, force `false`, and an unchanged id. If GitLab refuses the fields, use the printed UI path
+    (Settings > Repository > Protected branches) for every project, and tell the line which form
+    worked, so the printed form is corrected before merge 2.
+11. **GitLab protection, the rest.** Only the projects he decides on (decision b: where he alone
+    pushes the default branch); the before-state of every one of them recorded first, then the
+    printed lines, filtered out of a fresh output and read. Verify: a new check shows every chosen
+    GitLab row `ok`.
+12. **Azure DevOps**, per repository: `az repos policy list --org <org-url> --project <project>
     --repository-id <repo-id> --branch <branch>`; where missing, the printed `az repos policy
     approver-count create …`; then Repos > Branches > `<branch>` > ⋯ > Branch security > his user:
     "Bypass policies when pushing", "Bypass policies when completing pull requests" and "Force push"
@@ -797,14 +819,40 @@ after each step.
     Repositories > `<repo>` > Policies > Branch policies. Verify: the same `policy list` with
     `--query "[?isEnabled && isBlocking].type.id"` includes
     `"fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"` (Minimum number of reviewers), or the policy shows as
-    Required in the UI. A repository he cannot edit goes into step 11's file.
-11. **Exceptions.** `mkdir -p ~/.config/forge-protection`, then one remote per line in
-    `~/.config/forge-protection/exceptions`: the repositories of §2.4 he accepts as unprotected.
-    Verify: the check exits 0 (`echo $?`) and its summary's excepted count equals that list.
-12. **Record.** In a fresh sandboxed session `./tests/run.sh live-agent-auth` prints
+    Required in the UI. A repository he cannot edit goes into step 13's file.
+13. **Exceptions.** `mkdir -p ~/.config/forge-protection`, then one remote per line in
+    `~/.config/forge-protection/exceptions`: the repositories of §2.4 he accepts as unprotected
+    (the 14 others' GitHub repositories, the self-hosted one, unchosen dormant ones, projects he
+    leaves). Verify: the check exits 0 (`echo $?`) and its summary's excepted count equals that list.
+14. **Own-terminal verification.** The check exits 0; the GitHub rule list and collaborator
+    permission for each chosen repository; `ssh -T git@github.com` greets `michaelrigart`.
+15. **From a new agent session**, sandboxed: `./tests/run.sh live-agent-auth` prints
     `GITHUB_SSH=AGENT` and `GITLAB_SSH=READY`; with the agent token a GET of one project's protected
-    branches succeeds. Results go into the spec's Implementation notes without repository names, and
+    branches succeeds; the check as the agent (with the fine-grained token its GitHub rows may not
+    read `ok`, because `current_user_can_bypass` describes the token's user).
+16. **Record.** Results go into the spec's Implementation notes without repository names, and
     the line is told merge 1 is verified; merge 2 is planned after that (§6).
+
+The apply is step 9, after the GitHub steps, so no chosen repository has the machine account
+missing when agent sessions switch to it; until the apply an agent session is still him, and the
+local guard is what covers it.
+
+## Rulings
+
+Accepted limits of merge 1, recorded for Michael to overrule. None is code.
+
+- The agent SSH pin covers `github.com` and `ssh.github.com`. A trailing-dot host name, an IP
+  literal, an SSH host alias and an HTTPS remote are not covered (a pinned trailing-dot form was
+  tried and reverted).
+- Printed GitLab commands carry `--hostname gitlab.com`; the check reads `gitlab.com` only, and a
+  project on another GitLab host reads `unreadable`.
+- The `-F` ssh option, which selects the agent configuration, skips `/etc/ssh/ssh_config` for
+  agent sessions; `~/.ssh/config` is still included for hosts other than GitHub's.
+- Public-key templates render at mode 600 (the `private_` prefix of the template name).
+- An archived repository is not `ok`: the check does not read the archived flag, so such a
+  repository needs an exceptions line.
+- A named remote's tracking refs are attributed only when its fetch and push address are one
+  (Decisions row "A push to a named remote").
 
 ## Owed
 

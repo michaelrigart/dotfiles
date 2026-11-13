@@ -519,6 +519,44 @@ unchanged; each correction is listed here for Michael, and the text above stands
 8. **Section 2.1:** `bypass_actors` is returned to repository admins only. Run in an agent session
    the check proves that the agent cannot bypass; that `protect-main` binds Michael too shows
    only when he runs it, which his steps include.
+9. **The inventory is larger than this spec counts.** The check, read on 2026-11-13, found 86
+   repositories, not the two GitHub repositories and 28 GitLab projects above: on GitHub 43 of
+   Michael's own (all drift) and 14 of other owners that it cannot read (HTTP 403); on `gitlab.com`
+   25 (22 drift, 3 unreadable); 3 on Azure DevOps (unreadable from an agent session); and 1 on a
+   self-hosted host the check does not know (unreadable). Recorded for Michael to overrule; his
+   steps use these figures.
+10. **GitHub identity reach and authorship is an open decision of Michael's.** The agent SSH key is
+    pinned for every `github.com` remote, so an agent cannot push to (or, if private, fetch) a
+    repository where the machine account is not a collaborator, and a machine-account `GH_TOKEN`
+    makes every pull request, issue and comment the machine account's, against the rule that the
+    published record is Michael's. The steps recommend a fine-grained token of his own account (no
+    Contents write, so it cannot push or merge) and a collaborator only where agents work; recorded
+    for him to overrule, and unverified until he checks the permission names and that a merge is
+    refused.
+11. **GitLab changes are visible to other members.** The target (push "No one", merge Maintainers,
+    force push off) also removes default-branch push from other members and from a pushing CI job,
+    and merge from Developers; section 2.2's "nothing visible to others" was wrong. Recorded for
+    Michael to overrule: apply it only where he alone pushes the default branch, and decide whether
+    the merge clause leaves the target.
+12. **Section 5, "only this call remains in the helper", did not hold.** The guard still scans an
+    otherwise-allowed agent push when it cannot show the deployed hook will run for it
+    (`--no-verify`, an environment assignment or wrapper, a `core.hooksPath` that is not the
+    deployed directory, a missing or non-executable hook), which keeps main's verdicts for those
+    pushes. Recorded for Michael to overrule.
+13. **A named remote's tracking refs are attributed only when its fetch and push address are
+    one.** Otherwise the scan excludes nothing and scans the whole history, failing closed on the
+    budget; a `pushurl`, a `pushInsteadOf` rewrite or several URLs say nothing about what the push
+    destination holds. This sharpens correction 2 and is recorded for Michael to overrule.
+14. **The walk is three levels deep.** The check covers the dotfiles checkout and every checkout
+    one to three levels under `~/Code`, never entering a repository, and exits 1 when it finds none;
+    two levels missed checkouts. Recorded for Michael to overrule.
+15. **The Azure reviewers policy is matched by its type id,** not its localised display name, and
+    a policy without a string `type.id` makes the row unreadable. The id is taken from
+    documentation and confirmed when Michael first reads a real policy list. Recorded for him to
+    overrule.
+16. **The agent SSH pin covers `ssh.github.com` as well as `github.com`.** The port-443 endpoint is
+    GitHub's own; a trailing-dot host name, an IP literal, an SSH host alias and an HTTPS remote
+    stay outside the pin as accepted limits. Recorded for Michael to overrule.
 
 ## Left to the plan
 
