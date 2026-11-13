@@ -18,12 +18,15 @@
 #   [cd <literal path> &&] [sudo] az repos pr create [options]
 #
 # An API write that only comments, opens or resolves a thread, starts an MR's pipeline, or
-# updates a title or description (-f/-F fields, no --input) is never gated, in any position.
-# A merge of origin's default branch (origin/<name> or refs/remotes/origin/<name>) is never
-# gated where it is a command of its own, in a directory the gate can read: it lands only
-# what origin's default branch already holds. It must be written in plain characters (letters,
-# digits and _ . / = -), with only git's -C and the flags --ff-only, --no-edit and the like,
-# so no shell can read it as anything else. Any gated verb left beside it decides.
+# updates a title or description (-f/-F fields, no --input) is never gated, and neither is a
+# merge of origin's default branch (origin/<name> or refs/remotes/origin/<name>), which lands
+# only what origin's default branch already holds, in a directory the gate can read. Each must
+# be a command of its own, written in plain words (letters, digits and _ . / : @ % + , = -;
+# the API call's words may also be quoted, a double-quoted one holding no $, backtick or
+# backslash) with no redirection but >, >>, 2>, 2>>, &> and 2>&1, so no shell can read it as
+# anything else; the merge takes only git's -C and the flags --ff-only, --no-edit and the
+# like. Run some other way (a substitution, a subshell, sh -c), it is gated like any other
+# write. Any gated verb left beside it decides.
 #
 # glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
 # proposes a branch the forge makes itself, which no review can have seen.
@@ -599,7 +602,7 @@ def lex(cmd, body=False, everywhere=False, naive=False):
 # marker, anywhere in an unquoted word; at the start of a word it may carry a descriptor
 # number (2>, 2>&1). Not a process substitution, <( ) or >( ), which runs a command.
 REDIRECT_OP = r"(?:&>>|&>|>>|>&|>\||<>|<&|<<<|<<-|<<|>|<)(?!\()"
-REDIRECT_RE = re.compile(r"\d*" + REDIRECT_OP)
+REDIRECT_RE = re.compile(r"\d?" + REDIRECT_OP)
 REDIRECT_MID_RE = re.compile(REDIRECT_OP)
 WORD_END = " \t\n;&|()<>"
 
@@ -659,16 +662,28 @@ def split_commands(text):
     """(segment, separator) pairs of text, split where the shell ends a command: at an unquoted
     ;, &, | or newline, a run of them (&&, ||, |&, ;;) being one separator. Quotes and
     backslashes are honoured as strip_redirections honours them, so a quoted or escaped
-    operator never splits. Parentheses do not split: a segment holding one is not plain. The
-    last pair's separator is empty. text has been through lex, so the only quotes left are
-    '...' and "..."."""
+    operator never splits. The & or | of a redirection (2>&1, >|, &>) is part of it, not a
+    separator. Parentheses do not split: a segment holding one is not plain. The last pair's
+    separator is empty. text has been through lex, so the only quotes left are '...' and
+    "...", and its redirections are still in it."""
     out, buf, i, n, quoting = [], [], 0, len(text), None
     while i < n:
         c = text[i]
+        if quoting is None and c == ">":
+            j = i + 1 + (text[i + 1:i + 2] == ">")
+            if text[j:j + 1] and text[j] in "&|":
+                j += 1
+            buf.append(text[i:j])
+            i = j
+            continue
         if quoting is None and c in ";&|\n":
             j = i
             while j < n and text[j] in ";&|\n":
                 j += 1
+            if text[i:j] == "&" and text[j:j + 1] == ">":
+                buf.append(c)
+                i = j
+                continue
             out.append(("".join(buf), text[i:j]))
             buf, i = [], j
             continue
@@ -684,6 +699,62 @@ def split_commands(text):
         i += 1
     out.append(("".join(buf), ""))
     return out
+
+
+# What a shell passes to a program unchanged. A character outside this set may expand, split,
+# glob or redirect, so a word holding one is not plain.
+PLAIN_RUN = re.compile(r"[A-Za-z0-9_./:@%+,=-]+")
+# The redirections a plain command may carry: stdout or stderr to a file, or to the other
+# stream (2>&1). A descriptor is one digit, as zsh reads it; no input redirection, no here
+# document, no process substitution.
+PLAIN_REDIRECT = re.compile(r"([12]?>>?|&>)[ \t]*")
+
+
+def plain_argv(segment, quotes):
+    """The words a segment of raw (lexed, not redirection-stripped) text passes to its
+    command, or None when any part of it is not plain. A word is plain runs, and with quotes
+    also '...' strings and "..." strings holding no $, backtick or backslash; it may not start
+    with an unquoted = (zsh expands =name to a path), and ~ is not plain at all. The
+    redirections of PLAIN_REDIRECT are dropped, each followed by a plain run or &1 or &2 as
+    a whole word. Whatever shell reads the segment, these are the words it passes on."""
+    words, i, n = [], 0, len(segment)
+    while i < n:
+        if segment[i] in " \t":
+            i += 1
+            continue
+        m = PLAIN_REDIRECT.match(segment, i)
+        if m:
+            i = m.end()
+            if m.group(1) != "&>" and segment[i:i + 2] in ("&1", "&2"):
+                j = i + 2
+            else:
+                run = PLAIN_RUN.match(segment, i)
+                if not run or segment[i] == "=":
+                    return None
+                j = run.end()
+            if j < n and segment[j] not in " \t":
+                return None
+            i = j
+            continue
+        start, parts = i, []
+        while i < n and segment[i] not in " \t":
+            c = segment[i]
+            run = PLAIN_RUN.match(segment, i)
+            if run:
+                if i == start and c == "=":
+                    return None
+                parts.append(run.group())
+                i = run.end()
+            elif quotes and c in "'\"":
+                j = segment.find(c, i + 1)
+                if j < 0 or (c == '"' and any(q in segment[i + 1:j] for q in "$`\\")):
+                    return None
+                parts.append(segment[i + 1:j])
+                i = j + 1
+            else:
+                return None
+        words.append("".join(parts))
+    return words
 
 
 def tokenize(text):
@@ -813,11 +884,13 @@ CLI_VERBS = {
 # The GraphQL mutations that create, update, revert, merge or enqueue an MR/PR, merge a branch
 # with no PR, or turn auto-merge on. An update can retarget, from arguments a variable may
 # carry, so it is denied by name, as is a note carrying mergeRequestDiffHeadSha, which runs
-# GitLab's /merge quick action. Every other mutation (review threads, comments) is allowed.
+# GitLab's /merge quick action, and a diff note (createDiffNote), whose position carries a head
+# sha to the same end. Every other mutation (review threads, comments) is allowed.
 MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAccept|"
                        r"mergeRequestSetAutoMerge|createPullRequest|updatePullRequest|"
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
-                       r"enablePullRequestAutoMerge|mergeBranch|mergeRequestDiffHeadSha)\b")
+                       r"enablePullRequestAutoMerge|mergeBranch|mergeRequestDiffHeadSha|"
+                       r"createDiffNote)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
 # The API writes that are never gated: a comment, a thread, a pipeline start, and an update of
 # a title or description. Each is a whole-path match on literal words, so a path the forge could
@@ -834,7 +907,7 @@ EXEMPT_PATH = {
 # /merge merge, so a note or thread is exempt only while every field name is one it may carry.
 GITLAB_NOTE_PATH = re.compile(r"projects/{}/merge_requests/\d+/(?:notes(?:/\d+)?|discussions"
                               r"(?:/[0-9a-f]+(?:/notes(?:/\d+)?)?)?)".format(GITLAB_PROJECT))
-GITLAB_NOTE_FIELD = re.compile(r"body|resolved|commit_id|position\[.*", re.S)
+GITLAB_NOTE_FIELD = re.compile(r"body|resolved|commit_id|position\[[a-z_]+\](?:\[[a-z_]+\])*")
 UPDATE_PATH = {
     "glab": (re.compile(r"projects/{}/merge_requests/\d+".format(GITLAB_PROJECT)), "PUT",
              {"title", "description"}),
@@ -1026,10 +1099,13 @@ def api_exempt(args, tool):
     updated with a title or description alone (UPDATE_PATH)? No other word of the call may name
     an MR/PR path, and the path holds no .. (the forge would resolve it to another endpoint).
     A GitLab note or an update must show its field names, so --input hides them; any other
-    body may come from anywhere. No option word may hold what a shell could expand into another
-    option (a $, a backtick, a brace), nor the endpoint a ; (a query could split into a field)."""
+    body may come from anywhere. The endpoint may hold no ; (a query could split into a field),
+    and --placeholder fills a segment the path does not show, so it is never exempt. The words
+    are those plain_argv reads, so nothing in them is left for a shell to expand."""
     pos = api_options(args, GLAB_API_VALUE if tool == "glab" else GH_API_VALUE)[1]
     if len(pos) != 1 or not names_gated_path(pos[0]) or sum(map(names_gated_path, args)) != 1:
+        return False
+    if api_placeholder(args, tool):
         return False
     call = parse_api(args, tool)
     endpoint = call["endpoint"]
@@ -1037,8 +1113,6 @@ def api_exempt(args, tool):
         return False
     path, query = endpoint_parts(endpoint)
     if ".." in path or ";" in endpoint:
-        return False
-    if any(a.startswith("-") and re.search(r"[${`]", a) for a in args):
         return False
     if EXEMPT_PATH[tool].fullmatch(path):
         return True
@@ -1054,15 +1128,6 @@ def api_exempt(args, tool):
     if tool == "glab":
         given |= set(query)
     return bool(given) and given <= names
-
-
-def api_is_gated(args, tool):
-    """Does the api call count as a gated verb? A --placeholder write always does; otherwise
-    one the parse reads as a gated write, or the net beside it catches, unless it is exempt."""
-    if api_placeholder(args, tool):
-        return True
-    return not api_exempt(args, tool) and (api_gated(parse_api(args, tool))
-                                           or api_unplaced(args, tool))
 
 
 def only_options(words):
@@ -1104,7 +1169,8 @@ def reordered(tool, rest):
             continue
         if word == "api":
             args = rest[:k] + rest[k + 1:]
-            if api_is_gated(args, tool):
+            if (api_gated(parse_api(args, tool)) or api_unplaced(args, tool)
+                    or api_placeholder(args, tool)):
                 return "api", ""
         if word != noun:
             continue
@@ -1175,7 +1241,8 @@ def gated_verb(words):
     if i == 0 and rest[:1] == ["api"]:
         if rest[1:2] and rest[1] in HELP:
             return None
-        if api_is_gated(rest[1:], tool):
+        if (api_gated(parse_api(rest[1:], tool)) or api_unplaced(rest[1:], tool)
+                or api_placeholder(rest[1:], tool)):
             return {"tool": tool, "kind": "api", "args": rest[1:]}
         return None
     found = reordered(tool, rest)
@@ -1367,7 +1434,8 @@ def merge_dir(args, cwd):
         if args[i] == "-C" and i + 1 < len(args):
             if not literal(args[i + 1]):
                 raise Deny(LITERAL.format("the -C path", args[i + 1]))
-            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(args[i + 1])))
+            # git changes directory physically, so a symlink's .. is its target's parent.
+            cwd = os.path.realpath(os.path.join(cwd, os.path.expanduser(args[i + 1])))
             i += 2
         elif args[i] in GIT_FLAGS:
             i += 1
@@ -1428,20 +1496,6 @@ DIR_CHANGERS = {"cd", "chdir", "pushd", "popd"}
 # shell or for git to read another way.
 SYNC_FLAGS = {"--ff-only", "--ff", "--no-ff", "--no-edit", "--no-commit", "-q", "--quiet",
               "--stat", "--no-stat", "-n", "--autostash", "--no-autostash", "-v", "--verbose"}
-# Characters no shell expands, quotes or ends a command at: a segment made only of these has
-# the words it splits into, whatever shell reads it.
-PLAIN_TEXT = re.compile(r"[A-Za-z0-9_./= \t-]*")
-
-
-def plain_words(segment):
-    """The words of a segment written in plain characters only, or None. zsh expands a word
-    that starts with = (=git is git's path), so that is not plain either."""
-    if not PLAIN_TEXT.fullmatch(segment):
-        return None
-    words = segment.split()
-    return None if any(w.startswith("=") for w in words) else words
-
-
 def is_sync(words, cwd, moved, ledger):
     """Is this command (plain words) a merge of origin's default branch, with nothing else on
     it? Such a merge lands only what origin's default branch already holds, on any branch, so
@@ -1476,20 +1530,32 @@ def is_sync(words, cwd, moved, ledger):
     return names_origin_default(top, refs[0], ledger.default_branch(top))
 
 
-def without_syncs(text, cwd, ledger):
-    """text with each sync segment replaced by the word :, every separator kept, or None when
-    it holds none. The directory a segment runs in is the hook's, moved by a leading
-    cd <path> && as parse_plain reads it; a cd, chdir, pushd or popd word in any other earlier
-    segment, quoted or not, moves it where the gate cannot follow."""
+def is_exempt_api(segment):
+    """Is the segment a glab or gh api call that is a command of its own and an exempt write?
+    The tool is named exactly and api follows it directly: an option between them is not read."""
+    words = plain_argv(segment, True)
+    if not words or words[0] not in ("glab", "gh") or words[1:2] != ["api"]:
+        return False
+    return api_exempt(words[2:], words[0])
+
+
+def without_exempt(text, cwd, ledger):
+    """text with each sync or exempt API segment replaced by the word :, every separator kept,
+    or None when it holds none. Each is read from the plain words of its own segment, so the
+    gate's reading is the shell's. The directory a sync runs in is the hook's, moved by a
+    leading cd <path> && as parse_plain reads it; a cd, chdir, pushd or popd word in any other
+    earlier segment, quoted or not, moves it where the gate cannot follow. ledger is None when
+    the command holds no merge, and then no segment is a sync."""
     parts = split_commands(text)
-    first = plain_words(parts[0][0])
+    first = plain_argv(parts[0][0], False)
     lead = None
     if first and len(first) == 2 and first[0] == "cd" and first[1] != "-" and parts[0][1] == "&&":
         lead = os.path.normpath(os.path.join(cwd, first[1]))
     out, found, moved = [], False, False
     for k, (segment, separator) in enumerate(parts):
-        words = plain_words(segment)
-        if words and is_sync(words, cwd if lead is None else lead, moved, ledger):
+        words = plain_argv(segment, False) if ledger is not None else None
+        if (words and is_sync(words, cwd if lead is None else lead, moved, ledger)
+                or is_exempt_api(segment)):
             out.append(" : " + separator)
             found = True
         else:
@@ -2509,13 +2575,14 @@ def main():
         if not gated:
             return
         ledger = None
-        if not hidden and any(v and v["kind"] == "merge-local"
-                              for v in map(gated_verb, candidates(tokens))):
-            # A sync is judged apart from the command around it: its segment is replaced by
-            # a no-op, and the command that is left is read as plain or compound, so
-            # whatever gated verb remains decides.
-            ledger = load_ledger()
-            rewritten = without_syncs(strip_redirections(lex(cmd)[0]), cwd, ledger)
+        kinds = {v["kind"] for v in map(gated_verb, candidates(tokens)) if v}
+        if not hidden and kinds & {"merge-local", "api"}:
+            # A sync or an exempt API write is judged apart from the command around it: its
+            # segment is replaced by a no-op, and the command that is left is read as plain or
+            # compound, so whatever gated verb remains decides.
+            if "merge-local" in kinds:
+                ledger = load_ledger()
+            rewritten = without_exempt(lex(cmd)[0], cwd, ledger)
             if rewritten is not None:
                 tokens = tokenize(rewritten)
                 if not gated_anywhere(tokens):

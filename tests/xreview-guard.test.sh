@@ -555,6 +555,21 @@ is "S13a quotes and operators in the other segments do not matter" \
    "$(decision "$W" "git fetch -q origin && git merge --ff-only -q origin/main 2>&1 | tail -2; git log --format='%h %s' -1")" allow
 is "S13b a quoted ; in a segment that follows" \
    "$(decision "$W" 'git merge --no-ff --no-commit origin/main >/dev/null 2>&1 || echo "conflict; see status"')" allow
+# S14: a redirection is read as the shell reads it, or the segment is no sync. zsh takes one
+# digit as a descriptor and <-> as a numeric glob, so neither hides a word from the gate.
+is "S14a a long descriptor leaves a second ref" "$(decision "$W" 'git fetch -q && git merge origin/main 81788>/dev/null')" deny
+is "S14b the same, plain" "$(decision "$W" 'git merge origin/main 81788>/dev/null')" deny
+is "S14c a numeric glob" "$(decision "$W" 'git fetch && git merge origin/main <->')" deny
+is "S14d a here-string" "$(decision "$W" 'git fetch && git merge origin/main <<<x')" deny
+is "S14e a word glued to a duplication target" "$(decision "$W" 'git fetch && git merge origin/main 2>&1feature')" deny
+is "S14f a word after a redirection" "$(decision "$W" 'git fetch && git merge origin/main >log feature')" deny
+# S15: git -C changes directory physically, so a symlink's .. is its target's parent. link
+# leads into the develop-default repository, where origin/main is no sync.
+mkdir -p "$DEV/sub"; ln -s "$DEV/sub" "$W/link"
+is "S15a -C through a symlink and .. names the other repository" "$(decision "$W" 'git -C link/.. merge --ff-only origin/main')" deny
+rm "$W/link"
+is "S15b a redirected sync by an absolute -C" "$(decision / "git -C $W merge --ff-only origin/main 2> err.log && git log -1")" allow
+is "S15c and one whose output is dropped" "$(decision / "git -C $W merge --ff-only origin/main >/dev/null 2>&1 || echo failed")" allow
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
@@ -1077,7 +1092,7 @@ is "O7c resolving a discussion, with a query string" "$(decision "$W" 'glab api 
 is "O7d a pipeline start, piped" "$(decision "$W" 'glab api -X POST projects/:fullpath/merge_requests/7/pipelines | jq .id')" allow
 is "O7e a note from a file, by absolute URL" "$(decision "$W" 'glab api --method POST https://forge.example/api/v4/projects/4242/merge_requests/7/notes -F body=@note.md')" allow
 is "O7f a GitHub review comment" "$(decision "$W" 'gh api repos/acme/app/pulls/9/comments -f body=hi')" allow
-is "O7g a GitHub reply, the repository by placeholder" "$(decision "$W" 'gh api repos/{owner}/{repo}/pulls/9/comments/55/replies -f body=hi --jq .html_url')" allow
+is "O7g a GitHub reply, the repository by placeholder" "$(decision "$W" "gh api ${SQ}repos/{owner}/{repo}/pulls/9/comments/55/replies${SQ} -f body=hi --jq .html_url")" allow
 is "O7h editing a GitHub review comment" "$(decision "$W" 'gh api -X PATCH repos/acme/app/pulls/comments/55 -f body=hi')" allow
 is "O7i a repository whose name starts with a dot" "$(decision "$W" 'gh api repos/acme/.github/pulls/9/comments -f body=hi')" allow
 is "O8 a PATCH of a pull request (a retarget) is denied" "$(denies "$W" 'gh api -X PATCH repos/acme/app/pulls/9 -f base=release' 'this gh api call writes to an MR/PR path whose source, head or destination')" 1
@@ -1086,11 +1101,14 @@ is "O10 an absolute GraphQL endpoint carrying a merge mutation is denied" \
    "$(denies "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
 is "O11a a GraphQL note carrying the diff head sha, which runs /merge, is denied" \
    "$(denies "$W" "glab api graphql -f query='mutation { createNote(input: {noteableId: \"x\", body: \"/merge\", mergeRequestDiffHeadSha: \"abc\"}) { errors } }'" 'this GraphQL call')" 1
+is "O12 a GraphQL diff note, whose position head sha runs /merge, is denied" \
+   "$(denies "$W" "glab api graphql -f query='mutation { createDiffNote(input: {noteableId: \"x\", body: \"/merge\", position: {headSha: \"abc\"}}) { errors } }'" 'this GraphQL call')" 1
 is "O11b the same note without it is allowed" \
    "$(decision "$W" "glab api graphql -f query='mutation { createNote(input: {noteableId: \"x\", body: \"hi\"}) { errors } }'")" allow
-# An exempt call reads nothing but its own literal words, so it passes wherever it stands.
-is "R0a a pipeline start inside a substitution" "$(decision "$W" 'ID=$(glab api -X POST projects/:id/merge_requests/7/pipelines | jq .id)')" allow
-is "R0b a note inside a nested shell" "$(decision "$W" "sh -c 'glab api -X POST projects/:id/merge_requests/7/notes -f body=x'")" allow
+# An exempt call is a command of its own, written in plain or quoted words: run some other way,
+# the shell may read it differently, so it is gated as any MR/PR write is.
+is "R0a a pipeline start inside a substitution is denied" "$(decision "$W" 'ID=$(glab api -X POST projects/:id/merge_requests/7/pipelines | jq .id)')" deny
+is "R0b a note inside a nested shell is denied" "$(decision "$W" "sh -c 'glab api -X POST projects/:id/merge_requests/7/notes -f body=x'")" deny
 is "R0c a merge inside a nested shell is still denied" "$(decision "$W" "sh -c 'glab api -X PUT projects/:id/merge_requests/7/merge'")" deny
 is "R0d an endpoint holding a variable is denied" "$(decision "$W" 'glab api -X POST projects/$P/merge_requests/7/notes -f body=x')" deny
 # A GitLab note runs quick actions, and a diff head sha field makes /merge merge: a note or
@@ -1111,6 +1129,36 @@ is "R4c a short option holding a variable, on a pipeline start, is denied" "$(de
 is "R4d an endpoint holding ; is denied" "$(decision "$W" 'glab api -X PUT "projects/:id/merge_requests/7?title=x;target_branch=release"')" deny
 R4E="gh api repos/acme/app/pulls/9/comments -f 'body=use \`x\` and \${y} {z}'"
 is "R4e a comment body holding \$, backticks and braces is allowed" "$(decision "$W" "$R4E")" allow
+# The words the gate reads are the words the shell passes: anything a shell could expand, split
+# or redirect in an exempt call's own segment leaves it gated.
+GN='glab api -X POST projects/:id/merge_requests/7/notes'
+GU='glab api -X PUT projects/:id/merge_requests/7'
+is "R5a a brace-expanded hostname carrying --input" "$(decision "$W" "$GN --hostname {forge.example,--input=n.json}")" deny
+is "R5b a command substitution in a field" "$(decision "$W" "$GN -f body=\$(cat n.txt)")" deny
+is "R5c backticks in a field" "$(decision "$W" "$GN -f body=\`cat n.txt\`")" deny
+is "R5d a split parameter in a field" "$(decision "$W" "$GN -f body=\${=X}")" deny
+is "R5e a brace-expanded header" "$(decision "$W" "$GN -H {Accept:x,--input=n.json}")" deny
+is "R5f a field in a nested shell" "$(decision "$W" "bash -c '$GN -f body=\$X'")" deny
+is "R5g a substitution in a title" "$(decision "$W" "$GU -f title=\$(cat t)")" deny
+is "R5h backticks in a title" "$(decision "$W" "$GU -f title=\`cat t\`")" deny
+is "R5i a subshell" "$(decision "$W" '(glab api -X POST projects/:id/merge_requests/7/pipelines)')" deny
+is "R5j -R before api" "$(decision "$W" 'glab -R acme/app api -X POST projects/:id/merge_requests/7/pipelines')" deny
+is "R5k an input redirection" "$(decision "$W" "$GN -f body=x <n.txt")" deny
+is "R5l a field name that carries another field" \
+   "$(decision "$W" "$GN -f 'position[a]&merge_request_diff_head_sha=abc=1'")" deny
+is "R5m a placeholder fills a segment the path does not show" \
+   "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/pipelines --placeholder id=x')" deny
+# What is quoted is literal, whatever it holds.
+is "R6a a single-quoted body holding every expansion" \
+   "$(decision "$W" "gh api repos/acme/app/pulls/9/comments -f body=${SQ}use \`x\`, \${y}, {a,b} and \$(z); done${SQ}")" allow
+is "R6b a quoted placeholder endpoint and a double-quoted body" \
+   "$(decision "$W" "gh api ${SQ}repos/{owner}/{repo}/pulls/9/comments/55/replies${SQ} -f body=\"plain words, no expansion\" --jq .html_url")" allow
+is "R6c a pipeline start redirected to a file, then a read" \
+   "$(decision "$W" 'glab api -X POST "projects/acme%2Fapp/merge_requests/7/pipelines" > out.json; jq .id out.json')" allow
+is "R6d a quoted description from a file, its stderr piped" \
+   "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -F "description=@tmp/d.md" --silent 2>&1 | jq .iid')" allow
+is "R6e a diff discussion after a cd" \
+   "$(decision "$ROOT" "cd $W && glab api -X POST projects/:id/merge_requests/7/discussions -F body=@c.md -f ${SQ}position[position_type]=text${SQ} -f ${SQ}position[new_line]=3${SQ}")" allow
 # What the table leaves out stays gated: it lands, rewrites or approves a change.
 is "R1a a rebase is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/rebase')" deny
 is "R1b an approval is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/approve')" deny
