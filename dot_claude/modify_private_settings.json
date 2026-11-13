@@ -44,14 +44,14 @@ op_state=unreachable
 agent_gh_token=""
 agent_gitlab_token=""
 read_agent_tokens() {
-  local items titles title token
+  local items title token
   command -v op >/dev/null 2>&1 || return 0
   items=$(op item list --vault Private --format json 2>/dev/null) || return 0
-  printf '%s' "$items" | jq -e 'type == "array"' >/dev/null 2>&1 || return 0
-  titles=$(printf '%s' "$items" | jq -r '.[].title' 2>/dev/null) || return 0
+  printf '%s' "$items" | jq -e 'type == "array" and all(.[]; type == "object")' >/dev/null 2>&1 || return 0
   op_state=reachable
   for title in "GitHub Agent Token" "GitLab Agent Token"; do
-    printf '%s\n' "$titles" | grep -qxF -- "$title" || continue
+    # jq reads the whole list, so no early exit hands the writer a SIGPIPE on a long list.
+    printf '%s' "$items" | jq -e --arg t "$title" 'any(.[]; .title == $t)' >/dev/null 2>&1 || continue
     if ! token=$(op read "op://Private/$title/token" 2>/dev/null) || [ -z "$token" ]; then
       echo "modify settings.json: 1Password lists \"$title\" but its token cannot be read — refusing to overwrite" >&2
       exit 1

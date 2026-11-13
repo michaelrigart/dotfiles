@@ -14,7 +14,8 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `grep -L onepassword private_dot_ssh/private_*.tmpl` must print nothing.
   The agent forge tokens are the exception to "a template": `dot_claude/modify_private_settings.json`
   reads them from 1Password at apply and they live only in the deployed `~/.claude/settings.json`.
-  Preview that target through `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`, never whole.
+  Preview that target through `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`, never whole; a
+  dry-run diff of it can print the token lines as context, so filter that output too.
 - `.chezmoiignore` is an **allowlist** for `~/.claude`, `~/.codex`, and Alfred: ignore
   the directory contents, then re-include one file at a time, one level at a time — a
   re-include cannot reach inside an ignored directory. A new managed file under those

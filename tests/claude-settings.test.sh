@@ -1189,6 +1189,15 @@ jq_is '.env | has("GH_TOKEN") or has("GITLAB_TOKEN")' false "no op on PATH and n
 emit_op '{"env":{"GH_TOKEN":7,"GITLAB_TOKEN":"live-gl-0001"}}' OP_DOWN=1
 jq_is '.env | has("GH_TOKEN")' false "op failing: a live value that is not a string is not carried"
 jq_is '.env.GITLAB_TOKEN == $ENV.LIVE_GL' true "op failing: the string value beside it is carried"
+# A long item list must not hide a listed item: matching through an early-exit pipe (grep -q) gives
+# the writer SIGPIPE once the list exceeds the pipe buffer, and a listed item then reads as unlisted.
+ITEMS_BIG=$("$REAL_JQ" -nc '[{"title":"GitHub Agent Token"}]
+  + [range(2500) | {"title": "Filler item number \(.) with a long enough title to fill the buffer"}]
+  + [{"title":"GitLab Agent Token"}]')
+if [ "${#ITEMS_BIG}" -gt 70000 ]; then _pass "the large item list is over the 64 KB pipe buffer"
+else _fail "the large item list is over the 64 KB pipe buffer" "${#ITEMS_BIG} bytes"; fi
+emit_op '{}' OP_ITEMS="$ITEMS_BIG"
+jq_is '.env.GH_TOKEN == $ENV.OP_GH and .env.GITLAB_TOKEN == $ENV.OP_GL' true "a listed item is found in a list over 64 KB: both tokens rendered"
 emit_op "$LIVE_BOTH" OP_ITEMS='not json'
 jq_is '.env.GH_TOKEN == $ENV.LIVE_GH and .env.GITLAB_TOKEN == $ENV.LIVE_GL' true "an unparsable item list counts as unreachable: carried"
 # Listed but unreadable: fail, so chezmoi keeps the old file.
@@ -1208,10 +1217,25 @@ if [ -s "$OP_LOG" ]; then _fail "op is only asked to list items and read the two
 else _pass "op is only asked to list items and read the two tokens"; fi
 # The agent SSH configuration must stay readable in the sandbox: no deny rule, credential entry
 # or allowRead gap hides ~/.config/agent-identity/ssh_config (its Match block is what pins the key).
+# A Read(<glob>) deny rule as a regex over a ~-rooted path: ** crosses directories (**/ may match
+# none), * stays inside one segment. ** is swapped for placeholders before the single * is translated,
+# so the .* it becomes is not rewritten again. Self-tested below against hypothetical rules.
+READ_COVERS='def read_covers($t): select(startswith("Read(")) | .[5:-1]
+    | gsub("(?<c>[.+?^$(){}|\\[\\]\\\\])"; "\\\(.c)")
+    | gsub("\\*\\*/"; "\u0001") | gsub("\\*\\*"; "\u0002") | gsub("\\*"; "[^/]*")
+    | gsub("\u0001"; "(.*/)?") | gsub("\u0002"; ".*")
+    | . as $re | select($t | test("^" + $re + "$"));'
+SSH_CFG="~/.config/agent-identity/ssh_config"
+for rule in 'Read(~/.config/**)' 'Read(~/**/ssh_config)' 'Read(~/.config/agent-identity/**)' 'Read(~/.config/agent-identity/ssh_config)' 'Read(**/ssh_config)'; do
+  n=$("$REAL_JQ" -n --arg r "$rule" --arg t "$SSH_CFG" "$READ_COVERS"' [$r | read_covers($t)] | length')
+  if [ "$n" = 1 ]; then _pass "the coverage check detects $rule"; else _fail "the coverage check detects $rule" "matched $n"; fi
+done
+for rule in 'Read(~/.ssh/**)' 'Read(~/.config/ha-mcp/**)' 'Read(**/*.key)' 'Edit(~/.config/**)'; do
+  n=$("$REAL_JQ" -n --arg r "$rule" --arg t "$SSH_CFG" "$READ_COVERS"' [$r | read_covers($t)] | length')
+  if [ "$n" = 0 ]; then _pass "the coverage check ignores $rule"; else _fail "the coverage check ignores $rule" "matched $n"; fi
+done
 emit '{}'
-jq_is '[.permissions.deny[]? | select(startswith("Read(")) | .[5:-1]
-        | gsub("\\."; "\\.") | gsub("\\*\\*/"; "(.*/)?") | gsub("/\\*\\*"; "/.*") | gsub("\\*"; "[^/]*")
-        | . as $re | select("~/.config/agent-identity/ssh_config" | test("^" + $re + "$"))] | length' 0 \
+jq_is "$READ_COVERS"' [.permissions.deny[]? | read_covers("~/.config/agent-identity/ssh_config")] | length' 0 \
       "no Read deny rule covers the agent SSH configuration"
 jq_is '[.sandbox.credentials.files[].path | . as $c | select("~/.config/agent-identity/ssh_config" | startswith($c))] | length' 0 \
       "no credential path covers the agent SSH configuration"
