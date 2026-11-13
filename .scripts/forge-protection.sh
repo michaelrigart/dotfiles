@@ -250,7 +250,7 @@ check_github() {  # <remote> <owner/repo>
 }
 
 check_gitlab() {  # <remote> <group/.../project>
-  local remote=$1 path=$2 enc id def ep rules v n i name nenc json why ui
+  local remote=$1 path=$2 enc id def ep rules v n i name nenc json why
   case "$path" in
     *//*|*/|/*|'') row unreadable "$remote" "not a group/project path"; return ;;
     */*) ;;
@@ -276,32 +276,28 @@ check_gitlab() {  # <remote> <group/.../project>
   fi
   # GitLab applies the most permissive matching rule, so every rule whose name is the default branch
   # or whose wildcard matches it is judged; `*` is any run of characters, anything else literal.
+  # The target is push "No one" (access level 0 only) and force push off; merge access is not judged.
   if ! v=$(printf '%s' "$rules" | jq -c --arg def "$def" '
       def esc: gsub("(?<c>[^A-Za-z0-9])"; "\\\(.c)");
       def hits($n): ($n == $def) or ($def | test("\\A" + ($n | split("*") | map(esc) | join(".*")) + "\\z"; "p"));
       def pusher: (.access_level != 0) or (.user_id != null) or (.group_id != null) or (.deploy_key_id != null);
-      def merger: ((.access_level == 0 or ((.access_level // 0) >= 40)) | not) or (.user_id != null) or (.group_id != null);
       def unlisted($f): (.[$f] | type) != "array";
       [.[] | select((.name | type) == "string" and hits(.name))
-        | if unlisted("push_access_levels") or unlisted("merge_access_levels") then
-            {name, unreadable: "rule \(.name): \(if unlisted("push_access_levels") then "push_access_levels" else "merge_access_levels" end) is not a list"}
+        | if unlisted("push_access_levels") then
+            {name, unreadable: "rule \(.name): push_access_levels is not a list"}
           else
             {name, force: (.allow_force_push != false),
              push_bad: [.push_access_levels[] | select(pusher) | .id],
-             push_kept: ([.push_access_levels[] | select(pusher | not)] | length),
-             merge_bad: [.merge_access_levels[] | select(merger) | .id],
-             merge_kept: ([.merge_access_levels[] | select(merger | not)] | length)}
+             push_kept: ([.push_access_levels[] | select(pusher | not)] | length)}
             | .push_fix = ((.push_bad | length) > 0 or .push_kept == 0)
-            | .merge_fix = ((.merge_bad | length) > 0 or .merge_kept == 0)
             | .body = ({}
                 + (if .force then {allow_force_push: false} else {} end)
-                + (if .push_fix then {allowed_to_push: ([.push_bad[] | {id: ., _destroy: true}] + (if .push_kept == 0 then [{access_level: 0}] else [] end))} else {} end)
-                + (if .merge_fix then {allowed_to_merge: ([.merge_bad[] | {id: ., _destroy: true}] + (if .merge_kept == 0 then [{access_level: 40}] else [] end))} else {} end))
-            | .bad = (.force or .push_fix or .merge_fix)
+                + (if .push_fix then {allowed_to_push: ([.push_bad[] | {id: ., _destroy: true}] + (if .push_kept == 0 then [{access_level: 0}] else [] end))} else {} end))
+            | .bad = (.force or .push_fix)
           end]' 2>/dev/null); then
     row unreadable "$remote" "the protected branches answer cannot be read"; return
   fi
-  # A matching rule whose access-level lists are absent or not lists is never counted protected.
+  # A matching rule whose push access-level list is absent or not a list is never counted protected.
   why=$(printf '%s' "$v" | jq -r '[.[] | select(.unreadable) | .unreadable][0] // empty' | tr -d '\000-\037\177')
   if [ -n "$why" ]; then row unreadable "$remote" "$why"; return; fi
   n=$(printf '%s' "$v" | jq -r 'length')
@@ -310,7 +306,7 @@ check_gitlab() {  # <remote> <group/.../project>
   fi
   row drift "$remote" "default branch $def"
   if [ "$n" -eq 0 ]; then
-    remedy "glab api --hostname gitlab.com --method POST $(shq "projects/$id/protected_branches") -f $(shq "name=$def") -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false"
+    remedy "glab api --hostname gitlab.com --method POST $(shq "projects/$id/protected_branches") -f $(shq "name=$def") -f push_access_level=0 -f allow_force_push=false"
     return
   fi
   i=0
@@ -321,9 +317,7 @@ check_gitlab() {  # <remote> <group/.../project>
       json=$(printf '%s' "$v" | jq -c ".[$i].body")
       remedy "glab api --hostname gitlab.com --method PATCH $(shq "projects/$id/protected_branches/$nenc") -H $(shq 'Content-Type: application/json') --input <(printf '%s\\n' $(shq "$json"))"
       note "in place, never removed and re-created"
-      ui="No one"
-      if [ "$(printf '%s' "$v" | jq -r ".[$i].merge_fix")" = true ]; then ui="No one (or Allowed to merge: Maintainers)"; fi
-      note "or in the UI: Settings > Repository > Protected branches > $name: Allowed to push and merge: $ui; Allowed to force push: off"
+      note "or in the UI: Settings > Repository > Protected branches > $name: Allowed to push and merge: No one; Allowed to force push: off"
     fi
     i=$((i + 1))
   done

@@ -567,6 +567,10 @@ unchanged; each correction is listed here for Michael, and the text above stands
 - **Correction 11, decided as recommended.** The GitLab target is applied only on projects where
   he alone pushes the default branch; every other project goes into his exceptions file or stays
   as it is.
+  The merge clause leaves the target: the check judges push "No one" and force push off only,
+  and prints nothing about merge. Decided by the driver session on Michael's delegation,
+  2026-11-13: the clause does not constrain agents (they act as the owner and the agent token
+  cannot merge) and it is the part that changes what other project members can do.
 - **Correction 12, accepted as built.** The guard keeps scanning the pushes it cannot show the
   hook will see.
 

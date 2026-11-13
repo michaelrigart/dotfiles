@@ -366,7 +366,8 @@ if grep -q "projects/$GENC\$" "$CALLS"; then _pass "gitlab ok: the nested path i
 
 glab_case '[]'
 row_is drift "$GLR" "gitlab no rule: drift row"
-out_has "glab api --hostname gitlab.com --method POST projects/$GID/protected_branches -f 'name=main' -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false" "gitlab no rule: the POST with push 0, merge 40, force push off"
+out_has "glab api --hostname gitlab.com --method POST projects/$GID/protected_branches -f 'name=main' -f push_access_level=0 -f allow_force_push=false" "gitlab no rule: the POST with push 0 and force push off"
+out_hasnt "merge_access_level" "gitlab no rule: the POST says nothing about merge"
 out_hasnt "PATCH" "gitlab no rule: no PATCH"
 rc_is 1 "gitlab no rule: exit 1"
 
@@ -374,12 +375,10 @@ glab_case "[$(glrule main 40 40 false 10)]"
 row_is drift "$GLR" "gitlab push Maintainers: drift row"
 out_has "--method PATCH projects/$GID/protected_branches/main " "gitlab push Maintainers: the PATCH names the rule in place"
 out_has '"allowed_to_push":[{"id":10,"_destroy":true},{"access_level":0}]' "gitlab push Maintainers: the push entry is destroyed and No one added"
-out_hasnt 'allowed_to_merge' "gitlab push Maintainers: the merge side is left alone"
 out_hasnt 'allow_force_push' "gitlab push Maintainers: force push is left alone"
 out_has "# in place, never removed and re-created" "gitlab push Maintainers: the in-place note"
 out_has "# or in the UI: Settings > Repository > Protected branches > main: Allowed to push and merge: No one; Allowed to force push: off" "gitlab push Maintainers: the UI note"
 out_hasnt "--method POST" "gitlab push Maintainers: no POST beside the PATCH"
-out_hasnt "Allowed to merge" "gitlab push Maintainers: the UI note leaves the merge side alone"
 rc_is 1 "gitlab push Maintainers: exit 1"
 
 glab_case "[$(glrule main 0 40 true 10)]"
@@ -387,19 +386,22 @@ row_is drift "$GLR" "gitlab force push on: drift row"
 out_has '"allow_force_push":false' "gitlab force push on: the PATCH turns it off"
 out_hasnt 'allowed_to_push' "gitlab force push on: the push side is left alone"
 
+# the merge side is not part of the target: judged never, printed never
 glab_case "[$(glrule main 0 30 false 10)]"
-row_is drift "$GLR" "gitlab merge Developers: drift row"
-out_has '"allowed_to_merge":[{"id":11,"_destroy":true},{"access_level":40}]' "gitlab merge Developers: the merge entry is replaced by Maintainers"
-out_has "Allowed to merge: Maintainers" "gitlab merge Developers: the UI note names Allowed to merge: Maintainers"
-
-glab_case "[$(glrule main 0 0 false 10)]"
-row_is ok "$GLR" "gitlab merge No one: ok"
+row_is ok "$GLR" "gitlab push No one, force push off, merge Developers: ok (merge is not judged)"
+rc_is 0 "gitlab merge Developers: exit 0"
+glab_case "[$(glrule main 40 30 true 10)]"
+row_is drift "$GLR" "gitlab push Maintainers, force push on, merge Developers: drift row"
+out_has '"allow_force_push":false' "gitlab merge Developers beside real drift: the PATCH still turns force push off"
+out_hasnt 'allowed_to_merge' "gitlab merge Developers beside real drift: no merge entry in the PATCH"
+out_hasnt 'merge_access_level' "gitlab merge Developers beside real drift: no merge_access_level anywhere"
+out_hasnt 'Allowed to merge' "gitlab merge Developers beside real drift: the UI note has no merge selector"
 
 glab_case '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0,"deploy_key_id":3}],"merge_access_levels":[{"id":11,"access_level":40}],"allow_force_push":false}]'
 row_is drift "$GLR" "gitlab a deploy key allowed to push: drift row"
 out_has '"allowed_to_push":[{"id":10,"_destroy":true},{"access_level":0}]' "gitlab a deploy key allowed to push: the entry is destroyed"
 
-# a user or a group allowed to push or merge is drift, even at a permitted level
+# a user or a group allowed to push is drift, even at a permitted level
 glrule_with() {  # <push entries> <merge entries> [force push]: one rule named main with literal entry lists
   printf '[{"id":10,"name":"main","push_access_levels":%s,"merge_access_levels":%s,"allow_force_push":%s}]' "$1" "$2" "${3:-false}"
 }
@@ -408,10 +410,9 @@ row_is drift "$GLR" "gitlab a user allowed to push (level 0): drift row"
 glab_case "$(glrule_with '[{"id":10,"access_level":0,"group_id":6}]' '[{"id":11,"access_level":40}]')"
 row_is drift "$GLR" "gitlab a group allowed to push (level 0): drift row"
 glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":40,"user_id":5}]')"
-row_is drift "$GLR" "gitlab a user allowed to merge (level 40): drift row"
-out_has '"allowed_to_merge":[{"id":11,"_destroy":true},{"access_level":40}]' "gitlab a user allowed to merge: the entry is destroyed and Maintainers added"
+row_is ok "$GLR" "gitlab a user allowed to merge: ok (merge is not judged)"
 glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":40,"group_id":6}]')"
-row_is drift "$GLR" "gitlab a group allowed to merge (level 40): drift row"
+row_is ok "$GLR" "gitlab a group allowed to merge: ok (merge is not judged)"
 
 # a missing allow_force_push counts as on
 glab_case '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0}],"merge_access_levels":[{"id":11,"access_level":40}]}]'
@@ -426,10 +427,13 @@ gl_unread() {  # <label> <answer> <field>
   out_hasnt "--method" "gitlab $1: no remedy is printed"
 }
 gl_unread "push_access_levels absent" '[{"id":10,"name":"main","merge_access_levels":[{"id":11,"access_level":40}],"allow_force_push":false}]' push_access_levels
-gl_unread "merge_access_levels absent" '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0}],"allow_force_push":false}]' merge_access_levels
 gl_unread "push_access_levels null" "$(glrule_with null '[{"id":11,"access_level":40}]')" push_access_levels
 gl_unread "push_access_levels an object" "$(glrule_with '{"id":10,"access_level":0}' '[{"id":11,"access_level":40}]')" push_access_levels
-gl_unread "merge_access_levels a string" "$(glrule_with '[{"id":10,"access_level":0}]' '"none"')" merge_access_levels
+# merge_access_levels is never read: absent, empty or malformed, the rule is judged on push and force push alone
+glab_case '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0}],"allow_force_push":false}]'
+row_is ok "$GLR" "gitlab merge_access_levels absent, push No one: ok, not unreadable"
+glab_case '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":40}],"allow_force_push":false}]'
+row_is drift "$GLR" "gitlab merge_access_levels absent, push Maintainers: drift on push alone"
 glab_case "[$GL_STRICT,{\"id\":30,\"name\":\"develop\",\"allow_force_push\":true}]"
 row_is ok "$GLR" "gitlab a rule for another branch without access-level lists is not judged: ok"
 
@@ -438,18 +442,12 @@ glab_case "$(glrule_with '[]' '[{"id":11,"access_level":40}]')"
 row_is drift "$GLR" "gitlab an empty push list: drift row"
 out_has '"allowed_to_push":[{"access_level":0}]' "gitlab an empty push list: the PATCH adds No one"
 glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[]')"
-row_is drift "$GLR" "gitlab an empty merge list: drift row"
-out_has '"allowed_to_merge":[{"access_level":40}]' "gitlab an empty merge list: the PATCH adds Maintainers"
+row_is ok "$GLR" "gitlab an empty merge list: ok (merge is not judged)"
 
 # the role entry is added only when no entry survives the destroy
 glab_case "$(glrule_with '[{"id":10,"access_level":0},{"id":12,"access_level":0,"deploy_key_id":3}]' '[{"id":11,"access_level":40}]')"
 row_is drift "$GLR" "gitlab a surviving No one push entry: drift row"
 out_has '"allowed_to_push":[{"id":12,"_destroy":true}]}' "gitlab a surviving No one push entry: only the offender is destroyed, no role entry added"
-glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":40},{"id":13,"access_level":30}]')"
-row_is drift "$GLR" "gitlab a surviving Maintainers merge entry: drift row"
-out_has '"allowed_to_merge":[{"id":13,"_destroy":true}]}' "gitlab a surviving Maintainers merge entry: only the offender is destroyed, no role entry added"
-glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":0},{"id":13,"access_level":30}]')"
-out_has '"allowed_to_merge":[{"id":13,"_destroy":true}]}' "gitlab a surviving No one merge entry: only the offender is destroyed, Maintainers is not added"
 
 glab_case "[$GL_STRICT,$(glrule 'ma*' 40 40 false 20)]"
 row_is drift "$GLR" "gitlab strict exact rule beside a permissive wildcard: drift row"

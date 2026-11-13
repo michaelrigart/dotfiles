@@ -858,6 +858,10 @@ local guard is what covers it.
 
 Accepted limits of merge 1, recorded for Michael to overrule. None is code.
 
+- 2026-11-13: the GitLab merge clause left the check's target (the check judges push "No one" and
+  force push off only). It does not constrain agents, who act as the owner with a token that cannot
+  merge, and it is the part that changes what other project members can do. Decided by the driver
+  session on Michael's delegation; Task 3's text above records the target as first written.
 - The agent SSH pin covers `github.com` and `ssh.github.com`. A trailing-dot host name, an IP
   literal, an SSH host alias and an HTTPS remote are not covered (a pinned trailing-dot form was
   tried and reverted).

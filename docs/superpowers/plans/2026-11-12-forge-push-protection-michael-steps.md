@@ -45,7 +45,7 @@ Three decisions come first: GitHub identity reach and authorship, GitLab on shar
 9. `command -v gitleaks` (must print a path), then `chezmoi apply`, plain, never `chezmoi diff` ([Step 9](#step-9)).
    Verify: `git config --global --get core.hooksPath` prints `~/.config/git/hooks`; the other checks: [Step 9](#step-9) below.
 10. One GitLab project first: record its rules with `glab api --hostname gitlab.com 'projects/<project-id>/protected_branches?per_page=100' > ~/.local/state/forge-protection/before-<project-id>.json`, then paste the check's printed line for it; details: [Step 10](#step-10) below.
-    Verify: `glab api --hostname gitlab.com projects/<project-id>/protected_branches/<rule-name-uri-encoded> | jq '{id, push: [.push_access_levels[].access_level], merge: [.merge_access_levels[].access_level], force: .allow_force_push}'` shows push `[0]`, merge `[40]` (or `[0]`), force `false`, the same `id`.
+    Verify: `glab api --hostname gitlab.com projects/<project-id>/protected_branches/<rule-name-uri-encoded> | jq '{id, push: [.push_access_levels[].access_level], force: .allow_force_push}'` shows push `[0]`, force `false`, the same `id` (the merge levels are not part of the target).
 11. Record every chosen project's rules first, then `bash ~/.local/state/forge-protection/gitlab-remedies.sh`; details: [Step 11](#step-11) below.
     Verify: re-run Step 6's command into a new file; every GitLab row you chose reads `ok`.
 12. Azure, per repository: save the policy list and permissions first, then paste the check's printed `az repos policy approver-count create …` line; details: [Step 12](#step-12) below.
@@ -107,23 +107,22 @@ user, which is you, the owner, so the agent-session check of step 15 may not rea
 
 ### b. GitLab on shared projects
 
-**Found.** The check's target (push "No one", merge Maintainers, force push off) also removes
-default-branch push from other project members and from any CI job or bot that pushes it, and
-merge from Developers. The spec's "nothing visible to others" was wrong. The inventory now: 25
+**Found.** The check's original target (push "No one", merge Maintainers, force push off) also
+removes default-branch push from other project members and from any CI job or bot that pushes it,
+and merge from Developers. The spec's "nothing visible to others" was wrong. The inventory now: 25
 `gitlab.com` repositories, 22 of them drift and 3 unreadable.
 
 **Consequence.** The merge-level clause does not constrain agents: they act as you, and their token
-cannot merge. It only changes what your teammates can do.
+cannot merge. It only changed what your teammates can do. **The merge clause was therefore removed
+from the target** (decided by the driver session on Michael's delegation, 2026-11-13): the check now
+judges push "No one" and force push off only, and prints nothing about merge.
 
 **Recommendation.** Apply push "No one" only where you are the only one who pushes the default
 branch directly. On projects with other members or a pushing CI job, decide per project, and use an
-exceptions line where the change would hurt others. Also decide whether the merge-level clause
-should leave the target: that is a small code change (in `check_gitlab` and its printed lines, and
-its rows in `tests/forge-protection.test.sh`) for the line to make on your word.
+exceptions line where the change would hurt others.
 
 **If you decide otherwise.** Patching all 22: steps 10 and 11 run over every `drift` GitLab row
-and step 13 holds only the 3 unreadable ones. Dropping the merge clause: the printed lines lose
-`allowed_to_merge`, and the target in step 10's "Expected" line loses its `merge` part.
+and step 13 holds only the 3 unreadable ones.
 
 ### c. The secret scan stays partly in the guard
 
@@ -155,7 +154,7 @@ what you saw, so the spec's Implementation notes and (for a wrong printed form) 
 | `rules/branches/<branch>` returns rulesets in evaluate mode (the check and the verification both read it) | 7 |
 | Decision a(ii): in an agent session the check reads `current_user_can_bypass` for the token's user (you), so the GitHub rows may not read `ok` there | 15 |
 | The exact permission names of the GitLab fine-grained token form, and what `personal_access_tokens/self` returns for one | 4, 15 |
-| GitLab accepts the printed PATCH (`_destroy` entries, `allowed_to_push`, `allowed_to_merge`) on Free | 10 |
+| GitLab accepts the printed PATCH (`_destroy` entries, `allowed_to_push`) on Free | 10 |
 | Azure: the state of all three repositories was never read, because `az repos` hung from an agent session (the outbound firewall is the first suspect) | 12 |
 | Azure: the permission-bit values and the security token format the check uses | 12 |
 | Azure: an empty `acesDictionary` for a user whose rights come only from groups makes the row `unreadable` | 12 |
@@ -711,9 +710,9 @@ The global hook is hygiene for agents and applies to you as well, from this appl
 What this costs you: you can no longer push a default branch directly on GitLab, on the small
 single-developer projects included; every change lands through a merge request you merge. As the
 Owner you can lift the rule in the UI when you need to. On a project with other members it also
-takes their direct pushes (and a pushing CI job's) away, and the merge level from Developers
-(decision b): apply it where you alone push, decide the rest per project, and put the ones you
-leave in the exceptions file (step 13).
+takes their direct pushes (and a pushing CI job's) away (decision b; the merge level is not
+touched): apply it where you alone push, decide the rest per project, and put the ones you leave in
+the exceptions file (step 13).
 
 Changes are made **in place**. Never unprotect a branch and protect it again: between the two
 calls, or for good if the second fails, the branch would accept a force push its old rule refused.
@@ -738,28 +737,27 @@ glab api --hostname gitlab.com --method PATCH projects/<project-id>/protected_br
 ```
 
 The JSON holds only what must change: `allow_force_push:false`, `allowed_to_push` (each offending
-entry destroyed, and `{"access_level":0}` added when no "No one" entry remains), and
-`allowed_to_merge` (each offender destroyed, `{"access_level":40}` added when no entry remains).
-For a project with no rule for its default branch the check prints a POST instead:
+entry destroyed, and `{"access_level":0}` added when no "No one" entry remains). The merge side
+is never in it. For a project with no rule for its default branch the check prints a POST instead:
 
 ```
-glab api --hostname gitlab.com --method POST projects/<project-id>/protected_branches -f 'name=<branch>' -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false
+glab api --hostname gitlab.com --method POST projects/<project-id>/protected_branches -f 'name=<branch>' -f push_access_level=0 -f allow_force_push=false
 ```
 
 **UNVERIFIED: GitLab Free accepts the PATCH fields.** Verify:
 
 ```
-glab api --hostname gitlab.com projects/<project-id>/protected_branches/<rule-name-uri-encoded> | jq '{id, push: [.push_access_levels[].access_level], merge: [.merge_access_levels[].access_level], force: .allow_force_push}'
+glab api --hostname gitlab.com projects/<project-id>/protected_branches/<rule-name-uri-encoded> | jq '{id, push: [.push_access_levels[].access_level], force: .allow_force_push}'
 ```
 
-Expected: `push` `[0]`, `merge` `[40]` (or `[0]`), `force` `false`, and the same `id` as before (the
+Expected: `push` `[0]`, `force` `false`, and the same `id` as before (the
 rule was changed, not recreated). I could not confirm that `glab api` has a `--jq` flag, so the
 output is piped to `jq`.
 
 If it fails: if GitLab answers 400 or 422 for `_destroy` or the other fields, nothing was changed
 (read the rule again to be sure), and you use the UI form the check prints under each line for every
-project: Settings > Repository > Protected branches > the rule: Allowed to push and merge: No one
-(and Allowed to merge: Maintainers where the note says so); Allowed to force push: off. Tell the line
+project: Settings > Repository > Protected branches > the rule: Allowed to push and merge: No one;
+Allowed to force push: off. Tell the line
 which form worked, so the printed form is corrected before merge 2. A 403 means your `glab` login is
 not Owner there; that project is a step 13 candidate.
 
@@ -1148,7 +1146,7 @@ Tell the line, in the session or by paste, with no repository names:
 Merge 1 is verified. Results: <check exit codes and the counts a ok / d excepted, own terminal and
 session>; GitHub rules and collaborator permission as expected; ssh greetings as expected;
 live-agent-auth GITHUB_SSH=<value> GITLAB_SSH=<value>. Decisions: a <(i)(ii)(iii) as recommended,
-or what you chose>; b <which projects patched, whether the merge clause stays>; c <keep>.
+or what you chose>; b <which projects patched>; c <keep>.
 Confirmed or corrected: fine-grained GitHub token permission names <list> and merge refused <yes/no>
 (or classic public_repo token <yes/no>); role id 5 is Repository admin <yes/no>; rules/branches
 shows evaluate-mode rulesets <yes/no/not tried>; session check GitHub rows <ok/drift/unreadable>;
