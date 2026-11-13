@@ -320,6 +320,7 @@ out_hasnt 'allow_force_push' "gitlab push Maintainers: force push is left alone"
 out_has "# in place, never removed and re-created" "gitlab push Maintainers: the in-place note"
 out_has "# or in the UI: Settings > Repository > Protected branches > main: Allowed to push and merge: No one; Allowed to force push: off" "gitlab push Maintainers: the UI note"
 out_hasnt "--method POST" "gitlab push Maintainers: no POST beside the PATCH"
+out_hasnt "Allowed to merge" "gitlab push Maintainers: the UI note leaves the merge side alone"
 rc_is 1 "gitlab push Maintainers: exit 1"
 
 glab_case "[$(glrule main 0 40 true 10)]"
@@ -330,6 +331,7 @@ out_hasnt 'allowed_to_push' "gitlab force push on: the push side is left alone"
 glab_case "[$(glrule main 0 30 false 10)]"
 row_is drift "$GLR" "gitlab merge Developers: drift row"
 out_has '"allowed_to_merge":[{"id":11,"_destroy":true},{"access_level":40}]' "gitlab merge Developers: the merge entry is replaced by Maintainers"
+out_has "Allowed to merge: Maintainers" "gitlab merge Developers: the UI note names Allowed to merge: Maintainers"
 
 glab_case "[$(glrule main 0 0 false 10)]"
 row_is ok "$GLR" "gitlab merge No one: ok"
@@ -337,6 +339,58 @@ row_is ok "$GLR" "gitlab merge No one: ok"
 glab_case '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0,"deploy_key_id":3}],"merge_access_levels":[{"id":11,"access_level":40}],"allow_force_push":false}]'
 row_is drift "$GLR" "gitlab a deploy key allowed to push: drift row"
 out_has '"allowed_to_push":[{"id":10,"_destroy":true},{"access_level":0}]' "gitlab a deploy key allowed to push: the entry is destroyed"
+
+# a user or a group allowed to push or merge is drift, even at a permitted level
+glrule_with() {  # <push entries> <merge entries> [force push]: one rule named main with literal entry lists
+  printf '[{"id":10,"name":"main","push_access_levels":%s,"merge_access_levels":%s,"allow_force_push":%s}]' "$1" "$2" "${3:-false}"
+}
+glab_case "$(glrule_with '[{"id":10,"access_level":0,"user_id":5}]' '[{"id":11,"access_level":40}]')"
+row_is drift "$GLR" "gitlab a user allowed to push (level 0): drift row"
+glab_case "$(glrule_with '[{"id":10,"access_level":0,"group_id":6}]' '[{"id":11,"access_level":40}]')"
+row_is drift "$GLR" "gitlab a group allowed to push (level 0): drift row"
+glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":40,"user_id":5}]')"
+row_is drift "$GLR" "gitlab a user allowed to merge (level 40): drift row"
+out_has '"allowed_to_merge":[{"id":11,"_destroy":true},{"access_level":40}]' "gitlab a user allowed to merge: the entry is destroyed and Maintainers added"
+glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":40,"group_id":6}]')"
+row_is drift "$GLR" "gitlab a group allowed to merge (level 40): drift row"
+
+# a missing allow_force_push counts as on
+glab_case '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0}],"merge_access_levels":[{"id":11,"access_level":40}]}]'
+row_is drift "$GLR" "gitlab allow_force_push missing: drift row (counts as on)"
+out_has '"allow_force_push":false' "gitlab allow_force_push missing: the PATCH turns it off"
+
+# an access-level list that is absent or not a list cannot be read: never counted protected
+gl_unread() {  # <label> <answer> <field>
+  glab_case "$2"
+  row_is unreadable "$GLR.*rule main: $3 is not a list" "gitlab $1: unreadable naming the rule and the field"
+  rc_is 1 "gitlab $1: exit 1"
+  out_hasnt "--method" "gitlab $1: no remedy is printed"
+}
+gl_unread "push_access_levels absent" '[{"id":10,"name":"main","merge_access_levels":[{"id":11,"access_level":40}],"allow_force_push":false}]' push_access_levels
+gl_unread "merge_access_levels absent" '[{"id":10,"name":"main","push_access_levels":[{"id":10,"access_level":0}],"allow_force_push":false}]' merge_access_levels
+gl_unread "push_access_levels null" "$(glrule_with null '[{"id":11,"access_level":40}]')" push_access_levels
+gl_unread "push_access_levels an object" "$(glrule_with '{"id":10,"access_level":0}' '[{"id":11,"access_level":40}]')" push_access_levels
+gl_unread "merge_access_levels a string" "$(glrule_with '[{"id":10,"access_level":0}]' '"none"')" merge_access_levels
+glab_case "[$GL_STRICT,{\"id\":30,\"name\":\"develop\",\"allow_force_push\":true}]"
+row_is ok "$GLR" "gitlab a rule for another branch without access-level lists is not judged: ok"
+
+# an explicit empty list says nothing about No one: drift, and the PATCH adds the role
+glab_case "$(glrule_with '[]' '[{"id":11,"access_level":40}]')"
+row_is drift "$GLR" "gitlab an empty push list: drift row"
+out_has '"allowed_to_push":[{"access_level":0}]' "gitlab an empty push list: the PATCH adds No one"
+glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[]')"
+row_is drift "$GLR" "gitlab an empty merge list: drift row"
+out_has '"allowed_to_merge":[{"access_level":40}]' "gitlab an empty merge list: the PATCH adds Maintainers"
+
+# the role entry is added only when no entry survives the destroy
+glab_case "$(glrule_with '[{"id":10,"access_level":0},{"id":12,"access_level":0,"deploy_key_id":3}]' '[{"id":11,"access_level":40}]')"
+row_is drift "$GLR" "gitlab a surviving No one push entry: drift row"
+out_has '"allowed_to_push":[{"id":12,"_destroy":true}]}' "gitlab a surviving No one push entry: only the offender is destroyed, no role entry added"
+glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":40},{"id":13,"access_level":30}]')"
+row_is drift "$GLR" "gitlab a surviving Maintainers merge entry: drift row"
+out_has '"allowed_to_merge":[{"id":13,"_destroy":true}]}' "gitlab a surviving Maintainers merge entry: only the offender is destroyed, no role entry added"
+glab_case "$(glrule_with '[{"id":10,"access_level":0}]' '[{"id":11,"access_level":0},{"id":13,"access_level":30}]')"
+out_has '"allowed_to_merge":[{"id":13,"_destroy":true}]}' "gitlab a surviving No one merge entry: only the offender is destroyed, Maintainers is not added"
 
 glab_case "[$GL_STRICT,$(glrule 'ma*' 40 40 false 20)]"
 row_is drift "$GLR" "gitlab strict exact rule beside a permissive wildcard: drift row"
@@ -363,6 +417,12 @@ row_is ok "$GLR" "gitlab non-matching rules (other wildcard, prefix, regex dot, 
 
 glab_case "[$GL_STRICT,$(glrule '*' 40 40 false 20)]"
 row_is drift "$GLR" "gitlab a bare * rule matches every branch: drift"
+
+# the match is anchored at both ends: a proper suffix (ain) or prefix (mai) of main is another branch's rule
+glab_case "[$(glrule ain 40 40 true 10),$(glrule mai 40 40 true 20)]"
+row_is drift "$GLR" "gitlab rules ain and mai (a suffix and a prefix of main): drift row"
+out_has "--method POST projects/$GID/protected_branches -f name=main" "gitlab rules ain and mai: no rule matches, so the POST is printed"
+out_hasnt "PATCH" "gitlab rules ain and mai: neither is patched"
 
 reset; mkrepo "$H/Code/ExampleOrg/example-app" "git@gitlab.com:$GP.git"
 ans glab "$GLA projects/$GENC" '{"message":"404 Project Not Found"}' 1 "glab: 404 Project Not Found (HTTP 404)"
@@ -402,6 +462,14 @@ row_is drift "$GLR" "gitlab hostile default branch: drift row"
 eval_remedy "--method POST"
 if [ "$EXTRA" -eq 0 ]; then _pass "gitlab hostile default branch: pasting the POST line runs nothing extra"; else _fail "gitlab hostile default branch: pasting the POST line runs nothing extra"; fi
 if grep -qxF "name=$HOSTILE" "$T/argv"; then _pass "gitlab hostile default branch: the pasted POST hands glab the exact name"; else _fail "gitlab hostile default branch: the pasted POST hands glab the exact name"; fi
+
+# a name with no quote character at all: only the shell quoting of the word stops `;` from ending the command
+HOSTILE2="x;touch $T/pwned;y"
+glab_case '[]' "$HOSTILE2"
+row_is drift "$GLR" "gitlab hostile default branch without quotes: drift row"
+eval_remedy "--method POST"
+if [ "$EXTRA" -eq 0 ]; then _pass "gitlab hostile default branch without quotes: pasting the POST line runs nothing extra"; else _fail "gitlab hostile default branch without quotes: pasting the POST line runs nothing extra"; fi
+if grep -qxF "name=$HOSTILE2" "$T/argv"; then _pass "gitlab hostile default branch without quotes: the pasted POST hands glab the exact name"; else _fail "gitlab hostile default branch without quotes: the pasted POST hands glab the exact name"; fi
 
 HRULE="main';touch $T/pwned;echo '"
 glab_case "[$(glrule "$HRULE" 40 40 true 10)]" "$HRULE"
