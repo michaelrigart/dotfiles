@@ -429,7 +429,7 @@ def finish(turn, schema, raw=None):
     except ValueError:
         doc, problems = None, ["not JSON"]
     if problems:
-        if raw:
+        if raw is not None:
             # The text goes to the file only: a miss prints none of the reviewer's bytes.
             if not write_raw(raw, text):
                 return 1

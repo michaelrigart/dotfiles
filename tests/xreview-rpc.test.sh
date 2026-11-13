@@ -732,6 +732,14 @@ is "R11 and is mode 600" "$(stat -f %Lp "$T/raw")" 600
 is "R11 stderr names neither the bad value nor the extra key" "$(grep -c -e PWNED-KEY -e PWNED-VALUE "$T/err")" 0
 is "R11 but still names the paths" \
    "$(grep -c -F '$.verdict: not an allowed value' "$T/err")/$(grep -c -F '$: unexpected key' "$T/err")" 1/1
+# A --raw that cannot be written fails closed: the text goes nowhere, not to stdout. Catches
+# `if raw:` (an empty path falls through to printing the text) and a write failure that prints it.
+for bad_raw in "" "$T/nodir/x"; do
+  out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --raw "$bad_raw" 2>"$T/err")"; rc=$?
+  is "R11 --raw '$bad_raw' that cannot be written is exit 1 with nothing on stdout" "$rc/$out" "1/"
+  is "R11 and none of the reviewer's text is on stderr, only the path and the reason" \
+     "$(grep -c -e PWNED -e changes "$T/err")/$(grep -c -F "could not write the reviewer's answer to $bad_raw: " "$T/err")" 0/1
+done
 printf 'old' > "$T/raw"; chmod 644 "$T/raw"
 rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --raw "$T/raw" >/dev/null 2>&1
 is "R11 an existing file is replaced, and the new one is mode 600" "$(cat "$T/raw")/$(stat -f %Lp "$T/raw")" "$BAD/600"
