@@ -491,6 +491,58 @@ check "$(glab_calls)" "4" "--force bypasses the cache"
 expire; run refresh
 check "$(glab_calls)" "4" "an expired cache is refetched"
 
+# A glab that exits 0 with something that is not a list (an error body, null, a number, a string)
+# is a failed lookup, not an empty answer. Open: the cached badges stand and the table file is left
+# alone (same bytes, same mtime). Merged: the open rows badge, no merged state is invented and
+# nothing is cached. Bug caught: the non-list read as "no MRs", which cached an empty table and
+# wiped every MR badge of the repository for a TTL.
+GL_TSV="$T/cache/herdr-phase/test%2Fproj.tsv"
+for ans in '{"message":"x"}' null 5 '"[]"'; do
+  rm -rf "$T/cache/herdr-phase"; run refresh
+  cp "$GL_TSV" "$T/tsv.before"; expire; m1="$(stat -f %m "$GL_TSV")"
+  printf '%s\n' "$ans" > "$T/mr-open-nonlist.json"
+  MROPEN="$T/mr-open-nonlist.json" run refresh
+  case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "an open answer $ans: the cached review badge stands";;
+    *) _fail "an open answer $ans: the cached review badge stands (got: $(report_for w4))";; esac
+  check "$(cmp -s "$GL_TSV" "$T/tsv.before" && echo same || echo changed)" "same" "an open answer $ans: the table is byte for byte what it was"
+  check "$(stat -f %m "$GL_TSV")" "$m1" "an open answer $ans: nothing new is cached"
+done
+for ans in null '{"message":"x"}' garbage; do
+  rm -rf "$T/cache/herdr-phase"
+  printf '%s\n' "$ans" > "$T/mr-merged-nonlist.json"
+  MRMERGED="$T/mr-merged-nonlist.json" run refresh
+  case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "a merged answer $ans: the open MRs still badge";;
+    *) _fail "a merged answer $ans: the open MRs still badge (got: $(report_for w4))";; esac
+  case "$(report_for w6)" in *"--token merged"*) _fail "a merged answer $ans: no merged state is invented";;
+    *) _pass "a merged answer $ans: no merged state is invented";; esac
+  [ ! -e "$GL_TSV" ] && _pass "a merged answer $ans: the half answer is not cached" || _fail "a merged answer $ans: the half answer is not cached"
+done
+
+# A row a forge could forge. The table is tab-separated lines, so a tab or newline in a branch or a
+# state would add rows or shift columns: here a branch that smuggles a row for feature/nomr (w7), a
+# state that smuggles an iid and a row for feature/unpushed (w3), and a branch holding a lone
+# surrogate (jq turns it into U+FFFD). Such a row is skipped: no badge for the smuggled branches, the
+# table has only whole four-column rows, and the honest rows still badge. An iid that is not a whole
+# number printing as plain digits (1e300) is left empty; 13.0 prints as 13. Bug caught: a forged
+# MR badging a worktree it does not belong to.
+printf '%s\n' '[{"iid":10,"source_branch":"feature/review","state":"opened","draft":false},' \
+  ' {"iid":30,"source_branch":"b\nfeature/nomr\topened\t5\t0","state":"opened","draft":false},' \
+  ' {"iid":31,"source_branch":"feature/unpushed","state":"opened\t7\t0\nx","draft":false},' \
+  ' {"iid":32,"source_branch":"x\udcffy","state":"opened","draft":false},' \
+  ' {"iid":1e300,"source_branch":"feature/draft","state":"opened","draft":false},' \
+  ' {"iid":13.0,"source_branch":"feature/dirty-review","state":"opened","draft":false}]' > "$T/mr-open-forged.json"
+rm -rf "$T/cache/herdr-phase"
+MROPEN="$T/mr-open-forged.json" run refresh
+case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "forged rows: the honest MR still badges";;
+  *) _fail "forged rows: the honest MR still badges (got: $(report_for w4))";; esac
+phase_check w7 active "$ICON_BRANCH" "a branch that smuggles a row gives feature/nomr no badge"
+phase_check w3 active "$ICON_BRANCH" "a state that smuggles a row gives feature/unpushed no badge"
+check "$(grep -c . "$GL_TSV")" "5" "the table holds the three honest open rows and two merged ones, nothing smuggled"
+check "$(awk -F'\t' 'NF != 4' "$GL_TSV" | wc -l | tr -d ' ')" "0" "every GitLab row has four columns"
+check "$(grep -c "$(printf '\xef\xbf\xbd')" "$GL_TSV")" "0" "a branch holding a lone surrogate is not in the GitLab table"
+check "$(awk -F'\t' '$1 == "feature/draft" {print "[" $3 "]"}' "$GL_TSV")" "[]" "an iid of 1e300 is left empty"
+check "$(awk -F'\t' '$1 == "feature/dirty-review" {print $3}' "$GL_TSV")" "13" "an iid written 13.0 is 13"
+
 echo
 echo "F. a single space can be refreshed on its own"
 run refresh --workspace w4
@@ -949,21 +1001,38 @@ ci_check wG2 fail "the draft PR shows its CI too"
 ci_check wG3 none "a merged PR shows no CI"
 check "$(gh_calls)" "2" "CI costs no extra gh call"
 
-# A PR number is a number of 1 or more equal to its floor, printed without a fraction. jq cannot tell
-# 12, 12.0 and 12e0 apart once parsed, so 12.0 is the PR #12 (spec section 6, item 12), while 1.5, a
-# string, 0 and a negative are dropped and the space is left active. Bug caught: a number printed as
-# parsed ("12.0" in the badge and the table), or a fractional or string number let through.
+# A PR number is a whole number of 1 or more that prints as plain digits. It is compared with its
+# floor and printed as that, so 12.0 and 12e0 are the PR #12 (spec section 6, item 12), while 1.5, a
+# string, true, 0, a negative and 1e300 (which would print as 1e+300) are dropped and the space is
+# left active. Each case carries a second, valid PR, which must still badge: a row dropped is not a
+# lookup failed (a failed lookup leaves every space active too). Bug caught: a number printed as
+# parsed ("12.0" in the badge and the table), a fractional, string or exponent number let through, or
+# one odd row taking the whole answer down.
+numcase() { # numcase <number as written>
+  printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":%s,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},\n' "$1" > "$GH_OPEN"
+  printf ' {"headRefName":"feature/gh-draft","state":"OPEN","number":22,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' >> "$GH_OPEN"
+  rm -rf "$T/cache/herdr-phase"; ghrun refresh --force
+}
 for n in 12.0 12e0; do
-  printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":%s,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' "$n" > "$GH_OPEN"
-  rm -rf "$T/cache/herdr-phase"; ghrun refresh --force --workspace wG1
+  numcase "$n"
   phase_check wG1 review "$ICON_MR #12" "a PR number written $n badges #12"
   check "$(grep -c "^feature/gh-ready	opened	12	0	" "$GH_TSV")" "1" "and the table row carries 12, not $n"
 done
-for n in 1.5 '"7"' 0 -3; do
-  printf '[{"headRefName":"feature/gh-ready","state":"OPEN","number":%s,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' "$n" > "$GH_OPEN"
-  rm -rf "$T/cache/herdr-phase"; ghrun refresh --force --workspace wG1
+for n in 1.5 '"7"' true 0 -3 1e300; do
+  numcase "$n"
   phase_check wG1 active "$ICON_BRANCH" "a PR number written $n is dropped: the space stays active"
+  phase_check wG2 review "$ICON_MR #22" "and the valid PR beside it still badges"
 done
+
+# jq puts U+FFFD in place of an invalid byte or a lone surrogate (the "\udcff" escape here), so a
+# branch holding it could be another branch's name with the damage hidden, and a branch literally
+# named with U+FFFD would collect that badge. A row whose branch holds one is dropped; the others
+# still badge. Bug caught: a damaged branch name entering the table.
+printf '[{"headRefName":"x\\udcffy","state":"OPEN","number":31,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]},\n' > "$GH_OPEN"
+printf ' {"headRefName":"feature/gh-draft","state":"OPEN","number":22,"isDraft":false,"isCrossRepository":false,"statusCheckRollup":[]}]\n' >> "$GH_OPEN"
+rm -rf "$T/cache/herdr-phase"; ghrun refresh --force
+check "$(grep -c "$(printf '\xef\xbf\xbd')" "$GH_TSV")" "0" "a branch holding a lone surrogate is not in the GitHub table"
+phase_check wG2 review "$ICON_MR #22" "and the valid PR beside it still badges"
 roll "[$(cr COMPLETED SUCCESS)]" > "$GH_OPEN"
 
 # A failed lookup keeps the cached CI for 30 minutes, then clears it and keeps the phase.
