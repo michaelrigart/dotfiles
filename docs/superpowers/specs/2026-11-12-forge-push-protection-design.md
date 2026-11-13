@@ -687,14 +687,20 @@ nothing about the token.
 
 1. With the agent token read from 1Password into `GH_TOKEN` for the one command: `gh pr merge` of
    a pull request on the scratch repository is refused, and so is a write through the Contents
-   API (`PUT repos/<owner>/<scratch>/contents/<file>`), the permission an HTTPS push needs.
+   API to a branch **other than the default** (`PUT repos/<owner>/<scratch>/contents/<file>` with
+   `branch=<scratch branch>`; on `main` the ruleset would refuse it whatever the token holds), the
+   permission an HTTPS push needs. A GET of the repository with the same token succeeds first, so
+   a refusal is the permission and not a token that cannot see the repository.
 2. With his own login: `git push origin main` with a new commit on the scratch `main` is refused
    by the forge.
 3. With his own login: the pull request of test 1 merges with `gh pr merge <n> --merge`.
 
-If test 2 fails (the admin gets through), the boundary does not hold and the line stops before
-merge 3. If test 1 fails, the token gets fewer permissions or the line stops. If test 3 fails, the
-ruleset is deleted and nothing is lost.
+A failed test stops his steps there: no real repository gets a ruleset, the scratch repository
+stays until the line has seen the result, and the line does not write merge 3. If test 2 fails
+(the admin gets through), the boundary does not hold. If test 1 fails, the token's permissions
+are wrong or the inference is. If test 3 fails, he could not land a change, so the pull-request
+design does not work as specified. In each case the line returns to Michael with what the forge
+answered; nothing real has changed.
 
 **Decisions he can still change at signature:**
 
@@ -704,6 +710,10 @@ ruleset is deleted and nothing is lost.
 - the dotfiles' pull request opened ready for review, not as a draft (section 4.3);
 - three merges, with the pull-request flow starting at merge 2 and the retirement at merge 3
   (section 6).
+
+**Inventory.** Correction 9's figures are superseded by Michael's own baseline run of the check
+on 2026-11-13, the first to read Azure DevOps: 100 repositories, 1 ok, 81 drift, 18 unreadable,
+none excepted.
 
 **What changes for the driver:** it no longer merges a dotfiles line into `main`, and no agent
 pushes `main` or merges on GitHub. A line's final report carries the pull request and Michael's
