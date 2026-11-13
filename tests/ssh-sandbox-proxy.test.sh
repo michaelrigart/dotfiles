@@ -168,7 +168,7 @@ elif ! resolved "$rc" "$out"; then
   _bad "no agent configuration file: ssh -G must still resolve the host (rc $rc)" "$(printf '%s' "$out" | head -c 200)"
 else _ok "no agent configuration file: the argv is today's and the host resolves"; fi
 
-echo "the shipped agent configuration pins github.com and leaves every other host to ~/.ssh/config"
+echo "the shipped agent configuration pins github.com and ssh.github.com and leaves every other host to ~/.ssh/config"
 inc=$(grep -c '^ *Include ~/\.ssh/config$' "$CFG_SRC")
 if [ "$inc" = 1 ] && [ "$(grep -ci '^ *Include ' "$CFG_SRC")" = 1 ]; then
   _ok "exactly one Include, of ~/.ssh/config"
@@ -186,7 +186,7 @@ FIX
 COPY="$T/agent-copy"
 sed "s|~/.ssh/config|$FIXTURE|" "$CFG_SRC" > "$COPY"
 g() { /usr/bin/ssh -G -F "$COPY" "$1" 2>&1; }
-for h in github.com GitHub.com; do
+for h in github.com GitHub.com ssh.github.com SSH.GitHub.com; do
   out=$(g "$h")
   n=$(printf '%s\n' "$out" | grep -c '^identityfile ')
   last=$(printf '%s\n' "$out" | grep '^identityfile ' | head -1)
@@ -202,12 +202,14 @@ for h in github.com GitHub.com; do
     _bad "$h: Michael's configuration must not be read" "user fixture-user"
   else _ok "$h: Michael's configuration is not read"; fi
 done
-out=$(g gitlab.com)
-if printf '%s\n' "$out" | grep '^identityfile ' | grep -q 'fixture-default' &&
-   printf '%s\n' "$out" | grep -qx 'user fixture-user' &&
-   ! printf '%s\n' "$out" | grep -q 'github-agent.pub'; then
-  _ok "gitlab.com: the fixture's identity and user, no github-agent.pub"
-else _bad "gitlab.com: the fixture's identity and user, no github-agent.pub" "$(printf '%s' "$out" | grep -E '^(identityfile|user) ')"; fi
+for h in gitlab.com notgithub.com gist.github.com ssh.github.com.example; do
+  out=$(g "$h")
+  if printf '%s\n' "$out" | grep '^identityfile ' | grep -q 'fixture-default' &&
+     printf '%s\n' "$out" | grep -qx 'user fixture-user' &&
+     ! printf '%s\n' "$out" | grep -q 'github-agent.pub'; then
+    _ok "$h: the fixture's identity and user, no github-agent.pub"
+  else _bad "$h: the fixture's identity and user, no github-agent.pub" "$(printf '%s' "$out" | grep -E '^(identityfile|user) ')"; fi
+done
 
 echo "the public-key template renders only when 1Password lists the item"
 [ -f "$KEY_TPL" ] || { echo "missing template: $KEY_TPL" >&2; exit 2; }

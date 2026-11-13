@@ -78,7 +78,7 @@ reference below (§1 to §7, Tests) points into it.
 | Token rendering | The `modify_` script calls `op` at apply: `op item list --vault Private --format json`, then `op read` for each listed item. Listed: the variable is set. Not listed: absent (the inert and rollback state). `op` missing or failing: the live file's two values are carried unchanged, so a sandboxed preview neither drops nor diffs them. Listed but unreadable: exit 1 with no stdout (chezmoi keeps the old file). Values reach jq through its environment (`$ENV`), never its argv. |
 | 1Password items | `op://Private/GitHub Agent SSH Key/public key` (an SSH Key item), `op://Private/GitHub Agent Token/token`, `op://Private/GitLab Agent Token/token`. |
 | Agent SSH files | `~/.ssh/github-agent.pub` (template `private_dot_ssh/private_github-agent.pub.tmpl`, rendered only when the item is listed, so it is absent otherwise) and the static `~/.config/agent-identity/ssh_config`. `ssh-sandbox-proxy` adds `-F` for that config only when both files are readable, so `GIT_SSH_COMMAND` stays the proxy's path and `live-agent-auth`'s precondition holds. |
-| Agent SSH configuration | `Match host github.com` pins the agent key, `IdentitiesOnly yes` and the 1Password socket; `Match host "*,!github.com"` includes `~/.ssh/config`. IdentityFile is cumulative, so Michael's configuration is not read at all for `github.com`. |
+| Agent SSH configuration | `Match host "github.com,ssh.github.com"` pins the agent key, `IdentitiesOnly yes` and the 1Password socket (`ssh.github.com` is GitHub's port-443 endpoint); `Match host "*,!github.com,!ssh.github.com"` includes `~/.ssh/config`. IdentityFile is cumulative, so Michael's configuration is not read at all for either host. |
 | A remote on an SSH host alias | `forge-protection check` reports a host it does not know as `unreadable`; an alias that resolves to `github.com` would push with Michael's key. |
 | GitHub bypass visibility | `bypass_actors` is returned to admins only (read 2026-11-12 on the dotfiles: present for Michael, with `current_user_can_bypass`). The check reads `bypass_actors` when present, else requires `current_user_can_bypass == "never"`; as the machine account that proves the agent boundary, run by Michael it proves the whole target. |
 | Excepted remotes | Not queried: no forge call, row `excepted`. |
@@ -548,11 +548,11 @@ suite counts a FAIL when gitleaks is not installed rather than skipping its rows
 
   ```
   # Agent sessions only, through ssh-sandbox-proxy (spec 2026-11-12-forge-push-protection, section 1.1).
-  Match host github.com
+  Match host "github.com,ssh.github.com"
     IdentityFile ~/.ssh/github-agent.pub
     IdentitiesOnly yes
     IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-  Match host "*,!github.com"
+  Match host "*,!github.com,!ssh.github.com"
     Include ~/.ssh/config
   ```
 - Produces the template: it reads `output "op" "item" "list" "--vault" "Private" "--format"
@@ -573,8 +573,9 @@ suite counts a FAIL when gitleaks is not installed rather than skipping its rows
   - the shipped config holds exactly one `Include ~/.ssh/config`; a copy with that path replaced
     by a fixture (whose `Host github.com` and `Host *` blocks set other `IdentityFile`s and `User
     fixture-user`) under `/usr/bin/ssh -G -F <copy>`: `github.com` has exactly one `identityfile`,
-    ending `github-agent.pub`, `identitiesonly yes` and the 1Password `identityagent`; `GitHub.com`
-    the same; `gitlab.com` has the fixture's identity and user and no `github-agent.pub`;
+    ending `github-agent.pub`, `identitiesonly yes` and the 1Password `identityagent`; `GitHub.com`,
+    `ssh.github.com` and `SSH.GitHub.com` the same; `gitlab.com`, `notgithub.com`, `gist.github.com`
+    and `ssh.github.com.example` have the fixture's identity and user and no `github-agent.pub`;
   - the template under `chezmoi execute-template` (hermetic config and state, as in
     `codex-config.test.sh`; INCONCLUSIVE exit 2 when chezmoi is absent or its cache is cold) with a
     stub `op` first on `PATH`: listed → the stub's public key; not listed → empty output. The stub
