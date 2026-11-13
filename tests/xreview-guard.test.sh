@@ -1046,7 +1046,7 @@ is "O7a an MR note through the API is allowed" "$(decision "$W" 'glab api -X POS
 is "O7b a reply in a discussion, the project path-encoded" "$(decision "$W" 'glab api -X POST projects/acme%2Fapp/merge_requests/7/discussions/0a1b2c/notes -f body=hi')" allow
 is "O7c resolving a discussion, with a query string" "$(decision "$W" 'glab api -X PUT "projects/4242/merge_requests/7/discussions/0a1b2c?resolved=true"')" allow
 is "O7d a pipeline start, piped" "$(decision "$W" 'glab api -X POST projects/:fullpath/merge_requests/7/pipelines | jq .id')" allow
-is "O7e a note from a file, by absolute URL" "$(decision "$W" 'glab api --method POST https://forge.example/api/v4/projects/4242/merge_requests/7/notes --input note.json')" allow
+is "O7e a note from a file, by absolute URL" "$(decision "$W" 'glab api --method POST https://forge.example/api/v4/projects/4242/merge_requests/7/notes -F body=@note.md')" allow
 is "O7f a GitHub review comment" "$(decision "$W" 'gh api repos/acme/app/pulls/9/comments -f body=hi')" allow
 is "O7g a GitHub reply, the repository by placeholder" "$(decision "$W" 'gh api repos/{owner}/{repo}/pulls/9/comments/55/replies -f body=hi --jq .html_url')" allow
 is "O7h editing a GitHub review comment" "$(decision "$W" 'gh api -X PATCH repos/acme/app/pulls/comments/55 -f body=hi')" allow
@@ -1055,11 +1055,33 @@ is "O8 a PATCH of a pull request (a retarget) is denied" "$(denies "$W" 'gh api 
 is "O9 a REST create whose body comes from a file is denied" "$(denies "$W" 'glab api -X POST projects/:id/merge_requests --input mr.json' 'this glab api call writes to an MR/PR path whose source, head or destination')" 1
 is "O10 an absolute GraphQL endpoint carrying a merge mutation is denied" \
    "$(denies "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
+is "O11a a GraphQL note carrying the diff head sha, which runs /merge, is denied" \
+   "$(denies "$W" "glab api graphql -f query='mutation { createNote(input: {noteableId: \"x\", body: \"/merge\", mergeRequestDiffHeadSha: \"abc\"}) { errors } }'" 'this GraphQL call')" 1
+is "O11b the same note without it is allowed" \
+   "$(decision "$W" "glab api graphql -f query='mutation { createNote(input: {noteableId: \"x\", body: \"hi\"}) { errors } }'")" allow
 # An exempt call reads nothing but its own literal words, so it passes wherever it stands.
 is "R0a a pipeline start inside a substitution" "$(decision "$W" 'ID=$(glab api -X POST projects/:id/merge_requests/7/pipelines | jq .id)')" allow
 is "R0b a note inside a nested shell" "$(decision "$W" "sh -c 'glab api -X POST projects/:id/merge_requests/7/notes -f body=x'")" allow
 is "R0c a merge inside a nested shell is still denied" "$(decision "$W" "sh -c 'glab api -X PUT projects/:id/merge_requests/7/merge'")" deny
 is "R0d an endpoint holding a variable is denied" "$(decision "$W" 'glab api -X POST projects/$P/merge_requests/7/notes -f body=x')" deny
+# A GitLab note runs quick actions, and a diff head sha field makes /merge merge: a note or
+# thread must show its field names.
+HEADSHA=0123456789abcdef0123456789abcdef01234567
+is "R3a a note with the diff head sha is denied" "$(decision "$W" "glab api -X POST projects/:id/merge_requests/7/notes -f body=/merge -f merge_request_diff_head_sha=$HEADSHA")" deny
+is "R3b the same name in the query string is denied" "$(decision "$W" "glab api -X POST \"projects/:id/merge_requests/7/notes?merge_request_diff_head_sha=$HEADSHA\" -f body=/merge")" deny
+is "R3c a note with --input is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes --input note.json')" deny
+is "R3d a note with an unknown field is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=x -f other=y')" deny
+is "R3e a discussion with --input is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/discussions --input d.json')" deny
+is "R3f a diff discussion with position fields and a body file is allowed" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/discussions -F body=@c.md -f "position[position_type]=text" -f "position[new_line]=3" -f commit_id=abc')" allow
+is "R3g a GitHub comment with --input is allowed" "$(decision "$W" 'gh api repos/acme/app/pulls/9/comments --input c.json')" allow
+is "R3h a pipeline start with --input is allowed" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/pipelines --input x.json')" allow
+# An option or a field the gate cannot read leaves the call gated.
+is "R4a an option brace-expanded into --input is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -f title=x --{input=b.json,silent}')" deny
+is "R4b an option holding a variable is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -f title=x --$Z')" deny
+is "R4c a short option holding a variable, on a pipeline start, is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/pipelines -$Z')" deny
+is "R4d an endpoint holding ; is denied" "$(decision "$W" 'glab api -X PUT "projects/:id/merge_requests/7?title=x;target_branch=release"')" deny
+R4E="gh api repos/acme/app/pulls/9/comments -f 'body=use \`x\` and \${y} {z}'"
+is "R4e a comment body holding \$, backticks and braces is allowed" "$(decision "$W" "$R4E")" allow
 # What the table leaves out stays gated: it lands, rewrites or approves a change.
 is "R1a a rebase is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/rebase')" deny
 is "R1b an approval is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/approve')" deny

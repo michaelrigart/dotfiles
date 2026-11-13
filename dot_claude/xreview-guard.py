@@ -783,11 +783,12 @@ CLI_VERBS = {
 }
 # The GraphQL mutations that create, update, revert, merge or enqueue an MR/PR, merge a branch
 # with no PR, or turn auto-merge on. An update can retarget, from arguments a variable may
-# carry, so it is denied by name. Every other mutation (review threads, comments) is allowed.
+# carry, so it is denied by name, as is a note carrying mergeRequestDiffHeadSha, which runs
+# GitLab's /merge quick action. Every other mutation (review threads, comments) is allowed.
 MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAccept|"
                        r"mergeRequestSetAutoMerge|createPullRequest|updatePullRequest|"
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
-                       r"enablePullRequestAutoMerge|mergeBranch)\b")
+                       r"enablePullRequestAutoMerge|mergeBranch|mergeRequestDiffHeadSha)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
 # The API writes that are never gated: a comment, a thread, a pipeline start, and an update of
 # a title or description. Each is a whole-path match on literal words, so a path the forge could
@@ -796,11 +797,15 @@ NAME = r"[A-Za-z0-9._-]+"      # .github is a name; a .. anywhere is refused apa
 GITLAB_PROJECT = r"(?:\d+|:id|:fullpath|{0}(?:%2[Ff]{0})+)".format(NAME)
 GITHUB_PROJECT = r"(?:\{{owner\}}/\{{repo\}}|{0}/{0})".format(NAME)
 EXEMPT_PATH = {
-    "glab": re.compile(r"projects/{}/merge_requests/\d+/(?:notes(?:/\d+)?|discussions"
-                       r"(?:/[0-9a-f]+(?:/notes(?:/\d+)?)?)?|pipelines)".format(GITLAB_PROJECT)),
+    "glab": re.compile(r"projects/{}/merge_requests/\d+/pipelines".format(GITLAB_PROJECT)),
     "gh": re.compile(r"repos/{}/pulls/(?:\d+/comments(?:/\d+/replies)?|comments/\d+)"
                      .format(GITHUB_PROJECT)),
 }
+# GitLab runs quick actions in a note's body, and a merge_request_diff_head_sha field makes
+# /merge merge, so a note or thread is exempt only while every field name is one it may carry.
+GITLAB_NOTE_PATH = re.compile(r"projects/{}/merge_requests/\d+/(?:notes(?:/\d+)?|discussions"
+                              r"(?:/[0-9a-f]+(?:/notes(?:/\d+)?)?)?)".format(GITLAB_PROJECT))
+GITLAB_NOTE_FIELD = re.compile(r"body|resolved|commit_id|position\[.*", re.S)
 UPDATE_PATH = {
     "glab": (re.compile(r"projects/{}/merge_requests/\d+".format(GITLAB_PROJECT)), "PUT",
              {"title", "description"}),
@@ -991,8 +996,9 @@ def api_exempt(args, tool):
     literal word, is a comment, thread or pipeline path (EXEMPT_PATH), or the MR/PR itself
     updated with a title or description alone (UPDATE_PATH)? No other word of the call may name
     an MR/PR path, and the path holds no .. (the forge would resolve it to another endpoint).
-    The body may come from anywhere, except for an update, whose field names must be readable:
-    --input hides them."""
+    A GitLab note or an update must show its field names, so --input hides them; any other
+    body may come from anywhere. No option word may hold what a shell could expand into another
+    option (a $, a backtick, a brace), nor the endpoint a ; (a query could split into a field)."""
     pos = api_options(args, GLAB_API_VALUE if tool == "glab" else GH_API_VALUE)[1]
     if len(pos) != 1 or not names_gated_path(pos[0]) or sum(map(names_gated_path, args)) != 1:
         return False
@@ -1001,10 +1007,15 @@ def api_exempt(args, tool):
     if not literal(endpoint) or call["method"] not in ("POST", "PUT", "PATCH"):
         return False
     path, query = endpoint_parts(endpoint)
-    if ".." in path:
+    if ".." in path or ";" in endpoint:
+        return False
+    if any(a.startswith("-") and re.search(r"[${`]", a) for a in args):
         return False
     if EXEMPT_PATH[tool].fullmatch(path):
         return True
+    if tool == "glab" and GITLAB_NOTE_PATH.fullmatch(path):
+        return not call["input"] and all(GITLAB_NOTE_FIELD.fullmatch(name)
+                                         for name in (*call["fields"], *query))
     pattern, method, names = UPDATE_PATH[tool]
     if not pattern.fullmatch(path) or call["method"] != method or call["input"]:
         return False
