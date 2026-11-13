@@ -4,6 +4,8 @@
 #   ./tests/run.sh                 # every suite with no special requirement
 #   ./tests/run.sh --all           # those too, requirements printed, run anyway
 #   ./tests/run.sh forge worktree  # only suites whose name contains one of these
+#   ./tests/run.sh --changed       # the default suites, plus each heavy suite whose subject changed against main
+#   ./tests/run.sh --changed=<ref> # the same against another base
 #
 # This exists because all three ways of getting a run wrong are silent:
 #
@@ -46,6 +48,20 @@
 # choice for their length (minutes), not a missing condition. They are listed and
 # skipped unless named EXACTLY (`./tests/run.sh live-agent-auth`) or --all is passed; a
 # substring filter (`live`) still skips them. Read the tag before believing their output.
+#
+# --changed lifts the `heavy` gate, and only that gate (a suite is heavy when its requirement
+# is exactly `heavy`), for each heavy suite with a changed subject. A suite's subjects are the
+# files of .scripts/test-audit/subjects.tsv rows (file, lang, own_suite, loaded_by) whose
+# loaded_by lists it, its own file and tests/run.sh, under the map in the working tree or the
+# map at the merge base. The changed files are those of `git diff` against the merge base of
+# <ref> (default main) and HEAD, covering commits, the index and the working tree, plus
+# untracked unignored files; they are read NUL-delimited and compared byte for byte. A heavy
+# suite left out prints "(no subject changed since <merge base>)"; one that runs carries
+# [needs: heavy; changed: <first changed subject>(, +N more)]. Whatever the runner cannot read
+# or decide runs every heavy suite and says why in the same bracket: not a git work tree, an
+# unresolvable base, no merge base, a failing git command, a missing, unreadable or malformed
+# subject map (working tree or merge base), or a suite with no row. An exact name or --all
+# still runs a heavy suite whatever the diff; every other gate stays.
 set -uo pipefail
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
@@ -53,11 +69,13 @@ self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}
 [ "${1:-}" = --run-one ] || RUN_SH_START_DIR=$(pwd -P)
 export RUN_SH_START_DIR
 
-all=0 one=0
+all=0 one=0 changed=0 base=main
 filters=()
 for a in "$@"; do
   case "$a" in
     --all) all=1 ;;
+    --changed) changed=1 ;;
+    --changed=?*) changed=1 base=${a#--changed=} ;;
     --run-one) one=1 ;; # internal: the xargs driver runs a single suite, named by the filter
     -h|--help) sed -n '2,/^set /p' "$self" | sed '$d; s/^#\{0,1\} \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option: $a" >&2; exit 2 ;;
@@ -176,14 +194,89 @@ show_inconclusive() {
     { keep = 0 }' | sed 's/^/          /'
 }
 
-# select <file> sets name and req; returns 1 when the filters exclude the suite and 2 when
-# its requirement gate skips it.
+# map_check <file>: 0 when every row has four tab-separated fields (comment and empty lines
+# are skipped), 1 when one has not, 2 when awk cannot read the file.
+map_check() {
+  awk -F'\t' '/^#/ || $0 == "" { next } NF != 4 { bad = 1 } END { exit bad }' "$1"
+}
+
+# map_rows <suite> <file>: the files of the rows whose loaded_by lists the suite, one per line.
+map_rows() {
+  SUITE=$1 awk -F'\t' '/^#/ || $0 == "" { next }
+    { n = split($4, l, ","); for (i = 1; i <= n; i++) if (l[i] == ENVIRON["SUITE"]) { print $1; break } }' "$2"
+}
+
+# The files the branch changed and the two subject maps, read once for --changed. Any reason
+# left in sel_reason selects every heavy suite. The caller sets it before the call and only a
+# computation that ran to the end clears it, so a shell error that abandons this function
+# (bash drops the whole enclosing command) can only select, never skip.
+compute_selection() {
+  local map_rel=.scripts/test-audit/subjects.tsv inside sha b rc tree c
+  case $base in -*) sel_reason="base $base does not resolve"; return ;; esac
+  inside=$(git -C "$repo_root" rev-parse --is-inside-work-tree --show-prefix 2>/dev/null) || inside=
+  [ "$inside" = true ] || { sel_reason="not a git work tree"; return; }
+  sha=$(git -C "$repo_root" rev-parse --verify -q "$base^{commit}" 2>/dev/null) || { sel_reason="base $base does not resolve"; return; }
+  b=$(git -C "$repo_root" merge-base "$sha" HEAD 2>/dev/null); rc=$?
+  if [ "$rc" -eq 1 ]; then sel_reason="no merge base with $base"; return; fi
+  if [ "$rc" -ne 0 ] || [ -z "$b" ]; then sel_reason="git failed"; return; fi
+  sel_short=$(git -C "$repo_root" rev-parse --short "$b" 2>/dev/null) || { sel_reason="git failed"; return; }
+
+  map_wt=$RUN_SH_WORK/map.wt map_base=$RUN_SH_WORK/map.base have_base=0
+  [ -e "$repo_root/$map_rel" ] || { sel_reason="subject map missing"; return; }
+  cat "$repo_root/$map_rel" >"$map_wt" 2>/dev/null || { sel_reason="subject map unreadable"; return; }
+  map_check "$map_wt"; rc=$?
+  if [ "$rc" -eq 1 ]; then sel_reason="subject map malformed"; return; fi
+  if [ "$rc" -ne 0 ]; then sel_reason="subject map unreadable"; return; fi
+  # Absence at the base is only a successful ls-tree that names nothing.
+  tree=$(git -C "$repo_root" ls-tree "$b" -- "$map_rel" 2>/dev/null) || { sel_reason="git failed"; return; }
+  if [ -n "$tree" ]; then
+    git -C "$repo_root" show "$b:$map_rel" >"$map_base" 2>/dev/null || { sel_reason="subject map at $sel_short unreadable"; return; }
+    map_check "$map_base"; rc=$?
+    if [ "$rc" -eq 1 ]; then sel_reason="subject map at $sel_short malformed"; return; fi
+    if [ "$rc" -ne 0 ]; then sel_reason="subject map at $sel_short unreadable"; return; fi
+    have_base=1
+  fi
+
+  git -C "$repo_root" diff --name-only --no-renames -z "$b" -- >"$RUN_SH_WORK/changed.z" 2>/dev/null || { sel_reason="git failed"; return; }
+  git -C "$repo_root" ls-files --others --exclude-standard -z >>"$RUN_SH_WORK/changed.z" 2>/dev/null || { sel_reason="git failed"; return; }
+  changed_files=()
+  while IFS= read -r -d '' c; do changed_files+=("$c"); done <"$RUN_SH_WORK/changed.z"
+  sel_reason=
+}
+
+# changed_subjects <suite> sets why; returns 0 to run the heavy suite, 2 to skip it.
+changed_subjects() {
+  local subjects i c
+  if [ -n "$sel_reason" ]; then why=$sel_reason; return 0; fi
+  subjects=$(map_rows "$1" "$map_wt")
+  if [ -z "$subjects" ]; then why="no subject-map row"; return 0; fi
+  [ "$have_base" -eq 1 ] && subjects="$subjects"$'\n'$(map_rows "$1" "$map_base")
+  subjects="$subjects"$'\n'"tests/$1.test.sh"$'\n'"tests/run.sh"
+  hits=()
+  i=0
+  while [ "$i" -lt "${#changed_files[@]}" ]; do
+    c=${changed_files[$i]}
+    case $'\n'"$subjects"$'\n' in *$'\n'"$c"$'\n'*) hits+=("$c") ;; esac
+    i=$((i + 1))
+  done
+  if [ "${#hits[@]}" -eq 0 ]; then why="(no subject changed since $sel_short)"; return 2; fi
+  why="changed: ${hits[0]}"
+  if [ "${#hits[@]}" -gt 1 ]; then why="$why, +$((${#hits[@]} - 1)) more"; fi
+  return 0
+}
+
+# select <file> sets name, req and why; returns 1 when the filters exclude the suite and 2 when
+# its requirement gate skips it. Under --changed a heavy suite is gated by its subjects instead.
 select_suite() {
   name=$(basename "$1" .test.sh)
+  why=
   matches "$name" || return 1
   req=$(sed -n 's/^# test-requires: *//p' "$1" | head -1)
   req=${req%%  #*}
-  if [ -n "$req" ] && [ "$all" -eq 0 ] && ! named "$name"; then return 2; fi
+  if [ -n "$req" ] && [ "$all" -eq 0 ] && ! named "$name"; then
+    [ "$changed" -eq 1 ] && [ "$req" = heavy ] && { changed_subjects "$name"; return $?; }
+    return 2
+  fi
   return 0
 }
 
@@ -224,6 +317,8 @@ if [ "$lock_owner" = 1 ] && [ "$one" -eq 0 ]; then
   { printf '%s\t%s\t%s\n' "$(date +%s)" "$rec_dir" "$rec_args" >"$lock.holder.$$" && mv "$lock.holder.$$" "$lock.holder"; } 2>/dev/null || rm -f "$lock.holder.$$"
 fi
 
+sel_reason="git failed" # the safe state; compute_selection clears it only when it ran to the end
+[ "$changed" -eq 0 ] || compute_selection
 parallel=() serial=()
 for f in ./*.test.sh; do
   select_suite "$f" || continue
@@ -244,7 +339,7 @@ for f in ./*.test.sh; do
   case $? in
     1) continue ;;
     2)
-      printf '  skip  %-28s needs: %s\n' "$name" "$req"
+      printf '  skip  %-28s needs: %s%s\n' "$name" "$req" "${why:+ $why}"
       skipped=$((skipped + 1))
       continue ;;
   esac
@@ -269,7 +364,7 @@ for f in ./*.test.sh; do
   tot=$((p + fl))
   suites=$((suites + 1))
   note=""
-  [ -n "$req" ] && note="  [needs: $req]"
+  [ -n "$req" ] && note="  [needs: $req${why:+; $why}]"
 
   # Exit status is the verdict; the counts only describe it. Disagreement means the
   # suite died partway or never asserted, and either way its total is not trustworthy.

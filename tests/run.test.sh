@@ -535,6 +535,230 @@ out="$(fresh "$T/run-inject.sh" plain-alpha 2>&1)"; rc=$?
 if [ "$rc" = 2 ]; then _pass "an expansion error in the lock block exits 2"; else _fail "an expansion error in the lock block exits 2" "exit $rc: $out"; fi
 ran "and no suite runs unlocked" no 'ok +|suites' "$out"
 rm -f "$T/run-inject.sh"
+
+# Changed-subject selection (--changed). The fixture is a git repository holding a copy of
+# run.sh, two heavy suites, a live-gated one and a plain one, a subject map and the files it
+# names. Every case starts from the same state: HEAD on `work`, equal to `main`.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+R="$T/repo"; MAP=.scripts/test-audit/subjects.tsv; NAIVE='lib/naïve".sh'
+G() { git -C "$R" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+commit() { G add -A && G commit -q -m "$1"; }
+rr() { fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run.sh" "$@" 2>&1; }
+row() { printf '%s\t%s\t%s\t%s' "$1" sh '' "$2"; }
+write_map() { # write_map [extra row]...: the fixture map, then the rows given
+  mkdir -p "$R/.scripts/test-audit"
+  { printf '# file\tlang\town_suite\tloaded_by\n\n'
+    row lib/a.sh heavya; echo; row lib/b.sh heavyb; echo; row "lib/has space.sh" heavya; echo; row "$NAIVE" heavyb; echo
+    [ $# -eq 0 ] || printf '%s\n' "$@"
+  } > "$R/$MAP"
+}
+drop_rows() { awk -F'\t' -v k="$1" -v v="$2" '$k != v' "$R/$MAP" > "$R/$MAP.new" && mv "$R/$MAP.new" "$R/$MAP"; }
+edit() { printf '# edit\n' >> "$R/$1"; }
+rm -rf "$R"; mkdir -p "$R/tests" "$R/lib" "$R/.scripts/test-audit"
+cp "$RUN" "$R/tests/run.sh"
+for n in heavya heavyb; do
+  printf '#!/usr/bin/env bash\n%s: heavy  # a fixture\necho "  ok  %s ran"\n' "$tag" "$n" > "$R/tests/$n.test.sh"
+done
+printf '#!/usr/bin/env bash\n%s: a live herdr\necho "  ok  gatedlive2 ran"\n' "$tag" > "$R/tests/gatedlive2.test.sh"
+printf '#!/usr/bin/env bash\necho "  ok  plainc ran"\n' > "$R/tests/plainc.test.sh"
+chmod 755 "$R"/tests/*.sh
+for f in lib/a.sh lib/b.sh "lib/has space.sh" "$NAIVE"; do echo "# $f" > "$R/$f"; done
+write_map
+if ! G init -q -b main 2>"$T/ginit.err"; then echo "cannot build the fixture repository: $(cat "$T/ginit.err")" >&2; exit 2; fi
+commit base && G switch -q -c work && cp -R "$R" "$T/repo.tpl"
+reset_repo() { rm -rf "$R"; cp -R "$T/repo.tpl" "$R"; }
+# on_main <message>: commit what is in the tree to main, then start `work` there.
+on_main() { G switch -q main && commit "$1" && G switch -q -C work; }
+
+# both <label> <reason regex> <output>: both heavy suites ran, each carrying the reason.
+both() {
+  local a=no b=no
+  printf '%s\n' "$3" | grep -Eq "ok +heavya .*\[needs: heavy; $2\]" && a=yes
+  printf '%s\n' "$3" | grep -Eq "ok +heavyb .*\[needs: heavy; $2\]" && b=yes
+  if [ "$a$b" = yesyes ]; then _pass "$1"; else _fail "$1" "$(printf '%s' "$3" | tr '\n' '|')"; fi
+}
+# neither <label> <output>: both heavy suites were left out for want of a changed subject.
+neither() {
+  local a=no b=no
+  printf '%s\n' "$2" | grep -Eq 'skip +heavya +needs: heavy \(no subject changed since [0-9a-f]+\)$' && a=yes
+  printf '%s\n' "$2" | grep -Eq 'skip +heavyb +needs: heavy \(no subject changed since [0-9a-f]+\)$' && b=yes
+  if [ "$a$b" = yesyes ]; then _pass "$1"; else _fail "$1" "$(printf '%s' "$2" | tr '\n' '|')"; fi
+}
+
+# Bug caught: without --changed the report differs from today's (a stray note or reason).
+reset_repo
+out="$(rr)"
+want="$(printf '  skip  %-28s needs: %s\n  skip  %-28s needs: %s\n  skip  %-28s needs: %s\n  ok    %-28s %s\n' gatedlive2 'a live herdr' heavya heavy heavyb heavy plainc 1/1)
+$(printf '\n1 suites run, 3 skipped (see the needs: lines)\nall 1 suites passed (1 assertions)')"
+if [ "$out" = "$want" ]; then _pass "without --changed the report is exactly today's"; else _fail "without --changed the report is exactly today's" "$out"; fi
+
+# Bug caught: --changed= (an empty base) taken as the default base, or as a filter.
+out="$(rr --changed=)"; rc=$?
+if [ "$rc" = 2 ]; then _pass "--changed= is refused with exit 2"; else _fail "--changed= is refused with exit 2" "exit $rc"; fi
+ran "and names the option" yes 'unknown option: --changed=' "$out"
+
+# Bug caught: a changed subject not selecting its suite, or selecting every heavy suite.
+reset_repo; edit lib/a.sh; commit "edit a"
+out="$(rr --changed)"
+ran "a changed subject selects its heavy suite and names it" yes 'ok +heavya .*\[needs: heavy; changed: lib/a.sh\]' "$out"
+ran "the other heavy suite stays skipped" yes 'skip +heavyb +needs: heavy \(no subject changed since [0-9a-f]+\)' "$out"
+ran "--changed does not lift another gate" yes 'skip +gatedlive2 +needs: a live herdr$' "$out"
+
+# Bug caught: any commit selecting every heavy suite; an unrelated file counted as a subject.
+reset_repo; echo hi > "$R/README"; commit "readme"
+out="$(rr --changed)"
+neither "an unrelated change selects no heavy suite" "$out"
+ran "and the plain suite still runs" yes 'ok +plainc' "$out"
+ran "a skipped heavy suite counts as skipped" yes '^1 suites run, 3 skipped' "$out"
+
+# Bug caught: the suite's own file or run.sh missing from its subjects.
+reset_repo; edit tests/heavya.test.sh; commit "edit the suite"
+out="$(rr --changed)"
+ran "a change to the suite's own file selects it" yes 'ok +heavya .*changed: tests/heavya.test.sh' "$out"
+ran "and not the other heavy suite" yes 'skip +heavyb' "$out"
+reset_repo; edit tests/run.sh; commit "edit run.sh"
+out="$(rr --changed)"
+ran "a change to run.sh selects one heavy suite" yes 'ok +heavya .*changed: tests/run.sh' "$out"
+ran "and the other" yes 'ok +heavyb .*changed: tests/run.sh' "$out"
+
+# Bug caught: only committed changes seen.
+reset_repo; edit lib/a.sh
+out="$(rr --changed)"
+ran "an unstaged change selects" yes 'ok +heavya' "$out"
+reset_repo; edit lib/a.sh; G add lib/a.sh
+out="$(rr --changed)"
+ran "a staged change selects" yes 'ok +heavya' "$out"
+reset_repo; write_map "$(row lib/new.sh heavya)"; on_main "row for new"
+echo x > "$R/lib/new.sh"
+out="$(rr --changed)"
+ran "an untracked file selects" yes 'ok +heavya .*changed: lib/new.sh' "$out"
+# Bug caught: ignored files selected (build output, caches).
+reset_repo; write_map "$(row lib/new.sh heavya)"; echo lib/new.sh > "$R/.gitignore"; on_main "row for new"
+echo x > "$R/lib/new.sh"
+out="$(rr --changed)"
+ran "an ignored untracked file does not select" yes 'skip +heavya' "$out"
+
+# Bug caught: a rename away from a subject path seen only as an addition.
+reset_repo; G mv lib/a.sh lib/z.sh; commit "move a"
+out="$(rr --changed)"
+ran "a rename away from a subject selects" yes 'ok +heavya .*changed: lib/a.sh' "$out"
+
+# Bug caught: names read through git's quoting ("lib/na\303\257ve\".sh") never matching the map.
+reset_repo; edit "$NAIVE"; commit "edit naive"
+out="$(rr --changed)"
+ran "a name git would quote selects" yes 'ok +heavyb .*changed: lib/naïve".sh\]' "$out"
+# Bug caught: a name split at its space.
+reset_repo; edit "lib/has space.sh"; commit "edit spaced"
+out="$(rr --changed)"
+ran "a name with a space selects" yes 'ok +heavya .*changed: lib/has space.sh\]' "$out"
+
+# Bug caught: a count of changed subjects that is wrong or missing.
+reset_repo; edit lib/a.sh; edit "lib/has space.sh"; commit "edit two"
+out="$(rr --changed)"
+ran "several changed subjects are counted" yes 'ok +heavya .*changed: lib/a.sh, \+1 more\]' "$out"
+
+# Bug caught: only the working-tree map read, so dropping a row unselects its suite.
+reset_repo; drop_rows 1 lib/a.sh; edit lib/a.sh; commit "drop the row and edit"
+out="$(rr --changed)"
+ran "a row removed on the branch still selects" yes 'ok +heavya .*changed: lib/a.sh\]' "$out"
+
+# Bug caught: a map edit selecting every suite that has subjects.
+reset_repo; write_map "$(row lib/c.sh plainc)"; commit "map row for plainc"
+out="$(rr --changed)"
+neither "a map edit about another suite selects no heavy suite" "$out"
+
+# Bug caught: each fail-safe path skipping a heavy suite it could not decide about.
+reset_repo; rm -rf "$R/.git"
+out="$(rr --changed)"
+both "not a git work tree selects every heavy suite" 'not a git work tree' "$out"
+reset_repo
+out="$(rr --changed=nosuchref)"
+both "an unresolvable base selects every heavy suite" 'base nosuchref does not resolve' "$out"
+reset_repo; G switch -q --orphan orphan && echo o > "$R/o" && commit orphan && G switch -q work
+out="$(rr --changed=orphan)"
+both "no merge base selects every heavy suite" 'no merge base with orphan' "$out"
+reset_repo; G rm -q "$MAP"; commit "no map"
+out="$(rr --changed)"
+both "a missing map selects every heavy suite" 'subject map missing' "$out"
+reset_repo; printf 'lib/x.sh\tsh\theavya\n' >> "$R/$MAP"; commit "bad row"
+out="$(rr --changed)"
+both "a malformed row selects every heavy suite" 'subject map malformed' "$out"
+reset_repo; printf 'lib/x.sh\tsh\theavya\n' >> "$R/$MAP"; on_main "bad row on main"
+write_map; commit "row fixed on the branch"
+out="$(rr --changed)"
+both "a malformed row at the base selects every heavy suite" 'subject map at [0-9a-f]+ malformed' "$out"
+reset_repo; chmod 000 "$R/$MAP"
+if [ -r "$R/$MAP" ]; then
+  echo "  SKIP: an unreadable map selects every heavy suite (this user reads a mode 000 file)"
+else
+  out="$(rr --changed)"
+  both "an unreadable map selects every heavy suite" 'subject map unreadable' "$out"
+fi
+chmod 644 "$R/$MAP"
+reset_repo; blob="$(G rev-parse "main:$MAP")"; write_map "$(row lib/c.sh plainc)"; commit "map changed"
+rm -f "$R/.git/objects/${blob:0:2}/${blob:2}"
+out="$(rr --changed)"
+both "a base map whose blob cannot be read selects every heavy suite" 'subject map at [0-9a-f]+ unreadable' "$out"
+reset_repo; G rm -q "$MAP"; on_main "no map on main"
+write_map; echo hi > "$R/README"; commit "map and readme on the branch"
+out="$(rr --changed)"
+neither "a base without a map reads only the working tree" "$out"
+ran "and gives no fail-safe reason" no 'needs: heavy;' "$out"
+# Bug caught: a git command's failure read as "nothing changed".
+mkdir -p "$T/gitstub"; REAL_GIT="$(command -v git)"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "$STUB_FAIL" ] && exit 1; done\nexec "$REAL_GIT" "$@"\n' > "$T/gitstub/git"
+chmod 755 "$T/gitstub/git"
+for sub in diff ls-files ls-tree; do
+  reset_repo
+  out="$(PATH="$T/gitstub:$PATH" REAL_GIT="$REAL_GIT" STUB_FAIL=$sub rr --changed)"
+  both "a failing git $sub selects every heavy suite" 'git failed' "$out"
+done
+
+# Bug caught: a suite the map does not mention being skipped as "unchanged".
+reset_repo; drop_rows 4 heavyb; commit "heavyb has no rows on the branch"
+out="$(rr --changed)"
+ran "a suite without a row is selected" yes 'ok +heavyb .*\[needs: heavy; no subject-map row\]' "$out"
+ran "and the suite with rows is not" yes 'skip +heavya' "$out"
+
+# Bug caught: nothing-changed read as an error.
+reset_repo; G switch -q main
+out="$(rr --changed)"
+neither "HEAD equal to the base with a clean tree selects no heavy suite" "$out"
+
+# Bug caught: --changed overriding the exact-name and --all lifts, or the filters.
+reset_repo
+out="$(rr --changed heavyb)"
+ran "an exact name still runs a heavy suite with no changed subject" yes 'ok +heavyb' "$out"
+ran "and the filter still narrows the run" no 'heavya' "$out"
+out="$(rr --changed --all)"
+ran "--all still runs one heavy suite" yes 'ok +heavya' "$out"
+ran "and the other" yes 'ok +heavyb' "$out"
+out="$(rr --changed plainc)"
+ran "a filter that excludes the heavy suites lists none" no 'heavy' "$out"
+
+# Bug caught: the repository root taken from the current directory.
+reset_repo; edit lib/a.sh; commit "edit a"
+out="$(cd "$R/lib" && rr --changed)"
+ran "started from a subdirectory the branch diff is still read" yes 'ok +heavya' "$out"
+
+# Bug caught: an unexpected shell error in the selection leaving "nothing changed" in force,
+# which would skip a heavy suite nobody decided about.
+reset_repo; echo hi > "$R/README"; commit "readme"
+sed '/^compute_selection() {$/a\
+  : $((08))' "$RUN" > "$R/tests/run-inject.sh"
+chmod 755 "$R/tests/run-inject.sh"
+if ! grep -q '^  : \$((08))$' "$R/tests/run-inject.sh"; then _fail "the injected expansion error is in the copy" "sed did not inject"; fi
+out="$(fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run-inject.sh" --changed 2>&1)"
+both "an expansion error while selecting runs every heavy suite" 'git failed' "$out"
+# Bug caught: the same error in the per-suite decision ending in a green report that skipped a
+# heavy suite (bash abandons the whole loop, so the run must end non-zero without a verdict).
+sed '/^changed_subjects() {$/a\
+  : $((08))' "$RUN" > "$R/tests/run-inject.sh"
+if ! grep -q '^  : \$((08))$' "$R/tests/run-inject.sh"; then _fail "the injected expansion error is in the copy" "sed did not inject"; fi
+out="$(fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run-inject.sh" --changed 2>&1)"; rc=$?
+if [ "$rc" != 0 ]; then _pass "an expansion error in the per-suite decision fails the run"; else _fail "an expansion error in the per-suite decision fails the run" "exit $rc: $out"; fi
+ran "and prints no passing verdict" no 'suites passed' "$out"
+rm -f "$R/tests/run-inject.sh"
 unset HOLDER_DONE
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
