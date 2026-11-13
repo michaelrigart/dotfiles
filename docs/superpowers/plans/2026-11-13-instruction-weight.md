@@ -319,37 +319,102 @@ The controller (not a task): full default suite once, the sandboxed real-system 
 report to the driver with the measured table. Then wait for the driver's word on
 `fix/xreview-trust`.
 
-### Task 4: Rebase and write C's table (controller)
+### Task 4: Rebase and write C's table (controller) — done
 
-**Depends on:** the driver's word that `fix/xreview-trust` is on main.
+Parts A and B merged as 1a94111. The table is
+`docs/superpowers/plans/2026-11-13-instruction-weight-appendix-c.md` (Appendix C): C.1 maps
+every sentence of the skill (261 rows), C.2 every refusal either of its lists names (R1–R37),
+C.3 is the new skill in full (235 lines), C.4 maps every check of `tests/xreview-skill.test.sh`
+(K1–K71). Its Decisions section records what the driver decided on Michael's delegation: the
+goal is at most 250 lines, measured 235, because 150 cannot be reached without cutting a rule
+or editing a guard. Line numbers in the appendix are from d88277e: find text by its words.
 
-- [x] Rebase onto `origin/main` (done, 4c35ad4). The `xreview-guard-cli` paragraph that branch
-  added to `AGENTS.md` Testing was split by the move test: what its exit 2 means reads a run's
-  result and stays in the root, joined to the cold-cache paragraph (as the plan review ruled
-  for that paragraph); "the pin in the suite is updated in the change that weighs the new
-  command or flag" binds while changing the suite and moved to `tests/AGENTS.md`,
-  `## Suite-specific`. Root: 204 lines.
-- [ ] Append `## Appendix C` to this plan: one row per sentence or list item of the rebased
-  `dot_claude/skills/cross-review/SKILL.md` (kept / moved to which `xreview` or guard message /
-  dropped as rationale, with the rule it explained), and one row per `die` in
-  `dot_local/bin/executable_xreview` that the skill's two refusal lists name, with its closing
-  clause: the agent's action, or `Michael's call: report this and stop.` A refusal is marked
-  Michael's call exactly when today's escalation list names it.
-- [ ] If the kept rows exceed 150 lines, or a moved sentence needs a guard's deny message
-  changed, stop: that goes to Michael before any edit.
-- [ ] Replace Tasks 5 to 7 below with full steps written from the appendix, commit, and send
-  the plan to Codex at the `plan` checkpoint. Execution of C starts once it approves.
+Global Constraints for C, in addition to the plan's:
+- No trigger, round rule, verdict rule or escalation condition changes. A refusal carries
+  `Michael's call: report this and stop.` exactly when C.2 says so (R1–R25), and no other does.
+- Message text only: no branch, exit status or condition changes in `xreview` or
+  `xreview-packet.py`. No guard file (`dot_claude/executable_xreview-guard.sh`,
+  `dot_claude/xreview-guard.py`, `dot_claude/xreview-apply-guard*`) is edited.
+- The pinned sentences `cr-plan-review`, `cr-show-plan`, `cr-plan-path`, `cr-no-consensus` and
+  `cr-fix-rule` stay verbatim; their `rules.tsv` rows do not change.
 
-### Tasks 5 to 7: C (outline; steps written in Task 4)
+### Task 5: Refusals carry their next step
 
-- **Task 5, refusals.** `dot_local/bin/executable_xreview`: each listed `die` gets its closing
-  clause. `tests/xreview.test.sh`: each escalation refusal ends with the Michael's-call clause,
-  and no wait-and-retry refusal does. **Depends on:** Task 4.
-- **Task 6, the skill.** `dot_claude/skills/cross-review/SKILL.md` rewritten from the
-  appendix's kept rows; `rules.tsv` rows `cr-*` unchanged and passing; a cap of 150 lines in
-  `tests/xreview-skill.test.sh`. **Depends on:** Task 5 (the skill points at the clauses).
-- **Task 7, the skill's consistency suite.** `tests/xreview-skill.test.sh`: a check whose
-  sentence moved to a message now reads the message; one whose sentence was dropped as
-  rationale goes, each listed in the appendix. **Depends on:** Task 6.
+**Depends on:** Task 4.
 
-Then the same hold-point steps as above; `--changed` runs the heavy `xreview` suite.
+**Files:**
+- Modify: `dot_local/bin/executable_xreview` (the `die` texts of R1–R23, R28, R30, R31)
+- Modify: `dot_claude/xreview-packet.py` (`CAP_REFUSAL`, `CAP_REFUSAL_FRAMED`: R24, R25)
+- Test: `tests/xreview.test.sh`, `tests/xreview-packet.test.sh`
+
+**Interfaces:**
+- Produces: the marker, exactly `Michael's call: report this and stop.`, as the last words of
+  the `xreview:` line of each of R1–R25; Task 6's skill quotes it. The action clauses of
+  R26–R37 as C.2's "New text" column gives them.
+
+- [ ] **Step 1: Write the failing assertions** in `tests/xreview.test.sh`, extending the case
+  that already raises each refusal (C.2's last column names them; C.4's "replaced" rows K8,
+  K41, K45, K48, K53, K56, K58 and K68 name the same cases):
+  - for each of R1–R23 that a case raises today: its `xreview:` line ends with the marker. For
+    R8 check the message line, not the last line of stderr (the pane's screen follows it);
+  - R3 names `codex-daemon restart`; R6 carries "Michael can set XREVIEW_PANE to one of them";
+    R23 names `XREVIEW_MAX_ROUNDS`; R22 says "never drop it with xreview round --reset";
+  - R28 ends "wait for it, then dispatch again"; R29 carries "run codex-daemon ensure, then
+    collect again"; R30 and R31 end "(do NOT retry the dispatch): report this and stop";
+  - none of R26–R37 carries the marker.
+  A refusal no case raises today (C.2 says "none" for R2, R4, R12, R18, R19) gets no new case:
+  list them in the report as unpinned. In `tests/xreview-packet.test.sh`, change `CAP_TEXT` and
+  `CAP_FRAMED` (and F1) to C.2's new texts for R24 and R25.
+- [ ] **Step 2: Run** `./tests/run.sh xreview-packet` and `./tests/run.sh xreview` (the exact
+  name lifts the heavy gate; about 11 minutes; do not set `RUN_SH_LOCK_WAIT`).
+  Expected: the new assertions FAIL, everything else passes.
+- [ ] **Step 3: Change the texts** to C.2's "New text" column, exactly. R26, R27, R29, R32–R37
+  do not change. Update the existing exact-text and `$`-anchored assertions C.2 lists
+  (753, 926, 1026, 1058, 972, 1075, 1085, 980, 1034, 976, 1065, 1050, 1390, 1333, 1395, 2140)
+  to the new texts; an assertion that only matches a substring stays as it is.
+- [ ] **Step 4: Check nothing but text changed.**
+  Run: `git diff -U0 dot_local/bin/executable_xreview dot_claude/xreview-packet.py`
+  Expected: every changed line is a message string (a `die "…"` argument, or the two
+  constants); no line with `if`, `case`, `exit`, `return` or a condition differs.
+- [ ] **Step 5: Run** `./tests/run.sh xreview` and `./tests/run.sh xreview-packet`.
+  Expected: all pass; quote each `passed/total` line. If `xreview-rpc` fails only on "one that
+  never answers initialize is bounded the same way", rerun it alone and report both results.
+- [ ] **Step 6: Commit**, message `Let each xreview refusal state its next step`.
+
+### Task 6: The skill, from Appendix C
+
+**Depends on:** Task 5 (the skill quotes its marker and points at its clauses).
+
+**Files:**
+- Modify: `dot_claude/skills/cross-review/SKILL.md` (replaced by C.3, verbatim)
+- Modify: `tests/xreview-skill.test.sh` (per C.4)
+
+- [ ] **Step 1: Change the suite first**, per C.4: remove K37, K49, K57 and K59; remove the
+  skill half of K8, K41, K45, K48, K53, K56, K58 and K68 (Task 5 put their replacement on the
+  messages); in K51 keep the first phrase only; in K65 remove the two phrases C.4 names; set
+  K70's `expected_esc` to the five bullets of C.3's escalation list; add K71:
+  `the skill is at most 250 lines`, in the shape of the caps in
+  `tests/agent-instructions.test.sh`.
+- [ ] **Step 2: Run** `./tests/run.sh xreview-skill`.
+  Expected: K70 FAILS (the old list); K71 FAILS (381); the rest pass.
+- [ ] **Step 3: Replace the skill** with the fenced block under C.3, byte for byte (the block's
+  first line is the frontmatter's `---`).
+  Check: `wc -l dot_claude/skills/cross-review/SKILL.md` prints 235.
+- [ ] **Step 4: Run** `./tests/run.sh xreview-skill agent-instructions claude-settings review`.
+  Expected: all pass (the five `cr-*` rows among them); quote each `passed/total` line.
+  A check that fails because C.3 lacks a phrase C.4 says is kept is a defect in the appendix:
+  stop and report it, do not edit the skill text to fit.
+- [ ] **Step 5: See the cap fail.** Set K71's limit to 100, run the suite file, see it fail,
+  restore 250.
+- [ ] **Step 6: Commit**, message `Cut the cross-review skill to its rules`.
+
+### Hold point: C
+
+The controller: the full default suite once; the sandboxed real-system run (render the skill
+with `command chezmoi --source <checkout> cat ~/.claude/skills/cross-review/SKILL.md`, and raise
+one marked and one unmarked refusal from a scratch repository with a stubbed `herdr`, as the
+suite does); the final whole-branch review; `./tests/run.sh --changed` (the heavy `xreview`
+suite is selected); Codex pre-merge on `main...chore/instruction-weight`; set both records'
+Status; push; report tip and receipt to the driver. `wt-teardown` 100/101 is a known failure on
+main (the sandbox hides other processes; `fix/wt-teardown-sandbox` takes it): report it, do not
+fix it here.

@@ -43,7 +43,10 @@ lines). What is left there is small. The weight is in the dotfiles `AGENTS.md` a
     grown main. No rule is cut to reach a number. Decided by the driver session on Michael's
     delegation, 2026-11-13; part A stops here, and a later finding that asks for another
     sentence back in the root is taken as is unless the file would pass the cap;
-  - `cross-review` skill at most 150 lines;
+  - `cross-review` skill at most 250 lines, measured 235, from 381: a regrowth guard (the goal
+    at sign-off was 150. The sentence table, Appendix C of the plan, shows that 150 cannot be
+    reached without cutting a rule or editing a guard's deny message; the kept rules alone come
+    to 235. Decided by the driver session on Michael's delegation, 2026-11-13);
   - `claude-code.md` below its 50-line cap, so the next rule has room;
   - no rule lost: every sentence that leaves a file is kept elsewhere, or is named as dropped
     with its reason.
@@ -181,6 +184,18 @@ Result: `claude-code.md` at about 41 lines. The caps in `agent-instructions` sta
    and `cr-fix-rule`.
 
 This is not a change to the review loop: no trigger, round rule or verdict rule changes.
+
+**Amended at planning (2026-11-13, the driver on Michael's delegation).** The plan's Appendix
+C is the table. Four things differ from the text above: the goal is 250 lines, not 150;
+rationale of kinds this section does not list is dropped too, each row naming the rule it
+explained; the ambiguous turn, the failed turn and exit 4 keep an action clause, not the
+Michael's-call marker, because today's escalation list does not name them; and the scope grows
+by `dot_claude/xreview-packet.py` (the size-cap refusal lives there) and by five refusal
+messages whose body told the reader to act (run `round --reset`, unset `XREVIEW_THREAD`, apply
+the layout, slice by hand): they are reworded so the only imperative is the closing clause.
+Point 2 above changed: the gated-verb list and the quoting advice stay in the skill, since
+moving them would edit a guard's deny message. The Caps bullet under Testing reads 250 for the
+skill.
 
 ### Order
 
