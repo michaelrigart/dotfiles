@@ -250,14 +250,17 @@ if [ -e "$MARK/serialy.afterpar" ] && [ -e "$MARK/serialz.afterpar" ]; then _pas
 out="$(RUN_JOBS=4 "$T/run.sh" --all 2>&1)"
 ran "--all runs a live-gated suite alone"        yes 'ok +gatedlive' "$out"
 
-# Locking. hold <tenths> takes the lock in the background, waits until it is held, and
-# releases it after that long or when $T/release appears.
+# Locking. hold <tenths> [record] takes the lock in the background, waits until it is held
+# (and, when given, until its holder-record line is written to $L.holder), and releases it
+# after that long or when $T/release appears.
 hold() {
-  rm -f "$T/release" "$T/holder.done"
-  lockf -k "$L" sh -c 'i=0; while [ ! -e "$1/release" ] && [ "$i" -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done; touch "$1/holder.done"' sh "$T" "$1" &
+  rm -f "$T/release" "$T/holder.done" "$L.holder"
+  lockf -k "$L" sh -c '[ -z "$3" ] || printf "%s\n" "$3" > "$4.holder"; i=0; while [ ! -e "$1/release" ] && [ "$i" -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done; rm -f "$4.holder"; touch "$1/holder.done"' sh "$T" "$1" "${2:-}" "$L" &
   holder=$!
   local i=0
   while lockf -k -t 0 "$L" true 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0
+  while [ -n "${2:-}" ] && [ ! -e "$L.holder" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 }
 # Bug caught: no lock, so two runners share the machine.
 export HOLDER_DONE="$T/holder.done"
@@ -290,5 +293,142 @@ if grep -q 'suites passed' "$T/nested.out"; then _pass "RUN_SH_LOCKED=1 runs whi
 kill "$nested" 2>/dev/null
 touch "$T/release"
 wait "$holder"
+
+# A runner that must take the lock starts with none of the variables a locked parent exports.
+fresh() { env -u RUN_SH_LOCKED -u RUN_SH_LOCK_OWNER -u RUN_SH_LOCK_SINCE "$@"; }
+cat > "$T/nestedrun.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+d=$(cd "$(dirname "$0")" && pwd)
+cat "$RUN_SH_LOCK.holder" > "$MARK/nested.before"
+"$d/run.sh" plain-alpha > "$MARK/nested.out" 2>&1
+cat "$RUN_SH_LOCK.holder" > "$MARK/nested.after"
+echo "  ok  nestedrun"
+SUITE
+cat > "$T/holderseen.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+cat "$RUN_SH_LOCK.holder" > "$MARK/holderseen.rec"
+echo "  ok  holderseen"
+SUITE
+chmod 755 "$T"/nestedrun.test.sh "$T"/holderseen.test.sh
+export HOLDER_DONE="$T/holder.done"
+now() { date +%s; }
+
+# Bug caught: a waiter that cannot say who holds the lock, since when, or for what.
+hold 15 "$(printf '%s\tCHK/x\txreview wt' "$(( $(now) - 840 ))")"
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+ran "a waiter names the holder's age, arguments and checkout" yes "held for 14 min by 'run.sh xreview wt' in CHK/x" "$out"
+
+# Bug caught: the waiting line printed once, so a long wait looks hung.
+hold 25 "$(printf '%s\tCHK/x\txreview' "$(now)")"
+out="$(fresh RUN_SH_LOCK_POLL=1 "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+n=$(printf '%s\n' "$out" | grep -c 'waiting for the test-run lock')
+if [ "$n" -ge 2 ]; then _pass "a waiter repeats the line while it waits"; else _fail "a waiter repeats the line while it waits" "$n waiting lines"; fi
+
+# Bug caught: a missing or unparsable record breaking the wait instead of degrading.
+hold 15
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+ran "a missing holder record: today's line" yes 'held by another run' "$out"
+ran "a missing holder record: the run still happens" yes 'ok +lockheld' "$out"
+hold 15 'not a record'
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+ran "a garbage holder record: today's line" yes 'held by another run' "$out"
+ran "a garbage holder record: the run still happens" yes 'ok +lockheld' "$out"
+
+# Bug caught: a tab or newline in a record field splitting the waiting line or injecting a line.
+hold 20 "$(printf '%s\tCHK/a\tone\ttwo\nINJECTED line' "$(now)")"
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+n=$(printf '%s\n' "$out" | grep -c 'waiting for the test-run lock')
+if [ "$n" = 1 ]; then _pass "a record with a tab and a newline in a field prints one waiting line"; else _fail "a record with a tab and a newline in a field prints one waiting line" "$n waiting lines"; fi
+ran "that line carries no tab" no $'\t' "$out"
+ran "and no line of the record is printed on its own" no '^INJECTED' "$out"
+ran "and the run still happens" yes 'ok +lockheld' "$out"
+
+# Bug caught: RUN_SH_LOCK_WAIT=0 waiting anyway, or running the suites without the lock.
+hold 600
+out="$(fresh RUN_SH_LOCK_WAIT=0 "$T/run.sh" lockheld 2>&1)"; rc=$?
+touch "$T/release"; wait "$holder"
+if [ "$rc" = 75 ]; then _pass "RUN_SH_LOCK_WAIT=0 against a held lock exits 75"; else _fail "RUN_SH_LOCK_WAIT=0 against a held lock exits 75" "exit $rc"; fi
+ran "RUN_SH_LOCK_WAIT=0 runs no suite" no 'ok +' "$out"
+ran "RUN_SH_LOCK_WAIT=0 prints no totals" no 'suites run' "$out"
+ran "RUN_SH_LOCK_WAIT=0 says it gave up" yes 'giving up after 0 s: held by another run' "$out"
+
+# Bug caught: a bounded wait that never gives up.
+hold 600
+out="$(fresh RUN_SH_LOCK_WAIT=2 RUN_SH_LOCK_POLL=1 "$T/run.sh" lockheld 2>&1)"; rc=$?
+touch "$T/release"; wait "$holder"
+if [ "$rc" = 75 ]; then _pass "a bounded wait the holder outlasts exits 75"; else _fail "a bounded wait the holder outlasts exits 75" "exit $rc"; fi
+ran "and runs no suite" no 'suites run|ok +' "$out"
+ran "and says how long it waited" yes 'giving up after [2-9] s:' "$out"
+
+# Bug caught: a bounded wait giving up on a holder that releases within the bound.
+hold 20
+out="$(fresh RUN_SH_LOCK_WAIT=30 RUN_SH_LOCK_POLL=1 "$T/run.sh" lockheld 2>&1)"; rc=$?
+wait "$holder"
+ran "a bounded wait the holder releases in time runs" yes 'ok +lockheld' "$out"
+if [ "$rc" = 0 ]; then _pass "and exits 0"; else _fail "and exits 0" "exit $rc"; fi
+
+# Bug caught: a bad bound read as "no bound" or as a lockf usage error.
+for v in soon -1; do
+  out="$(fresh RUN_SH_LOCK_WAIT=$v "$T/run.sh" lockheld 2>&1)"; rc=$?
+  if [ "$rc" = 2 ]; then _pass "RUN_SH_LOCK_WAIT=$v exits 2"; else _fail "RUN_SH_LOCK_WAIT=$v exits 2" "exit $rc"; fi
+  ran "RUN_SH_LOCK_WAIT=$v says why" yes 'RUN_SH_LOCK_WAIT must be a non-negative integer' "$out"
+  ran "RUN_SH_LOCK_WAIT=$v runs no suite" no 'suites run|ok +' "$out"
+done
+
+# Bug caught: a wait nobody can measure; and a runner that never waited claiming it did.
+hold 20
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+ran "a runner that waited says how long" yes 'waited [0-9]+ s for the test-run lock' "$out"
+out="$(fresh "$T/run.sh" plain 2>&1)"
+ran "a runner that did not wait says nothing of waiting" no 'wait' "$out"
+
+# Bug caught: a wait shorter than the poll interval going unreported.
+hold 20 "$(printf '%s\tCHK/y\tfoo' "$(now)")"
+out="$(fresh "$T/run.sh" lockheld 2>&1)"
+wait "$holder"
+seq=$(printf '%s\n' "$out" | grep -oE 'waiting for the test-run lock|held for [0-9]+ min by .run.sh foo. in CHK/y|waited [0-9]+ s|ok +lockheld' | sed -E 's/waited [0-9]+ s/waited/; s/ok +/ok /; s/held for [0-9]+ min/held/' | tr '\n' ,)
+want="waiting for the test-run lock,held by 'run.sh foo' in CHK/y,waited,ok lockheld,"
+if [ "$seq" = "$want" ]; then _pass "a wait shorter than the poll still prints the holder, then how long, then runs"; else _fail "a wait shorter than the poll still prints the holder, then how long, then runs" "$seq"; fi
+
+# Bug caught: a nested runner clobbering or deleting its parent's record, or reporting a wait
+# that was not its own.
+hold 20
+out="$(fresh "$T/run.sh" nestedrun 2>&1)"
+wait "$holder"
+ran "the outer runner that waited says so" yes 'waited [0-9]+ s' "$out"
+ran "a nested runner reports no wait" no 'waited' "$(cat "$MARK/nested.out")"
+if [ -s "$MARK/nested.before" ] && cmp -s "$MARK/nested.before" "$MARK/nested.after"; then _pass "a nested runner leaves the record as it found it"; else _fail "a nested runner leaves the record as it found it" "$(cat "$MARK/nested.before" "$MARK/nested.after" 2>&1 | tr '\n\t' '| ')"; fi
+f3=$(awk -F'\t' '{print $3}' "$MARK/nested.before")
+if [ "$f3" = nestedrun ]; then _pass "and the record names the outer runner's arguments"; else _fail "and the record names the outer runner's arguments" "$f3"; fi
+
+# Bug caught: a record left behind after the run, which the next waiter would trust.
+fresh "$T/run.sh" plain >/dev/null 2>&1
+if [ ! -e "$L.holder" ]; then _pass "the holder record is removed after a run"; else _fail "the holder record is removed after a run" "$(cat "$L.holder")"; fi
+
+# Bug caught: a record naming the wrong checkout or arguments.
+want="$(cd "$T/.." && pwd -P)"
+(cd "$T/.." && fresh "$T/run.sh" holderseen >/dev/null 2>&1)
+f2=$(awk -F'\t' '{print $2}' "$MARK/holderseen.rec"); f3=$(awk -F'\t' '{print $3}' "$MARK/holderseen.rec")
+if [ "$f2" = "$want" ]; then _pass "a running runner's record names its checkout"; else _fail "a running runner's record names its checkout" "$f2"; fi
+if [ "$f3" = holderseen ]; then _pass "and its arguments"; else _fail "and its arguments" "$f3"; fi
+
+# Bug caught: a stale record against a free lock printed as if someone held it.
+printf '1\tCHK/old\told\n' > "$L.holder"
+out="$(fresh "$T/run.sh" plain-alpha 2>&1)"
+ran "a stale record with a free lock prints no waiting line" no 'wait' "$out"
+ran "and the run starts" yes 'ok +plain-alpha' "$out"
+rm -f "$L.holder"
+
+# Bug caught: a lock directory that does not exist yet reported as a failure to lock.
+out="$(fresh RUN_SH_LOCK="$T/newdir/lock" "$T/run.sh" plain-alpha 2>&1)"
+ran "a missing lock directory is created and the run starts" yes 'ok +plain-alpha' "$out"
+ran "and nothing is said of waiting" no 'wait' "$out"
+unset HOLDER_DONE
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

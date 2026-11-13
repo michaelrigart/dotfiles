@@ -30,9 +30,15 @@
 # `heavy` (a live herdr, a pty, the real daemon), which --all or an exact name selects.
 #
 # One runner per machine: every invocation, filtered or not, takes a lockf lock on
-# RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock) and says so when it has to
-# wait. The runner exports RUN_SH_LOCKED=1 to its suites, and an invocation that sees it
-# does not lock again, so a runner nested in a suite cannot wait for its parent's lock.
+# RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock). The runner that holds it writes
+# <lock>.holder (start time, checkout and arguments, one line) and removes it on exit; one
+# that has to wait prints at once, and then each minute, who holds the lock and for how
+# long, and, once it has the lock, how long it waited. The record is advisory: without a
+# usable one the line says only that another run holds it. RUN_SH_LOCK_WAIT=<seconds> bounds
+# the wait (0 does not wait): the runner then prints "giving up", runs nothing and exits 75;
+# unset, it waits without bound. A value that is not a non-negative integer exits 2.
+# The runner exports RUN_SH_LOCKED=1 to its suites, and an invocation that sees it does not
+# lock again, so a runner nested in a suite cannot wait for its parent's lock.
 # Never wrap this runner in lockf yourself.
 #
 # Suites with a `# test-requires:` line need conditions this runner cannot create
@@ -59,14 +65,74 @@ for a in "$@"; do
   esac
 done
 
+lock=${RUN_SH_LOCK:-/tmp/claude-$(id -u)/tests-run.lock}
+
+# Who holds the lock, as the clause of the waiting and giving-up lines. The record is
+# advisory: a missing, stale or unparsable one degrades to "held by another run".
+holder_clause() {
+  local ts= chk= args= age
+  [ -r "$lock.holder" ] && IFS=$'\t' read -r ts chk args <"$lock.holder"
+  case "$ts" in ''|*[!0-9]*) ts= ;; esac
+  if [ -z "$ts" ] || [ ${#ts} -gt 12 ] || [ -z "$chk" ]; then
+    echo "held by another run"
+    return
+  fi
+  age=$(($(date +%s) - ts)); [ "$age" -lt 0 ] && age=0
+  args=${args//$'\t'/ }
+  echo "held for $((age / 60)) min by 'run.sh${args:+ $args}' in ${chk//$'\t'/ }"
+}
+
 if [ "$one" -eq 0 ] && [ "${RUN_SH_LOCKED:-}" != 1 ]; then
-  lock=${RUN_SH_LOCK:-/tmp/claude-$(id -u)/tests-run.lock}
+  wait_max=
+  if [ -n "${RUN_SH_LOCK_WAIT+x}" ]; then
+    case "$RUN_SH_LOCK_WAIT" in
+      ''|*[!0-9]*) echo "run.sh: RUN_SH_LOCK_WAIT must be a non-negative integer" >&2; exit 2 ;;
+    esac
+    wait_max=$RUN_SH_LOCK_WAIT
+  fi
+  poll=${RUN_SH_LOCK_POLL:-60} # seconds between waiting lines; a seam for the tests
+  case "$poll" in ''|*[!0-9]*|0) poll=60 ;; esac
   mkdir -p "$(dirname "$lock")" || exit 2
-  lockf -k -t 0 "$lock" true 2>/dev/null
-  [ $? -eq 75 ] && echo "run.sh: waiting for the test-run lock $lock, held by another run" >&2
-  RUN_SH_LOCKED=1 exec lockf -k "$lock" "$self" "$@"
+
+  # The outer runner only waits; the locked one it starts runs the suites and is the only
+  # one that writes the holder record. lockf forwards TERM to its child.
+  run_args=("$@")
+  child= rc=0 since=
+  trap '[ -z "$child" ] || { kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; }; exit 130' INT TERM
+  attempt() { # attempt <seconds>: sets rc; 75 means the lock is still held
+    RUN_SH_LOCKED=1 RUN_SH_LOCK_OWNER=1 RUN_SH_LOCK_SINCE=$since \
+      lockf -k -t "$1" "$lock" "$self" ${run_args[@]+"${run_args[@]}"} &
+    child=$!
+    wait "$child"
+    rc=$?
+    child=
+    [ "$rc" -eq 73 ] && exit 2 # lockf could not open the lock file and said so
+    [ "$rc" -eq 75 ] && return
+    exit "$rc"
+  }
+  attempt 0
+  since=$(date +%s)
+  waited=0
+  while :; do
+    if [ -n "$wait_max" ] && [ "$waited" -ge "$wait_max" ]; then
+      echo "run.sh: giving up after $waited s: $(holder_clause)" >&2
+      exit 75
+    fi
+    echo "run.sh: waiting for the test-run lock $lock, $(holder_clause)" >&2
+    t=$poll
+    [ -n "$wait_max" ] && [ $((wait_max - waited)) -lt "$t" ] && t=$((wait_max - waited))
+    attempt "$t"
+    waited=$(($(date +%s) - since))
+  done
 fi
+lock_owner=${RUN_SH_LOCK_OWNER:-} lock_since=${RUN_SH_LOCK_SINCE:-}
+unset RUN_SH_LOCK_OWNER RUN_SH_LOCK_SINCE
 export RUN_SH_LOCKED=1
+if [ "$lock_owner" = 1 ] && [ -n "$lock_since" ]; then
+  e=$(($(date +%s) - lock_since)); [ "$e" -lt 0 ] && e=0
+  if [ "$e" -ge 60 ]; then echo "run.sh: waited $((e / 60)) min for the test-run lock" >&2
+  else echo "run.sh: waited $e s for the test-run lock" >&2; fi
+fi
 
 cd "$(dirname "$self")" || exit 2
 repo_root=$(cd .. && pwd)
@@ -133,8 +199,17 @@ fi
 
 RUN_SH_WORK=$(mktemp -d "${TMPDIR:-/tmp}/run-sh.XXXXXX") || exit 2
 export RUN_SH_WORK
-trap 'rm -rf "$RUN_SH_WORK"' EXIT
+trap 'rm -rf "$RUN_SH_WORK"; [ "$lock_owner" != 1 ] || rm -f "$lock.holder"' EXIT
 trap 'exit 130' INT TERM
+
+# The runner that took the lock says who it is: start time, checkout and arguments, one line
+# with no tab or newline inside a field, written to a temporary file and renamed.
+if [ "$lock_owner" = 1 ] && [ "$one" -eq 0 ]; then
+  rec_args="$*"
+  rec_args=${rec_args//$'\t'/ }; rec_args=${rec_args//$'\n'/ }
+  rec_dir=${RUN_SH_START_DIR//$'\t'/ }; rec_dir=${rec_dir//$'\n'/ }
+  { printf '%s\t%s\t%s\n' "$(date +%s)" "$rec_dir" "$rec_args" >"$lock.holder.$$" && mv "$lock.holder.$$" "$lock.holder"; } 2>/dev/null || rm -f "$lock.holder.$$"
+fi
 
 parallel=() serial=()
 for f in ./*.test.sh; do
