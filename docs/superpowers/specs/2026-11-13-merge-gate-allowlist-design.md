@@ -140,8 +140,20 @@ these paths, matched whole, after the scheme, host and `api/v3` or `api/v4` pref
   A second such word is the case the existing net denies, and it stays denied.
 - A writing `glab api` call carrying `--placeholder` stays denied before any of this
   (trust spec §5.6).
-- The body may come from anywhere (`-f`, `-F body=@file`, `--input`): the path decides what the
-  call does, not the body.
+- On GitHub, and for a GitLab pipeline start, the body may come from anywhere (`-f`,
+  `-F body=@file`, `--input`): the path decides what the call does.
+- **A GitLab note or thread must show its field names** (amended during execution, §10). GitLab
+  runs quick actions in a note's body, also through the API, and
+  `POST …/merge_requests/<n>/notes` takes `merge_request_diff_head_sha`, which its documentation
+  calls "required for the /merge quick action": with it, a note whose body is `/merge` merges
+  the MR or sets auto-merge (docs.gitlab.com/api/notes and
+  `lib/gitlab/quick_actions/merge_request_actions.rb`, read 2026-11-13). So a write to `notes` or
+  `discussions` is exempt only when it carries no `--input` and every field name, the query
+  string's included, is `body`, `resolved`, `commit_id` or `position[…]`. A field's value may
+  still come from a file. Without the SHA field `/merge` does nothing; the discussions, note-edit
+  and MR-update endpoints do not accept it.
+- An option word holding `$`, a backtick or `{` makes the call not exempt, and so does a `;` in
+  the endpoint: either could carry a field or an option the gate does not read.
 - The project and the host are not checked. A comment or a pipeline start proposes and lands
   nothing, on any project.
 
@@ -175,7 +187,15 @@ Any other field (`target_branch`, `base`, `state_event`, `state`) leaves the cal
 denied, as row O8 pins today. This allows nothing `glab mr update` and `gh pr edit` do not
 already allow ungated.
 
-### 4.4 Where it goes in the code
+### 4.4 A GraphQL note that can merge is denied (scope added during execution)
+
+The same fact reaches the deployed gate, apart from this line: GitLab's GraphQL `createNote`
+mutation takes `mergeRequestDiffHeadSha` (gitlab-org/gitlab issue 354091), so a GraphQL note
+with `/merge` merges with no receipt, and the gate's mutation list does not name it. A GraphQL
+call whose text holds `mergeRequestDiffHeadSha` is now denied with the existing GraphQL message.
+This tightens the receipt rule the gate exists for; a deny rule cannot read a GraphQL body.
+
+### 4.5 Where it goes in the code
 
 All of it is in `dot_claude/xreview-guard.py`. The shell front, its fast path, the fallbacks and
 the ledger are untouched.
@@ -190,7 +210,7 @@ the ledger are untouched.
 
 Estimate: about 90 lines of non-test code. Inferred, not measured.
 
-### 4.5 Cost
+### 4.6 Cost
 
 A compound holding a `git merge` now loads the ledger helper and runs three git calls per merge
 candidate (toplevel, the default branch, the ref's full name). Today it is denied without them.
@@ -211,6 +231,11 @@ New with this change:
 - A comment, a thread or a pipeline start on any project the agent's token reaches, through the
   API. The CLI verbs already allow the same.
 - A sub-resource a forge later gives a landing meaning under one of the names in §4.2.
+- GitLab quick actions that need no SHA (`/approve`, `/rebase`, `/target_branch`, `/close`) in a
+  note or a description sent through the API. The ungated CLI verbs already run them
+  (`glab mr note`, `glab mr update --description`), so the exemption adds no reach; approvals
+  and retargets are accepted limits in the trust spec's §7, and the pinned merge reads the
+  destination again.
 
 Unchanged: everything in the trust spec's §7.
 
@@ -246,6 +271,9 @@ exact decision. Not heavy; inferred growth about 5 s.
 | R0 | a pipeline start inside `$( )` and inside `sh -c '…'` is allowed; `sh -c 'glab api -X PUT …/7/merge'` and an endpoint `projects/$P/merge_requests/7/notes` are denied | the exemption holding where it stands, and only for literal words |
 | R1 | `…/7/merge` (still judged), `…/7/rebase`, `…/7/approve`, `pulls/9/reviews`, `pulls/9/update-branch` are denied | the table growing by accident |
 | R2 | `…/7/notes/../merge`, `…/7/notes%2F..%2Fmerge`, `…/:branch/notes`, a second word naming an MR path, and a writing call with `--placeholder` are denied | a path the forge reads differently |
+| R3 | a GitLab note with `-f merge_request_diff_head_sha=…`, with the same name in the query string, with `--input`, and with an unknown field is denied; a diff note with `position[…]` fields and `-F body=@f` is allowed; gh's comment with `--input` stays allowed | a note that merges |
+| R4 | an exempt call with an option word `--{input=b.json,silent}` or `--$Z`, and an update whose query holds `;`, are denied | an option or field the gate does not read |
+| O11 | a GraphQL call whose query names `mergeRequestDiffHeadSha` is denied; a `createNote` without it is allowed | §4.4 |
 | U1 | PUT with `-F description=@f`, with `-f title=x`, and gh's PATCH with `-f body=x` are allowed | §4.3 |
 | U2 | the same with `target_branch`, `state_event` or `base` (O8), with `--input`, with no field, or gh with a query string is denied | a retarget through the update |
 
@@ -272,6 +300,14 @@ Before the pre-merge review: `./tests/run.sh --changed`. The guard's rows in the
 D2 yes, D3 the list as written, without `rebase`. He was also shown that an exempt API call
 passes inside `$( )` and `sh -c` (§4.2) and the new accepted limits (§6). The options are kept
 below as the record.
+
+**Amended during execution (2026-11-13, ruled by the driver session on Michael's delegation and
+reported to him):**
+- §4.2 is narrowed: a GitLab note or thread must show its field names. The first task's review
+  found that a note can merge (the fact and its sources are in §4.2).
+- Quick actions that need no SHA are an accepted limit (§6).
+- A GraphQL call naming `mergeRequestDiffHeadSha` is denied (§4.4): a hole in the deployed gate,
+  older than this line, fixed here.
 
 - **D1, a merge of another ref into a non-default branch, in a compound** (the third part of
   item 23's second class; 4 denials).
