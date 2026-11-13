@@ -571,3 +571,9 @@ Rulings made during the run are recorded here, because the dotfiles have no MR. 
   - whether to gate `test-audit.test.sh` behind a `test-requires` tag.
 
   Cost: none beyond the fix round.
+- **R40 (pre-merge fix round 3).** Codex's round 3 found the clean-copy check blind to changes inside `.git`, such as a planted hook. A reused copy could carry such a change into later runs, and a later suite that failed on it would count as a false killer. It was the third gap in the same check, after R39's isolation and fix round 2's additions (refs, config, worktrees, stash, empty directories). So the check was replaced, not extended. `copy_state` is now one digest over every path in the copy, `.git` included, by type, mode, and content or symlink target. It adds `git ls-files -s -v` for the index, because `git status` rewrites the index file itself. Committed in `f83a3bb`, with a fifo test in `fc4860c`; it costs about 40 ms a run. Task 15's records are not re-measured:
+  - No recorded kill gained a killer after the cuts. Of 296 code records, 216 have the same killers as before and 80 a subset. All 139 targeted records have a strict subset, because the cut label is gone. Every rule mutant is killed only by its own rule's row. A failure caused by residue would add killers unrelated to the mutant.
+  - No suite Task 15 ran writes into its own checkout's `.git`. Every hook, exclude, attributes or `update-index` write in `tests/` targets a repository the suite creates.
+  - The fixed harness's inventory of the 35 suites Task 15 ran, at `f83a3bb`, is green, with no copy rebuilt: no suite's baseline leaves anything behind in its copy, `.git` included.
+
+  Cost if wrong: re-running the affected suites' records, within R33's 9 h.
