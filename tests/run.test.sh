@@ -637,6 +637,31 @@ ran "and the other" yes 'ok +heavyb .*changed: tests/run.sh' "$out"
 
 # Bug caught: only committed changes seen.
 reset_repo; edit lib/a.sh
+# Bug caught: a failing per-suite read of a subject map (awk failing after compute_selection
+# validated the copy) read as "no rows", so a suite whose subjects are missing is skipped as
+# unchanged. The stub awk first on PATH fails the rows program (the one using ENVIRON) when it
+# reads the file named in STUB_AWK_FILE, printing nothing.
+mkdir -p "$T/awkstub"; REAL_AWK="$(command -v awk)"
+cat > "$T/awkstub/awk" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *'ENVIRON["SUITE"]'*)
+    for a in "$@"; do last=$a; done
+    case "$last" in *"$STUB_AWK_FILE") echo "awk: stub failure" >&2; exit 2 ;; esac ;;
+esac
+exec "$REAL_AWK" "$@"
+STUB
+chmod 755 "$T/awkstub/awk"
+awk_fails() { PATH="$T/awkstub:$PATH" REAL_AWK="$REAL_AWK" STUB_AWK_FILE=$1 rr --changed; }
+reset_repo; drop_rows 1 lib/a.sh; edit lib/a.sh; commit "drop the row and edit"
+out="$(awk_fails map.base)"
+both "a failing read of the base map selects every heavy suite" 'subject map at [0-9a-f]+ unreadable' "$out"
+ran "and prints nothing of the failure" no 'awk:' "$out"
+reset_repo; edit lib/a.sh; commit "edit a"
+out="$(awk_fails map.wt)"
+both "a failing read of the working-tree map selects every heavy suite" 'subject map unreadable' "$out"
+ran "and prints nothing of that failure" no 'awk:' "$out"
+
 out="$(rr --changed)"
 ran "an unstaged change selects" yes 'ok +heavya' "$out"
 reset_repo; edit lib/a.sh; G add lib/a.sh

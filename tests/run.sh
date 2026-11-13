@@ -210,7 +210,7 @@ map_check() {
 # map_rows <suite> <file>: the files of the rows whose loaded_by lists the suite, one per line.
 map_rows() {
   SUITE=$1 awk -F'\t' '/^#/ || $0 == "" { next }
-    { n = split($4, l, ","); for (i = 1; i <= n; i++) if (l[i] == ENVIRON["SUITE"]) { print $1; break } }' "$2"
+    { n = split($4, l, ","); for (i = 1; i <= n; i++) if (l[i] == ENVIRON["SUITE"]) { print $1; break } }' "$2" 2>/dev/null
 }
 
 # The files the branch changed and the two subject maps, read once for --changed. Any reason
@@ -253,11 +253,14 @@ compute_selection() {
 
 # changed_subjects <suite> sets why; returns 0 to run the heavy suite, 2 to skip it.
 changed_subjects() {
-  local subjects i c hits
+  local subjects base_subjects i c hits
   if [ -n "$sel_reason" ]; then why=$sel_reason; return 0; fi
-  subjects=$(map_rows "$1" "$map_wt")
+  subjects=$(map_rows "$1" "$map_wt") || { why="subject map unreadable"; return 0; }
   if [ -z "$subjects" ]; then why="no subject-map row"; return 0; fi
-  [ "$have_base" -eq 1 ] && subjects="$subjects"$'\n'$(map_rows "$1" "$map_base")
+  if [ "$have_base" -eq 1 ]; then
+    base_subjects=$(map_rows "$1" "$map_base") || { why="subject map at $sel_short unreadable"; return 0; }
+    subjects="$subjects"$'\n'"$base_subjects"
+  fi
   subjects="$subjects"$'\n'"tests/$1.test.sh"$'\n'"tests/run.sh"
   hits=()
   i=0
