@@ -28,10 +28,10 @@ chezmoi templates.
 - Execute suites (`./tests/run.sh <name>`), never `bash tests/…`. Never chain after `cd`.
 - Check `git branch --show-current` prints `chore/instruction-weight` before each commit.
 - Commits: imperative mood, no agent attribution.
-- **Cap deviation:** the spec's goal for `AGENTS.md` is 150 lines. The move test Codex tightened
-  at spec review keeps more in the root; the tables in Tasks 1 and 2 yield about 186. The cap pinned
-  here is 190, and the spec carries the amendment (decided by the driver on Michael's delegation). If
-  Task 2 lands above 190, stop and report; do not cut a rule to fit.
+- **Cap:** the spec's goal for `AGENTS.md` is at most 200 lines (measured about 197; decided
+  by the driver on Michael's delegation after Task 1 measured 212). Task 1 leaves the cap
+  assertion out; Task 2 adds it at 200. If Task 2 lands above 200, stop and report; do not cut
+  a rule to fit.
 
 ## Review Focus
 
@@ -254,7 +254,9 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
   Expected: lists `.agents/skills/clarity/SKILL.md` as before (same count of lines as on main).
   If it exits 2 for a cold cache, that is not a failure of this task: say so.
 - [ ] **Step 5: Run** `./tests/run.sh agent-instructions agent-skills skill-updates`; expected:
-  all pass, the cap included (`wc -l AGENTS.md` at most 190). Quote the totals.
+  all pass. Then add the cap assertion to `tests/agent-instructions.test.sh`, beside the
+  fragment caps and in their shape: `AGENTS.md is at most 200 lines`, reading `$SRC/AGENTS.md`;
+  see it pass, and see it fail with the limit temporarily set to 100 (restore it). Quote the totals.
 - [ ] **Step 6: Commit**, message `Put the skill-bump procedure in the externals file`.
 
 ### Task 3: `claude-code.md`: the Subagents table and the plan workspace
