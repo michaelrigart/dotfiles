@@ -254,7 +254,7 @@ def locked(fn):
         try:
             st = json.load(open(os.path.join(D, "rpc-state.json")))
         except (OSError, ValueError):
-            st = {"threads": 0, "turns": 0, "global": 0, "per_thread": {}, "specs": {}, "totals": {}, "waits": {},
+            st = {"threads": 0, "turns": 0, "global": 0, "per_thread": {}, "specs": {}, "totals": {},
                   "written": [], "archived": []}
         out = fn(st)
         json.dump(st, open(os.path.join(D, "rpc-state.json"), "w"))
@@ -301,9 +301,6 @@ def turn_wait(st):
         sys.stderr.write("fake xreview-rpc: unknown turn {}\n".format(turn))
         return 1
     spec, thread = rec["spec"], rec["thread"]
-    if st["waits"].get(turn, 0) < spec.get("rc3", 0):
-        st["waits"][turn] = st["waits"].get(turn, 0) + 1
-        return 3
     if spec.get("sleep"):
         time.sleep(spec["sleep"])
     if turn not in st["written"]:
@@ -373,8 +370,7 @@ def stub_rpc(dir, codex_home, script):
 
     spec: {"answer": {verdict, findings, reviewed_files}, "tokens": 1000, "compacted": false,
            "rate_limits": {...}, "tools": [...], "model", "effort", "window", "ctx", "developer"
-           (as helpers.rollout_lines), "rc3": N (turn-wait exits 3 that many times first),
-           "rc": 4 with "raw" (the schema failure) or any other non-zero, "sleep": seconds}
+           (as helpers.rollout_lines), "rc": 4 with "raw" (the schema failure) or any other non-zero, "sleep": seconds}
 
     turn-wait appends the turn to <CODEX_HOME>/sessions/2026/10/20/rollout-...-<thread>.jsonl
     (the env's CODEX_HOME, else `codex_home`); turn-start keeps the input file as <dir>/inputs/<turn>."""

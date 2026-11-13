@@ -37,17 +37,18 @@ os.symlink("bad.sh", os.path.join(CO, "link.sh"))
 is_("coherent: a good .sh file", K.coherent(CO, ["ok.sh"], ENV), (True, ""))
 b = K.coherent(CO, ["bad.sh"], ENV)
 ok("coherent: bash -n on a .sh file", b[0] is False and "bad.sh" in b[1], b)
-ok("coherent: bash -n on a bash shebang", K.coherent(CO, ["shebang"], ENV)[0] is False)
-ok("coherent: zsh -n on a zsh shebang", K.coherent(CO, ["zshbang"], ENV)[0] is False)
-ok("coherent: zsh -n on a file under zsh/functions", K.coherent(CO, ["dot_config/zsh/functions/fn"], ENV)[0] is False)
+for label, name in (("coherent: bash -n on a bash shebang", "shebang"),
+                    ("coherent: zsh -n on a zsh shebang", "zshbang"),
+                    ("coherent: zsh -n on a file under zsh/functions", "dot_config/zsh/functions/fn"),
+                    ("coherent (F2): an extensionless script with a python shebang gets Python's check", "pyscript"),
+                    ("coherent (F2): one with #!/bin/sh gets bash -n", "shscript")):
+    ok(label, K.coherent(CO, [name], ENV)[0] is False)
 b = K.coherent(CO, ["bad.py"], ENV)
 ok("coherent: a Python syntax error", b[0] is False and "bad.py" in b[1], b)
 is_("coherent: a good .py and .json", K.coherent(CO, ["ok.py", "ok.json"], ENV), (True, ""))
 b = K.coherent(CO, ["bad.json"], ENV)
 ok("coherent: a JSON parse error", b[0] is False and "bad.json" in b[1], b)
 is_("coherent: a file of no known kind, a path that is gone and a symlink are fine", K.coherent(CO, ["plain.txt", "nothere.sh", "link.sh"], ENV), (True, ""))
-ok("coherent (F2): an extensionless script with a python shebang gets Python's check", K.coherent(CO, ["pyscript"], ENV)[0] is False)
-ok("coherent (F2): one with #!/bin/sh gets bash -n", K.coherent(CO, ["shscript"], ENV)[0] is False)
 b = K.coherent(CO, ["pybang.sh"], ENV)
 ok("coherent: the shebang wins over the extension (a .sh file run by python3 is checked as Python)", b[0] is False and "pybang.sh" in b[1], b)
 

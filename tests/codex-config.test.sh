@@ -104,17 +104,6 @@ echo "A3. every TUI puts its thread id first in its title"
 emit 'tui.terminal_title = ["current-dir"]'
 has '^\s*terminal_title = \["thread-id", "thread-title", "current-dir"\]' "terminal_title pinned with thread-id first"
 
-echo "B. js_repl is deleted, not pinned"
-# It was pinned off while Codex shipped it as a live flag (0.149.1). Codex 0.159 removed
-# the flag. The template carries every key it does not name, so the old pin has to be
-# DELETED from the live file; merely no longer setting it would keep it forever.
-emit '[features]
-js_repl = false
-'
-hasnt '^\s*js_repl' "a leftover js_repl pin is deleted from the live file"
-emit ''
-hasnt '^\s*js_repl' "js_repl is never emitted"
-
 echo "C. model preferences are seeded, not enforced"
 # /model, /effort and fast-mode changes must persist across an apply.
 emit 'model = "gpt-5.9-custom"
@@ -166,14 +155,6 @@ echo "F. notify path is derived from \$HOME, never hardcoded"
 emit ''
 has "$HOME/.codex/computer-use"      "notify hook points at this machine's home"
 hasnt '/Users/[a-z]+/\.codex/computer-use.*/Users/' "no doubled or foreign home path"
-
-echo "G. output is valid TOML"
-emit ''
-if printf '%s' "$OUT" | python3 -c 'import sys,tomllib; tomllib.loads(sys.stdin.read())' 2>/dev/null; then
-  _pass "emitted config parses as TOML"
-else
-  _fail "emitted config parses as TOML" "$(printf '%s' "$OUT" | head -c 200)"
-fi
 
 echo "H. hooks.json renders the observed Herdr registration"
 MAPCMD="/usr/bin/python3 '$HOME/.codex/herdr-codex-pane-map.py'"

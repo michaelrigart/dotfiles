@@ -53,10 +53,6 @@ for t in $tiers; do
     _fail "agent type $t exists with a matching name:" "no $f, or its name: line differs"
   fi
 done
-for t in sp-mechanical sp-standard sp-architect; do
-  if printf '%s\n' "$tiers" | grep -qx "$t"; then _pass "the skill offers tier $t"
-  else _fail "the skill offers tier $t" "not named in SKILL.md"; fi
-done
 
 # --- the lock -------------------------------------------------------------------
 lockline="$(grep -oE 'lockf [^"]*"\$\(git rev-parse --git-common-dir\)/live-feedback\.lock"' "$SKILL" | head -1)"

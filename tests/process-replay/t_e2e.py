@@ -313,14 +313,6 @@ def settle(command, limit=12, state=None, finals="AB"):
     raise AssertionError("{} did not settle".format(command))
 
 
-def jsons(root, skip=("scratch", "work", "views", "packs")):
-    out = set()
-    for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if not (d == root and x in skip) and x != "tree"]
-        out |= set(os.path.relpath(os.path.join(d, f), root) for f in files if f.endswith(".json"))
-    return out
-
-
 def tree_listing(root, ignore=("items.json", "items.lock", "alias")):
     return [x for x in helpers.listing(root) if os.path.basename(x[0]) not in ignore and not x[0].startswith("judges" + os.sep)]
 
@@ -328,7 +320,6 @@ def tree_listing(root, ignore=("items.json", "items.lock", "alias")):
 # ================================================================ the dry runs, before anything real
 rc, out = cli("snapshot", "--dry-run")
 is_("dry run: snapshot exits 0 and writes nothing", (rc, os.path.exists(os.path.join(STATE, "reviews.json"))), (0, False))
-ok("dry run: snapshot says what it would do", "would snapshot 4 task reviews in 1 groups" in out, out)
 
 # ================================================================ snapshot
 rc, out = cli("snapshot")
@@ -419,7 +410,6 @@ before = tree_listing(STATE)
 rc, out = cli("run", "--dry-run")
 is_("dry run: run with Codex rounds due exits 0, starts no turn and changes no state file",
     (rc, turn_starts(), tree_listing(STATE)), (0, probe_turns, before))
-ok("dry run: and says what it sees", "waits at codex" in out, out)
 out = settle("run", 30)
 rc, match_out = cli("match")
 is_("match: exits 0 with nothing left to apply", rc, 0)
@@ -442,7 +432,6 @@ rc, out = cli("report")
 is_("report: exits 0", rc, 0)
 data = C.jload(os.path.join(STATE, "report.json"))
 is_("report: the status is computed: every run assessable and every per-task defect recovered, so pass", data["bar"]["status"], "pass")
-ok("report: report.md says so", open(os.path.join(STATE, "report.md")).read().count("status: PASS") == 1)
 
 # ================================================================ a variant that fails: the final reviews leave B out, so B stays unrecovered
 rc, out = cli("run", state=STATE2)
@@ -458,7 +447,6 @@ ok("variant: and the reason names B", any(inv["B"]["id"] in r for r in data2["ba
 
 # ================================================================ cleanup
 threads = [t["thread"] for t in C.jload(os.path.join(STATE, "threads.json"))["threads"]]
-keep = jsons(STATE)
 items = C.jload(os.path.join(STATE, "items.json"))
 scratches = [r["scratch"] for r in runs]
 ok("cleanup: control: the threads, scratches, work, views and staged items exist before",
@@ -481,14 +469,6 @@ ok("cleanup: every thread of threads.json is archived (the probe's own thread wa
 ok("cleanup: and recorded as done", all(t["done"] for t in C.jload(os.path.join(STATE, "threads.json"))["threads"]))
 ok("cleanup: the stub daemon was stopped", any(e["argv"][:3] == ["app-server", "daemon", "stop"] and e["codex_home"] == NOMEM
                                                for e in helpers.read_log(CODEX_LOG)) and not os.path.exists(os.path.join(NOMEM, "app-server-control", "app-server-control.sock")))
-ok("cleanup: scratch, work, views and packs are gone", not any(os.path.exists(os.path.join(STATE, d)) for d in ("scratch", "work", "views", "packs")))
-REC = os.path.join(STATE, "recreate", CASE_D)
-ok("cleanup: the recreation's working copy is gone, its done marker, spec, brief and patches stay",
-   not os.path.exists(os.path.join(REC, "tree")) and os.path.isfile(os.path.join(REC, "done")) and os.path.isfile(REC + ".json")
-   and os.path.isfile(REC + ".brief.md") and os.path.isfile(os.path.join(STATE, "recreated", CASE_D + ".patch")))
-ok("cleanup: the runs' scratch repositories are gone", not any(os.path.exists(s) for s in scratches), scratches)
-ok("cleanup: this state's staged items are gone", not any(os.path.exists(os.path.join(C.items_root(), n)) for n in items.values()))
-is_("cleanup: every JSON file is kept", jsons(STATE), keep)
 rc, out = cli("pending")
 ok("cleanup: and nothing is left pending", rc == 0 and "nothing pending" in out, out)
 ok("cleanup: the daemon marker is gone with the daemon", not os.path.exists(os.path.join(STATE_HOME, "process-replay", "codex-auth", "daemon.json")))

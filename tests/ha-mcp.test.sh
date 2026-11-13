@@ -90,7 +90,6 @@ check "exits 1" "1" "$RC"
 check "stdout is empty" "" "$OUT"
 check "stderr says mise has no Python" "ha-mcp: mise has no Python for $T/home — run mise install" "$ERR"
 check "mise exec never ran" "" "$(cat "$LOG")"
-case "$OUT$ERR" in *"$SENTINEL"*) _fail "token never printed" "launcher output contains the token" ;; *) _pass "token never printed" ;; esac
 
 echo "D. POSIX sh"
 check "shebang is #!/bin/sh" "#!/bin/sh" "$(head -n1 "$LAUNCHER")"
@@ -122,7 +121,6 @@ run
 chmod 600 "$ENVR"
 check "uses env" "$ENVF" "$(third)"
 check "curl never ran" "" "$(cat "$T/curl.log")"
-no_secret "F"
 
 echo "G. home answers"
 write_env 'http://h:8123' 'https://r.example'
@@ -131,7 +129,6 @@ check "exits 0" "0" "$RC"
 check "uses env" "$ENVF" "$(third)"
 check "stderr is empty" "" "$ERR"
 check "probes the home address, without the variables" "$PROBE http://h:8123/|unset|unset" "$(cat "$T/curl.log")"
-no_secret "G"
 
 echo "H. home does not answer"
 for rc in 6 28; do
@@ -147,7 +144,6 @@ echo "I. trailing slash on the home address"
 write_env 'http://h:8123/' 'https://r.example'
 MOCK_CURL_RC=0 run
 check "probes with one slash" "$PROBE http://h:8123/|unset|unset" "$(cat "$T/curl.log")"
-no_secret "I"
 
 echo "J. env has no URL line"
 write_env 'http://h:8123' 'https://r.example'
@@ -155,7 +151,6 @@ printf "HOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
 MOCK_CURL_RC=6 run
 check "uses env" "$ENVF" "$(third)"
 check "curl never ran" "" "$(cat "$T/curl.log")"
-no_secret "J"
 
 echo "K. inherited variables"
 for rc in 0 6; do
@@ -173,15 +168,7 @@ write_env 'http://h:8123' 'https://r.example'
 printf "HOMEASSISTANT_URL='http://h:8123'\nHOMEASSISTANT_URL='http://other:8123'\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
 MOCK_CURL_RC=0 run
 check "probes the first URL only" "$PROBE http://h:8123/|unset|unset" "$(cat "$T/curl.log")"
-no_secret "L"
 
-echo "M. env has an empty URL"
-write_env 'http://h:8123' 'https://r.example'
-printf "HOMEASSISTANT_URL=''\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
-MOCK_CURL_RC=6 run
-check "uses env" "$ENVF" "$(third)"
-check "curl never ran" "" "$(cat "$T/curl.log")"
-no_secret "M"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

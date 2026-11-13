@@ -1619,11 +1619,12 @@ is_("records_2026_11_03: 7f3b624a's calls: --version is clean, a source in the s
     (leaked(fc("chezmoi --version"), CHW), leaked(fc("chezmoi --source {} managed".format(SCR)), CHW)), ([], [CLN, CHN]))
 is_("records_2026_11_03: 3819843a's calls, git -C on the original and ls of ~/.claude/skills, still leak",
     (leaked(fc("git -C ~/.local/share/chezmoi log"), CHW), leaked(fc("ls ~/.claude/skills"), CHW)), (CHZN, [CLN]))
-is_("flags_after_subcommand: managed --source <scratch> reads the original through ~ (R3)", leaked(fc("chezmoi managed --source {}".format(SCR)), CHZ), CHZN)
-is_("flags_after_subcommand: managed --source <scratch> -D <scratch>/h reads only the scratch", leaked(fc("chezmoi managed --source {0} -D {0}/h".format(SCR)), CHZ), [])
-is_("flags_after_subcommand: diff -S <scratch> still reads ~", leaked(fc("chezmoi diff -S {}".format(SCR)), CHZ), CHZN)
-is_("flags_after_subcommand: managed -S <scratch> --destination ~ reads ~", leaked(fc("chezmoi managed -S {} --destination ~".format(SCR)), CHZ), CHZN)
-is_("flags_after_subcommand: diff --source <scratch> -D <scratch>/h reads neither", leaked(fc("chezmoi diff --source {0} -D {0}/h".format(SCR)), CHZ), [])
+for label, cmd, want in (("managed --source <scratch> reads the original through ~ (R3)", "chezmoi managed --source {0}", CHZN),
+                         ("managed --source <scratch> -D <scratch>/h reads only the scratch", "chezmoi managed --source {0} -D {0}/h", []),
+                         ("diff -S <scratch> still reads ~", "chezmoi diff -S {0}", CHZN),
+                         ("managed -S <scratch> --destination ~ reads ~", "chezmoi managed -S {0} --destination ~", CHZN),
+                         ("diff --source <scratch> -D <scratch>/h reads neither", "chezmoi diff --source {0} -D {0}/h", [])):
+    is_("flags_after_subcommand: " + label, leaked(fc(cmd.format(SCR)), CHZ), want)
 for cmd in ("ls x$(cd /tmp) chezmoi", "echo chezmoi$(true) x$(true) chezmoi diff", "ls a`true` chezmoi diff"):
     is_("glued_word_not_a_command: {} does not run chezmoi".format(cmd), leaked(fc(cmd), CHZ), [])
 is_("glued_word_not_a_command: ... while a cd inside the substitution adds its directory, so the word is judged from there too (cd_monotone)",

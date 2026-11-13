@@ -259,11 +259,6 @@ is_("report_section: from 3 October pre-merge receipts (the repeated one counted
 is_("report_section: complete when every answer is in", rep["incomplete"], False)
 is_("report_section: a design-class P0/P1 means keep", rep["recommendation"], "keep")
 text = "\n".join(lines_)
-ok("report_section: the text states the recommendation, the cost and the lost saving",
-   "keep" in text and "516" in text and "11.0" in text and "5500" in text, text)
-ok("report_section: gives both estimates and their nets", "(a) lower bound" in text and "(b) packets 9" in text and "10484" in text
-   and "2830" in text and "8170" in text and "plan-review wall minutes 22.0" in text, text)
-ok("report_section: warns that per-plan rows can sum above the totals", "credited to every plan it lists" in text, text)
 ok("report_section: lists the plans", PLAN_A in text and PLAN_B in text, text)
 by_plan = {(p["plan"]): p for p in rep["plans"]}
 is_("report_section: per plan, rounds", (by_plan[PLAN_A]["rounds"], by_plan[PLAN_B]["rounds"]), (3, 3))

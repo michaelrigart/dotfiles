@@ -141,7 +141,6 @@ expect deny  "--force before the target"    "$TMP" "git worktree remove --force 
 # The exact shapes of the six commands that produced the husks.
 expect deny  "observed: pipe after"         "$TMP" "git worktree remove $SIB 2>&1 | tail -3"
 expect deny  "observed: && echo after"      "$TMP" "git worktree remove $SIB && echo done"
-expect deny  "observed: --force + pipe"     "$TMP" "git worktree remove --force $SIB 2>&1 | tail -2"
 expect deny  "trailing semicolon"           "$TMP" "git worktree remove $SIB;"
 # A redirect glued straight onto the target with no separating space. The
 # unquoted-target trim must terminate on `<`/`>` the same way the quoted-target

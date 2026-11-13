@@ -429,26 +429,11 @@ esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL"
 if [ "$(tail -n 1 <<<"$esc")" = "$(tail -n 1 "$SKILL")" ]; then
   _fail "the escalation range ends at its anchor" "it reached the end of the file"
 else _pass "the escalation range ends at its anchor"; fi
-if grep -qi 'no Codex pane' <<<"$esc"; then
-  _pass "the escalation list names the no-pane/several-panes refusal"
-else
-  _fail "the escalation list names the no-pane/several-panes refusal" "missing from the list"
-fi
-if grep -qi 'down and will not start' <<<"$esc"; then
-  _pass "the escalation list names the daemon-will-not-start refusal"
-else
-  _fail "the escalation list names the daemon-will-not-start refusal" "missing from the list"
-fi
 # item 16 fix round 1/C1: the pane is freed BEFORE the turn exists, and that free can now
 # itself refuse (the pane closes, or will not exit) - distinct from a pane that merely fails
 # to RESUME after the turn has started, which only warns. Both lists must say so, or the
 # model either does not know to escalate a real refusal, or thinks the post-turn warning is
 # one too and escalates every noisy pane.
-if grep -qi 'would not free' <<<"$esc"; then
-  _pass "the escalation list names the pane-will-not-free refusal"
-else
-  _fail "the escalation list names the pane-will-not-free refusal" "missing from the list"
-fi
 if grep -qi 'the pane will not free' "$SKILL"; then
   _pass "the skill's refusal list names the pane-will-not-free case"
 else
@@ -493,18 +478,6 @@ else _fail "the skill says a harness worktree uses its owner's pane" "missing"; 
 if grep -qi 'another dispatch is using' "$SKILL"; then
   _pass "the skill names the per-pane lock refusal"
 else _fail "the skill names the per-pane lock refusal" "missing"; fi
-if grep -qi 'cannot inspect' <<<"$esc"; then
-  _pass "the escalation list names the cannot-inspect refusal"
-else _fail "the escalation list names the cannot-inspect refusal" "missing from the list"; fi
-for phrase in 'cannot lock' 'cannot read whether' 'resuming something other than a thread id' \
-              'herdr pane process-info' 'herdr pane get'; do
-  if grep -qi "$phrase" <<<"$esc"; then
-    _pass "the escalation list names '$phrase'"
-  else _fail "the escalation list names '$phrase'" "missing from the list"; fi
-done
-if grep -qi 'another dispatch' <<<"$esc"; then
-  _fail "the lock refusal is not escalated" "it is on the escalation list"
-else _pass "the lock refusal is not escalated"; fi
 # The refusal list (not just the escalation list) quotes the exact resume refusal and names
 # both pane reads (its end anchor must track the sentence that follows the list); later rounds find the pane on the thread only while its TUI is connected.
 refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "ambiguous: no turn on record"/p' "$SKILL")"

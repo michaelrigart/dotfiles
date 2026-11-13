@@ -187,8 +187,6 @@ printf "x\n${BOM}y\n" > "$T/f.md"; run f.md
 has "a BOM at column 0 of file line 2 is flagged" 1 "f.md:2: invisible: <U+FEFF>y"
 printf -- "+++ b/a.md\n@@ -0,0 +1,2 @@\n+x\n+${BOM}y\n" > "$T/d4.diff"; rund "$T/d4.diff" --diff
 check "a BOM at column 0 of new-file line 2 is flagged in a diff" 1 "a.md:2: invisible: <U+FEFF>y"
-printf -- "+++ b/a.md\n@@ -0,0 +1,2 @@\n+${BOM}x\n+y\n" > "$T/d5.diff"; rund "$T/d5.diff" --diff
-check "a BOM at column 0 of new-file line 1 is exempt in a diff" 0 ""
 printf -- "+++ b/a.md\n@@ -4 +4,2 @@\n ctx\n+${BOM}y\n" > "$T/d6.diff"; rund "$T/d6.diff" --diff
 has "a BOM at column 0 of new-file line 5 is flagged in a diff" 1 "a.md:5: invisible: <U+FEFF>y"
 

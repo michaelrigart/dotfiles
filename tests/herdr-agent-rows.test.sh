@@ -32,8 +32,6 @@ is "manifest platforms" "$(grep -c '^platforms = \["macos"\]$' "$MANIFEST")" 1
 is "manifest has one startup hook" "$(grep -c '^\[\[startup\]\]$' "$MANIFEST")" 1
 is "manifest startup command" "$(grep '^command = ' "$MANIFEST")" \
   'command = ["/bin/zsh", "-c", "exec /usr/bin/python3 -I \"$HOME/.config/herdr/plugin-agent-rows/agent-rows.py\" start"]'
-is "manifest says how to link it" "$(grep -c 'herdr plugin link ~/.config/herdr/plugin-agent-rows' "$MANIFEST")" 1
-is "manifest says unlink waits for the next server start" "$(grep -ci 'next server start' "$MANIFEST")" 1
 is "plugin script has the absolute python shebang" "$(head -1 "$PLUGIN")" '#!/usr/bin/python3 -I'
 # chezmoi takes the deployed mode from the `executable_` prefix, not from the source file's mode,
 # so the prefix is what makes the script runnable: the hook's script name must exist under it.

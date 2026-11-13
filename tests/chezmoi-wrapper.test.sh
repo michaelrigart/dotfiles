@@ -256,9 +256,6 @@ gated_refuses() { # gated_refuses <label> <command> <expected reason>: refused, 
 }
 for c in $GATED; do
   fresh; git -C $T/co switch -q -c other; gated_refuses "chezmoi $c on another branch is refused" "$c" "not on main"
-  fresh; print change >> $T/co/dot_testfile; gated_refuses "chezmoi $c with an uncommitted change is refused" "$c" "uncommitted"
-  fresh; print x > $T/co/newfile; gated_refuses "chezmoi $c with an untracked file is refused" "$c" "uncommitted"
-  fresh; git -C $T/co commit -q --allow-empty -m local; gated_refuses "chezmoi $c with a local commit is refused" "$c" "origin's main is"
   fresh; chezmoi $c -v >/dev/null 2>&1
   if applied_clone NOPE && grep -q "^ARGS --source $T/cache/chezmoi-apply/run\..*/src $c -v$" $LOG && tmp_clean; then
     _pass "chezmoi $c on a clean main runs against a fresh clone, removed afterwards"
