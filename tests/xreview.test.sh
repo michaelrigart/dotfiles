@@ -1159,8 +1159,8 @@ is "F2 a running turn exits 3" "$rc" 3
 is "F2 says so and how to keep waiting" "$(printf '%s' "$out" | grep -c "xreview collect $nonce")" 1
 out="$(RPC_WAIT_RC=4 RPC_WAIT_OUT='PWNED prose' bash "$XREVIEW" collect "$nonce" 2>"$ROOT/err")"; rc=$?
 is "F3 a schema miss exits 4 and prints nothing on stdout" "$rc/${#out}" "4/0"
-is "F3 stderr says nothing was recorded and names the kept raw file" \
-   "$(grep -c 'Nothing was recorded' "$ROOT/err")/$(grep -cF "kept for Michael in $STATE/turns/$nonce.raw" "$ROOT/err")" "1/1"
+is "F3 stderr says nothing was recorded, gives the rpc's detail and names the kept raw file" \
+   "$(grep -c 'Nothing was recorded' "$ROOT/err")/$(grep -cF "kept for Michael in $STATE/turns/$nonce.raw" "$ROOT/err")/$(grep -cF '($.verdict: not an allowed value)' "$ROOT/err")" "1/1/1"
 is "F3 the file holds the raw text, mode 600, and no reviewer text is in either stream" \
    "$(cat "$STATE/turns/$nonce.raw")/$(stat -f %Lp "$STATE/turns/$nonce.raw")/$(printf '%s%s' "$out" "$(cat "$ROOT/err")" | grep -c PWNED)" "PWNED prose/600/0"
 out="$(RPC_WAIT_RC=1 bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
@@ -3371,7 +3371,7 @@ is "W1 and the validated answer is kept, mode 600, for Michael" \
    "$(stat -f %Lp "$STATE/turns/$nonce.answer")/$(grep -c "$(printf '\342\200\213')" "$STATE/turns/$nonce.answer")" "600/1"
 fresh
 nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"; rm -f "$STATE/turns/$nonce.shown"
-RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+RPC_WAIT_OUT='{"verdict":"approve","findings":[],"reviewed_files":["x"]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "W3 a turn with no .shown file collects, and the rendering has no reviewed_files key" \
    "$rc/$(jq -r 'has("reviewed_files")' "$ROOT/out")" "0/false"
 sliced; framed approve $L1 > "$P/answer.turn-$U1"; framed approve > "$P/answer.turn-$U4"
@@ -3391,6 +3391,15 @@ is "W4 no text-scan module: exit 1, nothing on stdout, no receipt, told to colle
 RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "W4 and with the module restored the same collect succeeds and records" \
    "$rc/$(jq -r .verdict "$ROOT/out")/$(receipt "$nonce" | grep -c .)" "0/approve/1"
+# W5: an answer over a render bound (a line of 2,000,000) ends in exit 4 with the answer kept, not in a generic failure.
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$clr~1..$clr" b.md 2>/dev/null)"
+RPC_WAIT_OUT='{"verdict":"changes","findings":[{"severity":"P2","file":"a","line":2000000,"summary":"s","failure_scenario":"f"}]}' \
+  bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "W5 over a render bound: exit 4, nothing on stdout, nothing recorded" \
+   "$rc/$(wc -c < "$ROOT/out" | tr -d ' ')/$(receipt "$nonce" | grep -c .)" "4/0/0"
+is "W5 stderr names the kept answer and says the bounds were exceeded" \
+   "$(grep -cF "kept for Michael in $STATE/turns/$nonce.answer" "$ROOT/err")/$(grep -cF "exceeds xreview's bounds" "$ROOT/err")" "1/1"
 
 # Two collects, A and B, wait on slice 1. A gets the answer first, starts slice 2 and saves
 # that; B's copy of the round is then stale. B saving slice 1's answer must keep A's slice 2,

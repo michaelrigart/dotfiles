@@ -1492,9 +1492,10 @@ _collect_wait() {
   if [ "$left" -le 0 ]; then rc=3; return 0; fi
   if [ "$packeted" = 1 ]; then rm -f "$report"; asked=(--report "$report"); fi
   # A schema miss puts the reviewer's text in $nonce.raw and prints none of it. turn-wait's stderr
-  # is kept in this collect's private file ($werr, outside turns/, which may not take a new file):
-  # _collect_fail takes the detail of an exit 4 from it, and every other status shows it as it
-  # always did.
+  # is kept in this collect's private file ($werr, in TMPDIR): _collect_fail takes the detail of an
+  # exit 4 from it, and every other status shows it as it always did. A turns/ that takes no new
+  # file does not stop the wait (a slice's exit 3 stands), but it stops collect at render
+  # (_collect_render cannot keep the answer) with nothing recorded.
   set +e
   out="$(xreview-rpc turn-wait --thread "$th" "${which[@]}" --budget "$left" --schema "$schema" ${asked[@]+"${asked[@]}"} --raw "$dir/turns/$nonce.raw" 2>"$werr")"
   rc=$?
@@ -2039,7 +2040,8 @@ cmd_collect() {
   # already unwound those.
   collect_trap="rm -f $(printf '%q' "$dir/turns/$nonce.report.$$") $(printf '%q' "$dir/turns/$nonce.resolved.$$")"
   # werr holds the stderr of this collect's xreview-rpc turn-wait and render calls (_collect_wait,
-  # _collect_render); it lives in TMPDIR because turns/ may refuse a new file.
+  # _collect_render); it lives in TMPDIR so a turns/ that takes no new file cannot stop a wait. Such
+  # a turns/ does stop collect at render, which must keep the answer there: nothing is recorded.
   werr="$(mktemp "${TMPDIR:-/tmp}/xreview-collect.XXXXXX")" || die "cannot make a temporary file in ${TMPDIR:-/tmp}"
   collect_trap="$collect_trap $(printf '%q' "$werr")"
   collect_trap="$collect_trap $(printf '%q' "$dir/turns/$nonce.answer.$$") $(printf '%q' "$dir/turns/$nonce.shownlist.$$")"
