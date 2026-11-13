@@ -2,7 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented (merge 1, branch feat/forge-push-protection; no MR, a dotfiles line)
+
+> **Completed on 2026-11-13. Do not run this plan again.** Merge 2 has its own plan, written after
+> the verification results of the spec's section 6 are in.
 
 **Scope:** merge 1 of the spec (section 6) only: `forge-protection check` (section 3, with the
 targets of section 2), the `pre-push` hook with the scan moved out of the helper (section 5), and
@@ -882,6 +885,15 @@ Accepted limits of merge 1, recorded for Michael to overrule. None is code.
   each first push of a branch.
 
 ## Owed
+
+Done on 2026-11-13: rebased onto main after `chore/test-audit` merged; `git-forge-guard`,
+`git-pre-push-hook`, `hook-path` and the default run were run on the rebased branch. The first whole
+run of `git-forge-guard` found one verdict that differed from main (a plain push whose source git
+cannot resolve was allowed once the hook covered it); the helper now scans such a push, so it stays
+a deny. `xreview` and `wt-functions` were not run: no file this branch changes is in their subject
+lists (`.scripts/test-audit/subjects.tsv`). Not done, Michael's call: the rows this plan added were
+not cut against the audit's rule; `tests/forge-protection.test.sh` is 1,078 lines for a 502-line
+script. The note as it stood:
 
 Rebase this branch onto main after `chore/test-audit` merges, then re-run the guard suites this
 plan changes, by name: `./tests/run.sh git-forge-guard pre-pu hook-path` (`git-forge-guard`
