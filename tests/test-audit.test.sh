@@ -3,7 +3,7 @@
 # harness against a throwaway git repository built from tests/fixtures/test-audit, with its
 # own state, copy root, run lock and a read-only probe directory standing in for $HOME.
 # Run: ./tests/test-audit.test.sh
-# test-requires: heavy  # 89 s on 2026-11-13; loads .scripts/test-audit/audit.py, mutators.py, rules.py
+# test-requires: heavy  # 89 s on 2026-11-13
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 AUDIT="$SRC/.scripts/test-audit/audit.py"

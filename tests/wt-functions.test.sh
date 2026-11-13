@@ -34,7 +34,7 @@
 # it decides when a real signal lands, then execs the real git with the identical argv.
 #
 # Run: ./tests/wt-functions.test.sh
-# test-requires: heavy  # 123 s on 2026-10-31; loads dot_config/zsh/functions
+# test-requires: heavy  # 123 s on 2026-10-31
 set -u
 
 FUNCS="$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions"

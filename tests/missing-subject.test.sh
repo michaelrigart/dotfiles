@@ -77,6 +77,7 @@ missing dev                   dot_config/nvim/lua/plugins/smart-splits.lua
 missing git-forge-guard       dot_claude/executable_git-forge-guard.sh
 missing herdr-phase           dot_config/herdr/executable_phase.sh
 missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
+missing run                   .scripts/test-audit/subjects.tsv
 missing worktree-guard        dot_claude/executable_worktree-guard.sh
 missing xreview-skill         .chezmoitemplates/agents/global.md
 

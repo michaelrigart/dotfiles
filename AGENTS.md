@@ -117,7 +117,9 @@ Suites live in `tests/`, one `<subject>.test.sh` per script under test.
 
 ```bash
 ./tests/run.sh                 # every suite with no special requirement
-./tests/run.sh --all           # those too, heavy ones included (~11 min) — read each `needs:` tag before believing it
+./tests/run.sh --all           # those too, heavy ones included (at least 15 min) — read each `needs:` tag before believing it
+./tests/run.sh --changed       # default suites plus each heavy suite whose subject changed against main; the pre-merge run
+./tests/run.sh --changed=<ref> # the same against another base
 ./tests/run.sh forge worktree  # only suites whose name contains one of these
 ```
 
@@ -129,7 +131,11 @@ F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine
 every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
 
 **The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,
-`RUN_SH_LOCK` overrides the path), and it says so when it waits. A nested runner sees
+`RUN_SH_LOCK` overrides the path). A runner that has to wait prints on stderr who holds the lock
+(arguments, checkout, minutes held), again each minute, and once it has the lock how long it
+waited (`run.sh: waited 9 min for the test-run lock`). `RUN_SH_LOCK_WAIT=<seconds>` bounds the
+wait (`0` does not wait): past it the runner prints `giving up`, runs no suite, prints no totals
+and exits 75; a value that is not a non-negative integer exits 2. A nested runner sees
 `RUN_SH_LOCKED=1` and does not lock again. Never wrap it in `lockf` yourself.
 
 **Execute suites, never prefix an interpreter.** Every suite carries a correct shebang
@@ -140,7 +146,8 @@ because it stubs zsh builtins. `./tests/x.test.sh` is always right; `bash tests/
 is the footgun. `run.sh` executes them for this reason.
 
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
-skipped by default. A substring filter to `./tests/run.sh` keeps that gate; only an
+skipped by default (a `heavy` tag gives only the suite's timing; what the suite loads is in the
+subject map alone). A substring filter to `./tests/run.sh` keeps that gate; only an
 exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, while
 `./tests/run.sh reconcile` does not; `./tests/run.sh xreview` is the exact name, so it
 lifts the gate and also selects every `xreview-*` suite, which run beside it at no extra
@@ -148,8 +155,7 @@ wall time):
 
 | Suite | Needs | Why |
 |---|---|---|
-| `xreview`, `git-forge-guard`, `wt-functions` | `heavy`: 672 s, 242 s, 123 s | skipped by default for their length. Run by exact name when a file its tag lists changes, and all three before every pre-merge review: `./tests/run.sh xreview git-forge-guard wt-functions` |
-| `test-audit` | `heavy`: 89 s | the audit harness's own suite, skipped by default for its length. Run by exact name when `.scripts/test-audit/` or `tests/fixtures/test-audit/` changes: `./tests/run.sh test-audit` |
+| `xreview`, `git-forge-guard`, `wt-functions`, `test-audit` | `heavy`: 672 s, 242 s, 123 s, 89 s | skipped by default for their length. Before every pre-merge review run `./tests/run.sh --changed`: it runs each one whose subject (its rows in `.scripts/test-audit/subjects.tsv`, its own file, `tests/run.sh`) changed against main, committed or not, and runs it whenever it cannot tell. An exact name or `--all` runs one regardless. After a tool upgrade that could reach them (`brew upgrade`), run all four by name, since no diff shows that: `./tests/run.sh xreview git-forge-guard wt-functions test-audit` |
 | `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `zshrc` | unsandboxed | drives a real zsh on a pseudo-terminal (Alt-k and SIGURG), and the sandbox has no pty devices; it then exits 2 (INCONCLUSIVE) |
@@ -158,6 +164,12 @@ wall time):
 | `live-codex-daemon` | unsandboxed + live `herdr` + clean daemon | drives the real Codex daemon and a scratch tab; the canary for Codex protocol changes. Run from inside a herdr pane after `chezmoi apply` |
 | `live-deny-modes` | unsandboxed + model | spends model calls (four modes and a control, each capped by `--max-budget-usd`), and `claude` writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary`, `live-write-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
+
+A new or moved file a suite loads gets its map row in the same commit; for a file a heavy suite
+names, `run`'s drift check fails until it does. Under `--changed` a skipped heavy suite reads
+`needs: heavy (no subject changed since <sha>)`, and one that runs carries
+`[needs: heavy; changed: …]` or the reason the runner could not tell; quote those lines in the
+pre-merge report.
 
 `live-write-boundary` also probes a dotfiles `wt` sibling. That probe measures only from a
 session started in one (`~/.local/share/chezmoi-<branch>`); from anywhere else it reads
