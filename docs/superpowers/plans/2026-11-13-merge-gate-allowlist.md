@@ -68,7 +68,8 @@ Everything else, the shell front included, is unchanged.
     `glab api --method POST https://forge.example/api/v4/projects/4242/merge_requests/7/notes --input note.json`;
     `gh api repos/acme/app/pulls/9/comments -f body=hi`;
     `gh api repos/{owner}/{repo}/pulls/9/comments/55/replies -f body=hi --jq .html_url`;
-    `gh api -X PATCH repos/acme/app/pulls/comments/55 -f body=hi`.
+    `gh api -X PATCH repos/acme/app/pulls/comments/55 -f body=hi`;
+    `gh api repos/acme/.github/pulls/9/comments -f body=hi`.
   - R0: `allow` for `ID=$(glab api -X POST projects/:id/merge_requests/7/pipelines | jq .id)` and
     `sh -c 'glab api -X POST projects/:id/merge_requests/7/notes -f body=x'`; `deny` for
     `sh -c 'glab api -X PUT projects/:id/merge_requests/7/merge'` and
@@ -103,7 +104,7 @@ Everything else, the shell front included, is unchanged.
   - Module constants beside `NAMES_MR_PATH`:
 
     ```python
-    NAME = r"[A-Za-z0-9_][A-Za-z0-9._-]*"
+    NAME = r"[A-Za-z0-9._-]+"      # .github is a name; a .. anywhere is refused apart
     GITLAB_PROJECT = r"(?:\d+|:id|:fullpath|{0}(?:%2[Ff]{0})+)".format(NAME)
     GITHUB_PROJECT = r"(?:\{{owner\}}/\{{repo\}}|{0}/{0})".format(NAME)
     EXEMPT_PATH = {
