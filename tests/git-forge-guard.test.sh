@@ -3591,8 +3591,9 @@ fi
 # A push naming a ref that does not exist cannot be listed, so it cannot be shown covered. Plain,
 # git itself refuses it before any hook; as a force push the guard asks, so it is scanned first.
 expect deny  "a source that is not a ref is a deny"   "$CLEAN" 'git push --force origin nosuch'
-# A gitleaks that hangs (or a git it spawns) must end in a deny within the helper's budget,
-# and the whole process group must go: a surviving child would hold the hook open.
+# A gitleaks that hangs (or a git it spawns) must end in a deny within the helper's budget. The
+# helper kills the scan's process group; the scan's own, shorter budget kills its gitleaks first,
+# and a survivor holds none of the helper's pipes, so it cannot keep the helper waiting.
 HANG="$TMP/hanggl"; mkdir -p "$HANG"
 printf '#!/bin/sh\nsleep 30\nexit 0\n' > "$HANG/gitleaks"; chmod 755 "$HANG/gitleaks"
 PATH="$HANG:$REALPATH"
