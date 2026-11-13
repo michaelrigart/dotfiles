@@ -867,6 +867,11 @@ Accepted limits of merge 1, recorded for Michael to overrule. None is code.
   repository needs an exceptions line.
 - A remote's tracking refs are attributed only to a push whose destination URL is its one fetch
   URL (Decisions row "Which history is excluded"); any other push scans the whole history.
+- The check fails on what a forge can really answer: an error, a timeout, a missing field, a state
+  that is not the target. It does not type-check every field: a `bypass_actors` that is an object
+  or a GitLab access level that is a string can read `ok`. No forge answer has those shapes (the
+  86 repositories read on 2026-11-13 gave none), and the check is the owner's reading aid, not a
+  boundary an attacker's input reaches.
 - Tracking refs are evidence, not proof, of what a destination holds. A remote whose URL was
   changed to another repository without pruning its tracking refs still has them excluded for a
   push to the new address, as on main, where the guard excluded by remote name. The question of
