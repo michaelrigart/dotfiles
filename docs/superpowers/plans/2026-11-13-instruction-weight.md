@@ -29,9 +29,9 @@ chezmoi templates.
 - Check `git branch --show-current` prints `chore/instruction-weight` before each commit.
 - Commits: imperative mood, no agent attribution.
 - **Cap deviation:** the spec's goal for `AGENTS.md` is 150 lines. The move test Codex tightened
-  at spec review keeps more in the root; the table in Task 1 yields about 172. The cap pinned
-  here is 175, and the spec carries the amendment (decided by the driver on Michael's delegation). If
-  Task 1 or 2 lands above 175, stop and report; do not cut a rule to fit.
+  at spec review keeps more in the root; the tables in Tasks 1 and 2 yield about 186. The cap pinned
+  here is 190, and the spec carries the amendment (decided by the driver on Michael's delegation). If
+  Task 2 lands above 190, stop and report; do not cut a rule to fit.
 
 ## Review Focus
 
@@ -75,15 +75,15 @@ chezmoi templates.
 | 148-154 | gates, exact name | kept whole |
 | 156-166 | gated-suite table | kept whole |
 | 168-172 | map row, `--changed` lines | kept whole |
-| 174-176 | `live-write-boundary` sibling | moved |
+| 174-176 | `live-write-boundary` sibling | kept whole (a prerequisite for running it) |
 | 178-181 | never run the `live-*` four unsandboxed | kept whole |
 | 183-185 | control for sandbox mode | kept, as the text below; moved: the "18-test regression" history |
 | 187-192 | brace expansion | kept, as the text below (the parenthesis about arguments kept whole) |
 | 194-198 | passed/total | kept, as the text below; moved: the "324 assertions" history |
 | 200-206 | two suite gotchas | moved |
-| 208-211 | cold external cache | moved |
-| 213-218 | missing-subject guard | moved |
-| 220-231 | output idioms, `failed_keys`, `write-boundary-probe` | moved |
+| 208-211 | cold external cache | kept whole (reads a run's result) |
+| 213-218 | missing-subject guard | moved; what its exit 2 looks like in a run is kept, as "Reading a run" below |
+| 220-231 | output idioms, `failed_keys`, `write-boundary-probe` | moved; how a kv suite's result reads is kept, as "Reading a run" below |
 | 233-242 | `HERDR_SESSION` | moved whole as history; its rule goes to Rules in Task 2 |
 
 Nothing is dropped in this task.
@@ -116,6 +116,13 @@ clean pass. Use `run.sh`, or a loop over a glob. (<the existing parenthesis, unc
 judges each on its **exit status**, and cross-checks that against the counted assertions: a
 suite that dies partway is reported `INCONSISTENT` instead of folded into a total.
 
+**Reading a run.** A `????` row is exit 2, never an assertion failure: a suite whose subject
+is missing, or an `INCONCLUSIVE:` condition; `run.sh` prints the suite's line under the row. The
+`KEY=VALUE` suites (`live-agent-auth`, `live-agent-signing`, `live-credential-boundary`,
+`live-write-boundary`) are judged on exit status alone; a failed one closes with a
+`failed_keys=<key>,<key>` line, which `run.sh` shows under the FAIL row with any `INCONCLUSIVE:`
+lines, never a value.
+
 **Before adding or changing a suite, a fixture or the runner, read `tests/AGENTS.md`:** it
 holds the suite conventions, the runner's knobs and the suite-specific gotchas. Claude Code
 loads it when it reads a file under `tests/`; a subagent and Codex read it by hand.
@@ -133,7 +140,7 @@ suites and reporting: the root `AGENTS.md`, Testing.
 then the moved blocks verbatim under these headings, in this order: `## The runner` (parallel
 knobs, `# test-serial`, lock path and variables), `## A new suite` (missing-subject guard,
 output idioms and `failed_keys`, `write-boundary-probe`), `## Suite-specific` (the two gotchas,
-cold external cache, `live-write-boundary` sibling, "because it stubs zsh builtins"),
+"because it stubs zsh builtins"),
 `## History` (the 18-test and 324-assertion cases, the whole `HERDR_SESSION` block).
 
 - [ ] **Step 1: Write the failing pins.** Add to `rules.tsv` (tab-separated; columns id, file,
@@ -146,12 +153,13 @@ cold external cache, `live-write-boundary` sibling, "because it stubs zsh builti
   | `a-exact-name` | `AGENTS.md` | `only an exact suite name lifts it` | no | `A substring filter` |
   | `a-execute` | `AGENTS.md` | `**Execute suites, never prefix an interpreter.**` | no | ``./tests/x.test.sh` is always right`` |
   | `a-passed-total` | `AGENTS.md` | `**Report totals as passed/total` | no | `exit status;INCONSISTENT` |
+  | `a-reading-run` | `AGENTS.md` | `**Reading a run.**` | no | `exit 2, never an assertion failure;judged on exit status alone;failed_keys=` |
   | `a-map-row` | `AGENTS.md` | `gets its map row in the same commit` | no | `quote those lines in the pre-merge report` |
   | `t-missing-subject` | `tests/AGENTS.md` | `must fail loudly, not silently pass` | no | `exits 2 if not;Exit 2, never 1` |
   | `t-kv` | `tests/AGENTS.md` | `Two output idioms exist` | no | `failed_keys=;so no value is echoed` |
 
   In `tests/agent-instructions.test.sh`, beside the fragment caps, add a cap in the same shape:
-  `AGENTS.md is at most 175 lines`, reading `$SRC/AGENTS.md`. Add `$SRC/AGENTS.md` and
+  `AGENTS.md is at most 190 lines`, reading `$SRC/AGENTS.md`. Add `$SRC/AGENTS.md` and
   `$SRC/tests/AGENTS.md` to the suite's "missing file under test" loop.
 
 - [ ] **Step 2: Run it and see it fail.**
@@ -181,9 +189,9 @@ cold external cache, `live-write-boundary` sibling, "because it stubs zsh builti
 
 - [ ] **Step 7: Run the suites.**
   Run: `./tests/run.sh agent-instructions missing-subject run`
-  Expected: all pass; quote the `passed/total` lines. `wc -l AGENTS.md` at most 190 at this
+  Expected: all pass; quote the `passed/total` lines. `wc -l AGENTS.md` at most 205 at this
   point (Task 2 removes about 15 more).
-  The cap assertion stays red until Task 2 if the count is above 175; if so say so in the
+  The cap assertion stays red until Task 2 if the count is above 190; if so say so in the
   report and do not weaken it.
 
 - [ ] **Step 8: Commit.** `git add AGENTS.md tests/AGENTS.md tests/fixtures/agent-instructions/rules.tsv tests/agent-instructions.test.sh .scripts/test-audit/subjects.tsv` (plus `tests/missing-subject.test.sh` if changed);
@@ -231,7 +239,7 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
   | id | file | anchor | safety | terms |
   |---|---|---|---|---|
   | `a-bump-pointer` | `AGENTS.md` | `Third-party skills are pinned` | no | ``follow the procedure at the top of `.chezmoiexternal.toml`;Closing one without a bump declines that release`` |
-  | `ext-bump-scan` | `.chezmoiexternal.toml` | `agent-text-scan --diff` | yes | ``an `invisible` finding stops the bump until Michael has seen it`` |
+  | `ext-bump-scan` | `.chezmoiexternal.toml` | `agent-text-scan --diff` | yes | the whole moved sentence, on one comment line: ``A bump reads the upstream diff first and runs `agent-text-scan --diff` on it: an `invisible` finding stops the bump until Michael has seen it, and any other finding that matters goes in the commit message.`` |
   | `ext-bump-warm` | `.chezmoiexternal.toml` | `managed >/dev/null` | no | `outside the sandbox` |
   | `ext-bump-closes` | `.chezmoiexternal.toml` | `Closes #<issue>` | no | `commit message` |
   | `a-herdr-bare` | `AGENTS.md` | ``never call `command herdr` bare`` | no | `--session;HERDR_SOCKET_PATH` |
@@ -243,7 +251,7 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
   Expected: lists `.agents/skills/clarity/SKILL.md` as before (same count of lines as on main).
   If it exits 2 for a cold cache, that is not a failure of this task: say so.
 - [ ] **Step 5: Run** `./tests/run.sh agent-instructions agent-skills skill-updates`; expected:
-  all pass, the cap included (`wc -l AGENTS.md` at most 175). Quote the totals.
+  all pass, the cap included (`wc -l AGENTS.md` at most 190). Quote the totals.
 - [ ] **Step 6: Commit**, message `Put the skill-bump procedure in the externals file`.
 
 ### Task 3: `claude-code.md`: the Subagents table and the plan workspace
@@ -264,7 +272,7 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
 | table row `sp-mechanical`: tasks from a clear plan | dropped: its description says "Implementation from a well-specified plan task" |
 | row `sp-standard`: integration, debugging, fix rounds, plan-run controllers, merges | dropped: in its description, after "merge-conflict resolution" becomes "merges and merge-conflict resolution" |
 | row `sp-reviewer`: cold diff review, every per-task review and re-review | dropped: its description says it |
-| row `sp-architect`: …; a fix only after an `sp-standard` attempt at it failed | description's last sentence becomes "Implementation only as an escalation: a fix only after an sp-standard attempt at it failed." |
+| row `sp-architect`: …; a fix only after an `sp-standard` attempt at it failed | description's last sentence becomes "Implementation only as an escalation, as a fix only after an sp-standard attempt at it failed." |
 | row `web-researcher`: all web research, a skill's researchers included: … | description opens "All web research on untrusted pages, a skill's researchers included." The rest is already there |
 | "Use the named types …", "Go up a tier …", "Reviews never run as forks …" | kept, as one bullet |
 | "Delete a finished `.superpowers/sdd/<plan>` workspace with `sdd-clean <workspace>`, never `rm -rf`." | moved verbatim to `plan-run`, new last section `## After the run` |
@@ -287,7 +295,9 @@ Its rules take precedence over superpowers:subagent-driven-development and its t
   - `cc-subagents` and `cc-no-review-forks`: unchanged, and must still pass.
 - [ ] **Step 2: Run** `./tests/run.sh agent-instructions`; expected: the five changed rows FAIL.
 - [ ] **Step 3: Make the edits.** Keep each `description:` on one line, with no `: `, ` #` or
-  backtick added to an unquoted value.
+  backtick added to an unquoted value. Then check every unquoted description:
+  Run: `awk '/^description: [^"]/ { v = $0; sub(/^description: /, "", v); if (v ~ /: | #|^`/) print FILENAME ": " v }' dot_claude/agents/*.md dot_claude/skills/*/SKILL.md dot_agents/skills/*/SKILL.md`
+  Expected: no output.
 - [ ] **Step 4: Preview the render.**
   Run: `command chezmoi --source /Users/michael/.local/share/chezmoi-chore-instruction-weight cat /Users/michael/.claude/CLAUDE.md`
   Expected: the Subagents bullet is one bullet of four lines with no table;

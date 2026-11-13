@@ -32,10 +32,10 @@ lines). What is left there is small. The weight is in the dotfiles `AGENTS.md` a
 ## Goals, non-goals, anti-goals
 
 - **Goals:**
-  - dotfiles `AGENTS.md` at most 150 lines (amended while planning, 2026-11-13: at most 175.
+  - dotfiles `AGENTS.md` at most 150 lines (amended while planning, 2026-11-13: at most 190.
     The move test tightened at spec review keeps the runner lock, the gate rule, the map-row
     rule and the herdr rule in the root, and the plan's sentence table then measures about
-    172. Raised rather than cut a rule to reach a number; decided by the driver session on
+    186 once the plan review also kept what reads a run's result. Raised rather than cut a rule to reach a number; decided by the driver session on
     Michael's delegation, 2026-11-13);
   - `cross-review` skill at most 150 lines;
   - `claude-code.md` below its 50-line cap, so the next rule has room;
