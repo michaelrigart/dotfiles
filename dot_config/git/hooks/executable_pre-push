@@ -11,7 +11,10 @@ set -u
 
 saved=$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 1
 trap 'rm -f "$saved"' EXIT
-cat > "$saved"
+if ! cat > "$saved"; then
+  echo "Push guard: cannot save the list of refs git sends, so the push is refused. Push by hand." >&2
+  exit 1
+fi
 
 shas=()
 while IFS=' ' read -r lref lsha rref rsha || [ -n "$lref" ]; do

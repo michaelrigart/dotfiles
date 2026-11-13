@@ -44,7 +44,7 @@ Three decisions come first: GitHub identity reach and authorship, GitLab on shar
    Verify: `for r in <repo-a> <repo-b>; do gh api repos/<owner>/$r/collaborators/<agent-account>/permission --jq .permission; done` prints `write` for each.
 9. `command -v gitleaks` (must print a path), then `chezmoi apply`, plain, never `chezmoi diff` ([Step 9](#step-9)).
    Verify: `git config --global --get core.hooksPath` prints `~/.config/git/hooks`; the other checks: [Step 9](#step-9) below.
-10. One GitLab project first: record its rules with `glab api --hostname gitlab.com --paginate 'projects/<project-id>/protected_branches?per_page=100' | jq -s add > ~/.local/state/forge-protection/before-<project-id>.json`, then paste the check's printed line for it; details: [Step 10](#step-10) below.
+10. One GitLab project first: record its rules with `(set -o pipefail; glab api --hostname gitlab.com --paginate 'projects/<project-id>/protected_branches?per_page=100' | jq -s add > ~/.local/state/forge-protection/before-<project-id>.json) || echo "read failed: do not go on"`, then paste the check's printed line for it; details: [Step 10](#step-10) below.
     Verify: `glab api --hostname gitlab.com projects/<project-id>/protected_branches/<rule-name-uri-encoded> | jq '{id, push: [.push_access_levels[].access_level], force: .allow_force_push}'` shows push `[0]`, force `false`, the same `id` (the merge levels are not part of the target).
 11. Record every chosen project's rules first, then `bash ~/.local/state/forge-protection/gitlab-remedies.sh`; details: [Step 11](#step-11) below.
     Verify: re-run Step 6's command into a new file; every GitLab row you chose reads `ok`.
@@ -725,7 +725,7 @@ line). Record its rules before changing them, into a file outside this repositor
 
 ```
 mkdir -p ~/.local/state/forge-protection
-glab api --hostname gitlab.com --paginate 'projects/<project-id>/protected_branches?per_page=100' | jq -s add > ~/.local/state/forge-protection/before-<project-id>.json
+(set -o pipefail; glab api --hostname gitlab.com --paginate 'projects/<project-id>/protected_branches?per_page=100' | jq -s add > ~/.local/state/forge-protection/before-<project-id>.json) || echo "read failed: do not go on"
 jq '.[] | {id, name, push: [.push_access_levels[].access_level], merge: [.merge_access_levels[].access_level], force: .allow_force_push}' ~/.local/state/forge-protection/before-<project-id>.json
 ```
 
@@ -779,7 +779,7 @@ it, record the current state of every one of those projects, not only the first.
 the printed lines:
 
 ```
-for id in $(rg -o 'projects/[0-9]+' ~/.local/state/forge-protection/gitlab-remedies.sh | sort -u | cut -d/ -f2); do glab api --hostname gitlab.com --paginate "projects/$id/protected_branches?per_page=100" | jq -s add > ~/.local/state/forge-protection/before-$id.json; done
+for id in $(rg -o 'projects/[0-9]+' ~/.local/state/forge-protection/gitlab-remedies.sh | sort -u | cut -d/ -f2); do (set -o pipefail; glab api --hostname gitlab.com --paginate "projects/$id/protected_branches?per_page=100" | jq -s add > ~/.local/state/forge-protection/before-$id.json) || { echo "read failed: $id"; rm -f ~/.local/state/forge-protection/before-$id.json; }; done
 ```
 
 Then make sure every file is there and holds a list (a project with no rule holds `[]`; a failed

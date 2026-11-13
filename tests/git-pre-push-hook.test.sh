@@ -777,6 +777,13 @@ else
   GIT_CONFIG_GLOBAL=$GITCONFIG_WRAP HOOK_EXTRA_PATH=$NOCOMMON \
     expect_push block "and so does a delete-only push" "$CLEAN" origin :old
   needle "and says why" "cannot find the repository's own hooks"
+  # If the hook cannot save what git wrote on stdin (a full temporary filesystem), it holds no
+  # list of refs: going on would scan nothing and pass.
+  NOCAT="$TMP/nocat"; mkdir -p "$NOCAT"
+  printf '#!/bin/sh\nexit 1\n' > "$NOCAT/cat"; chmod 755 "$NOCAT/cat"
+  GIT_CONFIG_GLOBAL=$GITCONFIG_WRAP HOOK_EXTRA_PATH=$NOCAT \
+    expect_push block "a hook that cannot save git's list of refs blocks the push" "$OWN" origin feat
+  needle "and says why" "cannot save the list of refs"
 
   echo "== the command line of secret-scan =="
   rc=0; out=$(/usr/bin/python3 -I "$HOOKS/secret-scan" --repo "$CLEAN" --remote origin 2>&1) || rc=$?
