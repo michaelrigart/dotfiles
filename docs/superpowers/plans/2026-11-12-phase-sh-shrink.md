@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (dotfiles: no MR; branch `refactor/phase-sh`)
+**Status:** Implemented on `refactor/phase-sh` (dotfiles: no MR). Completed 2026-11-13: do not run this plan again; its
+execution notes bind that run only. Task 4, Step 4 (the rebase onto the merged `chore/test-audit`) was
+deferred by a ruling of 2026-11-13 and is owed before merge, with a fresh suite run and pre-merge review.
 
 **Goal:** Replace `phase.sh`'s hand-rolled process supervision with `/usr/bin/timeout` and one run
 lock, and its Python with `/usr/bin/jq`, keeping every badge and every hardening property.

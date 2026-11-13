@@ -1,6 +1,6 @@
 # Shrink Herdr's `phase.sh`
 
-**Status:** In progress (dotfiles: no MR; branch `refactor/phase-sh`)
+**Status:** Implemented on `refactor/phase-sh` (dotfiles: no MR)
 **Date:** 2026-11-12
 **Sign-off:** Michael, 2026-11-12 (Codex spec review approved, `xr-1794520796-fe06b267`)
 **Branch:** `refactor/phase-sh`, in the `wt` checkout `~/.local/share/chezmoi-refactor-phase-sh`
@@ -373,11 +373,11 @@ each one makes a wrong answer read as a failed lookup or a dropped row, never as
    | | `main` | this branch |
    |---|---|---|
    | script, total lines | 848 | 675 |
-   | script, code lines | 495 | 407 |
-   | script, comment lines | 301 | 220 |
-   | suite, lines | 2,041 | 2,154 |
+   | script, code lines | 495 | 405 |
+   | script, comment lines | 301 | 223 |
+   | suite, lines | 2,041 | 2,163 |
    | suite, assertions | 537 | 556 |
-   | suite, wall time (run directly, loaded machine) | 125 s | 100 to 106 s |
+   | suite, wall time (run directly, loaded machine) | 125 s | 100 to 114 s |
    | one live refresh, 24 linked spaces | 8.6 to 10.4 s | 6.4 to 6.9 s |
 
    "About 300 to 350 lines" (Size) took a count of code lines for a total, and the `jq` programs
@@ -401,8 +401,9 @@ each one makes a wrong answer read as a failed lookup or a dropped row, never as
      to mean the default;
    - a run that cannot create its cache directory or open the lock exits 2 (a sandboxed run, for
      one); it used to skip the repository and exit 0;
-   - a GitLab row whose `state` is missing or not a string is dropped; it used to hold its
-     branch's slot with an empty state;
+   - a GitLab row whose `state` is missing or not a string is dropped; a missing or empty one
+     used to hold its branch's slot with an empty state, and any other non-string failed the
+     whole lookup;
    - a pipeline answer whose `iid` is written `12.0` matches MR 12;
    - `refresh` also requires `/usr/bin/lockf` (as `main` did, without checking).
 5. **Rulings on findings no real caller reaches** (no code, by the triage rule the driver set for
