@@ -1,4 +1,5 @@
-# Subject map for the test audit: which suite exercises which file, at 523a95d.
+# Subject map: which suite exercises which file, read by tests/run.sh --changed and the test audit.
+# A new or moved file a suite loads gets its row in the same commit.
 # Columns (tab-separated): file, lang, own_suite, loaded_by.
 #   file       repository-relative path.
 #   lang       bash|zsh|sh|py|prose|data|deployed.
@@ -8,7 +9,7 @@
 # Files no suite loads are absent.
 .chezmoidata/machines.toml	data	provision	provision
 .chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill
-.chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill
+.chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard
 .chezmoitemplates/agents/claude-code.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/codex.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/global.md	prose	agent-instructions	agent-instructions,xreview-skill
@@ -40,6 +41,12 @@
 .scripts/provision.sh	zsh	provision	provision
 .scripts/reconcile-agents.sh	bash	reconcile-agents	reconcile-agents
 .scripts/skill-updates.sh	bash	skill-updates	skill-updates
+.scripts/test-audit/audit.py	py	test-audit	test-audit
+.scripts/test-audit/mutators.py	py	test-audit	test-audit
+.scripts/test-audit/pinned-rules.tsv	data	-	test-audit
+.scripts/test-audit/rules.py	py	test-audit	test-audit
+.scripts/test-audit/subjects.tsv	data	run	run,test-audit
+.scripts/test-audit/targeted.jsonl	data	-	test-audit
 .scripts/xreview-replay.py	py	xreview-replay	xreview-replay,process-replay
 Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/From Claude Code.json	data	alfred-relay	alfred-relay
 Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/From Codex.json	data	alfred-relay	alfred-relay
@@ -127,6 +134,21 @@ dot_local/bin/executable_wt-teardown	zsh	wt-teardown	wt-teardown,wt-functions,de
 dot_local/bin/executable_xreview	bash	xreview	xreview,xreview-apply-guard,xreview-skill,live-codex-daemon,hook-path
 dot_local/bin/executable_xreview-rpc	py	xreview-rpc	xreview-rpc,xreview-packet,live-codex-daemon,hook-path
 dot_zshrc	zsh	zshrc-reload	zshrc-reload,zshrc
+tests/fixtures/test-audit/bin/esc.py	py	-	test-audit
+tests/fixtures/test-audit/bin/loop.sh	bash	-	test-audit
+tests/fixtures/test-audit/bin/p.py	py	-	test-audit
+tests/fixtures/test-audit/bin/s.sh	bash	-	test-audit
+tests/fixtures/test-audit/docs/gated.md	prose	-	test-audit
+tests/fixtures/test-audit/docs/rules.md	prose	-	test-audit
+tests/fixtures/test-audit/pins/agent-instructions-523a95d.txt	data	-	test-audit
+tests/fixtures/test-audit/subjects.tsv	data	-	test-audit
+tests/fixtures/test-audit/tests/amb.test.sh	bash	-	test-audit
+tests/fixtures/test-audit/tests/gated.test.sh	bash	-	test-audit
+tests/fixtures/test-audit/tests/lock.test.sh	bash	-	test-audit
+tests/fixtures/test-audit/tests/pins.test.sh	bash	-	test-audit
+tests/fixtures/test-audit/tests/red.test.sh	bash	-	test-audit
+tests/fixtures/test-audit/tests/s.test.sh	bash	-	test-audit
+tests/fixtures/test-audit/tests/s2.test.sh	bash	-	test-audit
 tests/live-deny-modes.test.sh	bash	deny-modes-probe	deny-modes-probe
 tests/live-write-boundary.test.sh	bash	write-boundary-probe	write-boundary-probe
-tests/run.sh	bash	run	run
+tests/run.sh	bash	run	run,test-audit

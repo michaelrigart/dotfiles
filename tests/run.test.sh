@@ -816,6 +816,109 @@ if [ "$rc" = 2 ]; then _pass "an expansion error in the report exits 2"; else _f
 ran "and gives no passing verdict" no 'suites passed' "$out"
 ran "and says the report stopped" yes '^run.sh: the report stopped partway; no verdict$' "$out"
 rm -f "$R/tests/run-inject.sh" "$R/tests/aplain.test.sh"
+
+# Subject-map drift. drift_check <repo root> prints one line per problem with the map and fails
+# when there is any: for each suite tagged heavy, a path it names with no row listing it, a row
+# listing it whose file is gone, or no row at all. A named path is a dot_…, .scripts/…, .chezmoi…
+# or tests/… token, bare or after a $VAR/, ${VAR}/ or $(…)/ root, with {a,b} expanded: a file
+# counts, a directory counts as every tracked file under it, anything else not at all. A floor,
+# not a proof: a file the suite reaches through a computed path is the map author's to list.
+IFS= read -r -d '' DRIFT_AWK <<'AWK'
+function expand(t,    pre, n, parts, i) {
+  if (!match(t, /\{[^{}]*,[^{}]*\}/)) { print t; return }
+  pre = substr(t, 1, RSTART - 1); n = split(substr(t, RSTART + 1, RLENGTH - 2), parts, ",")
+  t = substr(t, RSTART + RLENGTH)
+  for (i = 1; i <= n; i++) expand(pre parts[i] t)
+}
+{ s = " " $0
+  while (match(s, /([[:space:]"'=(`:;|&<>]|(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\))\/)(dot_|\.scripts\/|\.chezmoi|tests\/)[]A-Za-z0-9_.\/{},*?[@+-]*/)) {
+    t = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+    sub(/^([[:space:]"'=(`:;|&<>]|(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\))\/)/, "", t)
+    sub(/[.,:;\/]+$/, "", t)
+    expand(t)
+  }
+}
+AWK
+# Directories a heavy suite names without loading them whole; the map lists the files it loads.
+# wt-functions names dot_local/bin as the root of the two wrappers it runs; git-forge-guard names
+# dot_claude only in a command line it hands the guard.
+DRIFT_PART_DIRS="git-forge-guard:dot_claude wt-functions:dot_local/bin"
+# drift_loaded <root> <suite> <suite file>: the files the suite names, one per line; a directory
+# git cannot list is printed itself, so it fails the check rather than counting as empty.
+drift_loaded() {
+  local p
+  awk "$DRIFT_AWK" "$3" | while IFS= read -r p; do
+    if [ -f "$1/$p" ]; then
+      printf '%s\n' "$p"
+    elif [ -d "$1/$p" ]; then
+      case " $DRIFT_PART_DIRS " in *" $2:$p "*) continue ;; esac
+      git -C "$1" ls-files -z -- "$p" 2>/dev/null | tr '\0' '\n' || printf '%s\n' "$p"
+    fi
+  done | LC_ALL=C sort -u
+}
+drift_check() {
+  local f suite req rows loaded p out=
+  for f in "$1"/tests/*.test.sh; do
+    req=$(sed -n 's/^# test-requires: *//p' "$f" | head -1); req=${req%%  #*}
+    [ "$req" = heavy ] || continue
+    suite=$(basename "$f" .test.sh)
+    rows=$(SUITE=$suite awk -F'\t' '/^#/ || $0 == "" { next }
+      { n = split($4, l, ","); for (i = 1; i <= n; i++) if (l[i] == ENVIRON["SUITE"]) { print $1; break } }' "$1/$MAP")
+    loaded=$(drift_loaded "$1" "$suite" "$f")
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case $'\n'"$rows"$'\n' in *$'\n'"$p"$'\n'*) ;; *) out="$out$suite: $p is loaded but has no subject-map row"$'\n' ;; esac
+    done <<<"$loaded"
+    while IFS= read -r p; do
+      [ -z "$p" ] || [ -f "$1/$p" ] || out="$out$suite: subject-map row for $p names a missing file"$'\n'
+    done <<<"$rows"
+    [ -n "$rows" ] || out="$out$suite: no subject-map row"$'\n'
+  done
+  printf '%s' "$out"
+  [ -z "$out" ]
+}
+# drifts <label> <want>: drift_check prints exactly want, and fails unless want is empty.
+drifts() {
+  local got rc want_rc=1
+  got="$(drift_check "$R")"; rc=$?
+  [ -n "$2" ] || want_rc=0
+  if [ "$got" = "$2" ] && [ "$rc" = "$want_rc" ]; then _pass "$1"; else _fail "$1" "exit $rc: $(printf '%s' "$got" | tr '\n' '|')"; fi
+}
+names() { printf '%s\n' "$2" >> "$R/tests/$1.test.sh"; } # names <suite> <line>
+# Bug caught: a file a heavy suite loads added without a row, so changing it never selects the suite.
+reset_repo; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"
+names heavya 'cat "$SRC/dot_x/b.sh"'
+drifts "a file a heavy suite names with no row is reported" "heavya: dot_x/b.sh is loaded but has no subject-map row"
+# Bug caught: a brace list read as one literal path, which never exists.
+reset_repo; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"; write_map "$(row dot_x/c.sh heavya)"
+names heavya 'cat "$SRC/dot_x/{b,c}.sh"'
+drifts "a file named through a brace list is reported" "heavya: dot_x/b.sh is loaded but has no subject-map row"
+# Bug caught: a new file in a directory a heavy suite loads whole (a fixture tree) selecting nothing.
+reset_repo; mkdir -p "$R/dot_d/sub"; echo e > "$R/dot_d/sub/e.sh"; echo f > "$R/dot_d/f.sh"
+write_map "$(row dot_d/f.sh heavya)"; commit "a directory"
+names heavya 'cp -R "$SRC/dot_d" "$T/d"'
+drifts "a tracked file under a directory a heavy suite names is reported" "heavya: dot_d/sub/e.sh is loaded but has no subject-map row"
+# Bug caught: a directory the check cannot list read as empty.
+rm -rf "$R/.git"
+drifts "a directory the check cannot list is reported" "heavya: dot_d is loaded but has no subject-map row"
+# Bug caught: a row left behind for a file that was moved or deleted.
+reset_repo; rm "$R/lib/a.sh"
+drifts "a row naming a missing file is reported" "heavya: subject-map row for lib/a.sh names a missing file"
+# Bug caught: a heavy suite the map does not mention, which every --changed run then selects.
+reset_repo; drop_rows 4 heavyb
+drifts "a heavy suite with no row is reported" "heavyb: no subject-map row"
+# Bug caught: a path that does not exist, or a suite that is not heavy, reported as drift.
+reset_repo; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"; write_map "$(row dot_x/b.sh heavya)"
+names heavya 'cat "$SRC/dot_x/b.sh" "$SRC/dot_x/gone.sh"'
+names plainc 'cat "$SRC/dot_x/c.sh"'
+drifts "a fixture whose heavy suites' files all have rows passes" ""
+got="$(drift_check "$SRC")"; rc=$?
+if [ "$rc" = 0 ] && [ -z "$got" ]; then _pass "the subject map covers every file the heavy suites name"; else _fail "the subject map covers every file the heavy suites name" "exit $rc: $(printf '%s' "$got" | tr '\n' '|')"; fi
+# Bug caught: a hand-edited row the runner reads as malformed, so every --changed run runs every
+# heavy suite.
+reset_repo; cp "$SRC/$MAP" "$R/$MAP"
+out="$(rr --changed)"
+both "the runner reads the real subject map as well-formed" 'no subject-map row' "$out"
 unset HOLDER_DONE
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
