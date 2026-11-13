@@ -41,6 +41,8 @@
 #   - The caller's environment reaches the script (overrides, BASH_ENV, exported functions, glab's
 #     variables), unlike gh, which runs under `env -i`.
 #   - A partial answer (the merged half failed) is published but not cached.
+#   - The per-call bound reads the wall clock, so a Mac that sleeps mid-run wakes with nothing left
+#     and that run's remaining calls are skipped until the next run.
 #
 # Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
 # sandboxed command can write: an absolute shebang, the system bash 3.2 (SIP-protected), and a
@@ -97,7 +99,7 @@ jq_rows_status() { # jq_rows_status <jq's exit status> -> 0 full, 3 open rows on
 JQ_DEFS='
 def answer: (try fromjson catch null) | if type == "array" then . else null end;
 def line: type == "string" and (contains("\t") or contains("\n") | not);
-def name: line and length > 0 and (contains("�") | not);
+def name: line and length > 0 and (contains("\ufffd") | not);
 def whole: if type == "number" and . >= 1 and . < 9007199254740992 and . == floor then floor | tostring else null end;
 '
 
@@ -178,6 +180,7 @@ require_deadline() {
 bounded() { # bounded <end: epoch seconds> <command...>
   local left=$(( $1 - $(date +%s) ))
   shift
+  [ "$left" -le "$RUN_DEADLINE" ] || left=$RUN_DEADLINE
   [ "$left" -gt 0 ] || return 124
   /usr/bin/timeout -s KILL "$left" "$@" </dev/null 9>&-
 }
@@ -309,17 +312,17 @@ mr_table() { # mr_table <forge> <slug> <mode: ttl|force|cached>
 }
 
 gitlab_rows() { # gitlab_rows <slug> -> table rows; 0 full, 3 open rows only, else failed
-  local slug="$1" open_json merged_json rc
+  local slug="$1" open_json merged_json
   # Two queries, not one: `glab mr list` caps --per-page at 100 and this never paginates, so
   # a single --all query drops the oldest rows once a repo passes 100 MRs. The OPEN list on
   # its own keeps the rows a review badge depends on far from the cap.
   open_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
   [ -n "$open_json" ] || return 1
   # Merged state is best-effort: if only this half fails the open rows still stand, uncached, so
-  # the miss lasts one cycle instead of a TTL.
-  local cacheable=1
+  # the miss lasts one cycle instead of a TTL. "null" stands for a failed or empty call, which the
+  # parser reads as not a list.
   merged_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
-  [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
+  [ -n "$merged_json" ] || merged_json="null"
 
   # Each answer reaches jq as a file of its own (a pipe from printf, never an argument: an answer can
   # outgrow the argument list), parsed on its own. An open answer that is not a list fails the
@@ -347,9 +350,7 @@ def falsy: . == null or . == false or . == 0 or . == "" or . == [] or . == {};
     | join("\t")),
   (if $b == null then "" | halt_error(10) else empty end)
 ' 2>/dev/null
-  rc=$?
-  [ "$rc" -ne 0 ] || [ "$cacheable" = "1" ] || rc=10
-  jq_rows_status "$rc"
+  jq_rows_status $?
 }
 
 # gh gets the environment launchd gives it (HOME and PATH), the one it was measured to authenticate
@@ -439,9 +440,9 @@ pipeline_class() { # pipeline_class <slug> <iid> <mode: ttl|force|cached>
         "projects/$(printf '%s' "$slug" | sed 's|/|%2F|g')/merge_requests/$iid" 2>/dev/null)" || json=""
       if [ -n "$json" ]; then
         # \A and \z, not ^ and $: those match at a line break, so "ok<newline>x" would pass.
-        status="$(jqi -nr --rawfile json <(printf '%s' "$json") --arg iid "$iid" '
+        status="$(jqi -nr --rawfile json <(printf '%s' "$json") --arg iid "$iid" "$JQ_DEFS"'
 (try ($json | fromjson) catch null) as $d
-| if ($d | type) != "object" or ($d.iid | if type == "number" and . == floor then floor | tostring else tostring end) != $iid then "" | halt_error(1) else . end
+| if ($d | type) != "object" or ($d.iid | whole // tostring) != $iid then "" | halt_error(1) else . end
 | ($d.head_pipeline | if type == "object" then .status else null end) as $s
 | if ($s | type) == "string" and ($s | test("\\A[a-z_]{1,40}\\z")) then $s else "none" end
 ' 2>/dev/null)" || status=""

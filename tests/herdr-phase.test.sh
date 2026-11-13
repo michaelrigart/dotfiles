@@ -1517,6 +1517,7 @@ mpid=$!
 waitfor "$GLD/gpid-test__proj" && _pass "the hung forge call started" || _fail "the hung forge call started"
 kill -INT "$mpid" 2>/dev/null
 i=0; while kill -0 "$mpid" 2>/dev/null && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.1; done
+check "$(lock_busy)" "1" "after INT the orphaned job still holds the lock"
 _p="$(cat "$GLD/pid-test__proj" 2>/dev/null)"; _g="$(cat "$GLD/gpid-test__proj" 2>/dev/null)"
 if kill -0 "$_p" 2>/dev/null; then echo "  note: INT ended the run and the hung forge call outlived it, so the bound is what frees the lock"
 else echo "  note: INT took the hung forge call with it, so the bound is not exercised"; fi
@@ -1679,6 +1680,11 @@ _code="$(grep -v '^[[:space:]]*#' "$PHASE")"
 for _p in 'set -m' 'trap ' 'command herdr' 'kill ' 'python'; do
   case "$_code" in *"$_p"*) _fail "the script has no '$_p'";; *) _pass "the script has no '$_p'";; esac
 done
+# A herdr call outside `bounded` has no bound of its own, and in an orphaned job it would hold the run
+# lock until herdr answered. Bug caught: a herdr call that bypasses the bound.
+_herdr="$(printf '%s\n' "$_code" | grep -F 'herdr $HERDR_ARGS')"
+_unbounded="$(printf '%s\n' "$_herdr" | grep -v -E 'bounded [^|;&]*herdr \$HERDR_ARGS')"
+[ -n "$_herdr" ] && [ -z "$_unbounded" ] && _pass "every herdr call runs under bounded" || _fail "every herdr call runs under bounded (unbounded: $_unbounded)"
 
 glab_stub
 rm -rf "$CACHE" "$GLD" "$T/held" "$T/release"
@@ -1940,8 +1946,9 @@ else
     && _fail "the agent does not ask for low-priority I/O" \
     || _pass "the agent does not ask for low-priority I/O"
   # launchd ends a job's whole process group when its main process exits, unless told to abandon
-  # it. phase.sh's run is timeout and its descendants, in one group, so that group kill is the
-  # backstop for a TERM that timeout forwards to a descendant which ignores it.
+  # it. phase.sh's run is timeout and its worker's shells, in one group (each glab, gh and herdr call
+  # has a group of its own), so that group kill is the backstop for a TERM that timeout forwards to
+  # a descendant which ignores it.
   grep -q '<key>AbandonProcessGroup</key>' "$PLIST" \
     && _fail "the agent does not abandon its process group" \
     || _pass "the agent does not abandon its process group"

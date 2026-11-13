@@ -51,7 +51,7 @@
 
     <!-- Deliberately NO ProcessType=Background and NO LowPriorityIO. Both were here, and
          together they were the reason the badges went missing. A refresh forks ~100 short-lived
-         processes (git per worktree, python3, glab, herdr per workspace); background scheduling
+         processes (git per worktree, jq, glab, herdr per workspace); background scheduling
          puts every one of them in the lowest band and LowPriorityIO throttles them further.
          Measured 2026-09-11, same script and arguments: 13 s at normal priority, still
          unfinished after 4 minutes under `taskpolicy -b`, and a real `launchctl kickstart` of
