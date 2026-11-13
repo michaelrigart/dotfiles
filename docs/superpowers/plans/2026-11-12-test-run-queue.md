@@ -23,7 +23,7 @@
 - Execute suites, never prefix an interpreter: `./tests/run.test.sh`.
 - Fixture git repositories follow the pattern the existing suites use (`GIT_CONFIG_GLOBAL=/dev/null`, `-c commit.gpgsign=false`, under `$T`).
 - No comments beyond what the surrounding code's style carries; no agent attribution in commits.
-- All tasks run in this checkout (`~/.local/share/chezmoi-chore-test-run-queue`), in order. They share `tests/run.sh` and `tests/run.test.sh`, so there is no parallel batch.
+- All tasks run in this checkout (`~/.local/share/chezmoi-chore-test-run-queue`), one at a time, in the order 2, 3, 1, 4, 5, 6. They share `tests/run.sh` and `tests/run.test.sh`, so there is no parallel batch. Tasks 2 and 3 need only fixtures and start before `chore/test-audit` merges (spec, §1): that branch leaves `tests/run.sh` alone and removes two lines of `tests/run.test.sh` in the requirement-gate cases (`a prefix of the name keeps the gate`), which Tasks 2 and 3 do not edit. Tasks 4 to 6 need the real subject map and wait for Task 1.
 
 ## Review Focus
 
@@ -37,18 +37,18 @@
 
 ### Task 1: Rebase onto the merged test audit
 
-**Depends on:** `chore/test-audit` merged into `main` (Michael's merge). Do not start before it.
+**Depends on:** Task 3, and `chore/test-audit` merged into `main` (Michael's merge). Do not start before both. While the merge is outstanding after Task 3, report blocked and stop.
 
 **Files:** none changed.
 
 - [ ] **Step 1:** `git fetch origin main` then check `git -C ~/.local/share/chezmoi log --oneline -1 main` contains the audit merge; `git cat-file -e main:.scripts/test-audit/subjects.tsv` must succeed. If it fails, stop and report: the map is not on main.
-- [ ] **Step 2:** `git rebase main` in this checkout. The branch holds only the spec and this plan, so no conflict is expected; a conflict stops the task.
-- [ ] **Step 3:** `./tests/run.sh run` → `ok    run` with every assertion passing. Record `passed/total` as the baseline.
-- [ ] **Step 4:** Re-read `tests/run.sh`'s lock block and `select_suite`, and `tests/run.test.sh`'s fixtures, as merged. If the audit moved a line this plan cites, the later tasks follow the merged code, not the line numbers.
+- [ ] **Step 2:** `git rebase main` in this checkout. The branch holds the spec, this plan and Tasks 2 and 3; no conflict is expected (see Global Constraints). A conflict stops the task and is reported, never resolved by dropping either side's tests.
+- [ ] **Step 3:** `./tests/run.sh run` → `ok    run` with every assertion passing, Tasks 2 and 3's cases included. Record `passed/total`.
+- [ ] **Step 4:** Read `.scripts/test-audit/subjects.tsv` as merged and confirm its format is the four tab-separated columns Task 3 parses, with `#` comment lines. A difference stops the task and is reported.
 
 ### Task 2: A lock that reports
 
-**Depends on:** Task 1.
+**Depends on:** nothing.
 
 **Files:**
 - Modify: `tests/run.sh` (the lock block, lines 62-69 before the rebase; the header comment's lock paragraph)
@@ -160,7 +160,7 @@
 
 ### Task 4: The subject map goes live
 
-**Depends on:** Task 3.
+**Depends on:** Task 1.
 
 **Files:**
 - Modify: `.scripts/test-audit/subjects.tsv` (header; rows the check exposes)

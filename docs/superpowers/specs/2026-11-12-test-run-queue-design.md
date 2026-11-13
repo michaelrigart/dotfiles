@@ -87,7 +87,10 @@ that sources, executes, renders, copies or greps the file. It becomes a live fil
 reads, no longer a snapshot for the audit. Its header drops "at 523a95d" and says the runner
 reads it.
 
-This branch is rebased onto main once `chore/test-audit` has merged, before the plan executes.
+This branch is rebased onto main once `chore/test-audit` has merged, before anything reads the
+real map. The lock that reports and the `--changed` selection are built and tested on fixtures
+only, so they may be built before that merge (amended 2026-11-13, with Michael's approval); the
+drift check, the map's header, the heavy tags and `AGENTS.md` wait for the rebase.
 
 A suite's **subjects** are:
 
