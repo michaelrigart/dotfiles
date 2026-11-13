@@ -196,7 +196,13 @@ for f in ./*.test.sh; do
     broken=$((broken + 1))
   elif [ "$tot" -eq 0 ]; then
     printf '  ????  %-28s no assertions, exit=%s%s\n' "$name" "$rc" "$note"
-    show_inconclusive
+    # A suite stopped by a guard says why in its first lines (`missing file under test: …`).
+    # Never a KEY=VALUE line, so no status value is echoed.
+    if printf '%s\n' "$out" | grep -qE '^[[:space:]]*INCONCLUSIVE:'; then
+      show_inconclusive
+    else
+      printf '%s\n' "$out" | grep -vE '^[[:space:]]*$|^[A-Za-z_][A-Za-z0-9_.-]*=' | head -n 3 | sed 's/^/          /'
+    fi
     problems+=("$name (asserted nothing)")
     broken=$((broken + 1))
   elif [ "$rc" -eq 0 ]; then

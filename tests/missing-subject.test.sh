@@ -63,6 +63,7 @@ RELAY="Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Rela
 missing alfred-relay          "$RELAY/info.plist"
 missing alfred-relay          "$RELAY/From Codex.json"
 missing alfred-relay          "$RELAY/From Claude Code.json"
+missing claude-settings       dot_config/agents/plugins.conf
 missing codex-code-mode-host  dot_local/bin/executable_codex-code-mode-host
 missing codex-code-mode-host  dot_local/bin/executable_codex
 missing codex-code-mode-host  dot_local/bin/executable_codex-daemon

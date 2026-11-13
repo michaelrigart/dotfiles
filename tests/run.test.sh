@@ -105,6 +105,12 @@ cat > "$T/coldbare.test.sh" <<'SUITE'
 printf 'INCONCLUSIVE: no cache: bare\n  warm it bare: command chezmoi managed\n' >&2
 exit 2
 SUITE
+cat > "$T/guardbare.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "missing file under test: /x/subject.sh" >&2
+echo "probe=SKIPPED"
+exit 2
+SUITE
 # Slow fixtures hold a marker for a second, then record how many markers they saw.
 for n in slowa slowb; do
   cat > "$T/$n.test.sh" <<SUITE
@@ -209,6 +215,12 @@ ran "no-assertions branch: the row is reported"                 yes '\?\?\?\? +c
 ran "no-assertions branch: the INCONCLUSIVE line is printed"    yes '^ +INCONCLUSIVE: no cache: bare' "$out"
 ran "no-assertions branch: the continuation line is printed"    yes '^ +warm it bare: command chezmoi managed' "$out"
 if [ "$rc" -ne 0 ]; then _pass "no-assertions branch: the run still fails"; else _fail "no-assertions branch: the run still fails" "exit $rc"; fi
+# Bug caught: a suite stopped by its missing-subject guard showed as a bare ???? row, and the
+# one line saying which file is missing was dropped.
+out="$("$T/run.sh" guardbare 2>&1)"
+ran "no-assertions branch: a guard's reason is printed under its row" yes '^ +missing file under test: /x/subject.sh$' "$out"
+ran "no-assertions branch: and its exit is in the row"                yes '\?\?\?\? +guardbare +no assertions, exit=2' "$out"
+ran "no-assertions branch: a KEY=VALUE line is still not echoed"      no  'probe=SKIPPED' "$out"
 
 # Parallel run. Bug caught: parallel output differing from the sequential report.
 a="$(RUN_JOBS=1 env -u RUN_SH_LOCKED "$T/run.sh" 2>&1)"
