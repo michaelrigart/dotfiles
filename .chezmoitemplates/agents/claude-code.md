@@ -34,10 +34,10 @@
   code only when it names an Engineering judgement cost or a real caller reaching its failure (a
   code path, an input the system accepts, an attacker its threat model names; unsure counts as
   real). Any other finding gets one line under Rulings. Codex findings: the `cross-review` skill.
-- **Dispatching a `wt` line.** Find the checkout's session in `ListAgents` (named after it) and
-  `SendMessage` it the brief: spec, plan or task, branch, artifact paths, what to report back. That
-  session runs the line itself, with its own subagents and `xreview` reviews from its checkout. If
-  `ListAgents` does not list it, tell Michael; never run the line in the main session.
+- **Dispatching a `wt` line.** In the turn that ran `wt`, find the checkout's session in
+  `ListAgents` (named after it) and `SendMessage` it the brief: goal, sources, constraints, branch,
+  what to report back. That session runs the line itself, spec included, with its own subagents and
+  `xreview`. If `ListAgents` does not list it, tell Michael; never run the line in the main session.
 - **Pushing.** Push in its own Bash call as one plain command: `git push [options] <remote>
   <branch>` (other repo: `git -C <path> push …`), optionally piped to `tail`/`head`. The push
   guard denies a push chained after a commit, with a comment, or in a shell or substitution, and
