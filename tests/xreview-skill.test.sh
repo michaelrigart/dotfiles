@@ -450,12 +450,28 @@ else
   _fail "the skill says the old thread is archived once the pane shows the new one" "missing"
 fi
 
-# The reviewer's answer is schema-checked JSON, not raw text, except on the exit-4 miss.
-if grep -q 'findings JSON (or, on exit 4, raw untrusted text)' "$SKILL"; then
-  _pass "the skill says the answer is findings JSON, raw text only on exit 4"
+# The reviewer's answer is schema-checked JSON that xreview renders; on the exit-4 miss no reviewer text is printed.
+if grep -q 'findings JSON, rendered by xreview (on exit 4, no reviewer text at all)' "$SKILL"; then
+  _pass "the skill says the answer is rendered findings, and on exit 4 no reviewer text"
 else
-  _fail "the skill says the answer is findings JSON, raw text only on exit 4" \
-        "stale 'comes back as raw text' wording survives"
+  _fail "the skill says the answer is rendered findings, and on exit 4 no reviewer text" \
+        "stale 'raw untrusted text' wording survives"
+fi
+
+# Breaking a structural bound is an exit 4 too; without this the model treats it as a transient and re-dispatches.
+if grep -q 'or breaks one of xreview.s bounds' "$SKILL" && grep -q 'fails the review (exit 4)' "$SKILL"; then
+  _pass "the skill says breaking a structural bound fails the review with exit 4"
+else
+  _fail "the skill says breaking a structural bound fails the review with exit 4" \
+        "exit 4 is described as a schema miss only"
+fi
+
+# Exit 4 keeps the raw text in a file for Michael; a session that reads it back defeats the render.
+if grep -q 'not to be read into this session' "$SKILL"; then
+  _pass "the skill names the exit-4 kept file as not to be read into this session"
+else
+  _fail "the skill names the exit-4 kept file as not to be read into this session" \
+        "nothing tells the model to leave the kept raw file unread"
 fi
 
 # Collect's exit 1 for an unreachable daemon is not the ambiguous "no turn on record"

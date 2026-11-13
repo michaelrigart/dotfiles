@@ -7,20 +7,20 @@
 # Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Gated: MR/PR creation and agent-run merges - glab mr create|new|merge|accept, gh pr
-# create|new|merge, their REST forms through glab api / gh api, and a local git merge into the
-# default branch. Each opens only when the latest full-range pre-merge review of that exact
-# change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
+# create|new|merge, az repos pr create, their REST forms through glab api / gh api, and a local
+# git merge into the default branch. Each opens only when the latest full-range pre-merge
+# review of that exact change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
 # for and gh pr revert are denied outright. The change is named by a content fingerprint, so
 # any content change after the approval closes the gate again, while a clean rebase keeps it
 # open. The receipts live in one ledger per repository, shared by all its worktrees
 # (xreview-ledger.py beside this file).
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
-# names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
-# for, nor api together with a percent-escape such as m%65rge), or none of glab, gh or git,
-# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
-# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
-# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
+# names none of create, new, merge, accept, pulls, graphql, revert or placeholder (nor mr together with
+# for, nor api together with a percent-escape such as m%65rge, nor create in any letter case
+# together with az, repos and pr), or none of glab, gh, git or az, costs no subprocess at all. It matches each
+# word as the raw JSON payload can spell it, with quotes, backslashes and line continuations
+# allowed between its letters: g''it, mer""ge and mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
 # spell any word with escapes, always goes on.
 # Everything else goes to xreview-guard.py beside this file, which owns the grammar and the
 # checks and fails closed on a gated shape.
@@ -55,11 +55,23 @@ spells() {
   done
   return 1
 }
+# az reads its command words case-insensitively (az Repos PR CREATE), and on a case-insensitive
+# filesystem the tool's name too (AZ), so its words are matched without regard to case. az is
+# matched as a substring on purpose, like gh and git: a word such as lazy beside create costs a
+# helper start, never a deny.
+spells_i() {
+  local r
+  shopt -s nocasematch
+  spells "$@"; r=$?
+  shopt -u nocasematch
+  return $r
+}
 case "$payload" in
   *"\$'"*) ;;
-  *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } \
-       || { spells api && [[ $payload =~ $pct ]]; } || exit 0
-     spells glab gh git || exit 0 ;;
+  *) spells create new merge accept pulls graphql revert placeholder || { spells mr && spells for; } \
+       || { spells api && [[ $payload =~ $pct ]]; } \
+       || { spells_i az && spells_i repos && spells_i pr && spells_i create; } || exit 0
+     spells glab gh git || spells_i az || exit 0 ;;
 esac
 
 py=/usr/bin/python3
@@ -74,16 +86,18 @@ fi
 [ "$rc" -eq 0 ] && exit 0
 
 # The helper could not run at all. FAIL DIRECTION IS CLOSED for a command that may propose or
-# merge: glab/gh with mr, pr or api, or git with merge, as whole words on one line - the
-# helper's own last resort (CRUDE). The text is read with quotes and backslashes dropped,
-# both with every backslash-newline joined and without, so neither a fused redirection
-# (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the verb.
-# Anything else is allowed.
+# merge: glab/gh with mr, pr or api, git with merge, or az with repos and pr, as whole words
+# on one line - the helper's own last resort (CRUDE). The text is read with quotes and
+# backslashes dropped, both with every backslash-newline joined and without, so neither a fused
+# redirection (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the
+# verb. The az words are read without regard to case. Anything else is allowed.
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
 case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
 crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
-if { printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
-     printf '%s\n' "$cmd"; } | tr -d "'\"\\\\" | grep -Eq "$crude"; then
+crude_az='\baz\b.*\brepos\b.*\bpr\b'
+text=$({ printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
+         printf '%s\n' "$cmd"; } | tr -d "'\"\\\\")
+if printf '%s\n' "$text" | grep -Eq "$crude" || printf '%s\n' "$text" | grep -Eiq "$crude_az"; then
   reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."
   printf '%s' "$reason" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' 2>/dev/null \

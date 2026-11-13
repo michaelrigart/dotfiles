@@ -176,6 +176,11 @@ printf '%s' "$input" | jq \
           # Aliases of the verbs above: gh and glab resolve each to the same command.
           "Bash(gh gist new*)", "Bash(gh repo new*)", "Bash(glab snippet new*)",
           "Bash(glab project create*)",
+          # Publishing paths with no review gate: stacked pushes, and a cloud agent started on a repository.
+          # An Azure PR update can complete the PR (--status, --auto-complete, --bypass-policy); Michael runs it.
+          "Bash(glab stack*)", "Bash(gh agent-task create*)", "Bash(az repos pr update*)",
+          # Aliases of gh agent-task: gh agent, gh agents and gh agent-tasks.
+          "Bash(gh agent create*)", "Bash(gh agents create*)", "Bash(gh agent-tasks create*)",
           # Lasting mail send-out paths: a server-side rule or an auto-reply keeps
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",

@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 # The pre-merge gate: its command grammar and its checks. xreview-guard.sh beside this file
-# runs it for a payload that mentions create, new, merge, accept, pulls, graphql or revert (or
-# mr with for) and one of glab, gh or git. Design:
+# runs it for a payload that mentions create, new, merge, accept, pulls, graphql, revert or
+# placeholder (or mr with for, or create with az, repos and pr) and one of glab, gh, git or az.
+# Design:
 # docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Reads the PreToolUse payload on stdin. Prints ONE hookSpecificOutput deny object, or
@@ -14,6 +15,7 @@
 #   [cd <literal path> &&] [sudo] glab mr create|new|merge|accept [options]
 #   [cd <literal path> &&] [sudo] gh pr create|new|merge [options]
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
+#   [cd <literal path> &&] [sudo] az repos pr create [options]
 #
 # glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
 # proposes a branch the forge makes itself, which no review can have seen.
@@ -21,7 +23,7 @@
 # Any word may be a command word: one after a wrapper (timeout 30, caffeinate -i, xcrun,
 # find -exec, xargs, sudo -u root), a zsh precommand modifier (noglob, repeat 1), a keyword
 # (coproc, function f {) or an assignment (A+=1). So every unquoted word naming git, glab or
-# gh is read as one, and a gated verb anywhere but in the plain form above is denied, asking
+# gh (or az) is read as one, and a gated verb anywhere but in the plain form above is denied, asking
 # for the plain form; an unquoted mention (echo git merge x) is denied with it, and quoting
 # the mention keeps it out. So is any command whose substitutions run one - a $( ) or
 # backtick body, unquoted or inside double quotes, or inside a here-document whose delimiter
@@ -146,6 +148,10 @@ BRANCH_LOOKUP = ("Pre-merge gate: the current branch of {} cannot be read (the l
 UNRESOLVED_API = ("Pre-merge gate: this {} api call writes to an MR/PR path whose source, head or "
                   "destination the gate cannot read. Use the CLI (glab mr ..., gh pr ...) or the "
                   "REST create and merge endpoints with literal fields.")
+PLACEHOLDER = ("Pre-merge gate: this glab api call writes and carries --placeholder, which fills a "
+               ":name segment of the endpoint with a value the gate does not read, so the path it "
+               "reaches could be an MR path. Write the path out in the endpoint instead of using "
+               "--placeholder.")
 API_SPELLING = ("Pre-merge gate: this {0} api call names an MR/PR path and may write to it, but the "
                 "gate cannot read its options as {0} reads them. Write each option and its value "
                 "as separate words: {0} api -X <METHOD> <endpoint> -f <key>=<value>.")
@@ -175,6 +181,38 @@ QUERY_STRING = ("Pre-merge gate: this gh api write carries a query string ({}). 
 FORGE_MADE = ("Pre-merge gate: {0} creates an MR/PR from a branch the forge makes itself, which "
               "no review can have seen, so the gate never allows it. Make the branch, push it, "
               "and once its pre-merge review approves it, propose it with {1}.")
+AZ_FLAG = ("Pre-merge gate: {} is not among the options the gate allows for az repos pr create: it "
+           "could change what the PR proposes, or where, or defer or complete it, in a way the "
+           "gate does not read. Run the command without it.")
+AZ_VALUE = ("Pre-merge gate: az repos pr create takes its words as options and their values, and "
+            "{} comes before any option, so the gate cannot read what it is. Pass each value "
+            "after the option it belongs to.")
+AZ_FILE = ("Pre-merge gate: az reads the word {} from a file (@<path>, or <name>=@<path>) and "
+           "replaces it with the file's contents before it reads any option, so the gate cannot "
+           "read what the command carries. Write the text inline.")
+AZ_NEED_DEST = ("Pre-merge gate: name the destination explicitly with --target-branch <branch>. az "
+                "would otherwise ask the API for the repository's default branch, which the gate "
+                "does not read.")
+AZ_DETECT = ("Pre-merge gate: --detect {} turns off the detection of the project from origin, so "
+             "the gate cannot tell which project this creates the PR in. Run it without --detect.")
+AZ_NOT_AZURE = ("Pre-merge gate: this checkout's origin ({}) is not an Azure DevOps URL, so the "
+                "project az acts on cannot be checked. Run the command from the Azure DevOps "
+                "project's own checkout.")
+AZ_PUSH_URL = ("Pre-merge gate: origin's push URL ({1}) is not its fetch URL ({0}), and az may "
+               "read the project from either, so the gate cannot tell where this PR goes. Run it "
+               "from a checkout whose origin has one URL, or name --organization, --project and "
+               "--repository all three.")
+AZ_REMOTES_UNREADABLE = ("Pre-merge gate: the remotes of {} cannot be listed (git remote failed, "
+                         "or lists none), so where az would detect the project from is unknown. "
+                         "Retry it, or name --organization, --project and --repository all three.")
+AZ_REMOTES = ("Pre-merge gate: this checkout has remotes besides origin ({}), and with no project "
+              "named az reads the project from origin's push URL, or from another remote's when "
+              "it cannot use origin's. Name --organization, --project and --repository all "
+              "three, or run it from a checkout whose only remote is origin.")
+AZ_PROJECT = ("Pre-merge gate: {} The gate checks the project az acts on only when the command "
+              "names none of --organization, --project and --repository (origin is then the "
+              "project), or all three, equal to origin's ({}). Run it from that project's "
+              "checkout, naming all three or none.")
 
 
 class Deny(Exception):
@@ -194,7 +232,7 @@ PUNCT = ";&|()<>\n"
 # A here-document operator, << or <<- (not the here-string <<<); its delimiter word follows.
 HEREDOC_START = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*")
 METACHARS = " \t\n;&|()<>"
-TOOLS = {"git", "glab", "gh"}
+TOOLS = {"git", "glab", "gh", "az"}
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 MAX_NESTING = 8
 # The words after which a command starts, as after an operator.
@@ -628,8 +666,15 @@ def command_name(word):
     return os.path.basename(word[1:] if word.startswith("=") else word)
 
 
+def tool_name(word):
+    """The forge or git program a word names. AZ runs az on a case-insensitive filesystem, so az
+    is matched lowercased."""
+    name = command_name(word)
+    return "az" if name.lower() == "az" else name
+
+
 def candidates(tokens):
-    """Each word naming git, glab or gh, with the words after it in its simple command. Any
+    """Each word naming git, glab, gh or az, with the words after it in its simple command. Any
     word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
     xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc, function f {) or
     an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the command
@@ -638,7 +683,7 @@ def candidates(tokens):
     for k in range(len(tokens) - 1, -1, -1):
         if is_operator(tokens[k]):
             end = k
-        elif command_name(tokens[k]) in TOOLS:
+        elif tool_name(tokens[k]) in TOOLS:
             out.append(tokens[k:end])
     return out[::-1]
 
@@ -734,13 +779,13 @@ MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAc
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
                        r"enablePullRequestAutoMerge|mergeBranch)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
-# The api options that take a value, per CLI (gh 2.102's and glab 1.120's --help), and -R/--repo,
+# The api options that take a value, per CLI (gh 2.102's and glab 1.130's --help), and -R/--repo,
 # which glab takes before api, after it and after the endpoint. Every other option is a boolean.
 GH_API_VALUE = {"-F", "--field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-X",
                 "--method", "-p", "--preview", "-f", "--raw-field", "-t", "--template", "--cache",
                 "-R", "--repo"}
 GLAB_API_VALUE = {"-F", "--field", "--form", "-H", "--header", "--hostname", "--input", "-X",
-                  "--method", "--output", "-f", "--raw-field", "-R", "--repo"}
+                  "--method", "--output", "--placeholder", "-f", "--raw-field", "-R", "--repo"}
 API_FIELD = {"-f": False, "--raw-field": False, "-F": True, "--field": True, "--form": True}
 API_WRITE_FIELDS = ("--field", "--raw-field", "--input", "--form")
 READ_METHODS = ("GET", "HEAD")
@@ -899,6 +944,20 @@ def api_unplaced(args, tool):
     return not is_graphql(call["endpoint"] or "") and not api_gated(call)
 
 
+def api_placeholder(args, tool):
+    """A glab api call that may write and carries --placeholder, which fills a :name segment of
+    the endpoint, so the path the gate reads need not name the path glab reaches. Whatever the
+    path says, wherever the option stands, in either spelling (--placeholder x=y,
+    --placeholder=x=y). Only a call that both readings take for a read passes: the parse
+    (parse_api, as glab reads it) and the words alone (may_write), since a method word inside a
+    field's value (-f --method=GET) fools the second."""
+    if tool != "glab":
+        return False
+    if parse_api(args, tool)["method"] in READ_METHODS and not may_write(args, tool):
+        return False
+    return any(name == "--placeholder" for name, _ in api_options(args, GLAB_API_VALUE)[0])
+
+
 def only_options(words):
     """Could cobra read words as options alone: each word an option, or the value of the
     option before it?"""
@@ -938,7 +997,8 @@ def reordered(tool, rest):
             continue
         if word == "api":
             args = rest[:k] + rest[k + 1:]
-            if api_gated(parse_api(args, tool)) or api_unplaced(args, tool):
+            if (api_gated(parse_api(args, tool)) or api_unplaced(args, tool)
+                    or api_placeholder(args, tool)):
                 return "api", ""
         if word != noun:
             continue
@@ -949,18 +1009,38 @@ def reordered(tool, rest):
     return None
 
 
+def az_reordered(rest):
+    """Is az repos pr create in rest written out of the gate's order - repos, pr and create in
+    that order with options (and their values) before, between or after them? knack's parser
+    takes global options before the group names, and which options take a value cannot be read
+    from the text, so every word after options alone may be the group, and so on, as reordered
+    does for glab and gh. az reads its command words case-insensitively (az Repos PR CREATE),
+    so the words are compared lowercased; option names stay case-sensitive."""
+    for k, word in enumerate(rest):
+        if word.lower() != "repos" or not only_options(rest[:k]):
+            continue
+        for j in range(k + 1, len(rest)):
+            if rest[j].lower() != "pr" or not only_options(rest[k + 1:j]):
+                continue
+            for m in range(j + 1, len(rest)):
+                if rest[m].lower() == "create" and only_options(rest[j + 1:m]):
+                    return True
+    return False
+
+
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
-    args}, or None. kind is merge-local (git merge), create, forge-made, merge or api; args
-    are the words after the verb, with an option written before the noun (glab -R x mr ...,
-    glab -R x api ...) kept in front.
+    args}, or None. kind is merge-local (git merge), create, forge-made, merge or api (az
+    repos pr create: az-create); args are the words after the
+    verb, with an option written before the noun (glab -R x mr ..., glab -R x api ...) kept in
+    front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
     --continue only as its sole argument: anywhere else either may be an option's value. The
     gate checks glab and gh only in its own order - [-R <project>] noun verb, or api right
     after the tool; a gated verb cobra could find in another order is kind reordered."""
     if not words:
         return None
-    tool, rest = command_name(words[0]), words[1:]
+    tool, rest = tool_name(words[0]), words[1:]
     if tool not in TOOLS:
         return None
     if tool == "git":
@@ -970,6 +1050,14 @@ def gated_verb(words):
             if after[:1] and after[0] in HELP or len(after) == 1 and after[0] in MERGE_CONTROL:
                 return None
             return {"tool": "git", "kind": "merge-local", "args": rest}
+        return None
+    if tool == "az":
+        if [w.lower() for w in rest[:3]] == ["repos", "pr", "create"]:
+            if rest[3:4] and rest[3] in HELP:
+                return None
+            return {"tool": "az", "kind": "az-create", "args": rest[3:]}
+        if az_reordered(rest):
+            return {"tool": "az", "kind": "reordered", "args": rest, "verb": ("repos pr", "create")}
         return None
     i = skip_options(rest, 0, FORGE_VALUE_OPTS)
     canonical = only_repo(rest[:i])
@@ -981,7 +1069,8 @@ def gated_verb(words):
     if i == 0 and rest[:1] == ["api"]:
         if rest[1:2] and rest[1] in HELP:
             return None
-        if api_gated(parse_api(rest[1:], tool)) or api_unplaced(rest[1:], tool):
+        if (api_gated(parse_api(rest[1:], tool)) or api_unplaced(rest[1:], tool)
+                or api_placeholder(rest[1:], tool)):
             return {"tool": tool, "kind": "api", "args": rest[1:]}
         return None
     found = reordered(tool, rest)
@@ -1018,8 +1107,11 @@ def parse_plain(tokens, cwd):
     if verb is not None and verb["kind"] == "reordered":
         noun, name = verb["verb"]
         tool = verb["tool"]
-        form = ("{} api [options] <endpoint>".format(tool) if noun == "api"
-                else "{} [-R <project>] {} {} [options]".format(tool, noun, name))
+        if tool == "az":
+            form = "az {} {} [options]".format(noun, name)
+        else:
+            form = ("{} api [options] <endpoint>".format(tool) if noun == "api"
+                    else "{} [-R <project>] {} {} [options]".format(tool, noun, name))
         raise Deny(REORDERED.format(tool, (noun + " " + name).strip(), form))
     if verb is not None:
         verb["cwd"] = cwd
@@ -1365,7 +1457,7 @@ GH_CREATE_VALUE = {"-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assi
                    "--attach", "-b", "--body", "-F", "--body-file", "-l", "--label", "-m",
                    "--milestone", "-p", "--project", "--recover", "-r", "--reviewer", "-T",
                    "--template", "-t", "--title"}
-# The flags creation allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# The flags creation allows, per CLI (glab 1.130.0, gh 2.103.3); any other is denied by name. Denied
 # on purpose: --recover (replays options from a file), -w/--web (the browser finishes the
 # creation), glab's -i/--related-issue (the issue can supply the branch) and
 # --create-source-branch (only acts on a branch origin lacks, which the gate denies anyway).
@@ -1450,6 +1542,155 @@ def judge_create_cli(shape, ledger):
         local = (run(["git", "-C", top, "rev-parse", "HEAD"]) or "").strip()
         if local != head:
             raise Deny(PUSHES.format(pushing[0], local or "unknown", source, head))
+    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, head,
+          "origin/{}...{}".format(dest, source), None)
+
+
+# ------------------------------------------------------------------ az repos pr
+# The options az repos pr create may carry (azure-devops 1.0.8, `az repos pr create --help`); any
+# other is denied by name. Denied on purpose: --auto-complete (a deferred completion),
+# --bypass-policy and --bypass-policy-reason, --acquire-policy-token, --change-reference and
+# --subscription.
+AZ_CREATE_ALLOWED = {"--source-branch", "-s", "--target-branch", "-t", "--title", "--description",
+                     "-d", "--draft", "--labels", "--work-items", "--required-reviewers",
+                     "--optional-reviewers", "--delete-source-branch", "--squash",
+                     "--merge-commit-message", "--transition-work-items", "--organization",
+                     "--org", "--project", "-p", "--repository", "-r", "--detect", "--open",
+                     "--output", "-o", "--query", "--only-show-errors", "--verbose", "--debug"}
+AZ_TRUE = ("true", "1", "t", "yes", "y")
+AZ_SSH = re.compile(r"(?:ssh://)?(?:[^/@:]+@)?ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/([^/]+)", re.I)
+AZ_HTTPS = re.compile(r"(?:https?://)?(?:[^/@]+@)?dev\.azure\.com/([^/]+)/([^/]+)/_git/([^/]+)", re.I)
+AZ_VS = re.compile(r"(?:https?://)?(?:[^/@]+@)?([^/.@]+)\.visualstudio\.com/([^/]+)/_git/([^/]+)", re.I)
+
+
+def azure_project(url):
+    """(organization, project, repository), lowercased and percent-decoded, of an Azure DevOps
+    remote URL (ssh.dev.azure.com:v3/<org>/<project>/<repo>, dev.azure.com/<org>/<project>/_git/
+    <repo>, <org>.visualstudio.com/<project>/_git/<repo>; scheme and user optional), or None."""
+    u = url.strip().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    for pattern in (AZ_SSH, AZ_HTTPS, AZ_VS):
+        m = pattern.fullmatch(u)
+        if m:
+            return tuple(unquote(g).lower() for g in m.groups())
+    return None
+
+
+def azure_org(value):
+    """The organization an --organization URL names (https://dev.azure.com/<org>, or
+    https://<org>.visualstudio.com), lowercased, or None."""
+    u = urlsplit(value)
+    if u.scheme not in ("http", "https"):
+        return None
+    host = (u.hostname or "").lower()
+    segments = [s for s in u.path.split("/") if s]
+    suffix = ".visualstudio.com"
+    if host == "dev.azure.com" and len(segments) == 1:
+        return unquote(segments[0]).lower()
+    if host.endswith(suffix) and not segments and "." not in host[:-len(suffix)] and host != suffix:
+        return host[:-len(suffix)]
+    return None
+
+
+def az_options(args):
+    """(name, values) per option of az's arguments: a word starting with - is an option (its
+    =value carried), any other word a value of the option before it, as several options take
+    many values. A value before any option is denied."""
+    opts = []
+    for w in args:
+        if w.startswith("-") and w != "-":
+            name, eq, value = w.partition("=")
+            opts.append((name, [value] if eq else []))
+        elif opts:
+            opts[-1][1].append(w)
+        else:
+            raise Deny(AZ_VALUE.format(w))
+    return opts
+
+
+def az_one(opts, names, label):
+    """The single literal value of an option spelt any of names; None when it is absent."""
+    found = [values for name, values in opts if name in names]
+    if len(found) > 1:
+        raise Deny(ONCE.format(label))
+    if not found:
+        return None
+    values = found[0]
+    if len(values) != 1 or not values[0] or not literal(values[0]) or values[0].startswith("-"):
+        raise Deny(LITERAL.format(label, " ".join(values) or "an empty value"))
+    return values[0]
+
+
+def az_branch(name):
+    """A branch as az reads it: refs/heads/<name> is <name>."""
+    return name[len("refs/heads/"):] if name.startswith("refs/heads/") else name
+
+
+def az_check_project(top, opts):
+    """Either none of --organization, --project and --repository is named, and origin is an Azure
+    DevOps URL with one fetch and push URL; or all three are named and equal origin's."""
+    org = az_one(opts, ("--organization", "--org"), "--organization")
+    project = az_one(opts, ("--project", "-p"), "--project")
+    repo = az_one(opts, ("--repository", "-r"), "--repository")
+    url = (run(["git", "-C", top, "config", "--get", "remote.origin.url"]) or "").strip()
+    if not url:
+        raise Deny(NO_ORIGIN.format(top))
+    origin = azure_project(url)
+    if origin is None:
+        raise Deny(AZ_NOT_AZURE.format(url))
+    where = "/".join(origin)
+    named = [x for x in (org, project, repo) if x is not None]
+    if not named:
+        listed = run(["git", "-C", top, "remote"])
+        remotes = (listed or "").split()
+        if not remotes:
+            raise Deny(AZ_REMOTES_UNREADABLE.format(top))
+        if remotes != ["origin"]:
+            raise Deny(AZ_REMOTES.format(", ".join(r for r in remotes if r != "origin")))
+        fetch = run(["git", "-C", top, "remote", "get-url", "origin"])
+        push = run(["git", "-C", top, "remote", "get-url", "--push", "--all", "origin"])
+        if fetch is None or push is None:
+            raise Deny(RESOLVED_UNREADABLE.format(top))
+        if any(line.strip() != fetch.strip() for line in push.splitlines()):
+            raise Deny(AZ_PUSH_URL.format(url, ", ".join(push.split())))
+        return
+    if len(named) != 3:
+        raise Deny(AZ_PROJECT.format("the command names only some of them.", where))
+    named_org = azure_org(org)
+    if named_org is None:
+        raise Deny(AZ_PROJECT.format("--organization {} is not an Azure DevOps organization URL "
+                                     "(https://dev.azure.com/<org>).".format(org), where))
+    if (named_org, project.lower(), repo.lower()) != origin:
+        raise Deny(AZ_PROJECT.format("the command acts on {}/{}/{}, not on origin's project."
+                                     .format(named_org, project, repo), where))
+
+
+def judge_az(shape, ledger):
+    """az repos pr create: no word az reads from a file (@<path>, <name>=@<path>); only the
+    options in AZ_CREATE_ALLOWED; the project is origin's;
+    --target-branch is required; the source is --source-branch or the current branch, as origin
+    has it. The decision is the ledger's, as for glab mr create."""
+    for w in shape["args"]:
+        if w.startswith("@") or w.partition("=")[2].startswith("@"):
+            raise Deny(AZ_FILE.format(w))
+    opts = az_options(shape["args"])
+    for name, values in opts:
+        if name not in AZ_CREATE_ALLOWED:
+            raise Deny(AZ_FLAG.format(name))
+        if name == "--detect" and (len(values) > 1 or values and values[0].lower() not in AZ_TRUE):
+            raise Deny(AZ_DETECT.format(" ".join(values)))
+    top = toplevel(shape["cwd"])
+    az_check_project(top, opts)
+    dest = az_one(opts, ("-t", "--target-branch"), "--target-branch")
+    if dest is None:
+        raise Deny(AZ_NEED_DEST)
+    dest = az_branch(dest)
+    source = az_one(opts, ("-s", "--source-branch"), "--source-branch")
+    if source is None:
+        source = current_source(ledger, top, "--source-branch")
+    source = az_branch(source)
+    head = remote_head(top, source)
     check(ledger, top, source, dest, "refs/remotes/origin/" + dest, head,
           "origin/{}...{}".format(dest, source), None)
 
@@ -1736,7 +1977,7 @@ def judge_create_github_api(shape, ledger, owner, repo, fields):
 GLAB_MERGE_VALUE = {"-m", "--message", "--sha", "--squash-message", "-R", "--repo"}
 GH_MERGE_VALUE = {"-A", "--author-email", "-b", "--body", "-F", "--body-file",
                   "--match-head-commit", "-t", "--subject", "-R", "--repo"}
-# The flags a merge allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# The flags a merge allows, per CLI (glab 1.130.0, gh 2.103.3); any other is denied by name. Denied
 # on purpose: gh's --admin (it merges past required reviews and checks) and glab's hidden
 # --when-pipeline-succeeds. glab's --auto-merge is read by the deferred-merge check, which
 # allows it only when it is off.
@@ -1949,6 +2190,8 @@ def judge_api(shape, ledger):
     in its body, and GitHub may not read a write's query string, so a gh write carrying one is
     denied; glab's query fields are read with its body fields, as GitLab reads both."""
     tool, call = shape["tool"], parse_api(shape["args"], shape["tool"])
+    if api_placeholder(shape["args"], tool):
+        raise Deny(PLACEHOLDER)
     if api_unplaced(shape["args"], tool):
         raise Deny(API_SPELLING.format(tool))
     endpoint = call["endpoint"] or ""
@@ -1988,6 +2231,8 @@ def judge(shape, ledger):
         return judge_git_merge(shape, ledger)
     if kind == "create":
         return judge_create_cli(shape, ledger)
+    if kind == "az-create":
+        return judge_az(shape, ledger)
     if kind == "forge-made":
         raise Deny(FORGE_MADE.format(*FORGE_MADE_FORMS[shape["tool"]]))
     if kind == "merge":
@@ -1996,12 +2241,13 @@ def judge(shape, ledger):
 
 
 # ------------------------------------------------------------------ main
-CRUDE = re.compile(r"\b(glab|gh)\b[^\n]*\b(mr|pr|api)\b|\bgit\b[^\n]*\bmerge\b")
+CRUDE = re.compile(r"\b(glab|gh)\b[^\n]*\b(mr|pr|api)\b|\bgit\b[^\n]*\bmerge\b"
+                   r"|(?i:\baz\b[^\n]*\brepos\b[^\n]*\bpr\b)")
 
 
 def crude(text):
-    """The last resort, for text the grammar cannot read: glab or gh with mr, pr or api, or git
-    with merge, with quotes and backslashes dropped (g''it is git). The text is read three
+    """The last resort, for text the grammar cannot read: glab or gh with mr, pr or api, git
+    with merge, or az with repos and pr, with quotes and backslashes dropped (g''it is git). The text is read three
     ways: with every backslash-newline joined (mer\\<newline>ge is merge), as written (an
     escaped backslash does not continue its line), and as lex reads it ($'\\x67it' is git)."""
     def flat(t):

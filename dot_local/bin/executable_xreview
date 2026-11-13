@@ -145,8 +145,8 @@ is_safe_id() {
   return 0
 }
 
-# A nonce is xr-<epoch>-<hex>. turns/ also holds <nonce>.targets, .shown, .slices, .merged and
-# .known files, which pass the id check and -f, so a dot is never part of a nonce.
+# A nonce is xr-<epoch>-<hex>. turns/ also holds <nonce>.targets, .shown, .shown.all, .slices,
+# .merged, .answer, .raw and .known files, which pass the id check and -f, so a dot is never part of a nonce.
 is_nonce() {
   case "$1" in
     *.*) return 1 ;;
@@ -385,17 +385,28 @@ pane_screen() { # pane_screen <pane>: the bottom of the pane's visible screen - 
   # lines, and of those the last 1,000 bytes, since the bottom rows hold the prompt that is
   # waiting - control characters stripped, trailing blank lines dropped, each line indented
   # under the message. Prints nothing when the read fails. Untrusted text: evidence only.
-  local out
+  local out text esc tail12
   out="$(herdr pane read "$1" --source visible --lines 12 --format text 2>/dev/null)" || return 0
-  # `tail -c` can cut the first kept line short. The prefix is added by awk, which ends every
-  # line it prints with a newline, so whatever follows on stdout or stderr (the nonce, under
-  # 2>&1) always starts on a line of its own.
-  # The byte cut can also land inside a multi-byte character; the continuation bytes it leaves
-  # at the start of the first line are dropped, so the excerpt never opens on a stray one.
-  { printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
+  text="$(printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
       | awk '{ l[NR] = $0 } NF { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' \
-      | tail -n 12 | tail -c 1000 \
-      | LC_ALL=C awk 'NR == 1 { sub(/^[\200-\277]+/, "") } { print "  | " $0 }'; } || true
+      | tail -n 12)" || text=""
+  [ -n "$text" ] || return 0
+  # The screen holds the reviewer's unrendered answer: it is escaped and scanned for secrets like
+  # collect's rendering (spec 2026-11-12 §4.4), or withheld. The scan comes before the cut: a
+  # token the byte cut splits (its prefix cut off) would match no rule.
+  if esc="$(printf '%s\n' "$text" | xreview-rpc escape 2>/dev/null)"; then
+    # `tail -c` can cut the first kept line short. The prefix is added by awk, which ends every
+    # line it prints with a newline, so whatever follows on stdout or stderr (the nonce, under
+    # 2>&1) always starts on a line of its own.
+    # The byte cut can also land inside a multi-byte character; the continuation bytes it leaves
+    # at the start of the first line are dropped, so the excerpt never opens on a stray one.
+    tail12="$(printf '%s\n' "$esc" | tail -n 12 | tail -c 1000 \
+        | LC_ALL=C awk 'NR == 1 { sub(/^[\200-\277]+/, "") } { print }')" || tail12=""
+    printf '%s\n' "$tail12" | LC_ALL=C awk '{ print "  | " $0 }' || true
+  else
+    printf '  | (the pane'"'"'s screen is withheld: it could not be scanned)\n'
+  fi
+  return 0
 }
 
 die_with_screen() { # die_with_screen <pane> <message>: die, then show the pane's screen
@@ -1482,10 +1493,16 @@ _collect_wait() {
             'BEGIN { l = b - int(e - s); print (l > 0 ? l : 0) }')"
   if [ "$left" -le 0 ]; then rc=3; return 0; fi
   if [ "$packeted" = 1 ]; then rm -f "$report"; asked=(--report "$report"); fi
+  # A schema miss puts the reviewer's text in $nonce.raw and prints none of it. turn-wait's stderr
+  # is kept in this collect's private file ($werr, in TMPDIR): _collect_fail takes the detail of an
+  # exit 4 from it, and every other status shows it as it always did. A turns/ that takes no new
+  # file does not stop the wait (a slice's exit 3 stands), but it stops collect at render
+  # (_collect_render cannot keep the answer) with nothing recorded.
   set +e
-  out="$(xreview-rpc turn-wait --thread "$th" "${which[@]}" --budget "$left" --schema "$schema" ${asked[@]+"${asked[@]}"})"
+  out="$(xreview-rpc turn-wait --thread "$th" "${which[@]}" --budget "$left" --schema "$schema" ${asked[@]+"${asked[@]}"} --raw "$dir/turns/$nonce.raw" 2>"$werr")"
   rc=$?
   set -e
+  if [ "$rc" != 4 ]; then cat "$werr" >&2 || true; fi
   # Read and removed at once, before anything below can refuse.
   if [ "$packeted" = 1 ] && [ "$rc" = 0 ] && [ -s "$report" ]; then
     said="$(jq -c '{turn, compacted}' "$report" 2>/dev/null)" || said=""
@@ -1512,12 +1529,70 @@ _collect_fail() {
     3) printf 'xreview: still running - the budget of %ss is used up; turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
          "$budget" "$nonce" "$nonce" >&2
        exit 3 ;;
-    4) printf '%s\n' "$out"
-       printf 'xreview: the answer does not match the findings schema - the text above is UNTRUSTED raw output\n' >&2
-       exit 4 ;;
+    4) _collect_exit4 schema "$werr" "$dir/turns/$nonce.raw" ;;
     5) die "the Codex daemon is unreachable; the turn is on record for $nonce - run codex-daemon ensure, then collect again" ;;
     *) die "the reviewer turn failed for $nonce (do NOT retry the dispatch)" ;;
   esac
+}
+
+# _collect_exit4 schema|bounds <rpc-stderr-file> <kept-file> - the end of a review whose answer was
+# not rendered (spec 2026-11-12 §4.2): one fixed message on stderr, nothing on stdout, nothing
+# recorded, exit 4. The detail is xreview-rpc's own stderr line, which holds schema paths and fixed
+# words only; the reviewer's text stays in the kept file, which is not to be read into the session.
+_collect_exit4() {
+  local what detail
+  case "$1" in
+    schema) what="does not match the findings schema"
+            detail="$(sed -n 's/^xreview-rpc: the answer does not match the findings schema: //p' "$2" 2>/dev/null | head -1)" ;;
+    *)      what="exceeds xreview's bounds"
+            detail="$(sed -n "s/^xreview-rpc: the answer exceeds xreview's bounds (\(.*\))\$/\1/p" "$2" 2>/dev/null | head -1)" ;;
+  esac
+  detail="$(printf '%s' "$detail" | LC_ALL=C tr -cd '[:print:]' | head -c 400)"
+  [ -n "$detail" ] || detail="no detail"
+  printf "xreview: the review failed: the reviewer's answer %s (%s). Nothing was recorded. The answer is kept for Michael in %s and is in the Codex pane. It is not printed here and is not to be read into this session. Report it; do not re-dispatch.\n" \
+    "$what" "$detail" "$3" >&2
+  exit 4
+}
+
+# _collect_render <answer-json> <shown-json-or-null> - print the answer as xreview-rpc render builds
+# it (spec 2026-11-12 §4.1), the only way an answer reaches stdout. The answer is kept first, as
+# turns/<nonce>.answer for Michael. Runs before anything is recorded, so a refusal leaves the
+# round as it was and collect can simply be run again: render over its bounds ends in exit 4, and
+# render that cannot run (the text-scan module, gitleaks) in exit 1.
+_collect_render() {
+  local answer="$1" shown="$2" kept="$dir/turns/$nonce.answer" tmp="$dir/turns/$nonce.answer.$$" \
+        sf="$dir/turns/$nonce.shownlist.$$" rendering rrc show=()
+  if ! { ( umask 077; printf '%s\n' "$answer" > "$tmp" ) && mv -f "$tmp" "$kept"; } 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    die "cannot keep the answer in $kept; nothing was recorded"
+  fi
+  if [ "$shown" != null ]; then
+    ( umask 077; printf '%s\n' "$shown" > "$sf" ) 2>/dev/null || die "cannot write $sf; nothing was recorded"
+    show=(--shown "$sf")
+  fi
+  set +e
+  rendering="$(xreview-rpc render --nonce "$nonce" --kept "$kept" ${show[@]+"${show[@]}"} < "$kept" 2>"$werr")"
+  rrc=$?
+  set -e
+  rm -f "$sf"
+  case "$rrc" in
+    0) printf '%s\n' "$rendering" ;;
+    4) _collect_exit4 bounds "$werr" "$kept" ;;
+    *) cat "$werr" >&2 || true
+       die "nothing was recorded; restore it, then collect again" ;;
+  esac
+}
+
+# _collect_print_finished - a finished sliced round's answer again: turns/<nonce>.merged, rendered
+# with the labels its slices showed (turns/<nonce>.shown.all; missing or unreadable is null).
+_collect_print_finished() {
+  local shown=null
+  if [ -r "$dir/turns/$nonce.shown.all" ]; then
+    shown="$(jq -c 'if type == "array" and all(.[]; type == "string") then . else null end' \
+               "$dir/turns/$nonce.shown.all" 2>/dev/null)" || shown=null
+    [ -n "$shown" ] || shown=null
+  fi
+  _collect_render "$(cat "$dir/turns/$nonce.merged")" "$shown"
 }
 
 # The one missing label a target records when the labels its turn showed cannot be read.
@@ -1693,7 +1768,7 @@ _slices_sync() {
   elif [ -e "$dir/turns/$nonce.merged" ]; then
     _slices_unlock
     printf 'xreview: another collect of %s finished the round meanwhile; its answer follows\n' "$nonce" >&2
-    cat "$dir/turns/$nonce.merged"
+    _collect_print_finished
     exit 0
   else
     disk="$sl"
@@ -1725,7 +1800,7 @@ _slices_sync() {
 # order, and the union of reviewed_files. The receipt names the last slice's thread and turn,
 # and every slice's in slice_turns. Works on cmd_collect's locals.
 _collect_slices() {
-  local sl n i th t merged groups comp sturns last
+  local sl n i th t merged groups comp sturns last shown_all
   sl="$(jq -c 'select((.packets | type) == "array" and (.packets | length) > 0)
                | .threads //= [] | .turns //= [] | .answers //= []' "$sfile" 2>/dev/null)" || sl=""
   [ -n "$sl" ] || die "cannot read the state of the sliced round in $sfile"
@@ -1772,12 +1847,16 @@ _collect_slices() {
     | if any(. == true) then true elif any(. == null) then null else false end')"
   sturns="$(printf '%s' "$sl" | jq -c '[.answers[] | {thread, turn, compacted}]')"
   last="$(printf '%s' "$sl" | jq -r '.answers[-1] | "\(.thread) \(.turn)"')"
+  # The round's shown labels are every slice's, in slice order: null unless each slice's are a list.
+  shown_all="$(printf '%s' "$sl" | jq -c '[.packets[].shown] | if all(.[]; type == "array") then add else null end')"
+  _collect_render "$merged" "$shown_all"
   rm -rf "$dir/turns/$nonce.packets"
-  printf '%s\n' "$merged"
   # Done only once every receipt is written: until then a later collect records them from here.
+  # .shown.all goes down first: a finished round is rendered with it.
   if _collect_record "${last% *}" "${last#* }" "$merged" "$groups" "$comp" "$sturns"; then
     _slices_lock
-    if printf '%s\n' "$merged" > "$dir/turns/$nonce.merged" 2>/dev/null; then rm -f "$sfile"; fi
+    if printf '%s\n' "$shown_all" > "$dir/turns/$nonce.shown.all" 2>/dev/null \
+       && printf '%s\n' "$merged" > "$dir/turns/$nonce.merged" 2>/dev/null; then rm -f "$sfile"; fi
     _slices_unlock
   fi
 }
@@ -1935,7 +2014,7 @@ _slice_turn() {
 cmd_collect() {
   local other nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc \
         dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started compacted=null shown \
-        collect_trap sliced=0
+        collect_trap sliced=0 werr
   started="$(epoch_now)"
   is_nonce "$nonce" || die "usage: xreview collect <nonce> [budget] - nonces start with xr-"
   # The budget is whole seconds only; anything else is a usage error, never a failed
@@ -1962,6 +2041,12 @@ cmd_collect() {
   # exits. The paths travel in the trap string, not a local: on an errexit exit bash 5 has
   # already unwound those.
   collect_trap="rm -f $(printf '%q' "$dir/turns/$nonce.report.$$") $(printf '%q' "$dir/turns/$nonce.resolved.$$")"
+  # werr holds the stderr of this collect's xreview-rpc turn-wait and render calls (_collect_wait,
+  # _collect_render); it lives in TMPDIR so a turns/ that takes no new file cannot stop a wait. Such
+  # a turns/ does stop collect at render, which must keep the answer there: nothing is recorded.
+  werr="$(mktemp "${TMPDIR:-/tmp}/xreview-collect.XXXXXX")" || die "cannot make a temporary file in ${TMPDIR:-/tmp}"
+  collect_trap="$collect_trap $(printf '%q' "$werr")"
+  collect_trap="$collect_trap $(printf '%q' "$dir/turns/$nonce.answer.$$") $(printf '%q' "$dir/turns/$nonce.shownlist.$$")"
   trap "$collect_trap" EXIT
   # A turn dispatched with review packets has its switches beside its targets (spec 2026-10-25
   # §3.6): it is waited on with the schema they named, and judged clean or not. Any other keeps
@@ -1975,21 +2060,21 @@ cmd_collect() {
     fi
     if [ -e "$sfile" ]; then sliced=1; _collect_slices; return 0; fi
     # A sliced round collected in full: its merged answer again; its receipts are on record.
-    if [ -e "$dir/turns/$nonce.merged" ]; then cat "$dir/turns/$nonce.merged"; return 0; fi
+    if [ -e "$dir/turns/$nonce.merged" ]; then _collect_print_finished; return 0; fi
   fi
   _collect_wait "$thread" "$turn"
   [ "$rc" = 0 ] || _collect_fail
-  printf '%s\n' "$out"
+  # Labels shown that cannot be read are null, never an empty list: coverage cannot be judged.
+  # .shown is one JSON list of strings; anything else, the line format of a dispatch before it
+  # included, is unreadable (a label can hold a newline, so a line is not a label).
+  shown=null
+  if [ "$packeted" = 1 ] && [ -r "$dir/turns/$nonce.shown" ]; then
+    shown="$(jq -cs 'if length == 1 and (.[0] | type) == "array" and all(.[0][]; type == "string")
+                     then .[0] else null end' "$dir/turns/$nonce.shown" 2>/dev/null)" || shown=null
+    [ -n "$shown" ] || shown=null
+  fi
+  _collect_render "$out" "$shown"
   if [ "$packeted" = 1 ]; then
-    # Labels shown that cannot be read are null, never an empty list: coverage cannot be judged.
-    # .shown is one JSON list of strings; anything else, the line format of a dispatch before it
-    # included, is unreadable (a label can hold a newline, so a line is not a label).
-    shown=null
-    if [ -r "$dir/turns/$nonce.shown" ]; then
-      shown="$(jq -cs 'if length == 1 and (.[0] | type) == "array" and all(.[0][]; type == "string")
-                       then .[0] else null end' "$dir/turns/$nonce.shown" 2>/dev/null)" || shown=null
-      [ -n "$shown" ] || shown=null
-    fi
     _collect_record "$thread" "$turn" "$out" \
       "$(jq -nc --argjson s "$shown" --arg a "$out" '[{shown:$s, answer:($a | fromjson? // null)}]')" \
       "$compacted" || true
