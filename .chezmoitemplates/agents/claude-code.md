@@ -28,8 +28,8 @@
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
   Reviews never run as forks: a fork inherits the whole conversation, your reasoning included.
 - **Liveness.** Before a turn ends waiting on a child, background a `sleep` for its expected time.
-  After any wait or resume, first tail each child's output. Stop one silent past its time (a `wt`
-  line: tell Michael); only its parent redoes or parks its step, never doing what a prompt gated.
+  After any wait or resume, first tail each child's output. Stop or report one silent past its time
+  (a `wt` line: to Michael); only its parent redoes or parks its step, never what a prompt gated.
 - **Plan runs.** Plans give each task a `Depends on:` line and run in the line's checkout, never in
   a worktree per task. To run one, first load the `plan-run` skill: it overrides superpowers.
 - **Claude review findings.** For `sp-reviewer` and `sp-architect`, Fix now narrows: a finding gets
