@@ -83,6 +83,10 @@ reference below (§1 to §7, Tests) points into it.
 | A remote on an SSH host alias | `forge-protection check` reports a host it does not know as `unreadable`; an alias that resolves to `github.com` would push with Michael's key. |
 | GitHub bypass visibility | `bypass_actors` is returned to admins only (read 2026-11-12 on the dotfiles: present for Michael, with `current_user_can_bypass`). The check reads `bypass_actors` when present, else requires `current_user_can_bypass == "never"`; as the machine account that proves the agent boundary, run by Michael it proves the whole target. |
 | Excepted remotes | Not queried: no forge call, row `excepted`. |
+| The Azure reviewers policy | Matched by policy type id `fa4e907d-c16b-4a4c-9dfa-4906e5d171dd` (`type.id`), never by the localised display name; a missing or non-string `type.id` is `unreadable`. The id is taken from documentation and confirmed when Michael first reads a real policy list. |
+| Azure bypass bits | A bit in `effectiveAllow` counts as allowed even when `effectiveDeny` also holds it (fail closed: a group grant can still apply); `effectiveDeny` is never read. |
+| Azure after a failure | Only a timeout disables Azure for the rest of the run; any other failure makes that one row `unreadable`. |
+| Printed commands | Every forge-supplied word goes through `shq` (Task 2), so a printed remedy reads back literally under Bash, POSIX sh and zsh; `=` is quoted, e.g. `-f 'name=main'`. |
 | The collaborator invitation | Not checked: it is identity, not protection. Michael's verification covers it. |
 
 ## Review Focus
@@ -198,6 +202,13 @@ against them.
     of its rules → the same form with §2.1's `main-owner-only` body; a ruleset that has the rules but
     fails enforcement or bypass → `note "in the UI: https://github.com/<o>/<r>/rules/<id>: Enforcement
     Active, bypass list <none | Repository admin>"`.
+  - Printed commands: every forge-supplied word (a repository, a branch, an id, a path) enters a
+    printed line through `shq`, which leaves a word bare only when it holds nothing but
+    `A-Za-z0-9_./:@%+,-` and otherwise single-quotes it, so it reads back exactly under Bash, POSIX
+    sh and zsh. `=` is therefore quoted (zsh expands a leading `=` to a command path, and with
+    `magic_equal_subst` the part after `name=` too), as are `~`, `#`, `^`, `(`, `{`, `*`, `?` and
+    `[`. The suite pastes each remedy into `zsh -f`, with and without `magic_equal_subst`, for the
+    branches `=ls`, `~root` and `=(ls)`, and asserts the forge CLI receives the literal word.
 
 - [ ] **Step 1: Write the failing suite.** Header and harness after `tests/skill-updates.test.sh`:
   `SCRIPT=…/.scripts/forge-protection.sh`, exit 2 when missing; run it as `/bin/bash "$SCRIPT"
@@ -259,9 +270,10 @@ against them.
   entry has `access_level == 0` and no `user_id`, `group_id` or `deploy_key_id`;
   `allow_force_push == false`; each `merge_access_levels` entry has `access_level` 0 or ≥ 40 and no
   user or group. `ok` when at least one rule matches and all pass.
-- Remediation, never a DELETE or an unprotect: no matching rule → §2.2's POST, verbatim with
-  `<id>` and `<default>` filled in; per failing rule → `glab api --method PATCH
-  "projects/<id>/protected_branches/<name, @uri>" -H "Content-Type: application/json" --input
+- Remediation, never a DELETE or an unprotect: no matching rule → §2.2's POST with `<id>` and
+  `<default>` filled in, the name word quoted by `shq` (`-f 'name=<default>'`; the other `-f`
+  fields are fixed words); per failing rule → `glab api --hostname gitlab.com --method PATCH
+  projects/<id>/protected_branches/<name, @uri> -H 'Content-Type: application/json' --input
   <(printf '%s\n' '<json>')`, the JSON holding only what must change: `"allow_force_push":false`,
   `"allowed_to_push":[{"id":<each failing entry>,"_destroy":true},{"access_level":0}]`, and for
   merge `[{"id":…,"_destroy":true},{"access_level":40}]`; then `note "in place, never removed and
@@ -303,20 +315,32 @@ against them.
   permission show --id 2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87 --subject <user> --token
   repoV2/<projectId>/<repoId>/refs/heads/<branch>/ --org <url>`, where each path segment of the
   branch is the hex of its UTF-16LE bytes (`main` → `6d00610069006e00`).
-- Target (§2.3): an enabled, blocking policy whose `type.displayName` is `Minimum number of
-  reviewers` with `settings.minimumApproverCount >= 1`, and none of the bits ForcePush (8),
-  PolicyExempt (128) or PullRequestBypassPolicy (32768) in any `extendedInfo.effectiveAllow` of the
-  answer. Token format and bits are the documented ones; Michael confirms them once `az` answers.
-- Remediation: no policy → §2.3's `az repos policy approver-count create …` filled in; an allowed
-  bit → `note "Repos > Branches > <branch> > Branch security > <user>: set <permission names> to
-  Deny"`.
-- After the first `az` timeout, every later Azure row is `unreadable` ("az did not answer earlier
-  in this run") with no further `az` call, so three hanging repositories cost one timeout.
+- Target (§2.3): an enabled, blocking policy whose `type.id` is
+  `fa4e907d-c16b-4a4c-9dfa-4906e5d171dd` (Minimum number of reviewers; matched by id, never by the
+  localised display name) with `settings.minimumApproverCount >= 1`, and none of the bits ForcePush
+  (8), PolicyExempt (128) or PullRequestBypassPolicy (32768) in any `extendedInfo.effectiveAllow` of
+  the answer. A policy whose `type.id` is missing or not a string makes the row `unreadable`.
+  `effectiveDeny` is never read: a bit in both `effectiveAllow` and `effectiveDeny` counts as allowed
+  (a group grant can still apply), so it is drift. Token format, bits and the type id are the
+  documented ones; Michael confirms them once `az` answers.
+- Remediation: no policy → §2.3's `az repos policy approver-count create …` filled in, each
+  forge-supplied word quoted by `shq`; an allowed bit → `note "Repos > Branches > <branch> > Branch
+  security > <user>: set <permission names> to Deny (if it already shows Deny for the user, a group
+  grant is still effective: check the groups)"`.
+- After the first `az` timeout (and only a timeout), every later Azure row is `unreadable` ("az did
+  not answer earlier in this run") with no further `az` call, so three hanging repositories cost
+  one timeout. Any other failure (for example HTTP 404 on one repository) makes just that row
+  `unreadable`; the next repository is still read.
 
 - [ ] **Step 1: Write the failing cases**: `azure ok`; `azure no policy` (create command printed);
   `azure policy but PolicyExempt allowed` → `drift` (§Tests); `azure policy not blocking` →
   `drift`; `azure no answer` on the first of two Azure remotes → both `unreadable`, one `az repos
-  show` in `$CALLS`; a project named `Example Project` reached through `%20` in the origin.
+  show` in `$CALLS`; `azure repos show` failing with HTTP 404 on the first of two remotes → the
+  first `unreadable`, the second read and `ok`; a policy named `Minimum number of reviewers` with
+  another type id → `drift` with the create printed, and the reviewers type id under a localised
+  display name → `ok`; a `type.id` that is absent, a number or null → `unreadable`; a bit in both
+  `effectiveAllow` and `effectiveDeny` → `drift`, a bit only in `effectiveDeny` → `ok`; a project
+  named `Example Project` reached through `%20` in the origin.
 - [ ] **Step 2: Run, confirm the azure cases fail.** `./tests/forge-protection.test.sh`.
 - [ ] **Step 3: Implement `check_azure`** and wire it in.
 - [ ] **Step 4: Run.** Expected `0 failed`. Revert check: drop the 32768 bit; add a case allowing
@@ -745,10 +769,13 @@ after each step.
     --repository-id <repo-id> --branch <branch>`; where missing, the printed `az repos policy
     approver-count create …`; then Repos > Branches > `<branch>` > ⋯ > Branch security > his user:
     "Bypass policies when pushing", "Bypass policies when completing pull requests" and "Force push"
-    set to Deny where they show Allow. If `az` hangs, the policy through Project settings >
+    set to Deny where they show Allow. On one repository he first compares the check's reading with
+    that dialog for his user: an Allow in the dialog while the check says `ok` means the token
+    format is wrong, and he stops and reports it. If `az` hangs, the policy through Project settings >
     Repositories > `<repo>` > Policies > Branch policies. Verify: the same `policy list` with
-    `--query "[?isEnabled && isBlocking].type.displayName"` includes "Minimum number of reviewers",
-    or the policy shows as Required in the UI. A repository he cannot edit goes into step 11's file.
+    `--query "[?isEnabled && isBlocking].type.id"` includes
+    `"fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"` (Minimum number of reviewers), or the policy shows as
+    Required in the UI. A repository he cannot edit goes into step 11's file.
 11. **Exceptions.** `mkdir -p ~/.config/forge-protection`, then one remote per line in
     `~/.config/forge-protection/exceptions`: the repositories of §2.4 he accepts as unprotected.
     Verify: the check exits 0 (`echo $?`) and its summary's excepted count equals that list.

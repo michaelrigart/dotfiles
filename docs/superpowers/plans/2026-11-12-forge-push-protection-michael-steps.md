@@ -35,6 +35,9 @@ what you saw, so the spec's Implementation notes and (for a wrong printed form) 
 | Azure: the state of all three repositories was never read, because `az repos` hung from an agent session (the outbound firewall is the first suspect) | 12 |
 | Azure: the permission-bit values and the security token format the check uses | 12 |
 | Azure: an empty `acesDictionary` for a user whose rights come only from groups makes the row `unreadable` | 12 |
+| Azure: the check reads the rights of `az account show`'s user; if you push to Azure as another identity (a PAT of another account), it does not describe that identity | 12 |
+| Azure: a policy scoped by prefix or to all branches may not be returned by the exact-branch read, so the check prints a create for a branch that is already covered | 12 |
+| Azure: the reviewers-policy type id `fa4e907d-c16b-4a4c-9dfa-4906e5d171dd` is taken from documentation | 12 |
 
 ## Group A: accounts, tokens and 1Password items (no repository changes)
 
@@ -216,7 +219,15 @@ Expected: `pre-push` and `secret-scan`.
 test -s ~/.ssh/github-agent.pub && echo present
 ```
 
-Expected: `present`.
+Expected: `present`. The file lands at mode 600, not 644: its template is
+`private_dot_ssh/private_github-agent.pub.tmpl`, and the `private_` prefix makes chezmoi strip
+group and world access, as it does for every other `.pub` template in that directory.
+
+```
+ls -l ~/.ssh/github-agent.pub
+```
+
+Expected: `-rw-------`.
 
 ```
 jq '.env | has("GH_TOKEN"), has("GITLAB_TOKEN")' ~/.claude/settings.json
@@ -272,10 +283,16 @@ repositories: a ok, b drift, c unreadable, d excepted; e checkouts without origi
 roughly 36 rows (2 GitHub, 28 plus 3 inaccessible GitLab, 3 Azure), mostly `drift`, a few
 `unreadable`. The exit status is 1 until everything is `ok` or `excepted`.
 
+Printed lines quote any word with a character a shell treats specially (including `=`, so the
+GitLab POST reads `-f 'name=<branch>'`): paste them exactly as printed, quotes included; a plain
+name appears bare.
+
 If it fails: `unknown forge host <host>` means a remote uses an SSH host alias; the check refuses to
 guess, and an alias that resolves to `github.com` would push with your key: fix the remote or
 except it (step 13). A row `unreadable` with `no answer within 20s` for Azure is the known `az`
-hang (step 12). `HTTP 404` on a GitLab project is a project you cannot see (step 13).
+hang (step 12): only a timeout stops the later Azure rows (they read `az did not answer earlier in
+this run`); any other Azure failure, such as `HTTP 404` on one repository, makes just that row
+`unreadable`. `HTTP 404` on a GitLab project is a project you cannot see (step 13).
 
 No rollback: it changes nothing.
 
@@ -429,7 +446,7 @@ entry destroyed, and `{"access_level":0}` added when no "No one" entry remains),
 For a project with no rule for its default branch the check prints a POST instead:
 
 ```
-glab api --hostname gitlab.com --method POST projects/<project-id>/protected_branches -f name=<branch> -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false
+glab api --hostname gitlab.com --method POST projects/<project-id>/protected_branches -f 'name=<branch>' -f push_access_level=0 -f merge_access_level=40 -f allow_force_push=false
 ```
 
 **UNVERIFIED: GitLab Free accepts the PATCH fields.** Verify:
@@ -495,7 +512,12 @@ az repos policy list --org <org-url> --project <project> --repository-id <repo-i
 ```
 
 Target: an enabled, blocking policy of type "Minimum number of reviewers" with at least 1
-reviewer. Where there is none, the check prints (once `az` answers):
+reviewer. The check recognises the type by its type id, `fa4e907d-c16b-4a4c-9dfa-4906e5d171dd`
+(`type.id`), never by the display name, which is localised. **UNVERIFIED:** that id is taken from
+documentation; confirm it the first time you read a real policy list (the `type` object of the
+reviewers policy shows it), and tell the line if it differs. Where there is no such policy, the
+check prints (once `az` answers; each value is single-quoted only when it holds a character that
+a shell treats specially, so a plain name appears bare):
 
 ```
 az repos policy approver-count create --org <org-url> --project <project> --repository-id <repo-id> --branch <branch> --blocking true --enabled true --minimum-approver-count 1 --creator-vote-counts true --allow-downvotes false --reset-on-source-push false
@@ -529,7 +551,27 @@ az devops security permission show --id 2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87 --s
 
 **UNVERIFIED: the bits and token format.** The script treats bit values 8 (force push), 128 (bypass
 policies when pushing) and 32768 (bypass policies when completing pull requests) in any
-`extendedInfo.effectiveAllow` as drift. Confirm those match the names in the dialog.
+`extendedInfo.effectiveAllow` as drift. Confirm those match the names in the dialog. The script
+never reads `effectiveDeny`: a bit present in both `effectiveAllow` and `effectiveDeny` counts as
+allowed (a group grant can still apply), so its note tells you to check the groups when the dialog
+already shows Deny for your user.
+
+**Do this on ONE repository before trusting any Azure row.** Run the `az devops security permission
+show` call above (the one the script makes) and open that branch's Branch security dialog for your
+user. Compare "Bypass policies when pushing", "Bypass policies when completing pull requests" and
+"Force push" there with the check's reading. If the dialog shows Allow for any of the three while
+the check says `ok`, the token format is wrong: stop and report it to the line, and do not rely on
+the Azure rows.
+
+**UNVERIFIED: whose rights the check reads.** The subject is `az account show`'s user. If you push
+to Azure with a different identity (a PAT of another account), the check does not describe that
+identity.
+
+**UNVERIFIED: policy scope.** A policy scoped by prefix or to all branches may not be returned by
+the exact-branch `az repos policy list` read; the check then prints a create for a branch that is
+already covered. Check the existing policies in the UI (Project settings > Repositories > `<repo>`
+> Policies > Branch policies) before pasting a create.
+
 **UNVERIFIED: an empty `acesDictionary`.** If your rights come only through groups, this answer may hold no
 entry for you, and the check then marks the row `unreadable` ("the permission answer holds no
 whole effectiveAllow for the subject"). Then the dialog is the reading; setting an explicit Deny
@@ -538,10 +580,11 @@ for your user may also create the entry the check needs (unconfirmed).
 Verify:
 
 ```
-az repos policy list --org <org-url> --project <project> --repository-id <repo-id> --branch <branch> --query "[?isEnabled && isBlocking].type.displayName" --output json
+az repos policy list --org <org-url> --project <project> --repository-id <repo-id> --branch <branch> --query "[?isEnabled && isBlocking].type.id" --output json
 ```
 
-Expected: includes `"Minimum number of reviewers"`, or the UI shows the policy as Required. Then
+Expected: includes `"fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"` (Minimum number of reviewers), or the UI
+shows the policy as Required. Then
 re-run the check (step 7's command): the row reads `ok`.
 
 If it fails: a row that stays `drift` prints the exact UI path and the permission names to Deny. A
@@ -686,8 +729,9 @@ The check as the agent (proves the agent cannot bypass):
 ~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"
 ```
 
-Expected: the GitHub and GitLab rows `ok`. The Azure rows will probably read `unreadable` ("no
-answer within 20s") while `az` still hangs from a session: that is the known hang, and it is why
+Expected: the GitHub and GitLab rows `ok`. The Azure rows will probably read `unreadable` (the
+first "no answer within 20s", the rest "az did not answer earlier in this run") while `az` still
+hangs from a session: that is the known hang, and it is why
 the exit-0 proof of step 14 comes from your own terminal. If the session shows `excepted 0` while
 the file has lines, the sandbox may not read it (UNVERIFIED); that is not a defect of the
 protection.
@@ -707,7 +751,8 @@ live-agent-auth GITHUB_SSH=<value> GITLAB_SSH=<value>. Confirmed or corrected: c
 token <yes/no>; role id 5 is Repository admin <yes/no>; rules/branches shows evaluate-mode
 rulesets <yes/no/not tried>; GitLab PATCH accepted on Free <yes, or UI used>; GitLab token
 permission names <list>; Azure: <what az printed, what the bits and token format did, whether the
-empty acesDictionary case occurred>. Please put them in the spec's Implementation notes and plan
+dialog comparison agreed with the check, whether the reviewers type id matched, whether the empty
+acesDictionary case or a prefix-scoped policy occurred>. Please put them in the spec's Implementation notes and plan
 merge 2.
 ```
 
