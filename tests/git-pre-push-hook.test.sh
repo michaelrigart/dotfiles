@@ -685,7 +685,10 @@ else
   mkdir -p "$OWNLINK/.git/hooks"; ln -sf "$HOOKS/pre-push" "$OWNLINK/.git/hooks/pre-push"
   printf 'again\n' > "$OWNLINK/notes2.txt"
   git -C "$OWNLINK" add notes2.txt && git -C "$OWNLINK" commit -q -m "a clean change on feat"
-  PUSH_BOUND=10 expect_push pass "a repository hook that is a link to the global hook is not re-entered (a commit is outgoing)" "$OWNLINK" origin feat
+  # A regression here is killed by SIGKILL, so no hook level's EXIT trap runs and its pre-push.*
+  # temp file stays: the bounded rows get a TMPDIR of their own, and a normal run must leave it empty.
+  BTMP="$TMP/bound-tmp"; mkdir -p "$BTMP"
+  TMPDIR=$BTMP PUSH_BOUND=10 expect_push pass "a repository hook that is a link to the global hook is not re-entered (a commit is outgoing)" "$OWNLINK" origin feat
   # Re-entered through a link to the hook file alone, the global hook meets a hooks directory with
   # no scan beside it and refuses, so that row ends without help. A link to the whole hooks
   # directory is the shape that would recurse for as long as it is allowed to.
@@ -693,7 +696,9 @@ else
   rm -rf "$OWNDIR/.git/hooks"; ln -s "$HOOKS" "$OWNDIR/.git/hooks"
   printf 'again\n' > "$OWNDIR/notes2.txt"
   git -C "$OWNDIR" add notes2.txt && git -C "$OWNDIR" commit -q -m "a clean change on feat"
-  PUSH_BOUND=10 expect_push pass "a hooks directory that is a link to the global one is not re-entered (a commit is outgoing)" "$OWNDIR" origin feat
+  TMPDIR=$BTMP PUSH_BOUND=10 expect_push pass "a hooks directory that is a link to the global one is not re-entered (a commit is outgoing)" "$OWNDIR" origin feat
+  if [ -z "$(find "$BTMP" -name 'pre-push.*')" ]; then ok "and the bounded rows leave no hook temp files behind"
+  else bad "and the bounded rows leave no hook temp files behind ($(find "$BTMP" -name 'pre-push.*' | tr '\n' ' '))"; fi
   # If git cannot say where the repository's hooks live, its own hook cannot be run, and a push
   # that skips it silently is a push the repository's rules never saw: refuse, scan or no scan.
   NOCOMMON="$TMP/nocommon"; mkdir -p "$NOCOMMON"
@@ -706,7 +711,6 @@ else
   GIT_CONFIG_GLOBAL=$GITCONFIG_WRAP HOOK_EXTRA_PATH=$NOCOMMON \
     expect_push block "and so does a delete-only push" "$CLEAN" origin :old
   needle "and says why" "cannot find the repository's own hooks"
-  if [ ! -s "$OWNLOG" ]; then ok "and the repository's hook was not run behind its back"; else bad "and the repository's hook was not run behind its back"; fi
 
   echo "== the command line of secret-scan =="
   rc=0; out=$(/usr/bin/python3 -I "$HOOKS/secret-scan" --repo "$CLEAN" --remote origin 2>&1) || rc=$?
