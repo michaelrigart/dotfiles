@@ -4,7 +4,8 @@
 
 **Status:** Implemented on `refactor/phase-sh` (dotfiles: no MR). Completed 2026-11-13: do not run this plan again; its
 execution notes bind that run only. Task 4, Step 4 (the rebase onto the merged `chore/test-audit`) was
-deferred by a ruling of 2026-11-13 and is owed before merge, with a fresh suite run and pre-merge review.
+deferred by a ruling of 2026-11-13 and done the same day, once that line was on `main` (`832dc90`): a clean
+rebase, a fresh suite run and a confirming pre-merge review.
 
 **Goal:** Replace `phase.sh`'s hand-rolled process supervision with `/usr/bin/timeout` and one run
 lock, and its Python with `/usr/bin/jq`, keeping every badge and every hardening property.

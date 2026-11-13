@@ -380,6 +380,11 @@ each one makes a wrong answer read as a failed lookup or a dropped row, never as
    | suite, wall time (run directly, loaded machine) | 125 s | 100 to 114 s |
    | one live refresh, 24 linked spaces | 8.6 to 10.4 s | 6.4 to 6.9 s |
 
+   The table was measured before the test audit landed on `main` (`832dc90`). The audit cut
+   eight assertions from this suite on both sides: rebased onto it, `main`'s suite is 2,034
+   lines and 529 assertions in 131 s, and this branch's is 2,156 lines and 548 assertions in
+   105 s.
+
    "About 300 to 350 lines" (Size) took a count of code lines for a total, and the `jq` programs
    came out barely shorter than the Python. The supervisor is gone (no process groups, traps,
    polling, clock or reaping) and so is Python, but the reviews added about 40 lines back: the
