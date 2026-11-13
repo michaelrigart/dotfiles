@@ -81,7 +81,9 @@ changes, and the retirement is merge 3 with its own plan.
   `ssh-credential-inventory`: revert its list to what `git show 1ca66ad^1` had if merge 1's only
   change there was the agent key (check with `git log -p`); otherwise remove just that entry.
   `subjects.tsv`: delete the two rows. `rg -n 'github-agent|agent-identity|GITHUB_SSH|GitHub Agent
-  SSH' dot_claude dot_config dot_local private_dot_ssh tests .scripts AGENTS.md` prints nothing.
+  SSH' dot_claude dot_config dot_local private_dot_ssh tests .scripts AGENTS.md` prints only the
+  two stale-file rows of Step 1 in `tests/ssh-sandbox-proxy.test.sh` (their fixture paths), and
+  nothing else.
 - [ ] **Step 4: Run** `./tests/run.sh ssh-sandbox-proxy claude-settings hook-path run
   missing-subject`. Expected: all pass (`live-agent-auth` and `ssh-credential-inventory` are gated;
   read their diffs instead).
@@ -108,8 +110,11 @@ changes, and the retirement is merge 3 with its own plan.
 - `body_main_owner_only` is deleted.
 
 Target, as `check_github` judges it: each of `deletion`, `non_fast_forward` and `pull_request`
-appears in the branch's rules from at least one **closed** ruleset (today's `closed`: active, and
-an empty `bypass_actors` or, when the list is not shown, `current_user_can_bypass == "never"`).
+appears in the branch's rules from at least one **closed** ruleset: active, with `bypass_actors`
+shown and empty. The fallback on `current_user_can_bypass == "never"` goes: it says only that
+this login cannot bypass, not that the list is empty. A ruleset that carries one of the three
+rules and does not show `bypass_actors` makes the row `unreadable` ("ruleset <id> does not show
+its bypass list to this login; run the check with the owner's login").
 `update` and `creation` are no longer read. `owner`, `oo`, `uc`, `blocker`, `owner_post` and the
 "blocks the owner's direct push" note go.
 
@@ -131,9 +136,11 @@ Printed for `drift`:
   5. `pull_request` only from a ruleset whose bypass list holds the admin role: `drift`, a UI note
      with `bypass list none`, no second POST;
   6. `pull_request` only from a ruleset with enforcement `evaluate`: `drift`;
-  7. all three closed plus an active `update` rule from any ruleset: `ok` (it is not read).
-  Run `./tests/run.sh forge-protection`: rows 1 to 7 FAIL (row 4 at least on `pull_request`).
-- [ ] **Step 2: Implement** the target above. Run: rows 1 to 7 pass.
+  7. all three closed plus an active `update` rule from any ruleset: `ok` (it is not read);
+  8. a ruleset carrying `pull_request` whose answer has no `bypass_actors` and
+     `current_user_can_bypass: "never"`: `unreadable`, never `ok`, exit 1.
+  Run `./tests/run.sh forge-protection`: rows 1 to 8 FAIL (row 4 at least on `pull_request`).
+- [ ] **Step 2: Implement** the target above. Run: rows 1 to 8 pass.
 - [ ] **Step 3: Remove what the old target pinned.** Delete every row about `main-owner-only`,
   owner-only carriers, bypass mode `always`, the merged ruleset and "blocks the owner's direct
   push"; adapt the rows that expected two POSTs to the one. Keep the unreadable, pagination,
@@ -145,7 +152,7 @@ Printed for `drift`:
 
 ### Task 3: The pull-request flow for the dotfiles in the instructions
 
-**Depends on:** Task 1 (`AGENTS.md` is edited here only, after Task 1's `rg` is clean).
+**Depends on:** Task 1 (`AGENTS.md` is edited here only, after Task 1's `rg` shows only its two fixture rows).
 
 **Files:**
 - Modify: `.chezmoitemplates/agents/global.md` (the Finishing rule),
@@ -185,7 +192,11 @@ Printed for `drift`:
 
 ## Rulings
 
-None yet.
+- 2026-11-14, plan review: a ruleset whose bypass list is not shown is `unreadable`, where the
+  spec's revision 2 let `current_user_can_bypass: "never"` stand in for an empty list. Tightened
+  on Michael's delegation to the driver (he is away); spec section 3 carries the sentence. Cost:
+  a check run with a login that is not shown the lists cannot read a GitHub row `ok`; his own
+  run, the one the verification uses, is not affected.
 
 ## Left for Michael after the apply
 

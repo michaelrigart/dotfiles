@@ -299,7 +299,9 @@ that stubs `gh`, `glab` and `az`.
 - It works with the agent identity: the GitLab token can read branch protection (section 1.2),
   and the GitHub token reads a repository's rules. A ruleset's bypass list is returned to
   repository admins only, so that the list is empty shows when Michael runs the check with his
-  own login; with the agent token the check reads `current_user_can_bypass`. The suite pins that
+  own login. A ruleset that does not show its list to the login in use makes the row
+  `unreadable`: that this login cannot bypass does not show the list is empty (tightened at the
+  plan review of merge 2, 2026-11-14). The suite pins that
   a 403 on the protection read is `unreadable`, and that `unreadable` fails.
 - It never writes to a forge. There is no apply mode: Michael runs the printed commands. The suite
   pins that the script contains no write verb (`POST`, `PUT`, `PATCH`, `DELETE`, `create`,
