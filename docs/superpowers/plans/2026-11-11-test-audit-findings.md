@@ -1,7 +1,7 @@
 # Test audit findings
 
 **Status:** In progress (phase 3: cuts made, validation recorded below)  
-**Measured at:** `523a95d` (main) for phase 1; the refresh at `eb60a84`; the phase 3 validation at `21563e5` and `0c14b64` (R37, R39)  
+**Measured at:** `523a95d` (main) for phase 1; the refresh at `eb60a84`; the phase 3 validation at `21563e5` and `0c14b64` (R37, R39); the whole runs at `5debd73`  
 **Spec:** `docs/superpowers/specs/2026-11-11-test-audit-design.md`  
 **Plan:** `docs/superpowers/plans/2026-11-11-test-audit.md` (rulings R1-R39)  
 **Classification:** `docs/superpowers/plans/2026-11-11-test-audit-classification.tsv` (6517 tests, every in-scope suite)  
@@ -223,6 +223,67 @@ Per file (sampled, killed, flaky, survived, inconclusive, baseline-red, stale, k
 | tests/live-deny-modes.test.sh | 20 | 15 | 0 | 5 | 0 | 0 | 0 | 0 | 75.0% |
 | tests/live-write-boundary.test.sh | 20 | 2 | 0 | 18 | 0 | 0 | 0 | 0 | 10.0% |
 | tests/run.sh | 20 | 17 | 0 | 1 | 2 | 0 | 0 | 0 | 94.4% |
+
+### 1.5 After-numbers
+
+*Read this for the phase 3 validation (Task 15) and the numbers after the cuts. Main moved from `523a95d` to `d349b01` while this branch ran, so an after-number set against sections 1.1-1.2 also carries main's own changes. The branch's own share is given beside it.*
+
+**Which commit supplied each number:**
+- `0c14b64`, the rebased branch after pre-merge fix round 1 (R37, R39): the rule mutants, the code mutants, and the targeted mutants for `claude-settings`, `git-config` and `ha-mcp`;
+- `21563e5`, the cut commit before the rebase (R37): the targeted mutants for the other suites. Main changed none of those suites, and their cut lines are byte-identical after the rebase;
+- `5debd73`: the whole runs, the merged cases and the harness suite's own cost. The commits after it change only the design records.
+
+**Validation:**
+
+| Check | Commit | Result |
+|---|---|---|
+| Code mutants killed before the cuts, phase 1 files (R33 d) | `0c14b64` | 213 of 213 still killed, in the 22 of 37 selected files that had a killed mutant |
+| Code mutants killed before the cuts, the 8 refreshed files | `0c14b64` | 83 of 83 still killed |
+| `report --compare` against both `<before>` states | `0c14b64` | `lost: 0`, `not run: 0` |
+| Targeted mutants of the approved deletions | `0c14b64` (`claude-settings`, `git-config`, `ha-mcp`), `21563e5` (the rest) | 96 candidates, 124 mutants, all killed by an assertion that remains |
+| Rule mutants, `rules.tsv` | `0c14b64` | 62 rules, 215 of 215 killed; every rule has mutants. No mutant survived, so no counterpart exception applies |
+| The testing rule's other three sentences (R39) | `0c14b64` | 5 of 5 killed |
+| Merged cases (R26): every label of every merged case passes | `5debd73` | 22 of 22 labels pass, in `dev` (4), `herdr-codex-pane-map` (8) and `process-replay` (10) |
+| Residue in the 65 targeted records made before R39 | `21563e5` | the fixed harness's inventory of their 18 suites is green, with no copy rebuilt |
+
+- The targeted report reads `mis-targeted` for every candidate. After a cut that is the expected verdict: the candidate's own label is gone, so no mutant can name it as a killer. The gate is each mutant's outcome, and every one is `killed`. `ha-mcp`'s 7 candidates (15 mutants) also ran at `21563e5` before the split, all killed. The table counts them once, at `0c14b64`.
+- The 15 selected files without a killed mutant are 14 `process-replay` modules and `xreview-replay.py`. Their mutants were inconclusive or survived, so R33 d re-runs none of them (Limits, below).
+- Main's move to `d349b01` changed no killed mutant's text, so neither compare holds a `stale` entry.
+- The rule run has 215 mutants where `checks-4` had 220. `g-testing` has 1 mutant instead of 4: Task 14 rewrote the rule, and a rule's mutants now cover only the sentences its anchor touches (§4.4). The rule's other three sentences ran on their own, in the row above. `g-wt` has 14 instead of 16, because main changed the rule (R31).
+
+**R36, the five `claude-settings` count assertions.** Each cut assertion's mutants at `0c14b64`, and the assertions that now kill them. "denyWrite is exactly …" stands for "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, and .obsidian". `hook-path` survives every one of these mutants; it is not the owning suite.
+
+| Cut assertion | Mutant (settings line) | Killed by |
+|---|---|---|
+| 454, denyWrite has 213 entries | `5da9b1a69be5` (530) | denyWrite is exactly … |
+| | `f9980c1c1a03` (532) | denyWrite is exactly …; exactly four entries end in /HEAD; the globs for `Code/HEAD` and `Code/head` |
+| 474-475, exactly 72 harness worktree entries | `5da9b1a69be5` (530) | denyWrite is exactly … |
+| 486-487, 16 lazygit and glab entries | `32ff84c3991a` (533) | denyWrite is exactly …; each work root denies all four per-repository lazygit and glab configuration forms |
+| | `4d8552e3c1e9` (520) | both of the above, and 4 globs for `…/.git/worktrees/w/glab-cli/config.yml` |
+| 488-489, 8 glab entries | `32ff84c3991a` (533), `4d8552e3c1e9` (520) | as for 486-487 |
+| 494-495, 15 entries end in /.git | `5da9b1a69be5` (530) | denyWrite is exactly … |
+| | `c4df57954d6d` (531) | denyWrite is exactly …; the only entries ending in .git are the four top-level ones and the fifteen harness forms; the glob for the vault's `x/.git` |
+
+**Size and run times:**
+
+| What | Before (`523a95d`) | After (`5debd73`) | The branch's own share (against `d349b01`) |
+|---|---|---|---|
+| Suites | 67 | 70 | +1, `test-audit`; main added 2 |
+| Suite lines | 36,408 | 40,127 | −340 in 29 suites (+145, −485); `test-audit.test.sh` adds 1307 |
+| `tests/` lines | 49,780 in 100 files | 54,029 in 119 files | −344 in 38 files (+223, −567); the harness suite and its 15 fixtures add 1836 |
+| Default run | 444.6 s, 53 suites, 9197/9197 | 412.1 s, 56 suites, 10046/10046 | |
+| Heavy run | 1353.2 s, 10 suites, 6057/6057 | 1168.2 s, 10 suites, 6295/6295 | |
+| Harness suite alone | 362/362 (`7159f37`) | 62.9 s, 405/405 | |
+
+**Net change.** The approved cuts remove about 22.2 s of suite time (the estimate in "What you decide"). The harness suite runs by default and costs 62.9 s on its own. So the branch adds about 41 s of suite time to each default run. The default run's wall time cannot show either figure: main's changes and the machine's load sit between 444.6 s and 412.1 s. Gating `test-audit` behind a `test-requires` tag would turn the net into a saving; that is Michael's call (R39).
+
+**Kill rate.** The phase 1 sample is not re-run whole (R33 d), so there is no after kill rate to set beside 67.3 percent. What the validation shows instead: every code mutant that a touched suite killed before the cuts is still killed (296 of 296).
+
+**Limits:**
+- R33 d: inconclusive and surviving mutants are not re-run. That is 59 inconclusive mutants in phase 1, 30 of them `process-replay`'s. A cut that removed the only test catching one of them would go unseen.
+- Rule mutants cover only the sentences their anchor touches, unless the anchor is the block's bold label (§4.4).
+- The 25 R17/R18 candidates were not run, and they stay.
+- The old pins' before-numbers stay at `523a95d` (R33 c).
 
 ## 2. Ranked list
 
