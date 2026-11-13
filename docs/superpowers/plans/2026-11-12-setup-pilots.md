@@ -445,8 +445,33 @@ finding counts for a per-task reviewer only if it raised the same defect.
 So the final review confirms three Sonnet-only Minor findings, and the host line fixed
 Sonnet's split-placeholder finding (`2255c23`, not confirmed against real glab). It confirms
 no Opus-only finding that was still open, since those were fixed in their rounds. Neither
-per-task reviewer raised any of the three Important findings. Codex's pre-merge review of
-`44db1df` is still running.
+per-task reviewer raised any of the three Important findings.
+
+**Against Codex's pre-merge review** (three rounds on 2026-11-13: changes with one finding,
+then approve twice). The one finding, P1: an origin rewritten by `url.<B>.insteadOf` lets the
+Azure project check read another repository's head (`xreview-guard.py:1655`, Task 6's
+area). Neither Opus's per-task reviews nor the Sonnet shadows raised it. The host line
+recorded it as an accepted limit (`08b0f66`). The branch is merged to main.
+
+### Pilot C: result (2026-11-13, one host run, a sample of one)
+
+- 17 per-task reviews and re-reviews over nine tasks, each shadowed once on Sonnet with the
+  host controller's own brief.
+- Sonnet raised 21 of Opus's 46 findings: Critical 2 of 6, Important 6 of 9, Minor 13 of 31.
+- Same verdict on 11 of 17. In the six that differ, Sonnet passed or approved where Opus
+  held the round open (reviews of Tasks 2, 4, 6 and 8 among them).
+- Four Critical findings on safety-boundary tasks were missed, three of them verified gate or
+  redaction bypasses. This meets the protocol's drop condition.
+- Sonnet-only findings confirmed later: the split-placeholder fast-path bypass (fixed by the
+  host line) and three Minor findings repeated by the final review. Earlier hand-checks
+  found 10 true Minor findings and 2 that were not defects; the Sonnet-only Minor findings of
+  reviews 10 to 17 are not hand-checked.
+- Cost: tool calls equal (309 against 308); wall time 3,034 s for Opus and 2,380 s for
+  Sonnet. Token cost was not measured.
+- Neither reviewer raised the final review's three Important findings or Codex's P1.
+
+Recommendation to the driver: drop, on the protocol's own condition. The numbers say nothing
+about tasks outside a safety boundary; this host run had none.
 
 A first Task 1 shadow, run in the host checkout, is discarded: it read the uncommitted fixes
 and reported three of Opus's findings from them (see the amended design above).
