@@ -24,6 +24,8 @@ NL=$'\n'
 N_OK=0; N_DRIFT=0; N_UNREADABLE=0; N_EXCEPTED=0
 FC_OUT=; FC_ERR=; FC_RC=0
 EXC=
+AZ_DEAD=; AZ_USER=; AZ_USER_WHY=
+AZ_GIT_NAMESPACE=2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87
 
 usage() {
   cat <<'EOF'
@@ -111,10 +113,13 @@ glab_get() {  # [--paginate] <endpoint>
   forge_call glab api --hostname gitlab.com "$@"
 }
 
-az_read() {  # <args...>: only read verbs
+az_read() {  # <args...>: only read verbs; the first timeout stops every later az call of the run
+  local rc
   case "$*" in
-    "repos show"*|"repos policy list"*|"account show"*|"devops security permission show"*)
-      forge_call az "$@" ;;
+    "repos show "*|"repos policy list "*|"account show "*|"devops security permission show "*)
+      forge_call az "$@"; rc=$?
+      if [ "$rc" -eq 124 ]; then AZ_DEAD=1; fi
+      return "$rc" ;;
     *)
       FC_OUT=; FC_ERR="refused: az $*"; FC_RC=125; return 125 ;;
   esac
@@ -125,7 +130,7 @@ fc_reason() {
   local h
   if [ "$FC_RC" -eq 124 ]; then printf 'no answer within %ss' "$LIMIT"; return; fi
   h=$(printf '%s' "$FC_ERR" | grep -o 'HTTP [0-9][0-9][0-9]' | head -n 1)
-  if [ -z "$h" ]; then h=$(printf '%s' "$FC_ERR" | head -n 1 | cut -c1-120); fi
+  if [ -z "$h" ]; then h=$(printf '%s' "$FC_ERR" | head -n 1 | tr -d '\000-\037\177' | cut -c1-120); fi
   if [ -z "$h" ]; then h="exit $FC_RC"; fi
   printf '%s' "$h"
 }
@@ -305,12 +310,109 @@ check_gitlab() {  # <remote> <group/.../project>
   done
 }
 
+# branch_token <project id> <repo id> <branch>: the Git Repositories security token of a branch,
+# repoV2/<project>/<repo>/refs/heads/<each path segment as hex of its UTF-16LE bytes, joined by />/
+branch_token() {
+  jq -rn --arg p "$1" --arg r "$2" --arg b "$3" '
+    "0123456789abcdef" as $d
+    | def byte: . as $n | $d[($n / 16 | floor):($n / 16 | floor) + 1] + $d[($n % 16):($n % 16) + 1];
+    def unit: if . < 65536 then [.] else (. - 65536) as $c | [55296 + ($c / 1024 | floor), 56320 + ($c % 1024)] end;
+    def seg: [explode[] | unit[] | (. % 256 | byte) + (. / 256 | floor | byte)] | join("");
+    "repoV2/\($p)/\($r)/refs/heads/" + ($b | split("/") | map(seg) | join("/")) + "/"'
+}
+
+# az_subject: sets AZ_USER (the signed-in user's name) from one `az account show` per run; a failed
+# read is remembered in AZ_USER_WHY and not repeated. Returns 1 with the reason in AZ_USER_WHY.
+az_subject() {
+  if [ -n "$AZ_USER" ]; then return 0; fi
+  if [ -n "$AZ_USER_WHY" ]; then return 1; fi
+  if ! az_read account show --output json; then AZ_USER_WHY=$(fc_reason); return 1; fi
+  AZ_USER=$(printf '%s' "$FC_OUT" | jq -r '.user.name // empty | select(type == "string")' 2>/dev/null)
+  if [ -z "$AZ_USER" ]; then AZ_USER_WHY="no user name in the account answer"; return 1; fi
+  return 0
+}
+
+check_azure() {  # <remote> <org> <project> <repo>
+  local remote=$1 org=$2 project=$3 repo=$4 orgurl def branch rid pid pol token bits n names
+  if [ -n "$AZ_DEAD" ]; then row unreadable "$remote" "az did not answer earlier in this run"; return; fi
+  if [ -z "$org" ] || [ -z "$project" ] || [ -z "$repo" ]; then row unreadable "$remote" "not an org/project/repo path"; return; fi
+  case "$repo" in */*) row unreadable "$remote" "not an org/project/repo path"; return ;; esac
+  orgurl="https://dev.azure.com/$org"
+  if ! az_read repos show --org "$orgurl" --project "$project" --repository "$repo" --output json; then
+    row unreadable "$remote" "$(fc_reason)"; return
+  fi
+  rid=$(printf '%s' "$FC_OUT" | jq -r '.id // empty | select(type == "string")' 2>/dev/null)
+  pid=$(printf '%s' "$FC_OUT" | jq -r '.project.id // empty | select(type == "string")' 2>/dev/null)
+  def=$(printf '%s' "$FC_OUT" | jq -r '.defaultBranch // empty | select(type == "string")' 2>/dev/null)
+  if [ -z "$rid" ]; then row unreadable "$remote" "no repository id in the answer"; return; fi
+  if [ -z "$pid" ]; then row unreadable "$remote" "no project id in the answer"; return; fi
+  if [ -z "$def" ]; then row unreadable "$remote" "no default branch in the answer"; return; fi
+  case "$rid$pid$def" in *[[:cntrl:]]*) row unreadable "$remote" "an id or the default branch name holds control characters"; return ;; esac
+  case "$def" in refs/heads/?*) branch=${def#refs/heads/} ;; *) row unreadable "$remote" "the default branch is not a branch under refs/heads"; return ;; esac
+  if ! az_read repos policy list --org "$orgurl" --project "$project" --repository-id "$rid" --branch "$branch" --output json; then
+    row unreadable "$remote" "$(fc_reason)"; return
+  fi
+  # Only a policy of type "Minimum number of reviewers" counts. A policy without a type name, or a
+  # reviewers policy without isEnabled, isBlocking or minimumApproverCount, cannot be judged.
+  if ! pol=$(printf '%s' "$FC_OUT" | jq -c '
+      if type != "array" then error("not a list") else . end
+      | map(if type == "object" and ((.type | type) == "object") and ((.type.displayName | type) == "string") then . else error("no type") end)
+      | map(select(.type.displayName == "Minimum number of reviewers"))
+      | map(if (.isEnabled | type) == "boolean" and (.isBlocking | type) == "boolean" and (.settings.minimumApproverCount | type) == "number"
+            then {ok: (.isEnabled and .isBlocking and .settings.minimumApproverCount >= 1)}
+            else error("fields") end)
+      | {n: length, ok: any(.[]; .ok)}' 2>/dev/null); then
+    row unreadable "$remote" "the policies answer is not a list of policies with their type, isEnabled, isBlocking and minimumApproverCount"; return
+  fi
+  if ! az_subject; then row unreadable "$remote" "$AZ_USER_WHY"; return; fi
+  token=$(branch_token "$pid" "$rid" "$branch")
+  if ! az_read devops security permission show --id "$AZ_GIT_NAMESPACE" --subject "$AZ_USER" --token "$token" --org "$orgurl" --output json; then
+    row unreadable "$remote" "$(fc_reason)"; return
+  fi
+  # The answer is the documented list of access control lists, each with an acesDictionary of
+  # entries carrying extendedInfo.effectiveAllow (the user's own and inherited rights). With
+  # --subject the entries are the subject's, so an answer with no entry at all cannot tell nothing
+  # allowed from nothing resolved: it is unreadable, as is any entry whose effectiveAllow is absent
+  # or not a whole non-negative number (floor fails on anything but a number). Bits set in any
+  # entry count.
+  if ! bits=$(printf '%s' "$FC_OUT" | jq -c '
+      if type != "array" then error("not a list") else . end
+      | [.[] | if type == "object" and ((.acesDictionary | type) == "object") then .acesDictionary | .[] else error("no acesDictionary") end] as $aces
+      | if ($aces | length) == 0 then error("no entry") else . end
+      | [$aces[] | .extendedInfo.effectiveAllow | if . >= 0 and . == floor then . else error("effectiveAllow") end] as $e
+      | [{v: 8, n: "Force push (rewrite history, delete branches and tags)"},
+         {v: 128, n: "Bypass policies when pushing"},
+         {v: 32768, n: "Bypass policies when completing pull requests"}]
+      | map(select(. as $b | any($e[]; (. / $b.v | floor) % 2 == 1)) | .n)' 2>/dev/null); then
+    row unreadable "$remote" "the permission answer holds no whole effectiveAllow for the subject"; return
+  fi
+  n=$(printf '%s' "$bits" | jq -r 'length')
+  if [ "$(printf '%s' "$pol" | jq -r '.ok')" = true ] && [ "$n" -eq 0 ]; then
+    row ok "$remote" "default branch $branch"; return
+  fi
+  row drift "$remote" "default branch $branch"
+  if [ "$(printf '%s' "$pol" | jq -r '.n')" -eq 0 ]; then
+    remedy "az repos policy approver-count create --org $(shq "$orgurl") --project $(shq "$project") --repository-id $(shq "$rid") --branch $(shq "$branch") --blocking true --enabled true --minimum-approver-count 1 --creator-vote-counts true --allow-downvotes false --reset-on-source-push false"
+  elif [ "$(printf '%s' "$pol" | jq -r '.ok')" != true ]; then
+    note "Repos > Branches > $branch > Branch policies: Minimum number of reviewers must be enabled, Required and ask for at least 1 reviewer"
+  fi
+  if [ "$n" -gt 0 ]; then
+    names=$(printf '%s' "$bits" | jq -r 'map("\"" + . + "\"") | join(", ")')
+    note "Repos > Branches > $branch > Branch security > $AZ_USER: set $names to Deny"
+  fi
+}
+
 check_remote() {  # <normalized remote>
-  local n=$1 host path
+  local n=$1 host path rest
   host=${n%%/*}; path=${n#*/}
   case "$host" in
     github.com) check_github "$n" "$path" ;;
     gitlab.com) check_gitlab "$n" "$path" ;;
+    dev.azure.com)
+      case "$path" in
+        */*/*) rest=${path#*/}; check_azure "$n" "${path%%/*}" "${rest%%/*}" "${rest#*/}" ;;
+        *) row unreadable "$n" "not an org/project/repo path" ;;
+      esac ;;
     *) row unreadable "$n" "unknown forge host $host; an SSH host alias is read as one" ;;
   esac
 }

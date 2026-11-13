@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Mocked test for .scripts/forge-protection.sh: stubs gh, glab and az on PATH (every argv is
 # appended to $CALLS; answers come from $T/answers/<tool>/<key>{.out,.rc,.err,.sleep}, the key
-# being the argv with every character outside A-Za-z0-9 turned into _) and asserts each row's
+# being the argv with every character outside A-Za-z0-9 turned into _, a key over 200 characters cut and
+# suffixed with its cksum) and asserts each row's
 # state, the remedies, the exit status, the exceptions file, the dedupe, and that nothing
 # writes to a forge. Fixture checkouts are hand-built git directories under a throwaway HOME.
 # The script runs under /bin/bash to pin Bash 3.2 compatibility.
@@ -23,6 +24,7 @@ cat > "$BIN/stub" <<'STUB'
 tool=$(basename "$0")
 echo "$tool $*" >> "$CALLS"
 key=$(printf '%s' "$*" | tr -c 'A-Za-z0-9' '_')
+[ "${#key}" -le 200 ] || key="${key:0:100}_$(printf '%s' "$key" | cksum | tr ' ' _)"
 d="$ANS/$tool/$key"
 if [ ! -e "$d.out" ] && [ ! -e "$d.rc" ]; then echo "stub: unconfigured call" >&2; exit 99; fi
 [ ! -f "$d.sleep" ] || sleep "$(cat "$d.sleep")"
@@ -37,6 +39,7 @@ for t in gh glab az; do ln -s stub "$BIN/$t"; done
 # ans <tool> <argv string> <out> [rc] [err] [sleep]
 ans() {
   local k; k=$(printf '%s' "$2" | tr -c 'A-Za-z0-9' '_')
+  [ "${#k}" -le 200 ] || k="${k:0:100}_$(printf '%s' "$k" | cksum | tr ' ' _)"
   mkdir -p "$ANS/$1"
   printf '%s\n' "$3" > "$ANS/$1/$k.out"
   [ -z "${4:-}" ] || printf '%s' "$4" > "$ANS/$1/$k.rc"
@@ -247,6 +250,7 @@ eval_remedy() {  # <fixed string selecting the line> -> sets BODY, EXTRA (1 if t
   ( mkdir -p "$T/evaldir" && cd "$T/evaldir" &&
     gh() { cat "${@: -1}" > "$T/body"; }
     glab() { printf '%s\n' "$@" > "$T/argv"; cat "${@: -1}" > "$T/body" 2>/dev/null; }
+    az() { printf '%s\n' "$@" > "$T/argv"; }
     eval "$line" ) >/dev/null 2>&1
   BODY=$(cat "$T/body" 2>/dev/null); EXTRA=0; [ ! -e "$T/pwned" ] && [ ! -e "$T/evaldir/pwned" ] || EXTRA=1
 }
@@ -483,6 +487,297 @@ if grep -qxF "projects/$GID/protected_branches/$(jq -rn --arg b "$HRULE" '$b | @
   _pass "gitlab hostile rule name: the pasted PATCH endpoint is the encoded name"
 else _fail "gitlab hostile rule name: the pasted PATCH endpoint is the encoded name"; fi
 
+echo "A3. azure"
+AZORG=example-org; AZOURL="https://dev.azure.com/$AZORG"
+AZURL="https://$AZORG@dev.azure.com/$AZORG/Example%20Project/_git/example-repo"
+AZR="dev.azure.com/$AZORG/example project/example-repo"
+AZPID=11111111-aaaa-bbbb-cccc-000000000001; AZRID=22222222-aaaa-bbbb-cccc-000000000002
+AZNS=2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87
+AZUSER=michael@example.com
+AZACCT="{\"user\":{\"name\":\"$AZUSER\"}}"
+# the permission token, computed here by an independent implementation
+az_tok() {  # <project id> <repo id> <branch>
+  /usr/bin/python3 -I -c 'import sys; print("repoV2/%s/%s/refs/heads/%s/" % (sys.argv[1], sys.argv[2], "/".join(s.encode("utf-16-le").hex() for s in sys.argv[3].split("/"))))' "$1" "$2" "$3"
+}
+az_show() { ans az "repos show --org $AZOURL --project $1 --repository $2 --output json" "$3"; }
+az_showok() {  # <project> <repo> [branch] [repo id]
+  az_show "$1" "$2" "$(jq -nc --arg b "refs/heads/${3:-main}" --arg r "${4:-$AZRID}" --arg p "$AZPID" '{id:$r,defaultBranch:$b,project:{id:$p}}')"
+}
+az_pol()  { ans az "repos policy list --org $AZOURL --project $1 --repository-id $2 --branch $3 --output json" "$4"; }  # <project> <repo id> <branch> <answer>
+az_acct() { ans az "account show --output json" "${1:-$AZACCT}"; }
+az_perm() {  # <repo id> <branch> <answer> [user]
+  ans az "devops security permission show --id $AZNS --subject ${4:-$AZUSER} --token $(az_tok "$AZPID" "$1" "$2") --org $AZOURL --output json" "$3"
+}
+pol() { jq -nc --arg n "$1" --argjson e "$2" --argjson b "$3" --argjson c "$4" '{id:7,isEnabled:$e,isBlocking:$b,settings:{minimumApproverCount:$c},type:{displayName:$n}}'; }
+ace() { printf '[{"acesDictionary":{"d":{"allow":0,"deny":0,"extendedInfo":{"effectiveAllow":%s}}},"includeExtendedInfo":true,"inheritPermissions":true,"token":"t"}]' "$1"; }
+AZGOOD=$(pol "Minimum number of reviewers" true true 1)
+AZREALISTIC=16502   # bits 2, 4, 16, 32, 64 and 16384: none of 8, 128, 32768
+N8='Force push (rewrite history, delete branches and tags)'
+N128='Bypass policies when pushing'
+N32768='Bypass policies when completing pull requests'
+azure_case() {  # <policies answer> <permission answer> [branch]
+  local b=${3:-main}
+  reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+  az_showok "example project" example-repo "$b"
+  az_pol "example project" "$AZRID" "$b" "$1"
+  az_acct
+  az_perm "$AZRID" "$b" "$2"
+  run check
+}
+azu() {  # <label> <reason regex> <policies answer> <permission answer>: one fail-closed case
+  azure_case "$3" "$4"
+  row_is unreadable "$AZR.*$2" "azure $1: unreadable"
+  rc_is 1 "azure $1: exit 1"
+  out_hasnt "approver-count create" "azure $1: no remedy is printed"
+}
+
+azure_case "[$AZGOOD]" "$(ace $AZREALISTIC)"
+row_is ok "$AZR" "azure ok (project Example Project reached through %20): ok row"
+rc_is 0 "azure ok: exit 0"
+out_has "1 repositories: 1 ok" "azure ok: the summary counts it"
+if grep -qx "az repos show --org $AZOURL --project example project --repository example-repo --output json" "$CALLS"; then _pass "azure ok: repos show gets the decoded project name and --output json"; else _fail "azure ok: repos show gets the decoded project name and --output json"; fi
+if grep -qx "az devops security permission show --id $AZNS --subject $AZUSER --token repoV2/$AZPID/$AZRID/refs/heads/6d00610069006e00/ --org $AZOURL --output json" "$CALLS"; then _pass "azure ok: the token is repoV2/<project>/<repo>/refs/heads/<hex of main in UTF-16LE>/"; else _fail "azure ok: the token is repoV2/<project>/<repo>/refs/heads/<hex of main in UTF-16LE>/"; fi
+
+azure_case "[$AZGOOD]" "$(ace $AZREALISTIC)" feature/x
+row_is ok "$AZR.*default branch feature/x" "azure branch feature/x: ok row"
+if grep -qx "az devops security permission show --id $AZNS --subject $AZUSER --token repoV2/$AZPID/$AZRID/refs/heads/6600650061007400750072006500/7800/ --org $AZOURL --output json" "$CALLS"; then _pass "azure branch feature/x: every path segment is hexed on its own, joined by /"; else _fail "azure branch feature/x: every path segment is hexed on its own, joined by /"; fi
+if grep -qx "az repos policy list --org $AZOURL --project example project --repository-id $AZRID --branch feature/x --output json" "$CALLS"; then _pass "azure branch feature/x: policy list gets the plain branch name"; else _fail "azure branch feature/x: policy list gets the plain branch name"; fi
+
+azure_case "[$AZGOOD]" "$(ace 0)" 'feature/é😀'
+row_is ok "$AZR" "azure branch with a non-ASCII segment and a surrogate pair: ok row"
+if grep -qx "az devops security permission show --id $AZNS --subject $AZUSER --token repoV2/$AZPID/$AZRID/refs/heads/6600650061007400750072006500/e9003dd800de/ --org $AZOURL --output json" "$CALLS"; then _pass "azure non-ASCII branch: UTF-16LE with a surrogate pair"; else _fail "azure non-ASCII branch: UTF-16LE with a surrogate pair"; fi
+
+# no policy: the create command, every value shell-quoted
+azure_case '[]' "$(ace $AZREALISTIC)"
+row_is drift "$AZR" "azure no policy: drift row"
+out_has "    az repos policy approver-count create --org $AZOURL --project 'example project' --repository-id $AZRID --branch main --blocking true --enabled true --minimum-approver-count 1 --creator-vote-counts true --allow-downvotes false --reset-on-source-push false" "azure no policy: the create command is filled in"
+rc_is 1 "azure no policy: exit 1"
+out_hasnt "Branch security" "azure no policy: no permission note when none is allowed"
+
+# only the type Minimum number of reviewers counts
+azure_case "[$(pol 'Build' true true 1)]" "$(ace $AZREALISTIC)"
+row_is drift "$AZR" "azure a blocking policy of another type only: drift row"
+out_has "approver-count create" "azure a blocking policy of another type only: the create command is printed"
+azure_case "[$(pol 'Build' true true 1),$AZGOOD]" "$(ace $AZREALISTIC)"
+row_is ok "$AZR" "azure a policy of another type beside the reviewers policy: ok"
+
+# a reviewers policy that is off, optional or asks for nobody is drift with a note, not a second create
+for spec in "disabled|false true 1" "not blocking|true false 1" "no reviewers|true true 0"; do
+  set -- $(printf '%s' "${spec#*|}")
+  azure_case "[$(pol 'Minimum number of reviewers' "$1" "$2" "$3")]" "$(ace $AZREALISTIC)"
+  row_is drift "$AZR" "azure policy ${spec%%|*}: drift row"
+  out_has '# Repos > Branches > main > Branch policies: Minimum number of reviewers must be enabled, Required and ask for at least 1 reviewer' "azure policy ${spec%%|*}: the click path is printed"
+  out_hasnt "approver-count create" "azure policy ${spec%%|*}: no create command beside the existing policy"
+  rc_is 1 "azure policy ${spec%%|*}: exit 1"
+done
+azure_case "[$(pol 'Minimum number of reviewers' false true 1),$AZGOOD]" "$(ace $AZREALISTIC)"
+row_is ok "$AZR" "azure a disabled reviewers policy beside an enabled one: ok (any qualifying policy)"
+azure_case "[$(pol 'Minimum number of reviewers' true true 2)]" "$(ace $AZREALISTIC)"
+row_is ok "$AZR" "azure two required reviewers: ok"
+
+# each of the three bits alone is drift naming its permission; the others never trigger it
+for pair in "8|$N8" "128|$N128" "32768|$N32768"; do
+  bit=${pair%%|*}; name=${pair#*|}
+  azure_case "[$AZGOOD]" "$(ace $((AZREALISTIC + bit)))"
+  row_is drift "$AZR" "azure bit $bit allowed: drift row"
+  out_has "# Repos > Branches > main > Branch security > $AZUSER: set \"$name\" to Deny" "azure bit $bit allowed: the note names only that permission"
+  rc_is 1 "azure bit $bit allowed: exit 1"
+  out_hasnt "approver-count create" "azure bit $bit allowed: the policy is fine, no create command"
+done
+azure_case "[$AZGOOD]" "$(ace 32768)"
+row_is drift "$AZR" "azure only PullRequestBypassPolicy (32768) allowed: drift"
+azure_case "[$AZGOOD]" "$(ace $((AZREALISTIC + 8 + 128 + 32768)))"
+out_has "set \"$N8\", \"$N128\", \"$N32768\" to Deny" "azure all three bits allowed: one note names all three"
+# the bit anywhere in the answer counts, not just in the first entry
+azure_case "[$AZGOOD]" '[{"acesDictionary":{"a":{"extendedInfo":{"effectiveAllow":0}},"b":{"extendedInfo":{"effectiveAllow":128}}}}]'
+row_is drift "$AZR" "azure a second access control entry allows PolicyExempt: drift"
+azure_case "[$AZGOOD]" "$(jq -nc --argjson a "$(ace 0)" --argjson b "$(ace 8)" '$a + $b')"
+row_is drift "$AZR" "azure a second access control list allows ForcePush: drift"
+azure_case '[]' "$(ace $((AZREALISTIC + 128)))"
+out_has "approver-count create" "azure no policy and a bit: the create command"
+out_has "set \"$N128\" to Deny" "azure no policy and a bit: and the permission note"
+
+# fail closed: an answer lacking a field the target depends on is never ok
+azu "policies answer an object" "policies answer" '{"value":[]}' "$(ace 0)"
+azu "policies answer null" "policies answer" 'null' "$(ace 0)"
+azu "policies answer an object of policies" "policies answer" "{\"x\":$AZGOOD}" "$(ace 0)"
+azu "policy without a type" "policies answer" '[{"isEnabled":true,"isBlocking":true,"settings":{"minimumApproverCount":1}}]' "$(ace 0)"
+azu "policy type without a display name" "policies answer" '[{"isEnabled":true,"isBlocking":true,"settings":{"minimumApproverCount":1},"type":{"id":"x"}}]' "$(ace 0)"
+azu "reviewers policy without isEnabled" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c 'del(.isEnabled)')]" "$(ace 0)"
+azu "reviewers policy without isBlocking" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c 'del(.isBlocking)')]" "$(ace 0)"
+azu "reviewers policy without minimumApproverCount" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c 'del(.settings.minimumApproverCount)')]" "$(ace 0)"
+azu "reviewers policy with isEnabled a string" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c '.isEnabled = "true"')]" "$(ace 0)"
+azu "reviewers policy with minimumApproverCount a string" "policies answer" "[$(printf '%s' "$AZGOOD" | jq -c '.settings.minimumApproverCount = "1"')]" "$(ace 0)"
+azu "permission answer an object" "permission answer" "[$AZGOOD]" '{}'
+azu "permission answer an object of lists" "permission answer" "[$AZGOOD]" '{"x":{"acesDictionary":{"d":{"extendedInfo":{"effectiveAllow":0}}}}}'
+azu "one permission list readable and one without acesDictionary" "permission answer" "[$AZGOOD]" "$(jq -nc --argjson a "$(ace 0)" '$a + [{"token":"t"}]')"
+azu "permission answer null" "permission answer" "[$AZGOOD]" 'null'
+azu "permission answer an empty list" "permission answer" "[$AZGOOD]" '[]'
+azu "permission list without acesDictionary" "permission answer" "[$AZGOOD]" '[{"token":"t"}]'
+azu "permission answer with no entry for the subject" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{},"token":"t"}]'
+azu "entry without extendedInfo" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{"d":{"allow":8,"deny":0}}}]'
+azu "extendedInfo without effectiveAllow" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{"d":{"extendedInfo":{"inheritedAllow":0}}}}]'
+azu "effectiveAllow null" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{"d":{"extendedInfo":{"effectiveAllow":null}}}}]'
+azu "effectiveAllow a string" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{"d":{"extendedInfo":{"effectiveAllow":"8"}}}}]'
+azu "effectiveAllow negative" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{"d":{"extendedInfo":{"effectiveAllow":-8}}}}]'
+azu "effectiveAllow fractional" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{"d":{"extendedInfo":{"effectiveAllow":1.5}}}}]'
+azu "one entry readable and one without effectiveAllow" "permission answer" "[$AZGOOD]" '[{"acesDictionary":{"a":{"extendedInfo":{"effectiveAllow":0}},"b":{"allow":8}}}]'
+
+# the repository answer
+for spec in "no repository id|id|no repository id" "no project id|project|no project id" "no default branch|defaultBranch|no default branch"; do
+  IFS='|' read -r label key why <<<"$spec"
+  reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+  az_show "example project" example-repo "$(jq -nc --arg r "$AZRID" --arg p "$AZPID" --arg k "$key" '{id:$r,defaultBranch:"refs/heads/main",project:{id:$p}} | del(.[$k])')"
+  run check
+  row_is unreadable "$AZR.*$why" "azure repos show with $label: unreadable"
+  rc_is 1 "azure repos show with $label: exit 1"
+  not_called "^az repos policy list" "azure repos show with $label: nothing is read after it"
+done
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_show "example project" example-repo "{\"id\":\"$AZRID\",\"defaultBranch\":null,\"project\":{\"id\":\"$AZPID\"}}"
+run check
+row_is unreadable "$AZR.*no default branch" "azure an empty repository (defaultBranch null): unreadable"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_show "example project" example-repo "{\"id\":\"$AZRID\",\"defaultBranch\":\"refs/tags/v1\",\"project\":{\"id\":\"$AZPID\"}}"
+run check
+row_is unreadable "$AZR.*not a branch" "azure a default branch outside refs/heads: unreadable"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_show "example project" example-repo "$(jq -nc --arg r "$AZRID" --arg p "$AZPID" '{id:$r,defaultBranch:"refs/heads/a\nb",project:{id:$p}}')"
+run check
+row_is unreadable "$AZR.*control characters" "azure a default branch with a control character: unreadable, never printed into a row"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_show "example project" example-repo "$(jq -nc --arg p "$AZPID" '{id:"a\nb",defaultBranch:"refs/heads/main",project:{id:$p}}')"
+run check
+row_is unreadable "$AZR.*control characters" "azure a repository id with a control character: unreadable"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_show "example project" example-repo "[]"
+run check
+row_is unreadable "$AZR.*no repository id" "azure a repos show answer that is not an object: unreadable"
+
+# errors from az and from the subject lookup
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+ans az "repos show --org $AZOURL --project example project --repository example-repo --output json" "" 1 "ERROR: TF401019: The Git repository does not exist (HTTP 404)"
+run check
+row_is unreadable "$AZR.*HTTP 404" "azure repos show fails: unreadable naming the status"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_showok "example project" example-repo; az_pol "example project" "$AZRID" main '[]'
+ans az "account show --output json" "" 1 "ERROR: Please run 'az login' to setup account."
+run check
+row_is unreadable "$AZR.*Please run" "azure account show fails: unreadable naming the reason"
+not_called "devops security" "azure account show fails: no permission read without a subject"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_showok "example project" example-repo; az_pol "example project" "$AZRID" main '[]'; az_acct '{"user":{"type":"user"}}'
+run check
+row_is unreadable "$AZR.*no user name" "azure account show without user.name: unreadable"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_showok "example project" example-repo; az_pol "example project" "$AZRID" main "[$AZGOOD]"; az_acct
+ans az "devops security permission show --id $AZNS --subject $AZUSER --token $(az_tok "$AZPID" "$AZRID" main) --org $AZOURL --output json" "" 1 "ERROR: TF400813 (HTTP 403)"
+run check
+row_is unreadable "$AZR.*HTTP 403" "azure permission show fails: unreadable naming the status"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_showok "example project" example-repo
+ans az "repos policy list --org $AZOURL --project example project --repository-id $AZRID --branch main --output json" "" 1 "ERROR: boom (HTTP 401)"
+run check
+row_is unreadable "$AZR.*HTTP 401" "azure policy list fails: unreadable naming the status"
+# an error text from az is forge-supplied: no control character reaches a row
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+ans az "repos show --org $AZOURL --project example project --repository example-repo --output json" "" 1 "ERROR: bad$(printf '\033')[2J$(printf '\r')login"
+run check
+row_is unreadable "$AZR.*bad.*login" "azure an error text with control characters: still an unreadable row"
+if printf '%s' "$OUT" | grep -q "$(printf '\033')\|$(printf '\r')"; then _fail "azure an error text with control characters: none reaches the output"; else _pass "azure an error text with control characters: none reaches the output"; fi
+
+# the subject is read once per run, a failure of that read too
+AZ2() {  # <first repo> <second repo>: two Azure remotes sharing every answer but the name
+  reset
+  mkrepo "$H/Code/ExampleOrg/aaa" "https://$AZORG@dev.azure.com/$AZORG/Example%20Project/_git/aaa-repo"
+  mkrepo "$H/Code/ExampleOrg/zzz" "https://$AZORG@dev.azure.com/$AZORG/Example%20Project/_git/zzz-repo"
+}
+AZ2
+for r in aaa-repo zzz-repo; do az_showok "example project" "$r"; az_pol "example project" "$AZRID" main "[$AZGOOD]"; done
+az_acct; az_perm "$AZRID" main "$(ace $AZREALISTIC)"
+run check
+rows_are ok 2 "azure two repositories: both ok"
+if [ "$(grep -c '^az account show' "$CALLS")" -eq 1 ]; then _pass "azure two repositories: account show is called once per run"; else _fail "azure two repositories: account show is called once per run"; fi
+AZ2
+for r in aaa-repo zzz-repo; do az_showok "example project" "$r"; az_pol "example project" "$AZRID" main "[$AZGOOD]"; done
+ans az "account show --output json" "" 1 "ERROR: Please run 'az login' to setup account."
+run check
+rows_are unreadable 2 "azure two repositories, account show fails: both unreadable"
+if [ "$(grep -c '^az account show' "$CALLS")" -eq 1 ]; then _pass "azure two repositories, account show fails: it is not asked again"; else _fail "azure two repositories, account show fails: it is not asked again"; fi
+
+# after the first az timeout every later Azure row is unreadable with no further az call
+AZ2
+ans az "repos show --org $AZOURL --project example project --repository aaa-repo --output json" '{}' "" "" 5
+export FORGE_PROTECTION_TIMEOUT=1
+run check
+unset FORGE_PROTECTION_TIMEOUT
+row_is unreadable "aaa-repo.*no answer within 1s" "azure no answer: the first remote is unreadable naming the timeout"
+row_is unreadable "zzz-repo.*az did not answer earlier in this run" "azure no answer: the second remote is unreadable without asking"
+if [ "$(grep -c '^az repos show' "$CALLS")" -eq 1 ] && [ "$(grep -c . "$CALLS")" -eq 1 ]; then _pass "azure no answer: one az repos show, no other az call"; else _fail "azure no answer: one az repos show, no other az call"; fi
+if [ "$SECS" -lt 4 ]; then _pass "azure no answer: two repositories cost one timeout (took ${SECS}s)"; else _fail "azure no answer: two repositories cost one timeout (took ${SECS}s)"; fi
+rc_is 1 "azure no answer: exit 1"
+AZ2
+for r in aaa-repo zzz-repo; do az_showok "example project" "$r"; az_pol "example project" "$AZRID" main "[$AZGOOD]"; done
+ans az "account show --output json" "$AZACCT" "" "" 5
+export FORGE_PROTECTION_TIMEOUT=1
+run check
+unset FORGE_PROTECTION_TIMEOUT
+row_is unreadable "zzz-repo.*az did not answer earlier in this run" "azure account show gives no answer: the second remote is unreadable without asking"
+if [ "$(grep -c '^az repos show' "$CALLS")" -eq 1 ]; then _pass "azure account show gives no answer: the second remote makes no az call"; else _fail "azure account show gives no answer: the second remote makes no az call"; fi
+# a timeout of one forge does not stop another
+AZ2
+mkrepo "$H/Code/ExampleOrg/gh" "$GHURL"; gh_michael "$R"
+ans az "repos show --org $AZOURL --project example project --repository aaa-repo --output json" '{}' "" "" 5
+export FORGE_PROTECTION_TIMEOUT=1
+run check
+unset FORGE_PROTECTION_TIMEOUT
+row_is ok "github.com/$R" "azure no answer: a GitHub row is still read"
+
+# a path that is not org/project/repo is unreadable and asks az nothing
+for spec in "two segments|https://dev.azure.com/$AZORG/Example%20Project" "four segments|https://dev.azure.com/$AZORG/Example%20Project/_git/a/b" "empty project|https://dev.azure.com/$AZORG//_git/r"; do
+  reset; mkrepo "$H/Code/ExampleOrg/example-repo" "${spec#*|}"
+  run check
+  row_is unreadable "dev.azure.com.*not an org/project/repo path" "azure a path with ${spec%%|*}: unreadable"
+  if [ -s "$CALLS" ]; then _fail "azure a path with ${spec%%|*}: no az call"; else _pass "azure a path with ${spec%%|*}: no az call"; fi
+done
+
+# forge-supplied and origin-supplied values in the printed command: pasted, each must run nothing extra
+argv_after() { awk -v k="$1" 'p{print; exit} $0==k{p=1}' "$T/argv"; }
+HB="x;touch pwned;y"; HID="i;touch pwned;j"
+HP='p`touch pwned`q'; HRP='r$(touch pwned)'
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://$AZORG@dev.azure.com/$AZORG/p\`touch%20pwned\`q/_git/r\$(touch%20pwned)"
+az_showok "$HP" "$HRP" "$HB" "$HID"
+az_pol "$HP" "$HID" "$HB" '[]'
+az_acct
+ans az "devops security permission show --id $AZNS --subject $AZUSER --token $(az_tok "$AZPID" "$HID" "$HB") --org $AZOURL --output json" "$(ace 0)"
+run check
+row_is drift "dev.azure.com" "azure hostile project, repo, id and branch: drift row"
+eval_remedy "az repos policy approver-count create"
+if [ "$EXTRA" -eq 0 ]; then _pass "azure hostile values: pasting the create line runs nothing extra"; else _fail "azure hostile values: pasting the create line runs nothing extra"; fi
+for pair in "--project|$HP" "--repository-id|$HID" "--branch|$HB" "--org|$AZOURL"; do
+  if [ "$(argv_after "${pair%%|*}")" = "${pair#*|}" ]; then _pass "azure hostile values: the pasted line hands az the exact ${pair%%|*}"; else _fail "azure hostile values: the pasted line hands az the exact ${pair%%|*} (got $(argv_after "${pair%%|*}"))"; fi
+done
+# the organization comes from the origin too
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "https://dev.azure.com/o\$(touch%20pwned)/p/_git/r"
+HORG='https://dev.azure.com/o$(touch pwned)'
+ans az "repos show --org $HORG --project p --repository r --output json" "{\"id\":\"$AZRID\",\"defaultBranch\":\"refs/heads/main\",\"project\":{\"id\":\"$AZPID\"}}"
+ans az "repos policy list --org $HORG --project p --repository-id $AZRID --branch main --output json" '[]'
+az_acct
+ans az "devops security permission show --id $AZNS --subject $AZUSER --token $(az_tok "$AZPID" "$AZRID" main) --org $HORG --output json" "$(ace 0)"
+run check
+eval_remedy "az repos policy approver-count create"
+if [ "$EXTRA" -eq 0 ] && [ "$(argv_after --org)" = "$HORG" ]; then _pass "azure hostile organization: pasting the create line runs nothing extra and hands az the exact --org"; else _fail "azure hostile organization: pasting the create line runs nothing extra and hands az the exact --org (got $(argv_after --org))"; fi
+# the subject (a note, so a comment) cannot start a command line
+HUSER=$(printf 'a@example.com\ntouch pwned')
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$AZURL"
+az_showok "example project" example-repo; az_pol "example project" "$AZRID" main "[$AZGOOD]"
+az_acct "$(jq -nc --arg u "$HUSER" '{user:{name:$u}}')"
+az_perm "$AZRID" main "$(ace 8)" "$HUSER"
+run check
+row_is drift "$AZR" "azure a subject with a newline: drift row"
+if printf '%s\n' "$OUT" | grep 'touch pwned' | grep -qv '^    # '; then _fail "azure a subject with a newline: every printed line that names it is a comment"; else _pass "azure a subject with a newline: every printed line that names it is a comment"; fi
+out_has 'touch pwned' "azure a subject with a newline: the note still names it"
+
 echo "B. unknown host, exceptions"
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "git@gh-alias:$R.git"
 run check
@@ -559,12 +854,12 @@ azr() {  # <args...>: runs az_read with forge_call recorded instead of run; prin
     az_read "$@" >/dev/null 2>&1; rc=$?
     printf '%s %s' "$rc" "$(cat "$T/azr.call" 2>/dev/null)" )
 }
-for v in "repos show --id x" "repos policy list --repository-id x" "account show" "devops security permission show --id x"; do
+for v in "repos show --org https://dev.azure.com/example-org --project p --repository r --output json" "repos policy list --org https://dev.azure.com/example-org --project p --repository-id x --branch main --output json" "account show --output json" "devops security permission show --id 2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87 --subject u --token t --org https://dev.azure.com/example-org --output json"; do
   # shellcheck disable=SC2086
   got=$(azr $v)
   if [ "$got" = "0 forge_call az $v" ]; then _pass "az_read allows: $v"; else _fail "az_read allows: $v (got $got)"; fi
 done
-for v in "repos policy create --id x" "repos policy update --id x" "repos delete --id x" "repos create --name x" "account set --subscription x" "devops security permission update --id x" "pipelines run" ""; do
+for v in "repos policy create --id x" "repos policy update --id x" "repos policy approver-count create --org x" "repos delete --id x" "repos create --name x" "repos update --id x" "account set --subscription x" "account get-access-token" "devops security permission update --id x" "devops security permission reset --id x" "pipelines run" "repos showx --id x" "repos policy listx --id x" "account showx --output json" "devops security permission showx --id x" "repos show" "account show" ""; do
   # shellcheck disable=SC2086
   got=$(azr $v)
   if [ "$got" = "125 " ]; then _pass "az_read refuses with 125 and no call: ${v:-(no arguments)}"; else _fail "az_read refuses with 125 and no call: ${v:-(no arguments)} (got $got)"; fi
@@ -578,6 +873,7 @@ bad=$(grep -E '^az ' "$ALLCALLS" | grep -vE '^az (repos show|repos policy list|a
 if [ -z "$bad" ]; then _pass "no write: every az call is an allowed read verb"; else _fail "no write: every az call is an allowed read verb"; fi
 if grep -qE 'DELETE|unprotect' "$ALLOUT"; then _fail "no write: printed output never holds DELETE or unprotect"; else _pass "no write: printed output never holds DELETE or unprotect"; fi
 if grep -q '^gh api' "$ALLCALLS"; then _pass "no write: the cases made gh calls"; else _fail "no write: the cases made gh calls"; fi
+if grep -q '^az repos show' "$ALLCALLS"; then _pass "no write: the cases made az calls"; else _fail "no write: the cases made az calls"; fi
 
 body=$(grep -vE '^[[:space:]]*#' "$SCRIPT")
 bad=$(printf '%s\n' "$body" | grep -E '(^|[^A-Za-z0-9_])(POST|PUT|PATCH|DELETE)([^A-Za-z0-9_]|$)' | grep -vE '^[[:space:]]*(remedy|note) ' || true)
