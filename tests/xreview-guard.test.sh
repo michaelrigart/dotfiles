@@ -1171,9 +1171,9 @@ is "R7 a read with an attached header value stays allowed" \
 # through it and the path the gate reads does not name it. A writing call carrying it is denied
 # by name, wherever the option stands and whatever the path; a read passes.
 PH="$GLM"; PH="${PH/merge_requests/:seg}"
-is "G1 a writing glab api call with --placeholder is denied by name, in both spellings, before the endpoint, and with a percent-encoded project" \
-   "$(denies "$W" "glab api --method PUT $PH --placeholder seg=merge_requests" '--placeholder') $(denies "$W" "glab api --method PUT $PH --placeholder=seg=merge_requests" '--placeholder') $(denies "$W" "glab api --placeholder seg=merge_requests --method PUT $PH" '--placeholder') $(denies "$W" "glab api -X PUT $PH -f sha=$REBASED --placeholder seg=merge_requests" '--placeholder')" \
-   "1 1 1 1"
+is "G1 a writing glab api call with --placeholder is denied by name, in both spellings, before the endpoint, with fields alone, and with a method word hidden in a field" \
+   "$(denies "$W" "glab api --method PUT $PH --placeholder seg=merge_requests" '--placeholder') $(denies "$W" "glab api --method PUT $PH --placeholder=seg=merge_requests" '--placeholder') $(denies "$W" "glab api --placeholder seg=merge_requests --method PUT $PH" '--placeholder') $(denies "$W" "glab api -X PUT $PH -f sha=$REBASED --placeholder seg=merge_requests" '--placeholder') $(denies "$W" "glab api $PH -f title=t --placeholder seg=merge_requests" '--placeholder') $(denies "$W" "glab api $PH -f --method=GET -f title=t --placeholder seg=merge_requests" '--placeholder')" \
+   "1 1 1 1 1 1"
 is "G1b the same call as a read is allowed" \
    "$(decision "$W" "glab api --method GET $PH --placeholder seg=merge_requests") $(decision "$W" "glab api $PH --placeholder=seg=merge_requests")" \
    "allow allow"
@@ -1281,7 +1281,7 @@ is "AZ-A3b and it is a deny" "$(decision "$AZ" 'az repos pr create --source-bran
 is "AZ-A4 --auto-complete on create is denied by name" \
    "$(denies "$AZ" "$AZN --auto-complete true" '--auto-complete')" 1
 is "AZ-A4b so is --bypass-policy" "$(denies "$AZ" "$AZN --bypass-policy true" '--bypass-policy')" 1
-is "AZ-A4c an update is not this gate's, plain, reordered or in mixed case: the permissions.deny rule refuses it" \
+is "AZ-A4c an update is not this gate's, plain, reordered or in mixed case: a permissions.deny rule refuses the plain form" \
    "$(decision "$AZ" 'az repos pr update --id 7 --status completed') $(decision "$AZ" 'az --debug repos pr update --id 7 --status completed') $(decision "$AZ" 'az Repos PR UPDATE --id 7 --status completed')" \
    "allow allow allow"
 is "AZ-A5 another project with the other two right is denied" \

@@ -944,8 +944,12 @@ def api_placeholder(args, tool):
     """A glab api call that may write and carries --placeholder, which fills a :name segment of
     the endpoint, so the path the gate reads need not name the path glab reaches. Whatever the
     path says, wherever the option stands, in either spelling (--placeholder x=y,
-    --placeholder=x=y); a read passes."""
-    if tool != "glab" or not may_write(args, tool):
+    --placeholder=x=y). Only a call that both readings take for a read passes: the parse
+    (parse_api, as glab reads it) and the words alone (may_write), since a method word inside a
+    field's value (-f --method=GET) fools the second."""
+    if tool != "glab":
+        return False
+    if parse_api(args, tool)["method"] in READ_METHODS and not may_write(args, tool):
         return False
     return any(name == "--placeholder" for name, _ in api_options(args, GLAB_API_VALUE)[0])
 

@@ -521,8 +521,8 @@ None added. Every change is either a deny (guard or rule) or an output format. g
     `glab -R x stack sync`;
   - `az rest` or `az devops invoke` to the PR API;
   - gh and glab extensions, and another agent started from a CLI (`glab duo cli`).
-  - a global option before `az`'s group names, which the update rule misses:
-    `az --debug repos pr update`.
+  - a global option before `az`'s group names, or another letter case, which the update rule
+    misses: `az --debug repos pr update`, `az Repos PR UPDATE`.
 - A gated verb's `--help` can still prompt: the ask rule `Bash(glab mr merge*)` matches it, and an
   ask rule cannot be narrowed by a hook. Two unattended implementers of this line waited on that
   prompt. Agents read the flags from the guard's allowlists instead; the rule stays.
