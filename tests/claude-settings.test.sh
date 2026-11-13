@@ -5,7 +5,10 @@
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 MOD="$SRC/dot_claude/modify_private_settings.json"
-[ -f "$MOD" ] || { echo "missing script under test: $MOD" >&2; exit 2; }
+# plugins.conf is read only by absence checks, which a missing file would pass.
+for f in "$MOD" "$SRC/dot_config/agents/plugins.conf"; do
+  [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
+done
 pass=0; fail=0; OUT=""
 
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }

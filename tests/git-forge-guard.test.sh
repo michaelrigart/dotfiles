@@ -147,7 +147,7 @@ set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GUARD="${1:-$SRC/dot_claude/executable_git-forge-guard.sh}"
-[ -f "$GUARD" ] || { echo "missing guard: $GUARD" >&2; exit 1; }
+[ -f "$GUARD" ] || { echo "missing guard: $GUARD" >&2; exit 2; }
 
 pass=0; fail=0
 # BSD mktemp -d without a template ignores $TMPDIR, so give it one explicitly.

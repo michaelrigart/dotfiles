@@ -200,7 +200,10 @@ That is not a regression.
 
 A suite whose subject has moved must fail loudly, not silently pass: each one checks its
 target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard
-is missing otherwise reports every "must allow" case as a pass.
+is missing otherwise reports every "must allow" case as a pass. Exit 2, never 1: 1 means an
+assertion failed. `run.sh` prints the guard's line under the suite's `????` row.
+`tests/missing-subject.test.sh` hides one file per row and pins the exit; a
+suite whose guard changes gets a row there.
 
 Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
 `KEY=VALUE` status the `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and

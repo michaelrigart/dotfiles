@@ -24,15 +24,18 @@ COLL="$ROOT/Library/Application Support/Alfred/Alfred.alfredpreferences/snippets
 CODEX="$COLL/From Codex.json"
 CLAUDE="$COLL/From Claude Code.json"
 PLIST="$COLL/info.plist"
+# Several assertions below are absence checks ("no stray tag", "no shadowed keyword",
+# "placeholders not disabled"), and grep reports absence just as cheerfully for a missing
+# file as for a clean one.
+for f in "$PLIST" "$CODEX" "$CLAUDE"; do
+  [ -r "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
+done
 pass=0; fail=0
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 check() { if [ "$1" = "$2" ]; then _pass "$3"; else _fail "$3 (got '$1', want '$2')"; fi; }
 
-echo "A. collection files exist and parse"
-[ -r "$PLIST" ]  && _pass "info.plist present"          || _fail "info.plist present"
-[ -r "$CODEX" ]  && _pass "From Codex.json present"     || _fail "From Codex.json present"
-[ -r "$CLAUDE" ] && _pass "From Claude Code.json present" || _fail "From Claude Code.json present"
+echo "A. collection files parse"
 if command -v plutil >/dev/null 2>&1; then
   plutil -lint "$PLIST" >/dev/null 2>&1 \
     && _pass "info.plist is valid plist" || _fail "info.plist is valid plist"
@@ -46,17 +49,6 @@ if command -v ruby >/dev/null 2>&1; then
   done
 else
   echo "  SKIP: ruby absent — JSON validity unverified"
-fi
-
-# Everything below reads the three files. Several of the assertions are absence checks —
-# "no stray tag", "no shadowed keyword", "placeholders not disabled" — and grep reports
-# absence just as cheerfully for a missing file as for a clean one. Without this gate a
-# deleted collection would report PASS on exactly the properties that protect the boundary.
-if [ ! -r "$PLIST" ] || [ ! -r "$CODEX" ] || [ ! -r "$CLAUDE" ]; then
-  echo
-  echo "FATAL: collection incomplete — the remaining assertions would pass vacuously."
-  echo "RESULT: $pass passed, $fail failed"
-  exit 1
 fi
 
 echo "B. both relay directions are defined"
