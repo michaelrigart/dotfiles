@@ -43,8 +43,7 @@
 #   - A partial answer (the merged half failed) is published but not cached.
 #
 # Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
-# sandboxed command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang,
-# the system bash 3.2 (SIP-protected, and what the launchd suite case already runs), and a
+# sandboxed command can write: an absolute shebang, the system bash 3.2 (SIP-protected), and a
 # pinned PATH that no caller's direnv or mise entry reaches. PINNED_PATH is for the suite only.
 PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -u
@@ -91,9 +90,10 @@ jq_rows_status() { # jq_rows_status <jq's exit status> -> 0 full, 3 open rows on
 
 # The definitions both forges' parsers share. answer: the string's JSON document when it is a list,
 # else null. line: a string with no tab or newline, which would forge a table row or column. name: a
-# branch name, which also is not empty and holds no U+FFFD (jq puts it in place of an invalid byte or
-# a lone surrogate, so two different names could become one). whole: a whole number from 1 to 2^53 - 1
-# as plain digits, else null.
+# branch name, which also is not empty and holds no U+FFFD (jq puts it in place of an invalid UTF-8
+# byte or a lone low surrogate, so two different names could become one; a lone high surrogate is
+# a jq parse error, so that whole answer is a failed lookup). whole: a whole number from 1 to
+# 2^53 - 1 as plain digits, else null.
 JQ_DEFS='
 def answer: (try fromjson catch null) | if type == "array" then . else null end;
 def line: type == "string" and (contains("\t") or contains("\n") | not);
@@ -166,17 +166,15 @@ require_deadline() {
 }
 
 # Every external call (glab, gh, herdr) runs under its own timeout, measured from the run's start, so
-# an orphaned job (an INT ends timeout and the worker but not the jobs) cannot hold the run lock
-# beyond the deadline by way of a call. The header names the two ways it still can: a local
-# operation that hangs (git, a file operation) is not a bounded call at all, and a process a call
-# leaves behind keeps the call's stdout open. The call gets a process group of its own (timeout
-# without --foreground) and the KILL at its bound, which cannot be ignored, takes the whole group:
-# what gh or glab start (a credential helper, git) dies with it. It has no fd 9, so nothing a call
-# starts can hold the run lock, and no stdin, so a call in a background group cannot stop on the
-# terminal. The call is thereby out of reach of the run's outer KILL or a forwarded TERM: its own
-# bound ends it. A cut call is a failed call, and the failed-lookup paths handle it. Forge calls end
-# at CALL_END, CALL_MARGIN before the run deadline; herdr calls at RUN_END, the deadline itself, so
-# a job whose forge call was cut still reports.
+# a call cannot keep an orphaned job (and its run lock) alive past the deadline; the header's limits
+# name what still can. The call gets a process group of its own (timeout without --foreground) and
+# the KILL at its bound, which cannot be ignored, takes the whole group: what gh or glab start (a
+# credential helper, git) dies with it. It has no fd 9, so nothing a call starts can hold the run
+# lock, and no stdin, so a call in a background group cannot stop on the terminal. The call is
+# thereby out of reach of the run's outer KILL or a forwarded TERM: its own bound ends it. A cut
+# call is a failed call, which the failed-lookup paths handle. Forge calls end at CALL_END,
+# CALL_MARGIN before the run deadline; herdr calls at RUN_END, so a job whose forge call was cut
+# still reports.
 bounded() { # bounded <end: epoch seconds> <command...>
   local left=$(( $1 - $(date +%s) ))
   shift
@@ -279,8 +277,8 @@ read_table() { # read_table <cache_file>
 # <ci> (ok, fail, run or empty) is a GitHub column only, empty on a merged row.
 # <mode> is ttl (look up once the cache is older than TTL), force (always look up) or cached (never
 # call out: answer as a failed lookup would). A lookup that cannot answer falls back to the cached
-# table: the phases stand however old it is, but read_table drops GitHub's CI column once it is
-# older than STALE_PIPELINE. Every lookup writes the repository's stamp first (see the header).
+# table, however old (read_table drops its CI column past STALE_PIPELINE). Every lookup writes the
+# repository's stamp first (see the header).
 mr_table() { # mr_table <forge> <slug> <mode: ttl|force|cached>
   local forge="$1" slug="$2" mode="$3" key cache rows rc
 
@@ -317,21 +315,20 @@ gitlab_rows() { # gitlab_rows <slug> -> table rows; 0 full, 3 open rows only, el
   # its own keeps the rows a review badge depends on far from the cap.
   open_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
   [ -n "$open_json" ] || return 1
-  # Merged state is best-effort: if only this half fails the open rows still stand, and the
-  # table is not cached, so the miss lasts one cycle instead of a TTL.
+  # Merged state is best-effort: if only this half fails the open rows still stand, uncached, so
+  # the miss lasts one cycle instead of a TTL.
   local cacheable=1
   merged_json="$(bounded "$CALL_END" glab mr list --repo "https://$GITLAB_HOST_NAME/$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
   # Each answer reaches jq as a file of its own (a pipe from printf, never an argument: an answer can
-  # outgrow the argument list), parsed on its own. An open answer that does not parse or is not a
-  # list fails the lookup, and so does a row that is not an object. A merged answer that is not a list
-  # leaves the open rows alone (see jq_rows_status): a glab that exits 0 with an error body must not
-  # replace the table with an empty one. A row is skipped unless its source_branch is a name and its
-  # state a line; the iid is printed when it is a whole number, else left empty. An open MR is the
-  # live one for a branch; anything else only fills a gap, so a branch reused after a merge still
-  # reports the MR that is actually open on it. Rows keep the order in which their branch was first
-  # seen.
+  # outgrow the argument list), parsed on its own. An open answer that is not a list fails the
+  # lookup, and so does a row that is not an object. A merged answer that is not a list leaves the
+  # open rows alone (see jq_rows_status): a glab that exits 0 with an error body must not replace
+  # the table with an empty one. A row is skipped unless its source_branch is a name and its state
+  # a line; the iid is printed when it is a whole number, else left empty. An open MR replaces any
+  # other row of its branch, so a branch reused after a merge reports the MR that is open on it.
+  # Rows keep the order in which their branch was first seen.
   jqi -nr --rawfile open <(printf '%s' "$open_json") --rawfile merged <(printf '%s' "$merged_json") "$JQ_DEFS"'
 def bad: "" | halt_error(1);
 def falsy: . == null or . == false or . == 0 or . == "" or . == [] or . == {};
@@ -366,20 +363,18 @@ github_rows() { # github_rows <slug> -> table rows; 0 full, 3 open rows only, el
   open_json="$(bounded "$CALL_END" env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state open --limit 100 \
     --json headRefName,state,number,isDraft,isCrossRepository,statusCheckRollup 2>/dev/null)" || return 1
   # Each status is taken on its own, never through a pipe into the parser. The merged half is
-  # best-effort, as on GitLab: "null" stands for a failed call and the parser reads it as not
-  # being a list.
+  # best-effort, as on GitLab: "null" stands for a failed call, which the parser reads as not a list.
   merged_json="$(bounded "$CALL_END" env -i HOME="$HOME" PATH="$PATH" gh pr list -R "github.com/$slug" --state merged --limit 100 \
     --json headRefName,state,number,isDraft,isCrossRepository 2>/dev/null)" || merged_json="null"
 
-  # The open answer not being a list is a failed lookup, the merged answer not being one leaves the
-  # open rows alone (see jq_rows_status). A row is dropped unless it is a PR of this repository (a
-  # fork's branch name is not this checkout's branch) with a branch name and a whole number. OPEN is
-  # "opened", MERGED is "merged", CLOSED has no badge, and an open PR beats a merged one on the same
-  # branch. Each answer reaches jq as a file of its own (see gitlab_rows), parsed on its own, so an
-  # empty answer can never let the other one take its place. The number is compared with its floor
-  # and printed as that, so 12.0 and 12e0 are PR #12; one that would not print as plain digits (1e300)
-  # is dropped.
-  # gh lists the newest first, so the first PR of a state is the one that counts.
+  # An open answer that is not a list fails the lookup; a merged one leaves the open rows alone (see
+  # jq_rows_status). A row is dropped unless it is a PR of this repository (a fork's branch name is
+  # not this checkout's branch) with a branch name and a whole number. OPEN is "opened", MERGED is
+  # "merged", CLOSED has no badge, and an open PR beats a merged one on the same branch. Each answer
+  # reaches jq as a file of its own (see gitlab_rows), so an empty answer can never let the other one
+  # take its place. The number is compared with its floor and printed as that, so 12.0 and 12e0 are
+  # PR #12; one that would not print as plain digits (1e300) is dropped. gh lists the newest first,
+  # so the first PR of a state is the one that counts.
   # An open PR's CI comes from its rollup, in gh pr checks' buckets: a CheckRun's state is its
   # conclusion once COMPLETED and its status before; a StatusContext's is its state. Fail beats
   # pending, pending beats success, and a state in no bucket (STALE, say) gives no badge.
