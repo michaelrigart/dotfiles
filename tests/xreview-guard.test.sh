@@ -1167,6 +1167,16 @@ is "R6 a write the parse cannot place is denied, naming the canonical form" \
 is "R7 a read with an attached header value stays allowed" \
    "$(decision "$W" 'gh api -X GET repos/acme/app/pulls -HX-GitHub-Api-Version:2022-11-28') $(decision "$W" 'glab api -X GET projects/acme%2Fapp/merge_requests -HX-Custom:1')" \
    "allow allow"
+# glab's --placeholder fills a :name segment of the endpoint, so a write can spell merge_requests
+# through it and the path the gate reads does not name it. A writing call carrying it is denied
+# by name, wherever the option stands and whatever the path; a read passes.
+PH="$GLM"; PH="${PH/merge_requests/:seg}"
+is "G1 a writing glab api call with --placeholder is denied by name, in both spellings, before the endpoint, and with a percent-encoded project" \
+   "$(denies "$W" "glab api --method PUT $PH --placeholder seg=merge_requests" '--placeholder') $(denies "$W" "glab api --method PUT $PH --placeholder=seg=merge_requests" '--placeholder') $(denies "$W" "glab api --placeholder seg=merge_requests --method PUT $PH" '--placeholder') $(denies "$W" "glab api -X PUT $PH -f sha=$REBASED --placeholder seg=merge_requests" '--placeholder')" \
+   "1 1 1 1"
+is "G1b the same call as a read is allowed" \
+   "$(decision "$W" "glab api --method GET $PH --placeholder seg=merge_requests") $(decision "$W" "glab api $PH --placeholder=seg=merge_requests")" \
+   "allow allow"
 
 echo "S. the guard never lazy-fetches"
 # The hook runs outside the sandbox and the repository's configuration is writable from it. A
@@ -1235,7 +1245,7 @@ treview t-hole "$GB3" approve '{"packet":"delta","missing":[],"delta_from":"t-li
 is "T4 a later approval whose history lacks a chain turn closes it again" \
    "$(decision "$W" 'glab mr create -s gatebr -b main')" deny
 
-echo "Z. Azure PRs: creation is gated, an update may not complete the PR"
+echo "Z. Azure PRs: creation is gated"
 # AZ: a checkout whose origin is an Azure DevOps SSH URL, reached through insteadOf like W's.
 # develop is the destination, feat one change ahead; AZ stays on feat. Every az row names the
 # bug it catches: the first nine ids follow the spec's table (section 9), A1-A10.
@@ -1271,19 +1281,9 @@ is "AZ-A3b and it is a deny" "$(decision "$AZ" 'az repos pr create --source-bran
 is "AZ-A4 --auto-complete on create is denied by name" \
    "$(denies "$AZ" "$AZN --auto-complete true" '--auto-complete')" 1
 is "AZ-A4b so is --bypass-policy" "$(denies "$AZ" "$AZN --bypass-policy true" '--bypass-policy')" 1
-is "AZ-A4c update with --auto-complete is denied, saying completing is Michael's" \
-   "$(denies "$AZ" 'az repos pr update --id 7 --auto-complete true' "Michael's")" 1
-is "AZ-A4d update --status completed" "$(decision "$AZ" 'az repos pr update --id 7 --status completed')" deny
-is "AZ-A4e update --bypass-policy" "$(decision "$AZ" 'az repos pr update --id 7 --bypass-policy true')" deny
-is "AZ-A4f update --bypass-policy-reason" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --bypass-policy-reason why')" deny
-is "AZ-A4g the =value form" "$(decision "$AZ" 'az repos pr update --id 7 --status=completed')" deny
-is "AZ-A4h an abbreviation argparse could read as --status" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --stat completed')" deny
-is "AZ-A4i a description that only mentions the options is allowed" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --description "mentions --auto-complete and --status"')" allow
-is "AZ-A4j and so is a plain update, which needs no receipt" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --title T')" allow
+is "AZ-A4c an update is not this gate's, plain, reordered or in mixed case: the permissions.deny rule refuses it" \
+   "$(decision "$AZ" 'az repos pr update --id 7 --status completed') $(decision "$AZ" 'az --debug repos pr update --id 7 --status completed') $(decision "$AZ" 'az Repos PR UPDATE --id 7 --status completed')" \
+   "allow allow allow"
 is "AZ-A5 another project with the other two right is denied" \
    "$(decision "$AZ" "${AZC/--project Proj/--project Other}")" deny
 is "AZ-A5b with the reason telling to name all three or none" \
@@ -1322,10 +1322,7 @@ is "AZ-A8 az with an option before repos is denied as reordered" \
 is "AZ-A8b the reason gives az's plain form" \
    "$(reason "$AZ" "az --debug ${AZN#az }" | grep -c -F 'az repos pr create [options]')" 1
 is "AZ-A8c and names no -R" "$(reason "$AZ" "az --debug ${AZN#az }" | grep -c -F -- '-R')" 0
-is "AZ-A8d an option between pr and the verb, for a completing update" \
-   "$(decision "$AZ" 'az repos pr --debug update --id 7 --status completed')" deny
 is "AZ-A9 a quoted mention of the creation" "$(decision "$AZ" 'echo "az repos pr create"')" allow
-is "AZ-A9b and of the update" "$(decision "$AZ" "rg 'az repos pr update' docs")" allow
 is "AZ-A9c lazy create x: az inside another word" "$(decision "$AZ" 'lazy create x')" allow
 is "AZ-A9d azure beside git" "$(decision "$AZ" 'ls azure && git status')" allow
 is "AZ-A9e help is never gated" "$(decision "$AZ" 'az repos pr create --help')" allow
@@ -1336,12 +1333,11 @@ rm -f "$TRIP/xreview-guard.py.ran"
 for c in 'ls azure && git status' 'az repos pr list' 'az account show' 'git update-index --refresh'; do
   payload /tmp "$c" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 done
-is "AZ-A9h none of those starts the helper: update counts only with az, repos and pr" "$(tripped)" idle
+is "AZ-A9h none of those starts the helper" "$(tripped)" idle
 payload /tmp 'az repos pr update --id 7 --title T' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
-is "AZ-A9i an az update does" "$(tripped)" ran
+is "AZ-A9i an az update does not start it either" "$(tripped)" idle
 is "AZ-A10 with the helper unrunnable, the front denies an az creation" \
    "$(fallback "$AZN")" deny
-is "AZ-A10b and an az update" "$(fallback 'az repos pr update --id 7 --status completed')" deny
 is "AZ-A10c while az account show stays allowed" "$(fallback 'az account show')" allow
 is "AZ-A10d a truncated payload holding an az creation is denied" \
    "$(printf '%s' '{"tool_input":{"command":"az repos pr create --target-branch develop"},"cwd":"'"$AZ"'"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
@@ -1355,23 +1351,13 @@ is "AZ-C1c the verb in capitals" \
    "$(decision "$AZ" 'az repos pr CREATE --source-branch feat --target-branch main')" deny
 is "AZ-C1d the tool's name in capitals" \
    "$(decision "$AZ" 'AZ repos pr create --source-branch feat --target-branch main')" deny
-is "AZ-C1e a completing update in mixed case" \
-   "$(decision "$AZ" 'az repos pr UPDATE --id 7 --status completed')" deny
 is "AZ-C1f an option before mixed-case words is reordered" \
    "$(decision "$AZ" 'az --debug Repos PR create --target-branch develop')" deny
-is "AZ-C1g a harmless update in mixed case passes" \
-   "$(decision "$AZ" 'az Repos pr UPDATE --id 7 --title T')" allow
-is "AZ-C1h option names stay case-sensitive: --Auto-Complete is not az's option, a plain update" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --Auto-Complete true')" allow
 rm -f "$TRIP/xreview-guard.py.ran"
 payload /tmp 'az Repos PR CREATE --target-branch develop' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "AZ-C2 the fast path starts the helper for a mixed-case creation" "$(tripped)" ran
-rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp 'AZ repos pr UPDATE --id 7 --status completed' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
-is "AZ-C2b and for a mixed-case update" "$(tripped)" ran
 is "AZ-C3 with the helper unrunnable, a mixed-case creation is denied" \
    "$(fallback 'az Repos PR CREATE --target-branch develop')" deny
-is "AZ-C3b and a mixed-case update" "$(fallback 'AZ repos pr UPDATE --id 7 --status completed')" deny
 is "AZ-C3c while a mixed-case mention of another az command stays allowed" \
    "$(fallback 'az ACCOUNT show')" allow
 is "AZ-C3d a truncated payload with a mixed-case creation is denied" \
@@ -1386,51 +1372,11 @@ is "AZ-R1b with the reason naming the remote as the message prints it, and the a
 is "AZ-R1c all three named stays allowed beside the second remote" "$(decision "$AZ" "$AZC")" allow
 git -C "$AZ" remote remove other
 is "AZ-R1d with origin alone again, none named is allowed" "$(decision "$AZ" "$AZN")" allow
-# Only an update that completes the PR is a gated verb, so a harmless one is allowed in a pipe,
-# a chain or a substitution; a completing one is denied there too.
-is "AZ-U1 a harmless update piped on" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --title T -o json | jq .status')" allow
-is "AZ-U1b a harmless update after a chain" \
-   "$(decision "$AZ" 'az repos pr show --id 7 && az repos pr update --id 7 --title T')" allow
-is "AZ-U1c a harmless reordered update" \
-   "$(decision "$AZ" 'az --debug repos pr update --id 7 --title T')" allow
-is "AZ-U1d a completing update in a pipe is denied" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --status completed | cat')" deny
-is "AZ-U1e a completing update in a chain is denied" \
-   "$(decision "$AZ" 'az repos pr show --id 7 && az repos pr update --id 7 --auto-complete true')" deny
-is "AZ-U1f and one in a substitution" \
-   "$(decision "$AZ" 'echo $(az repos pr update --id 7 --status abandoned)')" deny
 # az takes a branch as refs/heads/<name> too.
 is "AZ-H1 refs/heads/<name> branches are read as the names" \
    "$(decision "$AZ" 'az repos pr create --source-branch refs/heads/feat --target-branch refs/heads/develop')" allow
 is "AZ-H1b and the dispatch names the plain range" \
    "$(reason "$AZ" 'az repos pr create --source-branch refs/heads/feat --target-branch refs/heads/main' | grep -c -F 'origin/main...feat')" 1
-# Fix round 2. An update is a gated verb when it carries a completing option or a word the gate
-# cannot read (a variable, a substitution, a brace, a glob), which could be one: a literal harmless
-# update passes anywhere, one with such a word is denied in the plain form and in a compound.
-is "AZ-N1 an option from a variable, in a chain, is denied" \
-   "$(decision "$AZ" 'S=--status; az repos pr update --id 7 $S completed')" deny
-is "AZ-N1b an option from a command substitution" \
-   "$(decision "$AZ" 'az repos pr update --id 7 $(echo --status) completed')" deny
-is "AZ-N1c a substitution inside the option's name" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --$(echo status) completed')" deny
-is "AZ-N1d the reordered update with a variable" \
-   "$(decision "$AZ" 'az --debug repos pr update --id 7 $S completed')" deny
-is "AZ-N1e a variable in a pipe" \
-   "$(decision "$AZ" 'az repos pr update --id 7 $S completed | cat')" deny
-is "AZ-N2 a backtick substitution in the plain form" \
-   "$(decision "$AZ" 'az repos pr update --id 7 `echo --status` completed')" deny
-is "AZ-N2b a brace expansion in the plain form" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --{status,title} completed')" deny
-is "AZ-N2c a glob in the plain form" "$(decision "$AZ" 'az repos pr update --id 7 --stat* completed')" deny
-is "AZ-N2d a variable in the plain form, with a reason that says completing is Michael's" \
-   "$(denies "$AZ" 'az repos pr update --id 7 $S completed' "Michael's")" 1
-is "AZ-N2e a quoted variable as a word of its own" \
-   "$(decision "$AZ" 'az repos pr update --id 7 "$S" completed')" deny
-is "AZ-N3 a literal update with prose holding a dollar sign and brackets passes" \
-   "$(decision "$AZ" 'az repos pr update --id 7 --title "[WIP] costs $5 now" --description "a $B c"')" allow
-is "AZ-N3b and one in a chain" \
-   "$(decision "$AZ" 'az repos pr show --id 7 && az repos pr update --id 7 --title "[WIP]"')" allow
 # The reason for a failed remote listing says so, and is a deny: git remote made to fail.
 is "AZ-R2 a remote listing that fails is denied as unreadable, not as no other remotes" \
    "$(/usr/bin/python3 -I - "$HELPER" "$AZ" <<'PY'

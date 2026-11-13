@@ -177,7 +177,8 @@ printf '%s' "$input" | jq \
           "Bash(gh gist new*)", "Bash(gh repo new*)", "Bash(glab snippet new*)",
           "Bash(glab project create*)",
           # Publishing paths with no review gate: stacked pushes, and a cloud agent started on a repository.
-          "Bash(glab stack*)", "Bash(gh agent-task create*)",
+          # An Azure PR update can complete the PR (--status, --auto-complete, --bypass-policy); Michael runs it.
+          "Bash(glab stack*)", "Bash(gh agent-task create*)", "Bash(az repos pr update*)",
           # Lasting mail send-out paths: a server-side rule or an auto-reply keeps
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",

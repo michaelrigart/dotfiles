@@ -339,9 +339,9 @@ fingerprint) and the branch it is meant to land on. A `PreToolUse` guard gates
 `glab mr create`/`new`, `gh pr create`/`new`, `az repos pr create`, `glab mr merge`/`accept`,
 `gh pr merge`, their REST forms through `glab api`/`gh api`, and a local `git merge` into the
 default branch. It also denies GraphQL mutations that create, merge, enqueue or retarget,
-`glab mr for`, `gh pr revert`, the completing options `--auto-complete`, `--bypass-policy`,
-`--bypass-policy-reason` and `--status` on `az repos pr update`, and merges onto a branch with
-a merge queue or train. It
+`glab mr for`, `gh pr revert`, a writing `glab api` call that carries `--placeholder`, and merges
+onto a branch with a merge queue or train. `az repos pr update` is denied by a permission rule:
+hand Michael the command. It
 denies the rest unless the latest full-range `pre-merge` review of exactly that change, for that
 destination, has the verdict `approve`. Spec and plan reviews never open it, a partial
 range never does, and neither does a newer pending review or a verdict of `changes`. That is

@@ -8,9 +8,8 @@
 #
 # Gated: MR/PR creation and agent-run merges - glab mr create|new|merge|accept, gh pr
 # create|new|merge, az repos pr create, their REST forms through glab api / gh api, and a local
-# git merge into the default branch; az repos pr update is denied when it completes the PR. Each
-# opens only when the latest full-range pre-merge review of that exact
-# change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
+# git merge into the default branch. Each opens only when the latest full-range pre-merge
+# review of that exact change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
 # for and gh pr revert are denied outright. The change is named by a content fingerprint, so
 # any content change after the approval closes the gate again, while a clean rebase keeps it
 # open. The receipts live in one ledger per repository, shared by all its worktrees
@@ -18,8 +17,8 @@
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
 # names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
-# for, nor api together with a percent-escape such as m%65rge, nor update together with az,
-# repos and pr), or none of glab, gh, git or az, costs no subprocess at all. It matches each
+# for, nor api together with a percent-escape such as m%65rge, nor create in any letter case
+# together with az, repos and pr), or none of glab, gh, git or az, costs no subprocess at all. It matches each
 # word as the raw JSON payload can spell it, with quotes, backslashes and line continuations
 # allowed between its letters: g''it, mer""ge and mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
 # spell any word with escapes, always goes on.
@@ -71,7 +70,7 @@ case "$payload" in
   *"\$'"*) ;;
   *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } \
        || { spells api && [[ $payload =~ $pct ]]; } \
-       || { spells_i az && spells_i repos && spells_i pr && spells_i create update; } || exit 0
+       || { spells_i az && spells_i repos && spells_i pr && spells_i create; } || exit 0
      spells glab gh git || spells_i az || exit 0 ;;
 esac
 
