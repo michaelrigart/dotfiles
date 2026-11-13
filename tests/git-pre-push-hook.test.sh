@@ -650,6 +650,40 @@ else
   needle "and the block names the rule" "$NEEDLE_RULE"
   needle "and says the push is rewritten to B" "rewritten from $REMOTES/pio-a.git"
 
+  echo "== a push to a named remote whose push side differs from its fetch side =="
+  # The tracking refs of backup record what A holds. With a pushurl B or a pushInsteadOf rewrite
+  # to B, they say nothing about B, so the push by name scans what A holds.
+  expect_push block "backup fetching from A with a pushurl B: a secret fetched from A, pushed by name, is blocked" "$DIST" backup sec
+  needle "and the block names the rule" "$NEEDLE_RULE"
+  DISTEQ=$(clone dist-equal-pushurl)
+  git -C "$DISTEQ" remote add backup "$REMOTES/dist-a.git"
+  git -C "$DISTEQ" fetch -q backup 2>/dev/null
+  git -C "$DISTEQ" remote set-url --push backup "$REMOTES/dist-a.git"
+  git -C "$DISTEQ" branch -q sec backup/feat
+  expect_push pass "a pushurl equal to the fetch URL still attributes A's history: A already holds it" "$DISTEQ" backup sec
+  DISTTWO=$(clone dist-two-pushurls)
+  git -C "$DISTTWO" remote add backup "$REMOTES/dist-a.git"
+  git -C "$DISTTWO" fetch -q backup 2>/dev/null
+  git -C "$DISTTWO" remote set-url --push backup "$REMOTES/dist-a.git"
+  git -C "$DISTTWO" remote set-url --add --push backup "$REMOTES/dist-b.git"
+  git -C "$DISTTWO" branch -q sec backup/feat
+  expect_push block "two pushurls attribute nothing: a secret fetched from A is scanned" "$DISTTWO" backup sec
+  needle "and the block names the rule" "$NEEDLE_RULE"
+  PIOB=$(clone pio-named)
+  git -C "$PIOB" remote add backup "$REMOTES/pio-a.git"
+  git -C "$PIOB" fetch -q backup 2>/dev/null
+  git -C "$PIOB" branch -q sec backup/held
+  git -C "$PIOB" config "url.$REMOTES/pio-b.git.pushInsteadOf" "$REMOTES/pio-a.git"
+  [ "$(git -C "$PIOB" rev-parse sec)" = "$(git -C "$PIO" rev-parse feat)" ] \
+    || { echo "the named pushInsteadOf fixture is not what it claims" >&2; exit 2; }
+  expect_push block "backup with a pushInsteadOf rewrite to B: a secret fetched from A, pushed by name, is blocked" "$PIOB" backup sec
+  needle "and the block names the rule" "$NEEDLE_RULE"
+  PIOBCTL=$(clone pio-named-control)
+  git -C "$PIOBCTL" remote add backup "$REMOTES/pio-a.git"
+  git -C "$PIOBCTL" fetch -q backup 2>/dev/null
+  git -C "$PIOBCTL" branch -q sec backup/held
+  expect_push pass "without the rewrite, fetch and push URL are equal and A's history is excluded" "$PIOBCTL" backup sec
+
   echo "== the repository's own hook =="
   OWN=$(clone own-hook); OWNLOG="$TMP/own.log"
   mkdir -p "$OWN/.git/hooks"

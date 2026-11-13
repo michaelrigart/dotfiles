@@ -34,8 +34,9 @@ if [ "${#shas[@]}" -gt 0 ]; then
     exit 1
   fi
   # $1 is the remote's name, or the URL as typed; $2 is where git sends (a pushurl, or a
-  # pushInsteadOf rewrite of the URL). Only a name, or a URL git did not rewrite, says what the
-  # destination holds; a rewritten URL is scanned in full, under the address git really uses.
+  # pushInsteadOf rewrite of the URL). A URL git did not rewrite says what the destination holds
+  # through the remotes that fetch from it; a rewritten URL is scanned in full, under the address
+  # git really uses. A name counts only when its fetch and push URL are the same (the scan checks).
   dest="${1:-}"
   if [ "$dest" != "${2:-}" ] && ! git remote 2>/dev/null | grep -Fxq -- "$dest"; then
     dest="${2:-} (rewritten from $dest)"

@@ -72,6 +72,7 @@ reference below (§1 to §7, Tests) points into it.
 |---|---|
 | Where the scan lives | One deployed copy beside the hook: `dot_config/git/hooks/executable_secret-scan` → `~/.config/git/hooks/secret-scan` (§5 "beside the hook"). The hook finds it by `$(dirname "$0")`; the helper by `PUSH_GUARD_SCAN`, else `$HOME/.config/git/hooks/secret-scan`. The guard thereby trusts one more path under `~/.config`, which sandboxed sessions cannot write (`live-write-boundary`'s `config_git` probe). The name holds no `push`, so the guard's fast path never reads it. |
 | The scan's CLI | `secret-scan --repo <toplevel> --remote <name-or-url> [--budget <s>] -- <source>...`. Exit 0: clean or nothing outgoing; 1: refused, one reason on stderr; 2: usage. stdout always empty. Budget: `--budget`, else `SECRET_SCAN_BUDGET`, else 30 s. |
+| A push to a named remote (hook `$1` is in `git remote`) | Its tracking refs are excluded only when its fetch and push destinations are the same address: `git remote get-url --all <name>` and `git remote get-url --push --all <name>` each yield exactly one value and the two are string-equal (both forms resolve `pushInsteadOf`/`insteadOf`). A `pushurl` that differs, a `pushInsteadOf` rewrite, several urls or pushurls, or a failing `get-url` exclude nothing: the whole history is scanned and a history too large for the budget ends in the existing timeout refusal (fail closed). A `pushurl` equal to the fetch URL still attributes. |
 | A push to a URL (hook `$1` is not a remote name) | Only history attributable to the destination is excluded. Tracking refs record what a remote's **fetch** URL holds, so the scan looks for the configured remotes whose single fetch URL (`git config --get-all remote.<r>.url`, exactly one value, compared as a string) equals the pushed URL and excludes exactly those remotes' tracking refs. A `pushurl`, a `pushInsteadOf` rewrite or a second `url` never attributes history: a remote that fetches from A and pushes to B says nothing about what B holds. With no such remote nothing is excluded: every source's whole history is scanned, and a history too large for the budget ends in the existing timeout refusal (fail closed). Another remote's history is never excluded, so a commit that only `backup` holds is still scanned before it goes to a different repository by URL. |
 | The scan's git environment | Inherited env minus `GITLEAKS_*` and `GIT_CONFIG_PARAMETERS`; inherited `GIT_CONFIG_COUNT` entries are kept and the pins appended after them. Measured in an agent session: git hands the hook four `safe.directory` entries and the proxy's parameters, and a `git -c x=y push` reaches the hook through `GIT_CONFIG_PARAMETERS`. |
 | Dry runs | git runs `pre-push` for `--dry-run` (measured, git 2.56.1), so the hook scans dry runs; the helper still never scans a canonical dry run. The hook suite drives judged pushes as dry runs and pins that git still runs the hook for them. |
@@ -344,9 +345,10 @@ against them.
   `leak_reason`, and its own copy of `Repo.run`'s budget, per-call timeout, lazy-fetch and raw
   semantics. Three changes only: `main()` parses the CLI and maps `Deny` to exit 1 (an unexpected
   exception is exit 1 with `Push guard: internal error (<type>: <msg>), so the push is refused.
-  Push by hand.`); the `--not --remotes=<remote>` exclusion is built once, and when `<remote>` is not in `git remote`
-  it becomes one `--remotes=<r>` per configured remote whose single fetch URL equals it, or no exclusion at all
-  (Decisions); the environment follows Decisions.
+  Push by hand.`); the exclusion is built once: `--not --remotes=<remote>` when `<remote>` is in
+  `git remote` and its single fetch URL equals its single push URL, no exclusion when they differ,
+  and when `<remote>` is not in `git remote` one `--remotes=<r>` per configured remote whose single
+  fetch URL equals it, or no exclusion at all (Decisions); the environment follows Decisions.
 - Produces the hook `pre-push <remote> <url>`, git's lines on stdin. It saves stdin to a temp file
   (never `$(cat)`, which drops the last newline), collects each line's local sha that is not all
   zeros, and when there is one runs `/usr/bin/python3 -I "$(dirname "$0")/secret-scan" --repo
@@ -421,7 +423,11 @@ suite counts a FAIL when gitleaks is not installed rather than skipping its rows
     passes (that destination already holds it); a URL that matches no configured remote, with a
     secret in old history, is blocked; distinct fetch and push URLs: `backup` fetches from
     repository A and has `pushurl` B, a secret-bearing commit fetched from A and pushed to B's
-    path as a URL is blocked naming the rule (the pushurl attributes nothing);
+    path as a URL is blocked naming the rule (the pushurl attributes nothing); the same shape
+    pushed by the remote's name (`git push backup <ref>`) is blocked naming the rule, as is the
+    same shape with `url.<B>.pushInsteadOf` rewriting A to B and with two pushurls; controls where
+    the fetch and push URL are equal (a `pushurl` equal to the fetch URL, and no rewrite) pass for
+    history the remote holds;
     `secret-scan` removed from `$TMP/hooks` blocks with "is missing";
   - the repository's own hook: an executable `.git/hooks/pre-push` receives the same two arguments
     and, for a two-ref push, both lines (it counts lines with `while read`); exiting 1 it blocks a
