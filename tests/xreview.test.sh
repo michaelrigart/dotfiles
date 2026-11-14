@@ -15,7 +15,6 @@
 # the start). No precondition may be skipped, and no keystroke (send-keys) may ever reach the
 # pane once the turn exists (C1).
 # test-requires: heavy  # 672 s on 2026-10-31
-# test-serial  # T4b asserts dispatch returns inside XREVIEW_PANE_WAIT=2; beside the xreview-* suites it took 2.35 s (2026-10-31)
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
@@ -812,7 +811,7 @@ echo "T4b. a pane that closes (pane_not_found) AFTER the turn starts still warns
 # before this fix round.
 fresh
 start="$EPOCHREALTIME"
-out="$(GONE_AFTER_RUN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+out="$(GONE_AFTER_RUN=1 XREVIEW_PANE_WAIT=5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "T4b dispatch still exits 0" "$rc" 0
@@ -821,7 +820,7 @@ is "T4b the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 tu
 is "T4b and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T4b it returns quickly, not waiting out XREVIEW_PANE_WAIT" \
-   "$(awk -v t="$took" -v w="${XREVIEW_PANE_WAIT:-20}" 'BEGIN{print (t < w) ? "yes" : "no ("t"s)"}')" yes
+   "$(awk -v t="$took" -v w=5 'BEGIN{print (t < w) ? "yes" : "no ("t"s)"}')" yes
 
 echo "T5. thread-start failing refuses before any turn or pane keystroke"
 fresh

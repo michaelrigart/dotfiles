@@ -134,7 +134,7 @@ Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; a
 `RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the verdicts are
 the same either way; a load-sensitive suite's assertion count can differ (`xreview-packet`
 F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
-`# test-serial` line and runs alone after the parallel ones (today only `xreview`), and so does
+`# test-serial` line and runs alone after the parallel ones (no suite carries it today), and so does
 every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
 A `# test-slow` line (optionally followed by a comment) moves a parallel-phase suite (a `heavy` one too, when selected) ahead of the unmarked ones; it orders dispatch only, and serial suites and suites gated on anything but `heavy` are unaffected.
 The runner gives its suites the first `jq` on `PATH` that is not a mise shim (about 6 ms a call, against
