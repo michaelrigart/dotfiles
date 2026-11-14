@@ -79,14 +79,16 @@ LISTED_PLAN = ("{} was shown whole in the approved plan review {}; only its chan
 MISSED_FILES = "The last round's reviewed_files did not list: {}. Review them too."
 # The line a framed review without diffs carries where the file list would be (spec 3.1).
 NO_DIFFS = "This review carries no diffs, so there is no file list; return reviewed_files as an empty list."
-# The refusal when the diffs exceed the cap: main's, naming packets.conf's cap= beside the variable
-# (spec 3.8). With framing on, the cap is Michael's to raise, as the cross-review skill says: it
-# names his file, which lies outside the sandbox, and nothing offers another way round it.
+# The refusals when the diffs exceed the cap (spec 3.8). Both say the cap is Michael's to raise,
+# naming his file outside the sandbox, and both end with the escalation marker; they differ only in
+# wording, one for the unframed dispatch and one for the framed one.
 CAP_REFUSAL = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
-               "Review them in slices, or raise the cap if the reviewer can hold it: "
-               "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch.")
+               "The cap is Michael's to raise, if the reviewer can hold it: "
+               "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch. "
+               "Michael's call: report this and stop.")
 CAP_REFUSAL_FRAMED = ("the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to "
-                      "raise, as cap= in ~/.config/xreview/packets.conf; no review was started.")
+                      "raise, as cap= in ~/.config/xreview/packets.conf; no review was started. "
+                      "Michael's call: report this and stop.")
 # The cap while fit is off: XREVIEW_MAX_DIFF_BYTES for one dispatch, else packets.conf's cap=
 # line, else this (spec 3.8). A cap= value that is not a whole number refuses, naming the file.
 DEFAULT_CAP = 100000

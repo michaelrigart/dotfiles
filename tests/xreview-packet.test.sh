@@ -657,10 +657,12 @@ SLICE = "This is slice {} of {} of one change. The other slices are reviewed in 
 LISTED = "{} was shown whole in the approved plan review {}; only its changes since then are shown here."
 MISSED = "The last round's reviewed_files did not list: {}. Review them too."
 CAP_TEXT = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
-            "Review them in slices, or raise the cap if the reviewer can hold it: "
-            "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch.")
+            "The cap is Michael's to raise, if the reviewer can hold it: "
+            "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch. "
+            "Michael's call: report this and stop.")
 CAP_FRAMED = ("the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to raise, "
-              "as cap= in ~/.config/xreview/packets.conf; no review was started.")
+              "as cap= in ~/.config/xreview/packets.conf; no review was started. "
+              "Michael's call: report this and stop.")
 NO_DIFFS = "This review carries no diffs, so there is no file list; return reviewed_files as an empty list."
 HAVE_ZSTD = __import__("shutil").which("zstd") is not None
 

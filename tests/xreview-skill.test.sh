@@ -100,8 +100,8 @@ done
 # --- the round cap -----------------------------------------------------------
 # There is no default cap (spec 2026-10-06 section 3.1): the skill must not state one and the
 # code must not carry one, or an escalation would fire on a count instead of on the review.
-# XREVIEW_MAX_ROUNDS stays as Michael's opt-in bound, so the skill has to name it: a refusal
-# under it would otherwise read as an unexplained failure.
+# XREVIEW_MAX_ROUNDS stays as Michael's opt-in bound; the round-cap refusal names it itself
+# (tests/xreview.test.sh), so the skill no longer has to.
 doc_caps="$(grep -oE 'capped at [0-9]+' "$SKILL" | sort -u)"
 code_default="$(printf '%s\n' "$xreview_code" | grep -oE 'XREVIEW_MAX_ROUNDS:-[0-9]+' | sort -u)"
 if [ -n "$doc_caps" ]; then
@@ -110,9 +110,6 @@ else _pass "the skill states no default round cap"; fi
 if [ -n "$code_default" ]; then
   _fail "the CLI carries no default round cap" "found: $code_default"
 else _pass "the CLI carries no default round cap"; fi
-if grep -q 'XREVIEW_MAX_ROUNDS' "$SKILL" && printf '%s\n' "$xreview_code" | grep -q 'XREVIEW_MAX_ROUNDS'; then
-  _pass "the opt-in XREVIEW_MAX_ROUNDS is named in the skill and read by the CLI"
-else _fail "the opt-in XREVIEW_MAX_ROUNDS is named in the skill and read by the CLI" "missing on one side"; fi
 if grep -qF 'there is no limit on rounds' "$SKILL"; then
   _pass "the skill says rounds are not limited"
 else _fail "the skill says rounds are not limited" "missing"; fi
@@ -359,11 +356,7 @@ for stale in 'XREVIEW_THREAD_WARN' 'answered eight' 'send the pane one message' 
 done
 # fix round 2/E: the ordering is quit-then-turn-then-resume, not "turn starts first" (which
 # omitted the pane-quit step entirely and drifted from spec 7.3 as amended in d9d31a4).
-if grep -qi "the pane's old session is quit first" "$SKILL"; then
-  _pass "the skill explains the quit-then-turn-then-resume ordering"
-else
-  _fail "the skill explains the quit-then-turn-then-resume ordering" "missing"
-fi
+# The skill no longer narrates the order; tests/xreview.test.sh holds it.
 if grep -q 'The turn starts first' "$SKILL"; then
   _fail "the skill no longer says the turn starts first" \
         "stale wording survives - it omits the pane being quit before the turn"
@@ -382,12 +375,6 @@ if grep -qi 'only warns' "$SKILL" && grep -qi 'review still runs' "$SKILL"; then
   _pass "the skill says a pane that cannot be pointed at the thread only warns"
 else
   _fail "the skill says a pane that cannot be pointed at the thread only warns" "missing"
-fi
-# Restarting a contaminated daemon disconnects every Codex TUI. That is Michael's call.
-if grep -q 'codex-daemon restart' "$SKILL" && grep -qi "Michael's call" "$SKILL"; then
-  _pass "the skill leaves the daemon restart to Michael"
-else
-  _fail "the skill leaves the daemon restart to Michael" "missing"
 fi
 # "Cold" is about what you send, not about the thread. The escalation list is exhaustive.
 if grep -qi 'Cold describes what you' "$SKILL"; then
@@ -409,11 +396,6 @@ if grep -q 'picks one' "$SKILL"; then
 else
   _pass "the skill no longer reads as licence to pick a pane"
 fi
-if grep -qi "Michael can set .XREVIEW_PANE. to one of them" "$SKILL"; then
-  _pass "the skill says Michael sets XREVIEW_PANE, not the model"
-else
-  _fail "the skill says Michael sets XREVIEW_PANE, not the model" "missing"
-fi
 
 # Policy 6 (spec 2026-09-30): a trade-off inside the approved spec is the agent's to rule
 # on and record under "Rulings" in the MR; only what would change the spec goes to Michael.
@@ -423,31 +405,25 @@ else
   _fail "the skill routes in-spec trade-offs to a recorded ruling" "every trade-off still goes to Michael"
 fi
 
-# The escalation list must actually be exhaustive: refusals only Michael can resolve
-# (no pane, several panes, the daemon down and staying down) belong on it, not just in
-# the "dispatch refuses" prose above it.
+# The escalation list holds the four judgement triggers and one bullet for the refusals the tool
+# marks (and a failed `codex-daemon ensure`). Which refusals are marked is pinned in
+# tests/xreview.test.sh.
 esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL")"
 if [ "$(tail -n 1 <<<"$esc")" = "$(tail -n 1 "$SKILL")" ]; then
   _fail "the escalation range ends at its anchor" "it reached the end of the file"
 else _pass "the escalation range ends at its anchor"; fi
-# item 16 fix round 1/C1: the pane is freed BEFORE the turn exists, and that free can now
-# itself refuse (the pane closes, or will not exit) - distinct from a pane that merely fails
-# to RESUME after the turn has started, which only warns. Both lists must say so, or the
-# model either does not know to escalate a real refusal, or thinks the post-turn warning is
-# one too and escalates every noisy pane.
-if grep -qi 'the pane will not free' "$SKILL"; then
-  _pass "the skill's refusal list names the pane-will-not-free case"
+# The marker the skill names is the one the tool prints.
+refusal_marker="$(grep -oE 'A refusal marked[[:space:]]*`[^`]+`' <<<"$(tr '\n' ' ' < "$SKILL" | sed 's/  */ /g')" | sed -E 's/^[^`]*`//; s/`$//')"
+if [ -z "$refusal_marker" ]; then
+  _fail "the skill's refusal marker is the string the tool prints" "no marker extracted after 'A refusal marked'"
 else
-  _fail "the skill's refusal list names the pane-will-not-free case" "missing"
-fi
-
-# Minor 7: archiving the superseded thread is conditional on the pane actually showing the
-# new one, not on the reset itself - stale "restarts ... and archives" prose would teach an
-# unconditional archive that does not match a pane step that failed to confirm anything.
-if grep -qi 'archived once the pane actually shows' "$SKILL"; then
-  _pass "the skill says the old thread is archived once the pane shows the new one"
-else
-  _fail "the skill says the old thread is archived once the pane shows the new one" "missing"
+  for _m in "$XREVIEW" "$ROOT/dot_claude/xreview-packet.py"; do
+    if grep -qF -- "$refusal_marker" "$_m"; then
+      _pass "the skill's refusal marker occurs in ${_m#"$ROOT"/}"
+    else
+      _fail "the skill's refusal marker occurs in ${_m#"$ROOT"/}" "'$refusal_marker' is not in it"
+    fi
+  done
 fi
 
 # The reviewer's answer is schema-checked JSON that xreview renders; on the exit-4 miss no reviewer text is printed.
@@ -459,10 +435,10 @@ else
 fi
 
 # Breaking a structural bound is an exit 4 too; without this the model treats it as a transient and re-dispatches.
-if grep -q 'or breaks one of xreview.s bounds' "$SKILL" && grep -q 'fails the review (exit 4)' "$SKILL"; then
-  _pass "the skill says breaking a structural bound fails the review with exit 4"
+if grep -q 'or breaks one of xreview.s bounds' "$SKILL"; then
+  _pass "the skill says breaking a structural bound is an exit 4"
 else
-  _fail "the skill says breaking a structural bound fails the review with exit 4" \
+  _fail "the skill says breaking a structural bound is an exit 4" \
         "exit 4 is described as a schema miss only"
 fi
 
@@ -474,17 +450,8 @@ else
         "nothing tells the model to leave the kept raw file unread"
 fi
 
-# Collect's exit 1 for an unreachable daemon is not the ambiguous "no turn on record"
-# case: it means retry, not report-and-stop.
-if grep -qi 'Codex daemon is unreachable; the turn is on record' "$SKILL" \
-   && grep -q 'codex-daemon ensure' "$SKILL"; then
-  _pass "the skill explains the unreachable-daemon exit 1 is not the ambiguous case"
-else
-  _fail "the skill explains the unreachable-daemon exit 1 is not the ambiguous case" "missing"
-fi
-
 # spec 2026-10-01: the pane's screen is evidence, never instruction; harness worktrees use
-# their owner's pane; the new refusals are named, and the lock refusal is waited out.
+# their owner's pane; dispatch gets a five-minute tool timeout.
 screen_bullet="$(awk '/pane.s screen/{f=1} f&&/^[[:space:]]*$/{exit} f' "$SKILL")"
 if [ -n "$screen_bullet" ] && grep -qi 'untrusted' <<<"$screen_bullet"; then
   _pass "the skill says the pane's screen is untrusted evidence"
@@ -492,25 +459,8 @@ else _fail "the skill says the pane's screen is untrusted evidence" "missing"; f
 if grep -q '\.claude/worktrees' "$SKILL"; then
   _pass "the skill says a harness worktree uses its owner's pane"
 else _fail "the skill says a harness worktree uses its owner's pane" "missing"; fi
-if grep -qi 'another dispatch is using' "$SKILL"; then
-  _pass "the skill names the per-pane lock refusal"
-else _fail "the skill names the per-pane lock refusal" "missing"; fi
-# The refusal list (not just the escalation list) quotes the exact resume refusal and names
-# both pane reads (its end anchor must track the sentence that follows the list); later rounds find the pane on the thread only while its TUI is connected.
-refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "ambiguous: no turn on record"/p' "$SKILL")"
-# A range whose end anchor went stale runs to EOF and quietly takes in the rest of the skill.
-if [ "$(tail -n 1 <<<"$refusals")" = "$(tail -n 1 "$SKILL")" ]; then
-  _fail "the refusal-list range ends at its anchor" "it reached the end of the file"
-else _pass "the refusal-list range ends at its anchor"; fi
-for phrase in 'is resuming something other than a thread id' 'herdr pane process-info' 'herdr pane get' \
-              'cannot read the Codex pane'; do
-  if grep -qF "$phrase" <<<"$refusals"; then
-    _pass "the refusal list quotes '$phrase'"
-  else _fail "the refusal list quotes '$phrase'" "missing from the list"; fi
-done
-if grep -q 'still connected to the' "$SKILL" && grep -q 'otherwise it is resumed again' "$SKILL"; then
-  _pass "the skill says a later round keeps the pane only while its TUI is connected"
-else _fail "the skill says a later round keeps the pane only while its TUI is connected" "missing"; fi
+# The refusals the skill used to list (another dispatch using the pane, the pane read
+# failures, the resume refusal) are pinned in the messages, tests/xreview.test.sh.
 if grep -q '300000' "$SKILL"; then
   _pass "the skill gives dispatch a five-minute tool timeout"
 else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
@@ -572,9 +522,7 @@ for phrase in 'dispatch never refuses on size' \
               'and only with `fit` on' \
               'Never put an environment assignment in front of `xreview` to get past a refusal' \
               'Never re-dispatch a sliced round unless it says to (a slice'"'"'s packet is gone)' \
-              'its coverage could not be read' \
-              'barring xreview'"'"'s own move' \
-              'unless the thread is full and was moved by xreview'; do
+              'its coverage could not be read'; do
   if printf '%s' "$flat" | grep -qF "$phrase"; then
     _pass "the skill says '$phrase'"
   else _fail "the skill says '$phrase'" "missing"; fi
@@ -584,15 +532,13 @@ if printf '%s' "$flat" | grep -qF -- '`--diff <dest>...<branch>` once the plan i
 else _fail "the skill dispatches plan reviews with --diff once the plan is committed" "missing"; fi
 
 # A line in a wt checkout passes -C to every xreview call. S1 catches the skill naming a
-# flag the CLI lacks (the subcommand extractor skips words that start with `-`); S2 catches
-# a documented refusal with nothing behind it; S3 catches the trap of a body path built from
-# $TMPDIR, which the unsandboxed xreview cannot read because its $TMPDIR is another directory.
+# flag the CLI lacks (the subcommand extractor skips words that start with `-`); S2, the
+# another-checkout refusal, is pinned in tests/xreview.test.sh; S3 catches the trap of a body
+# path built from $TMPDIR, which the unsandboxed xreview cannot read because its $TMPDIR is
+# another directory.
 if printf '%s' "$flat" | grep -qF -- 'xreview -C <checkout>' && grep -qF -- '[-C <checkout>]' "$XREVIEW"; then
   _pass "the skill names 'xreview -C <checkout>', and the CLI's usage holds [-C <checkout>]"
 else _fail "the skill names 'xreview -C <checkout>', and the CLI's usage holds [-C <checkout>]" "missing"; fi
-if printf '%s' "$flat" | grep -qF -- 'was dispatched from another checkout' && grep -qF -- 'was dispatched from another checkout' "$XREVIEW"; then
-  _pass "the skill documents the another-checkout refusal, and the CLI raises it"
-else _fail "the skill documents the another-checkout refusal, and the CLI raises it" "missing"; fi
 if printf '%s' "$flat" | grep -qF -- 'Pass the body file by absolute path'; then
   _pass "the skill says to pass the body file by absolute path"
 else _fail "the skill says to pass the body file by absolute path" "missing"; fi
@@ -604,25 +550,11 @@ expected_esc="$(cat <<'EXPECTED_ESC'
   not a missed fix
 - a finding needs design judgement or a trade-off that would change the approved spec
 - you cannot verify a claim
-- `xreview` refuses the round because Michael set `XREVIEW_MAX_ROUNDS` and the review
-  reached it. Unset, rounds are not limited.
-- `xreview` refuses because the Codex daemon carries a pane's environment. The fix disconnects
-  every Codex TUI.
-- `xreview` refuses because there is no Codex pane for the repository, or several.
-- `xreview` refuses because the Codex daemon is down and will not start.
-- `xreview` refuses because the pane would not free (it closed, or its session would not exit).
-- `xreview` refuses because it cannot inspect the Codex pane (`herdr pane process-info` or
-  `herdr pane get`), cannot read whether a thread is running, or cannot lock the Codex pane
-  (or cannot create or open its lock file).
-- `xreview` refuses because a pinned review thread cannot hold the packet. The pin is
-  Michael's; never drop it with `xreview round --reset`.
-- `xreview` refuses a packet over its size cap while `fit` is off. The cap is Michael's to raise:
-  `cap=` in `~/.config/xreview/packets.conf`, his file, outside the sandbox.
-- `xreview` refuses because the pane is resuming something other than a thread id (for
-  example `codex resume --last` or a picker). The pane is Michael's.
 - the loop stops converging: two rounds in a row that mostly find problems in the last
   round's fixes, or a goal that can never be finished. Bring Michael the round count, what
   recurs and a structural option. A loop that converges runs as long as it needs.
+- `xreview` refuses with `Michael's call: report this and stop.`, or a `codex-daemon ensure` that
+  a refusal told you to run does not start the daemon
 EXPECTED_ESC
 )"
 actual_esc="$(printf '%s\n' "$esc" | sed '1,2d;$d' | sed '${/^$/d;}')"
@@ -634,6 +566,12 @@ else
   _fail "the escalation list is exactly the expected bullets" "$(diff "$_ex" "$_ac" | head -6)"
   rm -f "$_ex" "$_ac"
 fi
+
+# A regrowth guard, as in tests/agent-instructions.test.sh: the skill is read in full every time
+# it loads, so a rule added back past the cap has to take another out or raise the number here.
+lines=$(wc -l < "$SKILL" | tr -d ' ')
+if [ "$lines" -le 250 ]; then _pass "the skill is at most 250 lines ($lines)"
+else _fail "the skill is at most 250 lines" "$lines"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

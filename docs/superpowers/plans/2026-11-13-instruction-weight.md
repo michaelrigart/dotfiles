@@ -14,7 +14,7 @@ agent description, an `xreview` refusal). The always-loaded file keeps the rule 
 chezmoi templates.
 
 **Spec:** `docs/superpowers/specs/2026-11-13-instruction-weight-design.md`
-**Status:** In progress
+**Status:** Implemented (completed 2026-11-14; do not run again)
 
 ## Global Constraints
 
@@ -150,7 +150,7 @@ output idioms and `failed_keys`, `write-boundary-probe`), `## Suite-specific` (t
 "because it stubs zsh builtins"),
 `## History` (the 18-test and 324-assertion cases, the whole `HERDR_SESSION` block).
 
-- [ ] **Step 1: Write the failing pins.** Add to `rules.tsv` (tab-separated; columns id, file,
+- [x] **Step 1: Write the failing pins.** Add to `rules.tsv` (tab-separated; columns id, file,
   anchor, safety, terms, note):
 
   | id | file | anchor | safety | terms |
@@ -168,17 +168,17 @@ output idioms and `failed_keys`, `write-boundary-probe`), `## Suite-specific` (t
   The line cap is added in Task 2. In `tests/agent-instructions.test.sh`, add `$SRC/AGENTS.md`
   and `$SRC/tests/AGENTS.md` to the suite's "missing file under test" loop.
 
-- [ ] **Step 2: Run it and see it fail.**
+- [x] **Step 2: Run it and see it fail.**
   Run: `./tests/run.sh agent-instructions`
   Expected: exit 2, `missing file under test: …/tests/AGENTS.md`. Then `touch tests/AGENTS.md`
   and rerun: FAIL on the three new rows only: `a-tests-pointer`, `t-missing-subject`, `t-kv`.
 
-- [ ] **Step 3: Write `tests/AGENTS.md`** from the Disposition table, verbatim.
+- [x] **Step 3: Write `tests/AGENTS.md`** from the Disposition table, verbatim.
 
-- [ ] **Step 4: Rewrite `AGENTS.md` Testing** to the kept blocks, in their present order, with
+- [x] **Step 4: Rewrite `AGENTS.md` Testing** to the kept blocks, in their present order, with
   the exact text above; add `tests/AGENTS.md` to the Layout tree's `tests/` line.
 
-- [ ] **Step 5: Check nothing was lost.** Every sentence of old lines 116-242 is in the new
+- [x] **Step 5: Check nothing was lost.** Every sentence of old lines 116-242 is in the new
   root or in `tests/AGENTS.md`:
   Run: `git show HEAD:AGENTS.md | sed -n '114,242p' | tr -s ' \n' '\n' | sort -u > "$TMPDIR/old.words"`
   and `cat AGENTS.md tests/AGENTS.md | tr -s ' \n' '\n' | sort -u > "$TMPDIR/new.words"`, then
@@ -187,17 +187,17 @@ output idioms and `failed_keys`, `write-boundary-probe`), `## Suite-specific` (t
   and the like, which must then appear in `## History`: so in practice empty). Explain any word
   that remains in the report.
 
-- [ ] **Step 6: Map and guard rows.** Add `AGENTS.md` and `tests/AGENTS.md` to
+- [x] **Step 6: Map and guard rows.** Add `AGENTS.md` and `tests/AGENTS.md` to
   `.scripts/test-audit/subjects.tsv` as `prose`, suite `agent-instructions`, in path order,
   matching the neighbouring rows' columns. `tests/missing-subject.test.sh` hides one file per
   suite: add a row only if its table lists one per guarded file rather than one per suite (read
   its header; say which in the report).
 
-- [ ] **Step 7: Run the suites.**
+- [x] **Step 7: Run the suites.**
   Run: `./tests/run.sh agent-instructions missing-subject run`
   Expected: all pass; quote the `passed/total` lines.
 
-- [ ] **Step 8: Commit.** `git add AGENTS.md tests/AGENTS.md tests/fixtures/agent-instructions/rules.tsv tests/agent-instructions.test.sh .scripts/test-audit/subjects.tsv` (plus `tests/missing-subject.test.sh` if changed);
+- [x] **Step 8: Commit.** `git add AGENTS.md tests/AGENTS.md tests/fixtures/agent-instructions/rules.tsv tests/agent-instructions.test.sh .scripts/test-audit/subjects.tsv` (plus `tests/missing-subject.test.sh` if changed);
   message `Move suite-writing detail to tests/AGENTS.md`.
 
 ### Task 2: Rules: the bump procedure, the `.scripts` inventory, the herdr rule
@@ -237,7 +237,7 @@ New Rules bullet, exact, placed after the `tests/` bullet:
 The comment block in `.chezmoiexternal.toml` opens `# Bumping a pinned skill:` and gives the
 moved sentences as numbered steps, each pinned step on ONE comment line (Review Focus 2).
 
-- [ ] **Step 1: Write the failing pins** in `rules.tsv`:
+- [x] **Step 1: Write the failing pins** in `rules.tsv`:
 
   | id | file | anchor | safety | terms |
   |---|---|---|---|---|
@@ -247,17 +247,17 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
   | `ext-bump-closes` | `.chezmoiexternal.toml` | `Closes #<issue>` | no | `commit message` |
   | `a-herdr-bare` | `AGENTS.md` | ``never call `command herdr` bare`` | no | `--session;HERDR_SOCKET_PATH` |
 
-- [ ] **Step 2: Run** `./tests/run.sh agent-instructions`; expected: those five rows FAIL.
-- [ ] **Step 3: Make the edits** per the Disposition table.
-- [ ] **Step 4: Check the externals file still parses and nothing else moved.**
+- [x] **Step 2: Run** `./tests/run.sh agent-instructions`; expected: those five rows FAIL.
+- [x] **Step 3: Make the edits** per the Disposition table.
+- [x] **Step 4: Check the externals file still parses and nothing else moved.**
   Run: `command chezmoi --source /Users/michael/.local/share/chezmoi-chore-instruction-weight managed`
   Expected: lists `.agents/skills/clarity/SKILL.md` as before (same count of lines as on main).
   If it exits 2 for a cold cache, that is not a failure of this task: say so.
-- [ ] **Step 5: Run** `./tests/run.sh agent-instructions agent-skills skill-updates`; expected:
+- [x] **Step 5: Run** `./tests/run.sh agent-instructions agent-skills skill-updates`; expected:
   all pass. Then add the cap assertion to `tests/agent-instructions.test.sh`, beside the
   fragment caps and in their shape: `AGENTS.md is at most 240 lines`, reading `$SRC/AGENTS.md`;
   see it pass, and see it fail with the limit temporarily set to 100 (restore it). Quote the totals.
-- [ ] **Step 6: Commit**, message `Put the skill-bump procedure in the externals file`.
+- [x] **Step 6: Commit**, message `Put the skill-bump procedure in the externals file`.
 
 ### Task 3: `claude-code.md`: the Subagents table and the plan workspace
 
@@ -286,7 +286,7 @@ moved sentences as numbered steps, each pinned step on ONE comment line (Review 
 `plan-run` description becomes: `Use when running an implementation plan as its controller.
 Its rules take precedence over superpowers:subagent-driven-development and its templates.`
 
-- [ ] **Step 1: Change the pins** in `rules.tsv` (the test fails first):
+- [x] **Step 1: Change the pins** in `rules.tsv` (the test fails first):
   - `cc-table-standard`: file `dot_claude/agents/sp-standard.md`, anchor `name: sp-standard`,
     terms `fix rounds;plan-run controllers;merges and merge-conflict resolution`.
   - `cc-table-web`: file `dot_claude/agents/web-researcher.md`, anchor `name: web-researcher`,
@@ -298,18 +298,18 @@ Its rules take precedence over superpowers:subagent-driven-development and its t
   - new `pr-sdd-clean` (safety yes): `dot_claude/skills/plan-run/SKILL.md`, anchor
     `sdd-clean <workspace>`, terms the moved sentence, whole.
   - `cc-subagents` and `cc-no-review-forks`: unchanged, and must still pass.
-- [ ] **Step 2: Run** `./tests/run.sh agent-instructions`; expected: the five changed rows FAIL.
-- [ ] **Step 3: Make the edits.** Keep each `description:` on one line, with no `: `, ` #` or
+- [x] **Step 2: Run** `./tests/run.sh agent-instructions`; expected: the five changed rows FAIL.
+- [x] **Step 3: Make the edits.** Keep each `description:` on one line, with no `: `, ` #` or
   backtick added to an unquoted value. Then check every unquoted description:
   Run: `awk '/^description: [^"]/ { v = $0; sub(/^description: /, "", v); if (v ~ /: | #|^`/) print FILENAME ": " v }' dot_claude/agents/*.md dot_claude/skills/*/SKILL.md dot_agents/skills/*/SKILL.md`
   Expected: no output.
-- [ ] **Step 4: Preview the render.**
+- [x] **Step 4: Preview the render.**
   Run: `command chezmoi --source /Users/michael/.local/share/chezmoi-chore-instruction-weight cat /Users/michael/.claude/CLAUDE.md`
   Expected: the Subagents bullet is one bullet of four lines with no table;
   `wc -l .chezmoitemplates/agents/claude-code.md` prints 41 or 42.
-- [ ] **Step 5: Run** `./tests/run.sh agent-instructions claude-settings agent-skills live-feedback-skill review`.
+- [x] **Step 5: Run** `./tests/run.sh agent-instructions claude-settings agent-skills live-feedback-skill review`.
   Expected: all pass; quote the totals. A `????` row for a cold cache is not a failure; say so.
-- [ ] **Step 6: Commit**, message `State agent routing in the agent descriptions`.
+- [x] **Step 6: Commit**, message `State agent routing in the agent descriptions`.
 
 ### Hold point: A and B
 
@@ -319,37 +319,119 @@ The controller (not a task): full default suite once, the sandboxed real-system 
 report to the driver with the measured table. Then wait for the driver's word on
 `fix/xreview-trust`.
 
-### Task 4: Rebase and write C's table (controller)
+### Task 4: Rebase and write C's table (controller) — done
 
-**Depends on:** the driver's word that `fix/xreview-trust` is on main.
+Parts A and B merged as 1a94111. The table is
+`docs/superpowers/plans/2026-11-13-instruction-weight-appendix-c.md` (Appendix C): C.1 maps
+every sentence of the skill (261 rows), C.2 every refusal either of its lists names (R1–R37),
+C.3 is the new skill in full (235 lines), C.4 maps every check of `tests/xreview-skill.test.sh`
+(K1–K71). Its Decisions section records what the driver decided on Michael's delegation: the
+goal is at most 250 lines, measured 235, because 150 cannot be reached without cutting a rule
+or editing a guard. Line numbers in the appendix are from d88277e: find text by its words.
 
-- [x] Rebase onto `origin/main` (done, 4c35ad4). The `xreview-guard-cli` paragraph that branch
-  added to `AGENTS.md` Testing was split by the move test: what its exit 2 means reads a run's
-  result and stays in the root, joined to the cold-cache paragraph (as the plan review ruled
-  for that paragraph); "the pin in the suite is updated in the change that weighs the new
-  command or flag" binds while changing the suite and moved to `tests/AGENTS.md`,
-  `## Suite-specific`. Root: 204 lines.
-- [ ] Append `## Appendix C` to this plan: one row per sentence or list item of the rebased
-  `dot_claude/skills/cross-review/SKILL.md` (kept / moved to which `xreview` or guard message /
-  dropped as rationale, with the rule it explained), and one row per `die` in
-  `dot_local/bin/executable_xreview` that the skill's two refusal lists name, with its closing
-  clause: the agent's action, or `Michael's call: report this and stop.` A refusal is marked
-  Michael's call exactly when today's escalation list names it.
-- [ ] If the kept rows exceed 150 lines, or a moved sentence needs a guard's deny message
-  changed, stop: that goes to Michael before any edit.
-- [ ] Replace Tasks 5 to 7 below with full steps written from the appendix, commit, and send
-  the plan to Codex at the `plan` checkpoint. Execution of C starts once it approves.
+Global Constraints for C, in addition to the plan's:
+- No trigger, round rule, verdict rule or escalation condition changes. A refusal carries
+  `Michael's call: report this and stop.` exactly when C.2 says so (R1–R25), and no other does.
+- Message text only: no branch, exit status or condition changes in `xreview` or
+  `xreview-packet.py`. No guard file (`dot_claude/executable_xreview-guard.sh`,
+  `dot_claude/xreview-guard.py`, `dot_claude/xreview-apply-guard*`) is edited.
+- The pinned sentences `cr-plan-review`, `cr-show-plan`, `cr-plan-path`, `cr-no-consensus` and
+  `cr-fix-rule` stay verbatim; their `rules.tsv` rows do not change.
 
-### Tasks 5 to 7: C (outline; steps written in Task 4)
+### Task 5: Refusals carry their next step — done
 
-- **Task 5, refusals.** `dot_local/bin/executable_xreview`: each listed `die` gets its closing
-  clause. `tests/xreview.test.sh`: each escalation refusal ends with the Michael's-call clause,
-  and no wait-and-retry refusal does. **Depends on:** Task 4.
-- **Task 6, the skill.** `dot_claude/skills/cross-review/SKILL.md` rewritten from the
-  appendix's kept rows; `rules.tsv` rows `cr-*` unchanged and passing; a cap of 150 lines in
-  `tests/xreview-skill.test.sh`. **Depends on:** Task 5 (the skill points at the clauses).
-- **Task 7, the skill's consistency suite.** `tests/xreview-skill.test.sh`: a check whose
-  sentence moved to a message now reads the message; one whose sentence was dropped as
-  rationale goes, each listed in the appendix. **Depends on:** Task 6.
+**Depends on:** Task 4.
 
-Then the same hold-point steps as above; `--changed` runs the heavy `xreview` suite.
+**Files:**
+- Modify: `dot_local/bin/executable_xreview` (the `die` texts of R1–R23, R28, R30, R31)
+- Modify: `dot_claude/xreview-packet.py` (`CAP_REFUSAL`, `CAP_REFUSAL_FRAMED`: R24, R25)
+- Test: `tests/xreview.test.sh`, `tests/xreview-packet.test.sh`
+
+**Interfaces:**
+- Produces: the marker, exactly `Michael's call: report this and stop.`, as the last words of
+  the message of each of R1–R25; Task 6's skill quotes it. "The message" is what the refusal
+  prints on stderr from its `xreview:` line up to, and not including, any pane-screen lines
+  (`  | …`) or a following `DIE_NOTE` line. Most messages are one line; R23 has four lines and
+  R24 two, and for those the marker ends the last line. The action clauses of
+  R26–R37 as C.2's "New text" column gives them.
+
+- [x] **Step 1: Write the failing assertions** in `tests/xreview.test.sh`, extending the case
+  that already raises each refusal (C.2's last column names them; C.4's "replaced" rows K8,
+  K41, K45, K48, K53, K56, K58 and K68 name the same cases):
+  - for every one of R1–R25: its message (as Interfaces defines it) ends with the marker. Write
+    one helper for "the message of the refusal in this stderr" and use it everywhere, so R8
+    (the pane's screen follows), R23 and R24 (several lines) and the sliced refusals (a
+    `DIE_NOTE` line follows) are all read the same way;
+  - R3 names `codex-daemon restart`; R6 carries "Michael can set XREVIEW_PANE to one of them";
+    R23 names `XREVIEW_MAX_ROUNDS`; R22 says "never drop it with xreview round --reset";
+  - R28 ends "wait for it, then dispatch again"; R29 carries "run codex-daemon ensure, then
+    collect again"; R30 and R31 end "(do NOT retry the dispatch): report this and stop";
+  - none of R26–R37 carries the marker.
+  C.2 says no case pins R2, R4, R12, R18 or R19 today. Each gets a case: R2, R4 and R12 are the
+  sliced-collect twins of R1, R3 and R10, so add them beside the sliced-collect cases (SL
+  section) with the same stubs that raise their twins; R18 and R19 are raised by making the
+  locks directory, then the lock file, impossible to create, beside the lock cases (near the
+  "another dispatch is using" assertions). After the Task 6 skill, the marker is the only thing
+  that tells the agent these are escalations, so none may stay unpinned. If one cannot be
+  raised in the suite's harness, stop and report which and why. In `tests/xreview-packet.test.sh`, change `CAP_TEXT` and
+  `CAP_FRAMED` (and F1) to C.2's new texts for R24 and R25.
+- [x] **Step 2: Run** `./tests/run.sh xreview-packet` and `./tests/run.sh xreview` (the exact
+  name lifts the heavy gate; about 11 minutes; do not set `RUN_SH_LOCK_WAIT`).
+  Expected: the new assertions FAIL, everything else passes.
+- [x] **Step 3: Change the texts** to C.2's "New text" column, exactly. R26, R27, R29, R32–R37
+  do not change. Update the existing exact-text and `$`-anchored assertions C.2 lists
+  (753, 926, 1026, 1058, 972, 1075, 1085, 980, 1034, 976, 1065, 1050, 1390, 1333, 1395, 2140)
+  to the new texts; an assertion that only matches a substring stays as it is.
+- [x] **Step 4: Check nothing but text changed.**
+  Run: `git diff -U0 dot_local/bin/executable_xreview dot_claude/xreview-packet.py`
+  Expected: every changed line is a message string (a `die "…"` argument, or the two
+  constants); no line with `if`, `case`, `exit`, `return` or a condition differs.
+- [x] **Step 5: Run** `./tests/run.sh xreview` and `./tests/run.sh xreview-packet`.
+  Expected: all pass; quote each `passed/total` line. If `xreview-rpc` fails only on "one that
+  never answers initialize is bounded the same way", rerun it alone and report both results.
+- [x] **Step 6: Commit**, message `Let each xreview refusal state its next step`.
+
+### Task 6: The skill, from Appendix C — done
+
+**Depends on:** Task 5 (the skill quotes its marker and points at its clauses).
+
+**Files:**
+- Modify: `dot_claude/skills/cross-review/SKILL.md` (replaced by C.3, verbatim)
+- Modify: `tests/xreview-skill.test.sh` (per C.4), `tests/fixtures/agent-instructions/rules.tsv`
+
+- [x] **Step 1: Change the suite first**, per C.4: remove K37, K49, K57 and K59; remove the
+  skill half of K8, K41, K45, K48, K53, K56, K58 and K68 (Task 5 put their replacement on the
+  messages); in K51 keep the first phrase only; in K65 remove the two phrases C.4 names; set
+  K70's `expected_esc` to the five bullets of C.3's escalation list; add three rows to
+  `tests/fixtures/agent-instructions/rules.tsv` for the rules that replace the lists, file
+  `dot_claude/skills/cross-review/SKILL.md`, safety `yes`, each with its whole sentence as the
+  term: `cr-refusal-follow` (anchor `When a refusal names its next step`, term
+  `**When a refusal names its next step, follow it.**`), `cr-refusal-marker` (same anchor,
+  term ``A refusal marked `Michael's call: report this and stop.` is an escalation (below).``)
+  and `cr-refusal-no-workaround` (same anchor, term `Never work around a refusal.`); add K71:
+  `the skill is at most 250 lines`, in the shape of the caps in
+  `tests/agent-instructions.test.sh`.
+- [x] **Step 2: Run** `./tests/run.sh xreview-skill`.
+  Expected: K70 FAILS (the old list); K71 FAILS (381); the rest pass. And
+  `./tests/run.sh agent-instructions`: the three new rows FAIL (anchor not found).
+- [x] **Step 3: Replace the skill** with the fenced block under C.3, byte for byte (the block's
+  first line is the frontmatter's `---`).
+  Check: `wc -l dot_claude/skills/cross-review/SKILL.md` prints 235.
+- [x] **Step 4: Run** `./tests/run.sh xreview-skill agent-instructions claude-settings review`.
+  Expected: all pass (the five `cr-*` rows among them); quote each `passed/total` line.
+  A check that fails because C.3 lacks a phrase C.4 says is kept is a defect in the appendix:
+  stop and report it, do not edit the skill text to fit.
+- [x] **Step 5: See the cap fail.** Set K71's limit to 100, run the suite file, see it fail,
+  restore 250.
+- [x] **Step 6: Commit**, message `Cut the cross-review skill to its rules`.
+
+### Hold point: C
+
+The controller: the full default suite once; the sandboxed real-system run (render the skill
+with `command chezmoi --source <checkout> cat ~/.claude/skills/cross-review/SKILL.md`, and raise
+one marked and one unmarked refusal from a scratch repository with a stubbed `herdr`, as the
+suite does); the final whole-branch review; `./tests/run.sh --changed` (the heavy `xreview`
+suite is selected); Codex pre-merge on `main...chore/instruction-weight`; set both records'
+Status; push; report tip and receipt to the driver. `wt-teardown` 100/101 is a known failure on
+main (the sandbox hides other processes; `fix/wt-teardown-sandbox` takes it): report it, do not
+fix it here.
