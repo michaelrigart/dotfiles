@@ -28,7 +28,7 @@ GitHub target of section 2.1 gains that ruleset, his merge command gains `--admi
 the Actions residual is closed, the scope is his 43 GitHub repositories, and merge 3 may be
 written before the GitLab and Azure results (section 6). The section "Revision 3" at the end lists
 every change; "Implementation notes" records his results so far. Revision 2 as signed is this
-file at commit `50f0421`.
+file at commit `50f0421`. Codex approved revision 3 in spec round 2 (`xr-1794692786-1c2c3c79`).
 
 This repository is public. Client organisations, groups, projects and hosts are never named here,
 in the plan, in code or in tests; the tooling reads them from the local checkouts at run time.
