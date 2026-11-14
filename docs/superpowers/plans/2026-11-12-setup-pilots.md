@@ -244,8 +244,8 @@ with `measure-interventions.py` and a scan of every error tool result:
   `mktemp -d` and no removal), classifier 0, `user-rejected` 0. The line's own report counted
   three refusals under the key; two of them are path-resolution guard denials of `cd … &&`
   chains, a hook denial whose text appears in 2,908 transcript files of other projects, which
-  ran without the key, so they would have happened anyway. The safety-check text appears in 57 transcript
-  files of 28 other projects.
+  ran without the key, so they would have happened anyway. The safety-check text appears in
+  57 transcript files of 28 other projects.
 
 **Recommendation to the driver:** adopt, for unattended lines only, by the rule above: no turn
 ended on a streak, the one refusal was worked around without Michael, and no human turn came
@@ -493,7 +493,8 @@ findings (Critical 2 of 6, Important 6 of 9, Minor 13 of 31); same verdict on 11
 final review and Codex's pre-merge review is still open.
 
 **Against the host line's final whole-branch review** (`sp-architect` on `3d65954`: changes,
-0 Critical, 3 Important, 6 Minor). Read by me against both sets of per-task reports; a
+0 Critical, 3 Important, 7 Minor, the seventh a group of six places where text no longer
+matches the code). Read by me against both sets of per-task reports; a
 finding counts for a per-task reviewer only if it raised the same defect.
 
 | Final-review finding | Task it sat in | Opus per-task | Sonnet shadow |
@@ -525,14 +526,17 @@ recorded it as an accepted limit (`08b0f66`). The branch is merged to main.
 - 17 per-task reviews and re-reviews over nine tasks, each shadowed once on Sonnet with the
   host controller's own brief.
 - Sonnet raised 21 of Opus's 46 findings: Critical 2 of 6, Important 6 of 9, Minor 13 of 31.
-- Same verdict on 11 of 17. In the six that differ, Sonnet passed or approved where Opus
-  held the round open (reviews of Tasks 2, 4, 6 and 8 among them).
+- Same verdict on 11 of 17. Of the six that differ, five have Sonnet passing or approving
+  where Opus held the round open (reviews 4, 6, 7, 14 and 17, on Tasks 6, 6, 2, 8 and 4), and
+  one has Sonnet asking for fixes where Opus approved (review 2, Task 1).
 - Four Critical findings on safety-boundary tasks were missed, three of them verified gate or
   redaction bypasses. This meets the protocol's drop condition.
-- Sonnet-only findings confirmed later: the split-placeholder fast-path bypass (fixed by the
-  host line) and three Minor findings repeated by the final review. Every Sonnet-only
-  finding is now hand-checked: 25 true (the split placeholder, Important; 24 Minor, most
-  cosmetic or test gaps, one false deny) and 5 not defects.
+- Sonnet-only findings confirmed later: three Minor findings repeated by the final review.
+  The host line also fixed Sonnet's split-placeholder finding (`2255c23`), but it stays
+  unconfirmed as a bypass: the guard allows the split form, and that glab fills `:a:b` as two
+  placeholders was never checked. Every Sonnet-only finding is now hand-checked: 24 true
+  (all Minor, most cosmetic or test gaps, one false deny), 1 Important unconfirmed (the split
+  placeholder) and 5 not defects.
 - Cost: tool calls equal (309 against 308); wall time 3,034 s for Opus and 2,380 s for
   Sonnet. Token cost was not measured.
 - Neither reviewer raised the final review's three Important findings or Codex's P1.
