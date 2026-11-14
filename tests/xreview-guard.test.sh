@@ -1286,7 +1286,8 @@ is "V5 a plain sync with a long descriptor is the word 81788 to zsh, a second re
    "$(decision "$W" 'git merge origin/main 81788>/dev/null')" deny
 is "V6 no shell takes a non-ASCII digit as a descriptor, so it is a second ref" \
    "$(decision "$W" 'git merge origin/main ٣>/dev/null')" deny
-is "V8 where a merge option would take it as its value" "$(decision "$W" 'git merge -m 10>x feature')" deny
+is "V8 where a merge option would take it as its value: hidden, not judged as one reading's merge" \
+   "$(denies "$W" 'git merge -m 10>x feature' 'plain command of its own')" 1
 is "V9 a command with no gated verb is untouched" \
    "$(decision "$W" 'echo hi 10>x') $(decision "$W" 'git log --oneline -1 10>x')" "allow allow"
 is "V10 and a sync with one-digit descriptors" \
