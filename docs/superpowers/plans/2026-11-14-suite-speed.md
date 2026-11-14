@@ -70,26 +70,28 @@ suites, `.scripts/test-audit/audit.py` for mutants.
 
 Fixtures under `$T/jq/`: `mise` (an executable printing `shim`), `shims/jq` (a symlink to
 `../mise`), `shims2/jq` (another symlink to `../mise`), `real/jq` (an executable printing `real`),
-`dirjq/jq/` (a directory). A fixture suite `jqprobe.test.sh` prints `  ok  jq says $(jq)`.
+`dirjq/jq/` (a directory). A fixture suite `jqprobe.test.sh` writes what `jq` prints to
+`$MARK/jq.says` and its `PATH` to `$MARK/jq.path`, then prints `  ok  probed` (the runner prints
+only a passing suite's report line, so the rows read the files, not the output).
 A helper `narrow` builds `$T/jq/tools/` holding symlinks to every tool the copied runner and the
 fixture suite call (`bash`, `env`, `lockf`, `mktemp`, `rm`, `mkdir`, `ln`, `readlink`, `dirname`,
 `basename`, `sed`, `grep`, `head`, `awk`, `xargs`, `getconf`, `cat`, `date`, `mv`, `id`, `sort`,
 `tr`, `wc`; add any the run shows missing), and no `jq`. Rows, each running the copied runner on
 `jqprobe` alone:
-  - J1 `PATH=$T/jq/shims:$T/jq/real:<narrowed>`: output has `jq says real`.
-  - J2 `PATH=$T/jq/shims:$T/jq/shims2:$T/jq/real:<narrowed>`: `jq says real` (a second shim is
-    skipped too).
-  - J3 `PATH=$T/jq/shims:<narrowed>`: `jq says shim`, and the suite's `PATH` equals the one the
-    runner was given (the fixture also prints `  ok  path $PATH`; compare).
-  - J4 `PATH=:relative-dir:$T/jq/dirjq:$T/jq/shims:$T/jq/real:<narrowed>`: `jq says real`, and
-    no error line on stderr.
-  - J5 the suite's report line and the closing totals are byte-identical to a run of the same
-    fixture under J3 apart from the `jq says` line (the link changes nothing in the report).
+  - J1 `PATH=$T/jq/shims:$T/jq/real:<narrowed>`: `jq.says` is `real`.
+  - J2 `PATH=$T/jq/shims:$T/jq/shims2:$T/jq/real:<narrowed>`: `real` (a second shim is skipped
+    too).
+  - J3 `PATH=$T/jq/shims:<narrowed>`: `shim`, and `jq.path` equals the `PATH` the runner was
+    given.
+  - J4 `PATH=:relative-dir:$T/jq/dirjq:$T/jq/shims:$T/jq/real:<narrowed>`: `real`, and the
+    runner's stderr is empty.
+  - J5 the runner's whole output (report line and closing totals) under J1 equals its output under
+    J3: the link changes nothing in the report.
 
 - [ ] **Step 2: Run the rows; J1, J2 and J4 fail**
 
 Run: `./tests/run.sh run`
-Expected: FAIL on J1, J2, J4 (`jq says shim`); J3 and J5 pass.
+Expected: FAIL on J1, J2, J4 (`jq.says` is `shim`); J3 and J5 pass.
 
 - [ ] **Step 3: Implement the link in `tests/run.sh`**
 
@@ -302,13 +304,15 @@ nothing uncommitted; switch back after) and at the tip, run `./tests/run.sh` and
 `./tests/run.sh xreview wt-functions test-audit`, each through the poller
 (`profile.py … base-default`, `… base-heavy xreview wt-functions test-audit`, and `tip-…` the
 same). Compare each suite's PASS/FAIL label sequence at base and tip (`cut -f3-` of the `.lines`
-files, filtered to `^\s*(ok|PASS|FAIL|not ok)`). Expected: identical for every suite; any
-difference is a finding. The four timings go into Step 4.
+files, filtered to `^\s*(ok|PASS|FAIL|not ok)`). Expected: identical for every suite except
+`run`, whose tip sequence is its base sequence plus exactly the rows J1-J5 and S1-S5 added by
+Tasks 1 and 2; any other difference (a label lost, changed or added) is a finding. The four
+timings go into Step 4.
 
 - [ ] **Step 2: Targeted mutants**
 
-Write `.superpowers/suite-speed/targeted.jsonl` with the `process-replay` (16) and `xreview-rpc`
-(3) rows of `.scripts/test-audit/targeted.jsonl`, and run
+Write `.superpowers/suite-speed/targeted.jsonl` with the `process-replay` (16), `xreview-rpc`
+(3) and `run` (1, `run:156-157`) rows of `.scripts/test-audit/targeted.jsonl`, and run
 `.scripts/test-audit/audit.py --ref HEAD --state .superpowers/suite-speed/state targeted .superpowers/suite-speed/targeted.jsonl`
 at the tip, then `audit.py --state .superpowers/suite-speed/state report --section targeted`.
 Expected: every mutant `killed`. The `try` results of Tasks 4 and 5 and the J/S rows'
@@ -331,3 +335,10 @@ plan's status for pre-merge.
 - [ ] **Step 5: Commit**
 
 `git add docs tests AGENTS.md && git commit -m "Record the suite-speed validation"`
+
+- [ ] **Step 6: The pre-merge run on the final tree**
+
+Run: `./tests/run.sh --changed` on the committed tree of Step 5. `tests/run.sh` changed, so it
+runs all four heavy suites, `git-forge-guard` included.
+Expected: every suite ok; each heavy suite's line carries `[needs: heavy; changed: …]`. Quote the
+heavy lines and the totals in the final report.
