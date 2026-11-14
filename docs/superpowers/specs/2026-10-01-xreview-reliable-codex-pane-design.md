@@ -205,6 +205,8 @@ reaches the pane).
 > `mcpServer/startupStatus/updated` notifications was rejected, because nothing orders them
 > before the resume answer. Reviewed by Codex over three rounds.
 
+> **2026-11-14 — amended.** The barrier now holds only while a server is `starting` or `notStarted`; null, a missing status and any other value let the turn start. Between 2026-11-01 and 11-11 a null status refused 20 dispatches, because a null never settles (spec `2026-11-14-xreview-reliability-design.md`, §2.2 and §3.1).
+
 ### 4.5 Resume, and report a pane that does not follow
 
 The resume runs as today, with `-C` (§4.1), and the success test is unchanged: the title

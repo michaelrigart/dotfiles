@@ -471,8 +471,10 @@ def cmd_thread_status(c, a):
     return 0
 
 
-# What mcpServerStatus/list reports once a server has stopped starting, one way or another.
-MCP_SETTLED = ("connected", "authenticationRequired", "failed", "cancelled", "disabled")
+# The only statuses mcpServerStatus/list reports for a server still starting. A null status
+# (the schema's "unavailable or the configuration changed") never turns into one of these, so
+# waiting on it only runs out the bound.
+MCP_STARTING = ("notStarted", "starting")
 
 
 def env_secs(name, default):
@@ -506,10 +508,11 @@ def mcp_servers(c, thread, until):
 
 
 def mcp_barrier(c, thread):
-    """0 once every MCP server of the loaded thread has stopped starting, else 1 with the
-    refusal printed. A turn started while they still start leaves a resumed TUI with a stale
-    "turn running" state its ctrl+c ladder cannot quit (spec 2026-10-01, 2026-10-15
-    amendment). Nothing has been sent for the turn yet, so every refusal is a clean one."""
+    """0 once no MCP server of the loaded thread is starting or notStarted (any other status,
+    null and a missing one included, settles), else 1 with the refusal printed. A turn started
+    while they still start leaves a resumed TUI with a stale "turn running" state its ctrl+c
+    ladder cannot quit (spec 2026-10-01, 2026-10-15 and 2026-11-14 amendments). Nothing has
+    been sent for the turn yet, so every refusal is a clean one."""
     wait = env_secs("XREVIEW_MCP_WAIT", 30.0)
     poll = env_secs("XREVIEW_MCP_POLL", 0.2)
     start = time.monotonic()
@@ -531,13 +534,13 @@ def mcp_barrier(c, thread):
             return 1
         if servers is not None:
             held = [(s.get("name"), s.get("runtimeStatus")) for s in servers
-                    if s.get("runtimeStatus") not in MCP_SETTLED]
+                    if s.get("runtimeStatus") in MCP_STARTING]
             if not held:
                 return 0
         if servers is None or time.monotonic() >= bound:
             secs = f"{round(bound - start, 1):g}s"
             if held:
-                what = ", ".join(f"{n}={'null' if st is None else st}" for n, st in held)
+                what = ", ".join(f"{n}={st}" for n, st in held)
                 err(f"the thread's MCP servers did not finish starting within {secs} ({what}); "
                     "no review was started")
             else:
