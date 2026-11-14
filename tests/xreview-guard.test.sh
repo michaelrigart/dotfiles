@@ -338,6 +338,46 @@ bash -c 'echo "$\
 CMD
 )
 is "B110 a line continuation between \$ and ( inside double quotes still opens the substitution" "$(decision "$W" "$X26")" deny
+X27=$(cat <<'CMD'
+x="$\
+("; git merge y; echo ")"
+CMD
+)
+X28=$(cat <<'CMD'
+echo "$\
+("
+git merge y
+")"
+CMD
+)
+is "B111 a \$( split by a line continuation in double quotes is text to zsh, which then runs what follows" \
+   "$(decision "$W" "$X27") $(decision "$W" "$X28")" "deny deny"
+X29=$(cat <<'CMD'
+echo "$\
+(( 1<<EOF ))"
+git merge y
+EOF
+CMD
+)
+is "B112 a \$(( split by a line continuation is not read as a substitution that hides the next lines" "$(decision "$W" "$X29")" deny
+X30=$(cat <<'CMD'
+cat <<EOF
+$\
+( ' )
+$(git merge y)
+' )
+EOF
+CMD
+)
+X31=$(cat <<'CMD'
+cat <<EOF
+$\
+(git merge y)
+EOF
+CMD
+)
+is "B113 a split \$( in an expanding here-document body stays denied, as does a real one after it" \
+   "$(decision "$W" "$X30") $(decision "$W" "$X31")" "deny deny"
 is "B105 the inner command's own quoting, single quotes, \$( ), a here-document and a nested quote with no gated verb stay allowed" \
    "$(decision "$W" "$X12") $(decision "$W" "$X13") $(decision "$W" "$X14") $(decision "$W" "$X15") $(decision "$W" "$X16") $(decision "$W" "$X19")" \
    "allow allow allow allow allow allow"

@@ -30,9 +30,9 @@
 # is unquoted - and any command that hands one to another shell: sh, bash, zsh, dash or ksh
 # -c '...', or env -S '...'. Such a string is read as written and as the outer shell hands it
 # on, its double-quoted \$ and \` unescaped; a backtick body inside double quotes is read with
-# \" unescaped too. A command holding a quote inside a double-quoted ${...}, where the shells
-# nest quotes by rules the gate does not model, is denied when it also mentions a gated verb,
-# on one line or several.
+# \" unescaped too. A command holding a quote inside a double-quoted ${...}, or a $( split by a
+# line continuation, where the shells read by rules the gate does not model, is denied when it
+# also mentions a gated verb, on one line or several.
 # A comment, a redirection, single-quoted text ($'...' included) and the rest of a
 # here-document body are read past, wherever they stand, and a line continuation is joined
 # first, as the shell joins it. A redirection's descriptor is read as bash reads it (every
@@ -79,9 +79,9 @@ PLAIN = ("Pre-merge gate: this command proposes or merges a change in a shape th
          "only mentions the verb, quote the mention.")
 UNPARSEABLE = ("Pre-merge gate: this command cannot be parsed (unbalanced quotes), and it may "
                "propose or merge a change. Fix the quoting, and run the verb as a plain command.")
-NESTED_QUOTE = ("Pre-merge gate: this command has a quote inside a double-quoted ${...}, where the "
-                "shells nest quotes by rules the gate does not read, and it may propose or merge a "
-                "change. Put the value in a variable first, and run the verb as a plain command.")
+UNSURE = ("Pre-merge gate: this command holds a quote inside a double-quoted ${...}, or a $( split "
+          "by a line continuation, which the shells read by rules the gate does not model, and it "
+          "may propose or merge a change. Rewrite that part, and run the verb as a plain command.")
 MALFORMED = ("Pre-merge gate: the hook's payload is not valid JSON, and its text may propose or "
              "merge a change, so the command is refused. Retry it.")
 REORDERED = ("Pre-merge gate: {0} takes a subcommand's options before its name and between its "
@@ -412,17 +412,18 @@ def here_bodies(cmd, i, pending, expanding):
 
 def lex(cmd, body=False, everywhere=False, naive=False):
     """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
-    expanding, nested_quote). text is cmd with each line continuation (an unescaped
+    expanding, unsure). text is cmd with each line continuation (an unescaped
     backslash-newline), comment and here-document body removed, each $'...' string rewritten
     in single quotes, and the body of each substitution taken out ($( ), <( ), >( ) and ``
     stay, empty), so the text holds no quoting nested inside one. substitutions are the
     bodies of the outermost command and process substitutions, each to be read in turn - a
     backtick body with its \\`, \\\\ and \\$ undone, and, inside double quotes, also read with
     \\" undone, as the shells read it. expanding are the bodies of the here-documents whose
-    delimiter is unquoted. nested_quote says a " or ' stands inside a ${...} that is itself
-    inside double quotes, where the shells nest quotes by rules lex does not model. In double
-    quotes and in an expanding here-document body a $( and that ${ are found past a
-    backslash-newline, as bash joins them; an escaped character never counts.
+    delimiter is unquoted. unsure says the text holds what the shells read by rules lex does
+    not model: a " or ' inside a ${...} that is itself inside double quotes, or, in double
+    quotes or an expanding here-document body, a $( found only past a backslash-newline, which
+    bash joins and zsh does not (lex opens no substitution for it, as it never has). R3's ${
+    is counted past a backslash-newline too; an escaped character never counts.
     Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
     here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
     arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
@@ -442,7 +443,7 @@ def lex(cmd, body=False, everywhere=False, naive=False):
     # unused, for the ${ parameter expansions open inside it.
     stack = [["body" if body else "sh", 0, 0, 0]]
     glued = -1                      # len(out) right after a substitution closed: no word break
-    nested_quote = False
+    unsure = False
 
     def close():
         frame = stack.pop()
@@ -501,20 +502,22 @@ def lex(cmd, body=False, everywhere=False, naive=False):
                 continue
         if kind in ('"', "body"):
             if kind == '"' and frame[2] and c in "'\"":
-                nested_quote = True
+                unsure = True
             if c == '"' and kind == '"':
                 stack.pop()
                 out.append(c)
                 i += 1
-            elif c == "$" and joined(cmd, i, 2)[0] == "$(":
+            elif cmd.startswith("$(", i):
                 out.append("$(")
                 stack.append(["$(", len(out), 1, 0, 0])
-                i = joined(cmd, i, 2)[1]
+                i += 2
             elif funsub(cmd, i):
                 out.append("${")
                 stack.append(["${", len(out), 1, 0, 0])
                 i += 2
             else:
+                if c == "$" and joined(cmd, i, 2)[0] == "$(":
+                    unsure = True
                 if kind == '"' and c == "$" and joined(cmd, i, 2)[0] == "${":
                     frame[2] += 1
                 elif kind == '"' and c == "}" and frame[2]:
@@ -618,7 +621,7 @@ def lex(cmd, body=False, everywhere=False, naive=False):
             subs.append("".join(out[frame[1]:]))
             del out[frame[1]:]
             break
-    return "".join(out), subs, expanding, nested_quote
+    return "".join(out), subs, expanding, unsure
 
 
 # A redirection operator: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string or a here-document
@@ -790,16 +793,18 @@ def scan(cmd, depth=0):
     its text puts in command position is hidden from the others. A fourth reads redirection
     descriptors as zsh does, one digit at most: a command holding a gated verb whose words differ
     between that reading and the first is hidden. Nesting deeper than MAX_NESTING counts as
-    hidden. Raises ValueError when cmd has unbalanced quotes, and Deny when it holds a quote
-    inside a double-quoted ${...} and mentions a gated verb, read as written or with its
-    newlines flattened."""
-    text, nested, expanding, nested_quote = lex(cmd)
-    if nested_quote and (crude(cmd) or crude(cmd.replace("\n", " "))):
-        raise Deny(NESTED_QUOTE)
+    hidden. Raises ValueError when cmd has unbalanced quotes, and Deny when lex is unsure of it
+    (in the command or in an expanding here-document body) and it mentions a gated verb, read
+    as written or with its newlines flattened."""
+    text, nested, expanding, unsure = lex(cmd)
     nested.extend(b for b in lex(cmd, everywhere=True)[1] if b not in nested)
     for body in expanding:
         for flag in (False, True):
-            nested.extend(b for b in lex(body, body=True, everywhere=flag)[1] if b not in nested)
+            _, subs, _, body_unsure = lex(body, body=True, everywhere=flag)
+            nested.extend(b for b in subs if b not in nested)
+            unsure = unsure or body_unsure
+    if unsure and (crude(cmd) or crude(cmd.replace("\n", " "))):
+        raise Deny(UNSURE)
     tokens = tokenize(text)
     # bash 3.2 (/bin/bash, macOS /bin/sh) ends $( at its first ) - a case pattern's or one in
     # ${...}: a verb only that reading puts in command position is hidden from the others.
