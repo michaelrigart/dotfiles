@@ -10,10 +10,11 @@
 #   2. If the repo ships an MR/PR template, the description must follow it.
 #
 # It also carries two genuine danger gates: `glab api` calls that write (rule 3), and
-# `git push` (rule 4, in git-push-guard.py beside this file: default-branch, force,
-# delete and mirror pushes ask, after the secret scan; an unsupported push configuration
-# or a secret in the outgoing commits is denied. The scan of every other push is the
-# global pre-push hook's, in ~/.config/git/hooks).
+# `git push` (rule 4, in git-push-guard.py beside this file: a push of the default branch,
+# its delete, --all and --mirror are denied; force and delete pushes of other branches ask,
+# after the secret scan; an unsupported push configuration or a secret in the outgoing commits
+# is denied. The scan of every other push is the global pre-push hook's, in
+# ~/.config/git/hooks).
 #
 # Rules 1 and 2 are reported as permissionDecision=deny. That is NOT a user prompt: the
 # model reads the reason and rewrites, so a violation costs a retry, not an

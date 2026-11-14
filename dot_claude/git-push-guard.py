@@ -210,6 +210,8 @@ PLAIN = ("Push guard: this command may run git push in a shape the guard does no
          "with a bracket, for example rg 'git pu[s]h'.")
 
 
+DEFAULT_DENY = ("Push guard: the default branch is Michael's; push the branch and open a merge "
+                "request or pull request.")
 TIMED_OUT = "Push guard: the push check timed out, so the push is refused. Retry the push."
 
 
@@ -1035,13 +1037,14 @@ def check_merged_delete(repo, remote, default, names, leases, root, session, pla
 
 def dry_run_deny(asks, args, root, session):
     """The deny for a dry run outside canonical text whose real-push verdict is an ask (spec
-    2026-10-28, section 2, Dry runs): a silent deny costs Michael no prompt. It says, in order:
+    2026-10-28, section 2, Dry runs): a silent deny costs Michael no prompt. A dry run of a
+    default-branch push never gets here: it is the default-branch deny, as the real push is. It says, in order:
     the dry run is refused because it is not in plain words; the plain -n form, where one can be
     printed (the canonical dry run in the session's checkout, or the plain -n form to run from
     the push's own repository); and that the push it previews needs Michael's confirmation, so
     the agent confirms with him rather than preview it this way. It never offers the real push:
-    every push it previews is one the guard asks about (a delete, a default-branch push, a force
-    push without a lease, or --all or --mirror), each needing Michael's confirmation. A printed
+    every push it previews is one the guard asks about (a delete of another branch, --prune, a
+    force push without a lease), each needing Michael's confirmation. A printed
     command stands on a line of its own, so no sentence punctuation runs into it."""
     command = "git push " + " ".join(shell_word(a) for a in args)
     there = other_checkout(root, session)
@@ -1195,10 +1198,8 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
             "(pushurl, a second url, or pushInsteadOf)"))
 
     default = default_branch(repo, remote)
-    asks, sources, dests = [], [], []
+    asks, sources, dests, deleted = [], [], [], []
     deleting = "-d" in flags or "--delete" in flags
-    if "--mirror" in flags or "--all" in flags:
-        asks.append("it pushes every ref (--mirror or --all)")
     if deleting or "--prune" in flags:
         asks.append("it deletes remote refs (--delete, -d or --prune)")
     if "-f" in flags or "--force" in flags:
@@ -1221,9 +1222,11 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
                                           "destination (: pushes every matching branch)"))
         if colon and not src:
             asks.append("the refspec " + spec + " deletes " + dst + " on " + remote)
+            deleted.append(dst)
             continue
         if deleting:
-            continue                                   # these name refs to delete
+            deleted.append(s)                          # these name refs to delete
+            continue
         if src.startswith("-"):
             raise Deny("Push guard: cannot read the refspec " + spec + ".")
         if src in ("HEAD", "@"):
@@ -1251,10 +1254,24 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
                        "to push. Name the destination: git push " + remote + " HEAD:<branch>.")
         sources.append("HEAD")
         dests.append(branch)
+    # Every push that touches the default branch is denied: an update, a delete, and --all or
+    # --mirror, which move every ref. default_branch always names one (main when the remote names
+    # none). It comes before the merged-delete check, the dry-run deny and the scan.
+    touched = "--mirror" in flags or "--all" in flags
     for dst in dests:
         name = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
         if not name.startswith("refs/") and name == default:
-            asks.append("it updates " + default + ", the default branch of " + remote)
+            touched = True
+    for name in deleted:
+        # git resolves heads/<name> to refs/heads/<name>, so a delete names the branch either way
+        for prefix in ("refs/heads/", "heads/"):
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+                break
+        if name == default:
+            touched = True
+    if touched:
+        raise Deny(DEFAULT_DENY)
 
     # An asking push is scanned by secret-scan before the ask is returned: a push Michael
     # approves must already be clean, and a secret is a deny, which beats an ask. A push that
@@ -1275,7 +1292,7 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
     # runs. delete_targets admits no flag or refspec that adds any other ask, so the asks it
     # replaces are delete asks.
     targets = delete_targets(flags, refspecs)
-    if asks and targets is not None and default not in targets:
+    if asks and targets is not None:
         # Not bare: no lease counts, so a merged delete cannot come back True; the deny names
         # the bare pinned command instead.
         leases = push_leases(args) if bare else []

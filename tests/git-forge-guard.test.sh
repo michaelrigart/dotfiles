@@ -4,8 +4,8 @@
 # The guard is a PreToolUse(Bash) hook: it reads the hook payload on stdin and
 # either stays silent (allow) or prints a permissionDecision JSON object —
 # "deny" for rules 1-2 (correctness catches, bounced back to the model) or "ask"
-# for rule 3 (a danger gate, surfaced to the user). Rule 4 (git push) asks for
-# default-branch, force, delete and mirror pushes and denies what it cannot resolve.
+# for rule 3 (a danger gate, surfaced to the user). Rule 4 (git push) denies every push of the
+# default branch and what it cannot resolve, and asks for force and delete pushes of other branches.
 # It fires on every Bash call Claude Code makes, so a false deny blocks real
 # work — most of these cases pin the ALLOW side.
 #
@@ -410,6 +410,18 @@ expect ask   "the bypass does not lift rule 3" "$BARE" 'FORGE_GUARD=off glab api
 reason() {
   run "$1" "$2" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null
 }
+# expect_default <label> <cwd> <command>: a push of the default branch is the silent deny, whose
+# reason is exactly the one text (Push guard, the default branch is Michael's).
+DEFAULT_DENY="Push guard: the default branch is Michael's; push the branch and open a merge request or pull request."
+expect_default() {
+  local label=$1 got
+  got=$(reason "$2" "$3")
+  if [ "$got" = "$DEFAULT_DENY" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (want the default-branch deny, got: %s)\n' "$label" "${got:-no reason}"
+  fi
+}
 # has_reason <label> <needle> <cwd> <command>
 has_reason() {
   local label=$1 needle=$2 got
@@ -460,23 +472,23 @@ clone() { cp -R "$BASE" "$TMP/$1" && printf '%s' "$TMP/$1"; }
 R=$BASE
 
 echo "== rule 4: recognising a push =="
-expect ask   "push to the default branch"             "$R"   'git push origin main'
-expect ask   "git -C <repo> from another directory"   "$TMP" "git -C $R push origin main"
-expect ask   "command git push"                       "$R"   'command git push origin main'
-expect ask   "env X=1 git push"                       "$R"   'env X=1 git push origin main'
-expect ask   "an assignment prefix"                   "$R"   'X=1 git push origin main'
-expect ask   "sudo git push"                          "$R"   'sudo git push origin main'
-expect ask   "a path to git"                          "$R"   '/usr/bin/git push origin main'
-expect ask   "global options before push"             "$TMP" "git --no-pager -C $R push origin main"
-expect ask   "FORGE_GUARD=off does not lift rule 4"   "$R"   'FORGE_GUARD=off git push origin main'
-expect ask   "a global alias: pom = push origin main" "$R"   'git pom'
-expect ask   "a repository-local alias"               "$R"   'git lp'
+expect_default "push to the default branch"             "$R"   'git push origin main'
+expect_default "git -C <repo> from another directory"   "$TMP" "git -C $R push origin main"
+expect_default "command git push"                       "$R"   'command git push origin main'
+expect_default "env X=1 git push"                       "$R"   'env X=1 git push origin main'
+expect_default "an assignment prefix"                   "$R"   'X=1 git push origin main'
+expect_default "sudo git push"                          "$R"   'sudo git push origin main'
+expect_default "a path to git"                          "$R"   '/usr/bin/git push origin main'
+expect_default "global options before push"             "$TMP" "git --no-pager -C $R push origin main"
+expect_default "FORGE_GUARD=off does not lift rule 4"   "$R"   'FORGE_GUARD=off git push origin main'
+expect_default "a global alias: pom = push origin main" "$R"   'git pom'
+expect_default "a repository-local alias"               "$R"   'git lp'
 expect deny  "a push after another git command, on a later line" "$R" 'git status
 git push origin main'
 expect deny  "a push after another git command, after &&" "$R" 'git add -A && git push origin main'
-expect ask   "a push with redirects and a pipe"       "$R"   'git push origin main 2>&1 | tail -5'
+expect_default "a push with redirects and a pipe"       "$R"   'git push origin main 2>&1 | tail -5'
 expect deny  "a push inside bash -c"                  "$R"   "bash -c 'git push origin main'"
-expect ask   "a cd before the push is followed"       "$TMP" "cd $R && git push origin main"
+expect_default "a cd before the push is followed"       "$TMP" "cd $R && git push origin main"
 # Only a plain command is judged; a push inside any compound command is a silent deny.
 expect deny  "a push inside if/then"                  "$R"   'if true; then git push origin main; fi'
 expect deny  "a push as an if condition"              "$R"   'if git push origin main; then echo ok; fi'
@@ -489,9 +501,9 @@ expect deny  "a push inside a case arm is denied"     "$R"   'case x in x) git p
 # An alias defined only in the repository git selects is resolved THERE, not in the cwd:
 # the fast path cannot list it, so any git command naming another repository goes on.
 OTHER=$(clone other); git -C "$OTHER" config alias.lp2 'push origin main'
-expect ask   "an alias local to the -C repository"    "$TMP" "git -C $OTHER lp2"
+expect_default "an alias local to the -C repository"    "$TMP" "git -C $OTHER lp2"
 expect deny  "an alias in the --git-dir= repository is denied with it" "$TMP" "git --git-dir=$OTHER/.git lp2"
-expect ask   "a -C path through a variable the hook can see" "$TMP" 'git -C "$GUARDTMP/work" push origin main'
+expect_default "a -C path through a variable the hook can see" "$TMP" 'git -C "$GUARDTMP/work" push origin main'
 expect deny  "an alias defined with -c on the command line" "$R" "git -c alias.zz='push origin main' zz"
 expect deny  "an alias under a GIT_DIR override"      "$TMP" "GIT_DIR=$OTHER/.git git lp2"
 # deny beats ask: a rule 4 ask must not swallow a rule 1 deny in the same command.
@@ -650,9 +662,9 @@ expect deny  "a comment after an inert command"       "$R"   'git status # git p
 expect deny  "ANSI-C quoting hiding a push"           "$R"   "echo \$'\\'' ; git push origin main ; echo \$'\\''"
 
 echo "== rule 4: pushes that ask =="
-expect ask   "HEAD:main"                              "$R" 'git push origin HEAD:main'
-expect ask   "refs/heads/main as the destination"     "$R" 'git push origin feat:refs/heads/main'
-expect ask   "a lease on the default branch"          "$R" 'git push --force-with-lease origin main'
+expect_default "HEAD:main"                              "$R" 'git push origin HEAD:main'
+expect_default "refs/heads/main as the destination"     "$R" 'git push origin feat:refs/heads/main'
+expect_default "a lease on the default branch"          "$R" 'git push --force-with-lease origin main'
 expect ask   "a + refspec"                            "$R" 'git push origin +feat'
 expect ask   "--force on a feature branch"            "$R" 'git push --force origin feat'
 expect ask   "-f bundled as -fu"                      "$R" 'git push -fu origin feat'
@@ -660,8 +672,19 @@ expect ask   "a :ref refspec"                         "$R" 'git push origin :old
 expect ask   "--delete"                               "$R" 'git push --delete origin old'
 expect ask   "-d"                                     "$R" 'git push -d origin old'
 expect ask   "--prune"                                "$R" 'git push --prune origin feat'
-expect ask   "--mirror"                               "$R" 'git push --mirror origin'
-expect ask   "--all"                                  "$R" 'git push --all origin'
+expect_default "--mirror"                               "$R" 'git push --mirror origin'
+expect_default "--all"                                  "$R" 'git push --all origin'
+expect_default "--delete of the default branch"         "$R" 'git push --delete origin main'
+expect_default "-d of refs/heads/<default>"             "$R" 'git push -d origin refs/heads/main'
+expect_default "a :<default> refspec"                   "$R" 'git push origin :main'
+# git resolves heads/<name> to refs/heads/<name>, so a delete names the branch either way.
+expect_default "--delete of heads/<default>"            "$R" 'git push --delete origin heads/main'
+expect_default "a :heads/<default> refspec"             "$R" 'git push origin :heads/main'
+expect ask   "--delete of heads/<another branch>"     "$R" 'git push --delete origin heads/feat'
+expect ask   "a :heads/<another branch> refspec"      "$R" 'git push origin :heads/feat'
+expect_default "a +: refspec deleting the default branch" "$R" 'git push origin +:main'
+expect ask   "--prune alone"                          "$R" 'git push --prune origin'
+expect ask   "--delete of another branch"             "$R" 'git push origin --delete feat'
 
 echo "== rule 4: merged-branch deletes =="
 # A remote of its own, so the cases that move it never touch the fixtures above. done and
@@ -738,8 +761,8 @@ has_reason   "a partly pinned pair: the command pins both" \
              "$DEL" "git push --force-with-lease=done:$DONE origin --delete done done2"
 expect ask   "an unmerged branch, pinned"                 "$DEL" "git push --force-with-lease=open:$OPEN origin --delete open"
 expect ask   "a merged and an unmerged branch"            "$DEL" "git push --force-with-lease=done:$DONE --force-with-lease=open:$OPEN origin --delete done open"
-expect ask   "the default branch, pinned"                 "$DEL" "git push --force-with-lease=main:$MAIN origin --delete main"
-expect ask   "the default branch as refs/heads/main"      "$DEL" "git push --force-with-lease=main:$MAIN origin --delete refs/heads/main"
+expect_default "the default branch, pinned"                 "$DEL" "git push --force-with-lease=main:$MAIN origin --delete main"
+expect_default "the default branch as refs/heads/main"      "$DEL" "git push --force-with-lease=main:$MAIN origin --delete refs/heads/main"
 expect ask   "a tag by name"                              "$DEL" "git push --force-with-lease=v1:$MAIN origin --delete v1"
 expect ask   "a tag by ref"                               "$DEL" 'git push origin :refs/tags/v1'
 expect ask   "a branch missing on the remote"             "$DEL" "git push --force-with-lease=gone:$GONE origin --delete gone"
@@ -1097,7 +1120,6 @@ expect deny  "an option value that swallowed --delete"                  "$DEL" "
 DRY_REFUSED="Push guard: this dry run is refused because it is not written in ${PLAIN_LEAD#Push guard: a merged delete passes only when written in }"
 DRY_HERE=$'\nRun it in plain words, from this checkout:\n  '
 CONFIRM_DELETE="The push it previews needs Michael's confirmation before it runs, because it deletes remote refs (--delete, -d or --prune): confirm it with him rather than preview it this way."
-CONFIRM_MAIN="The push it previews needs Michael's confirmation before it runs, because it updates main, the default branch of origin: confirm it with him rather than preview it this way."
 # no_real_push <label> <cwd> <command> [<real push>]: a dry-run deny never offers the real push:
 # no "drop" advice, and never the push it previews printed without -n.
 no_real_push() {
@@ -1167,13 +1189,18 @@ expect deny  "D3 real ask: a dry run behind -C, from outside the checkout" "$TMP
 has_reason   "D3 and the deny is refused, the -n form from that repository, confirm, in order" \
              "$DRY_REFUSED"$'\n'"It runs in $DELTOP, which is not this session's checkout. Run the plain -n form from that repository:"$'\n'"  git push -n --force-with-lease=open:$OPEN origin --delete open"$'\n'"$CONFIRM_DELETE" "$TMP" "$D3_C"
 no_real_push "D3 -C, unmerged" "$TMP" "$D3_C" "git push --force-with-lease=open:$OPEN origin --delete open"
+# A dry run of a default-branch push is the default-branch deny, not a dry-run deny: it would tell
+# the agent to confirm with Michael a push that is denied. The canonical one still returns early.
 D3_MAIN="cd $DEL && git push -n origin main"
-expect deny  "D3 real ask: a dry run of a default-branch push behind cd" "$DEL" "$D3_MAIN"
-has_reason   "D3 and the deny is refused, the canonical dry run, confirm, in order" \
-             "$DRY_REFUSED${DRY_HERE}git push -n origin main"$'\n'"$CONFIRM_MAIN" "$DEL" "$D3_MAIN"
+expect_default "D3 a dry run of a default-branch push behind cd" "$DEL" "$D3_MAIN"
 no_real_push "D3 default branch" "$DEL" "$D3_MAIN" "git push origin main"
-D3_PRINTED=$(reason "$DEL" "$D3_MAIN"); D3_PRINTED=${D3_PRINTED#*from this checkout:$'\n'  }; D3_PRINTED=${D3_PRINTED%%$'\n'*}
-if [ "$D3_PRINTED" = "git push -n origin main" ]; then
+D3_OPEN="cd $DEL && git push -n origin --delete open"
+expect deny  "D3 real ask: a dry run of an unmerged delete behind cd" "$DEL" "$D3_OPEN"
+has_reason   "D3 and the deny is refused, the canonical dry run, confirm, in order" \
+             "$DRY_REFUSED${DRY_HERE}git push -n origin --delete open"$'\n'"$CONFIRM_DELETE" "$DEL" "$D3_OPEN"
+no_real_push "D3 unmerged delete" "$DEL" "$D3_OPEN" "git push origin --delete open"
+D3_PRINTED=$(reason "$DEL" "$D3_OPEN"); D3_PRINTED=${D3_PRINTED#*from this checkout:$'\n'  }; D3_PRINTED=${D3_PRINTED%%$'\n'*}
+if [ "$D3_PRINTED" = "git push -n origin --delete open" ]; then
   pass=$((pass + 1)); printf '  ok   %s\n' "D3 the printed dry run is the plain command, on a line of its own"
 else
   fail=$((fail + 1)); printf '  FAIL %s (printed %s)\n' "D3 the printed dry run is the plain command, on a line of its own" "$D3_PRINTED"
@@ -1244,16 +1271,18 @@ else
   fail=$((fail + 1)); printf '  FAIL %s\n' "git deletes a branch pinned to its current tip"
 fi
 ONMAIN=$(clone onmain); git -C "$ONMAIN" switch -q main
-expect ask   "a bare push while on main"              "$ONMAIN" 'git push'
-expect ask   "push <remote> while on main"            "$ONMAIN" 'git push origin'
-expect ask   "push HEAD while on main"                "$ONMAIN" 'git push origin HEAD'
-has_reason   "the ask names the default branch" "main, the default branch of origin" "$R" 'git push origin main'
+expect_default "a bare push while on main"              "$ONMAIN" 'git push'
+expect_default "push <remote> while on main"            "$ONMAIN" 'git push origin'
+expect_default "push HEAD while on main"                "$ONMAIN" 'git push origin HEAD'
+has_reason   "the deny is the default-branch text" "$DEFAULT_DENY" "$R" 'git push origin main'
 TRUNK=$(clone trunk); git -C "$TRUNK" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
 git -C "$TRUNK" branch trunk
-expect ask   "the default branch comes from origin/HEAD" "$TRUNK" 'git push origin trunk'
+expect_default "the default branch comes from origin/HEAD" "$TRUNK" 'git push origin trunk'
 expect allow "main is not special when HEAD names trunk" "$TRUNK" 'git push origin main'
 NOHEAD=$(clone nohead); git -C "$NOHEAD" remote set-head origin -d
-expect ask   "no origin/HEAD falls back to main"      "$NOHEAD" 'git push origin main'
+expect_default "no origin/HEAD falls back to main"      "$NOHEAD" 'git push origin main'
+expect_default "--all with no origin/HEAD: the fallback main is still touched" "$NOHEAD" 'git push --all origin'
+expect_default "--mirror with no origin/HEAD: the fallback main is still touched" "$NOHEAD" 'git push --mirror origin'
 
 echo "== rule 4: pushes that go ahead silently =="
 expect allow "a feature branch"                       "$R" 'git push origin feat'
@@ -1313,7 +1342,7 @@ POOK=$(clone push-option-ok); git -C "$POOK" config push.pushOption ci.skip
 expect allow "push.pushOption set to ci.skip"         "$POOK" 'git push origin feat'
 mkdir -p "$R/sub/dir"
 expect allow "a push from a subdirectory"             "$R/sub/dir" 'git push origin feat'
-expect ask   "a push to main from a subdirectory"     "$R/sub/dir" 'git push origin main'
+expect_default "a push to main from a subdirectory"     "$R/sub/dir" 'git push origin main'
 
 echo "== rule 4: unsupported configuration is denied, never asked =="
 u=0
@@ -1344,7 +1373,7 @@ has_reason   "the deny names the key and value" \
              "push.recurseSubmodules=on-demand, which also pushes submodule commits" "$RSDEMAND" 'git push origin feat'
 RSCHECK=$(clone recurse-check); git -C "$RSCHECK" config push.recurseSubmodules check
 expect allow "push.recurseSubmodules=check is evaluated normally" "$RSCHECK" 'git push origin feat'
-expect ask   "and a push to main under it still asks" "$RSCHECK" 'git push origin main'
+expect_default "and a push to main under it still asks" "$RSCHECK" 'git push origin main'
 RSLATE=$(clone recurse-check-then-true)
 git -C "$RSLATE" config push.recurseSubmodules check; git -C "$RSLATE" config submodule.recurse true
 expect deny  "check, then submodule.recurse=true: git recurses" "$RSLATE" 'git push origin feat'
@@ -1394,7 +1423,7 @@ expect deny  "a refspec in a shell variable"          "$R" 'B=main; git push ori
 expect deny  "a remote in a shell variable"           "$R" 'git push "$REMOTE" feat'
 expect deny  "a refspec in backticks"                 "$R" 'git push origin `git branch --show-current`'
 expect allow "the current branch by substitution"     "$R" 'git push -u origin "$(git branch --show-current)"'
-expect ask   "the current branch by substitution, on main" "$ONMAIN" 'git push origin "$(git branch --show-current)"'
+expect_default "the current branch by substitution, on main" "$ONMAIN" 'git push origin "$(git branch --show-current)"'
 # The shell runs the substitution where it is, not where -C or a cd points the push.
 expect deny  "a current-branch substitution under -C" "$TMP" "git -C $OTHER push origin \"\$(git branch --show-current)\""
 expect deny  "a current-branch substitution after a leading cd" "$TMP" "cd $R && git push origin \"\$(git branch --show-current)\""
@@ -1413,7 +1442,7 @@ expect deny  "a tags/ destination"                    "$R" 'git push origin feat
 expect deny  "a remotes/ destination"                 "$R" 'git push origin feat:remotes/origin/main'
 expect deny  "a refs/tags/ destination"               "$R" 'git push origin HEAD:refs/tags/v1'
 has_reason   "the DWIM deny names the destination" "the destination heads/main" "$R" 'git push origin feat:heads/main'
-expect ask   "HEAD:refs/heads/main still asks"        "$R" 'git push origin HEAD:refs/heads/main'
+expect_default "HEAD:refs/heads/main still asks"        "$R" 'git push origin HEAD:refs/heads/main'
 expect allow "a destination with a slash is a branch" "$R" 'git push origin HEAD:feat/x'
 # The scan lists the commits of every source, so a source must name a ref that exists.
 SLASH=$(clone slash); git -C "$SLASH" branch topic/x
@@ -1438,7 +1467,7 @@ expect allow "a computed subcommand, no push in the git text" "$R" 'git ${X:-pu}
 echo push'
 expect deny  "a computed option word"                 "$R" 'git ${X:--C} . push origin feat'
 expect deny  "a brace list as the subcommand"         "$R" 'git {push,pull} origin feat'
-expect ask   "a -C value through a variable still resolves" "$TMP" 'git -C "$GUARDTMP/work" push origin main'
+expect_default "a -C value through a variable still resolves" "$TMP" 'git -C "$GUARDTMP/work" push origin main'
 # Commands that push without being git push.
 expect deny  "git subtree push"                       "$R" 'git subtree push --prefix=d origin main'
 expect deny  "git http-push"                          "$R" 'git http-push origin main'
@@ -1608,10 +1637,10 @@ BS=$(printf '\134'); PAIR="${BS}ud83d${BS}ude00"       # a valid surrogate pair 
 expect_raw allow "jq a valid surrogate pair in a feature push reaches the helper" "$(rawpayload "X=$PAIR $G $P origin feat")"
 expect_raw allow "jq a valid surrogate pair with a glab api read is unchanged" "$(rawpayload "X=$PAIR glab api projects/1")"
 ask_out=$(printf '%s' "$(rawpayload "X=$PAIR $G $P origin main")" | PINNED_PATH="$PATH" bash "$GUARD")
-if printf '%s' "$ask_out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then
-  pass=$((pass + 1)); printf '  ok   %s\n' "jq a valid surrogate pair in a push to main still asks"
+if printf '%s' "$ask_out" | jq -e --arg r "$DEFAULT_DENY" '.hookSpecificOutput | .permissionDecision=="deny" and .permissionDecisionReason==$r' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "jq a valid surrogate pair in a push to main is the default-branch deny"
 else
-  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "jq a valid surrogate pair in a push to main still asks" "$ask_out"
+  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "jq a valid surrogate pair in a push to main is the default-branch deny" "$ask_out"
 fi
 # N1: a judge() failure on a command outside the grammar is the plain-push deny, as main's
 # internal-error deny was. The helper gets the lone surrogate through json.loads, and its own
@@ -1907,7 +1936,6 @@ else
   has_reason   "and that deny names the rule too" "rule aws-access-token in creds.txt" "$LEAKY" 'git push origin :old feat'
   expect ask   "a clean force push is scanned, then asks"     "$CLEAN" 'git push --force origin feat'
   expect allow "a leaky feature push is left to the hook"     "$LEAKY" 'git push origin feat'
-  expect deny  "a secret beats an ask: deny, not ask"         "$LEAKY" 'git push origin feat:main'
   expect allow "a dry run is never scanned"                   "$LEAKY" 'git push --dry-run origin feat'
   # --tags, --all and --mirror push refs the scan does not name one by one, so it cannot show an
   # exception is committed on each of them: with an exception file in the worktree they are
@@ -1919,9 +1947,10 @@ else
   git -C "$TAGGED" switch -q -c scratch main
   printf '# reviewed\n' > "$TAGGED/.gitleaksignore"
   git -C "$TAGGED" add .gitleaksignore && git -C "$TAGGED" commit -q -m "ignore, on scratch only"
-  expect deny  "--all with an exception file in the worktree"  "$TAGGED" 'git push --all origin'
-  has_reason   "and the deny says to push the refs by name" "Push the branches and tags by name" "$TAGGED" 'git push --all origin'
-  expect deny  "--mirror with an exception file in the worktree" "$TAGGED" 'git push --mirror origin'
+  expect deny  "--tags beside a force with an exception file in the worktree" "$TAGGED" 'git push --force --tags origin'
+  has_reason   "and the deny says to push the refs by name" "Push the branches and tags by name" "$TAGGED" 'git push --force --tags origin'
+  expect_default "--all with an exception file in the worktree is denied before the scan" "$TAGGED" 'git push --all origin'
+  expect_default "--mirror with an exception file in the worktree is denied before the scan" "$TAGGED" 'git push --mirror origin'
   # The script is looked up at PUSH_GUARD_SCAN: a push that would ask and cannot be scanned is a
   # deny naming the file, and a push that passes silently never reads it.
   PUSH_GUARD_SCAN="$TMP/none" expect deny  "with the scan script missing, an asking push is denied" "$CLEAN" 'git push --force origin feat'

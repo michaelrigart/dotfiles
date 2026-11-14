@@ -163,7 +163,9 @@ rm -f "$MARKS"/*
 # origin's head with ls-remote.
 payload() { jq -cn --arg d "$1" --arg c "$2" '{hook_event_name:"PreToolUse",tool_name:"Bash",
   session_id:"hook-path",cwd:$d,tool_input:{command:$c},transcript_path:"/nonexistent"}'; }
-COMMANDS=("git push origin main"
+# The push asks (a force without a lease, HEAD being the outgoing commit of repo-plain), so the
+# guard reaches the scan: a push of the default branch is denied before it.
+COMMANDS=("git push --force origin HEAD:feat"
           "gh pr create --base main --head feat --title t --body b"
           "glab mr create -s feat -b main --title t"
           "glab api projects/1/merge_requests")
@@ -228,7 +230,7 @@ done < <(printf '%s' "$SETTINGS" | jq -r '(.hooks[][]?.hooks[]?.command, .status
 # runs the same guard from a home without the script and must print it, so the row can fail.
 GCMD=$(printf '%s' "$SETTINGS" | jq -r '.hooks[][]?.hooks[]?.command | select(type == "string" and contains("git-forge-guard.sh"))' | head -1)
 mkdir -p "$T/nohome"; ln -s "$T/.claude" "$T/nohome/.claude"
-ctl=$( cd "$T/repo-plain" && payload "$T/repo-plain" "git push origin main" | env -i HOME="$T/nohome" TMPDIR="$T" \
+ctl=$( cd "$T/repo-plain" && payload "$T/repo-plain" "git push --force origin HEAD:feat" | env -i HOME="$T/nohome" TMPDIR="$T" \
   PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/sh -c "$GCMD" 2>/dev/null )
 case $ctl in
   *"the secret scan ("*) _pass "control: with no scan script beside the mirror the guard denies with the missing-scan reason" ;;
