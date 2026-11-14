@@ -1,6 +1,6 @@
 # Shrink wt's mise-trust carry
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-11-14
 **Branch:** `refactor/wt-mise-trust`
 **Sign-off:** the driver session (chezmoi-c1), on Michael's delegation, 2026-11-14; Codex spec
