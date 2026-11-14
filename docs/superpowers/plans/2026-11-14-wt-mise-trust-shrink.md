@@ -23,7 +23,7 @@ comments with every test unchanged.
 - Comments keep the non-obvious why; no comment cites a review round, a task or a case ID.
 - Run the suite only as `./tests/run.sh wt-functions` (the exact name lifts the heavy gate).
   The test lock is shared: never wrap `run.sh` in `lockf`, never run it twice at once, and do
-  not loop on it.
+  not loop on it. The suite runs twice in Task 1 (red, then green) and once in Task 2.
 - Line count, the spec's way (prints each function and the total):
 
   ```
@@ -91,7 +91,9 @@ comments with every test unchanged.
 - [ ] **Step 2: Run the suite and see exactly those cases fail**
 
   Run: `./tests/run.sh wt-functions`
-  Expected: FAIL; the failures are XC1, XC5, X29, X30, X35, X36 assertions only.
+  Expected: FAIL; the failures are X29, X30, X35 and X36 assertions only (with no base
+  argument the old code already lists `<main>` then Git's order, so XC1 and XC5 pass). This is
+  the revert check for the changed expectations.
 
 - [ ] **Step 3: Remove the base from the code**
 
