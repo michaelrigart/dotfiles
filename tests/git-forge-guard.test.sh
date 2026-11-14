@@ -85,7 +85,7 @@
 #    sourced, since it sets its own PATH, and the snapshot overrides neither tail nor head.
 #    macOS tail and head read -N as -n N; head -0 fails as head -n 0 does.
 
-# test-requires: heavy  # 242 s on 2026-10-31
+# test-requires: heavy  # 142 s on 2026-11-15
 set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
