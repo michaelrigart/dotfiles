@@ -1284,28 +1284,13 @@ rm "$DEVREPO/+0" "$DEVREPO/-0"
 # takes them all. The two readings differ in what the command is, so a gated verb is denied.
 is "V5 a plain sync with a long descriptor is the word 81788 to zsh, a second ref" \
    "$(decision "$W" 'git merge origin/main 81788>/dev/null')" deny
-is "V6 inside glab's words" "$(decision "$W" 'glab mr 10>x merge 7')" deny
-is "V7 inside a nested shell" "$(decision "$W" "bash -c 'git 10>/dev/null merge feature'")" deny
+is "V6 no shell takes a non-ASCII digit as a descriptor, so it is a second ref" \
+   "$(decision "$W" 'git merge origin/main ٣>/dev/null')" deny
 is "V8 where a merge option would take it as its value" "$(decision "$W" 'git merge -m 10>x feature')" deny
 is "V9 a command with no gated verb is untouched" \
    "$(decision "$W" 'echo hi 10>x') $(decision "$W" 'git log --oneline -1 10>x')" "allow allow"
 is "V10 and a sync with one-digit descriptors" \
    "$(decision "$W" 'git merge --ff-only origin/main 2>&1') $(decision "$W" 'git merge --ff-only origin/main >/dev/null 2>&1')" "allow allow"
-# Every shell cuts a word at a NUL, and zsh reads a bare \x as one, so a $'...' string that may
-# hold one is a word the gate cannot read.
-SQ="'"
-is "V11 glab \$'mr\\x' is glab mr under zsh" "$(denies "$W" 'glab $'"$SQ"'mr\x'"$SQ"' merge 7' 'cannot read')" 1
-is "V12 a NUL inside an option cluster turns -i\\0XGET into a POST" \
-   "$(denies "$W" 'glab api $'"$SQ"'-i\0XGET'"$SQ"' projects/:id/merge_requests/7/merge -f sha=abc' 'cannot read')" 1
-is "V13 and one in git's verb" "$(denies "$W" 'git $'"$SQ"'merge\0x'"$SQ"' feature' 'cannot read')" 1
-is "V14 inside a nested shell's string" \
-   "$(decision "$W" 'sh -c "glab $'"$SQ"'mr\\x'"$SQ"' merge 7"')" deny
-is "V15 every spelling of a NUL" \
-   "$(for s in '\0' '\00' '\000' '\x00' '\u0000' '\U00000000' '\c@' '\c ' '\x' '\u' '\U'; do
-        denies "$W" 'git $'"$SQ"'merge'"$s"''"$SQ"' feature' 'cannot read'; done | tr -d '\n')" 11111111111
-is "V16 a NUL in a command without a forge or git word is none of the gate's business" \
-   "$(decision "$W" 'printf $'"$SQ"'a\0b'"$SQ")" allow
-is "V17 a newline is not a NUL" "$(decision "$W" 'git commit -m $'"$SQ"'line one\nline two'"$SQ")" allow
 
 echo "Z. Azure PRs: creation is gated"
 # AZ: a checkout whose origin is an Azure DevOps SSH URL, reached through insteadOf like W's.

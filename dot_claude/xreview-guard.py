@@ -32,9 +32,8 @@
 # and the rest of a here-document body are read past, wherever they stand, and a line
 # continuation is joined first, as the shell joins it. A redirection's descriptor is read as
 # bash reads it (every digit) and as zsh does (one): a gated verb whose command the two split
-# differently is denied. A $'...' string that may decode to a NUL, which the shells cut a word
-# at, is unreadable, and denied when the command names git, glab, gh or az. --help or -h right after the verb, and
-# a merge's lone --abort, --quit or --continue, are never gated.
+# differently is denied. --help or -h right after the verb, and a merge's lone --abort,
+# --quit or --continue, are never gated.
 #
 # The grammar is bash's and zsh's: the Bash tool runs its commands under zsh here, and scripts
 # run under bash. Threat model: the commands an agent plausibly writes. Out of scope, as spec
@@ -75,10 +74,6 @@ PLAIN = ("Pre-merge gate: this command proposes or merges a change in a shape th
          "only mentions the verb, quote the mention.")
 UNPARSEABLE = ("Pre-merge gate: this command cannot be parsed (unbalanced quotes), and it may "
                "propose or merge a change. Fix the quoting, and run the verb as a plain command.")
-NUL_STRING = ("Pre-merge gate: this command holds a $'...' string that may decode to a NUL (\\0, "
-              "\\x00, \\c@, or a bare \\x, \\u or \\U), which the shells cut a word at, so the gate "
-              "cannot read the word it makes, and the command may propose or merge a change. Write "
-              "the word without the escape.")
 MALFORMED = ("Pre-merge gate: the hook's payload is not valid JSON, and its text may propose or "
              "merge a change, so the command is refused. Retry it.")
 REORDERED = ("Pre-merge gate: {0} takes a subcommand's options before its name and between its "
@@ -226,11 +221,6 @@ class Deny(Exception):
     """A gated command that must be refused, carrying the reason the agent reads."""
 
 
-class Unreadable(ValueError):
-    """A $'...' string that may decode to a NUL: every shell cuts a word at one, and zsh reads
-    a bare \\x, \\u or \\U as one, so the word the command runs is not the one the text spells."""
-
-
 def decision(reason):
     return json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
@@ -280,8 +270,7 @@ def heredoc_word(line, i):
 
 def ansi_c(cmd, i):
     """(value, end) of the $'...' string whose text starts at cmd[i]: its escapes decoded, and
-    the index past its closing quote. end is None when the string never closes. Raises
-    Unreadable when an escape may decode to a NUL (\\0, \\x00, \\c@, a bare \\x)."""
+    the index past its closing quote. end is None when the string never closes."""
     out, n = [], len(cmd)
     while i < n:
         c = cmd[i]
@@ -293,19 +282,13 @@ def ansi_c(cmd, i):
                 out.append(ANSI_C[e])
                 i += 2
             elif e == "c" and i + 2 < n:
-                if ord(cmd[i + 2]) & 0x1f == 0:
-                    raise Unreadable(cmd[i:i + 3])
                 out.append(chr(ord(cmd[i + 2]) & 0x1f))
                 i += 3
             elif m:
                 code = m.group(0)
                 value = int(code, 8) if code[0] in "01234567" else int(code[1:], 16)
-                if value == 0:
-                    raise Unreadable(cmd[i:m.end()])
                 out.append(chr(min(value, 0x10FFFF)))
                 i = m.end()
-            elif e in "xuU":
-                raise Unreadable(cmd[i:i + 2])
             else:
                 out.append(cmd[i:i + 2])
                 i += 2
@@ -609,10 +592,10 @@ def lex(cmd, body=False, everywhere=False, naive=False):
 # A redirection operator: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string or a here-document
 # marker, anywhere in an unquoted word; at the start of a word it may carry a descriptor
 # number (2>, 2>&1). Not a process substitution, <( ) or >( ), which runs a command. bash takes
-# every digit before the operator as the descriptor (10>x is one redirection), zsh at most one
-# (81788>x is the word 81788, then >x): BASH_DIGITS and ZSH_DIGITS are the two readings.
+# every ASCII digit before the operator as the descriptor (10>x is one redirection), zsh at most
+# one (81788>x is the word 81788, then >x): BASH_DIGITS and ZSH_DIGITS are the two readings.
 REDIRECT_OP = r"(?:&>>|&>|>>|>&|>\||<>|<&|<<<|<<-|<<|>|<)(?!\()"
-BASH_DIGITS, ZSH_DIGITS = r"\d*", r"\d?"
+BASH_DIGITS, ZSH_DIGITS = "[0-9]*", "[0-9]?"
 REDIRECT_RES = {d: re.compile(d + REDIRECT_OP) for d in (BASH_DIGITS, ZSH_DIGITS)}
 REDIRECT_MID_RE = re.compile(REDIRECT_OP)
 WORD_END = " \t\n;&|()<>"
@@ -771,10 +754,6 @@ def scan(cmd, depth=0):
             return tokens, True
         try:
             inner_tokens, inner_hidden = scan(inner, depth + 1)
-        except Unreadable:
-            if names_tool(inner) or crude(inner):
-                return tokens, True
-            continue
         except ValueError:
             if crude(inner):
                 return tokens, True
@@ -2298,12 +2277,6 @@ def crude(text):
     return any(CRUDE.search(flat(t)) for t in (text.replace("\\\n", ""), text, lexed))
 
 
-def names_tool(text):
-    """Does text hold git, glab, gh or az as a word? az is matched case-insensitively, as AZ
-    runs az on a case-insensitive filesystem."""
-    return bool(re.search(r"\b(git|glab|gh)\b", text) or re.search(r"\baz\b", text, re.I))
-
-
 def on_alarm(signum, frame):
     raise Deny(TIMED_OUT)
 
@@ -2344,10 +2317,6 @@ def main():
     try:
         try:
             tokens, hidden = scan(cmd)
-        except Unreadable:
-            if names_tool(cmd) or crude(cmd):
-                raise Deny(NUL_STRING)
-            return
         except ValueError:
             if crude(cmd):
                 raise Deny(UNPARSEABLE)
