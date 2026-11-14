@@ -31,8 +31,8 @@
 # -c '...', or env -S '...'. A comment, a redirection, single-quoted text ($'...' included)
 # and the rest of a here-document body are read past, wherever they stand, and a line
 # continuation is joined first, as the shell joins it. A redirection's descriptor is read as
-# bash reads it (every digit) and as zsh does (one): a gated verb whose command the two split
-# differently is denied. --help or -h right after the verb, and a merge's lone --abort,
+# bash reads it (every digit) and as zsh does (one): a command holding a gated verb that the
+# two split differently is denied. --help or -h right after the verb, and a merge's lone --abort,
 # --quit or --continue, are never gated.
 #
 # The grammar is bash's and zsh's: the Bash tool runs its commands under zsh here, and scripts
@@ -722,8 +722,10 @@ def scan(cmd, depth=0):
     the reading that counts case everywhere finds them, so no command start the first one
     misses can end a substitution early and hide the rest of it. The tokens come from the
     first. A third, bash 3.2 reading (lex naive) adds its substitutions, and a gated verb only
-    its text puts in command position is hidden from the others. Nesting deeper than
-    MAX_NESTING counts as hidden. Raises ValueError when cmd has unbalanced quotes."""
+    its text puts in command position is hidden from the others. A fourth reads redirection
+    descriptors as zsh does, one digit at most: a command holding a gated verb whose words differ
+    between that reading and the first is hidden. Nesting deeper than MAX_NESTING counts as
+    hidden. Raises ValueError when cmd has unbalanced quotes."""
     text, nested, expanding = lex(cmd)
     nested.extend(b for b in lex(cmd, everywhere=True)[1] if b not in nested)
     for body in expanding:

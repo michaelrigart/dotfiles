@@ -471,6 +471,11 @@ classifier. Each holds on main today.
   while the gate reads another word.
 - A named descriptor `{x}>`: `git {x}>/dev/null merge feature` runs the merge under zsh and
   bash 5.3, while the gate reads `{x}` as a word.
+- A GraphQL `createNote` whose input comes in as a variable built from bracketed field names
+  (`-F 'i[mergeRequestDiffHeadSha]=abc'`): the gate searches field values, not names. Whether
+  glab builds such keys into GraphQL variables is unverified.
+- `createImageDiffNote` is not denied. A reading of GitLab's source excerpts during this line
+  found that it passes no head SHA to the quick actions; it was not verified by running.
 - `cd ~-` or `cd ~+` with a planted directory of that name: the gate reads a path, while the
   shells read the previous or current directory.
 - The plain forms `git merge origin/main <->` (a zsh numeric glob naming a file) and
