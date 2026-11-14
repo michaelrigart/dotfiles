@@ -9,6 +9,8 @@
   unsandboxed in `sandbox.excludedCommands`. Sandboxed they lie: "unauthenticated", "no Codex pane".
   - The declaration only applies when the tool is the first command of the Bash call, on its own.
     Do setup in a separate call; never pipe or prefix these tools, or pass the escape flag for them.
+  - `xreview` and `wt` act on the Herdr front end the caller runs in, the app's space or the
+    TUI's workspace; a pane only in the other one is not found.
 - **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths
   or `git -C`; a lone `cd` lasts only in the main session. Name directories, not a recursive
   `grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.
