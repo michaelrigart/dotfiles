@@ -53,8 +53,8 @@ Measured with mise 2026.11.8, paranoid mode, a scratch `MISE_STATE_DIR`:
 
 1. **Check mise's own record (recommended).** Hash `<dest>/<rel>` once; a candidate vouches when
    mise's stored hash for its copy equals that hash and `trust --show` lists the copy
-   `trusted`; after `mise trust <dest>/<rel>`, mise's stored hash for it must equal the same
-   value, else `--untrust` and refuse. Whatever bytes sit in `<dest>/<rel>` later, mise loads
+   `trusted`; after `mise trust <dest>/<rel>`, mise's stored hash for it and a fresh hash of the
+   file must both equal the same value, else `--untrust` and refuse. Whatever bytes sit in `<dest>/<rel>` later, mise loads
    only bytes with that hash, so the race is decided by mise's record, not by re-reading a
    file a writer controls. About 333 → 200 lines; closes the 10-27 residuals that are writes
    or swaps of the worktree file's bytes. Cost: it reads an undocumented store layout; a
@@ -94,16 +94,18 @@ nothing. A failed read of the store (no `zsh/stat`) stops the carry like a faile
    The first that vouches ends the search; none refuses it with the "matches no trusted copy"
    reason.
 4. `command mise trust <dest>/<rel>`; a failure stops the carry, as now.
-5. Re-read the record. The one for `${dest:A}/<rel>` equals `h`: carried, with the existing line
-   naming `<c>`. Otherwise `command mise trust --untrust <dest>/<rel>` and refuse with the
-   changed reason and its rerun hint; a failed untrust stops with the existing "may still be
-   trusted" line.
+5. Re-read the record and hash `<dest>/<rel>` again. The record for `${dest:A}/<rel>` equals `h`
+   and so does the new hash (mise trusts exactly those bytes, and they are the file's bytes
+   now): carried, with the existing line naming `<c>`. Otherwise
+   `command mise trust --untrust <dest>/<rel>` and refuse with the changed reason and its rerun
+   hint; a failed untrust stops with the existing "may still be trusted" line.
 
 `${dest:A}` and `${c:A}` give the canonical key because no component below them is a symlink
 (step 1, step 3); a `<dest>` that is itself a symlink is refused before any of this, as now.
 
 **Report.** The `review` line diffs against `<main>/<rel>` when that copy is plain, listed
-`trusted` and different; otherwise it is `cat` of the worktree file. The base checkout's
+`trusted` and different; otherwise it is `cat` of the worktree file. The report reads `<main>`'s
+`trust --show` itself when step 3 did not (the same once-per-run cache). The base checkout's
 baseline goes.
 
 **Removed:** the base branch (`wt` passes none; `_wt_do_prepare` and `_wt_mise_trust` lose the
@@ -125,8 +127,11 @@ holds.
 are now closed: mise's record decides. Still open, as before (10-19 "misdirected rollback"): a
 directory or the file swapped for a symlink between step 1 and `mise trust` makes mise trust
 the link's canonical target; step 5 then untrusts `<dest>/<rel>`, which reaches that target only
-while the link is still in place. Parent-directory configs and configs `trust --show` does not
-list stay out of scope (10-27).
+while the link is still in place. A write to `<dest>/<rel>` after step 5's hash reaches the
+setup or teardown hook with a config mise will not load (mise then fails, or asks if the hook
+has a terminal); no check before the hook can close that, and the current code has the same
+window after its last check. Parent-directory configs and configs `trust --show` does not list
+stay out of scope (10-27).
 
 ## Testing
 
@@ -144,6 +149,10 @@ store; `mise_seed` and `mise_unseed` write and remove that layout. The flip hook
   without a path, always under a destination).
 - The flip of `<dest>/<rel>` during `mise trust`, flipped back before step 5: refused and
   untrusted (stored hash is the flipped bytes').
+- New: `<dest>/<rel>` rewritten after `mise trust` recorded the good hash and left rewritten:
+  refused and untrusted (the new hash differs).
+- Kept: a refusal whose main copy is trusted and differs, with no candidate matching, gets the
+  `diff` against main (the report's own read).
 - New: a candidate whose record matches but which `trust --show` lists `untrusted` (ignored)
   never vouches; a path with two different records never vouches and is never carried.
 - Changed: the voucher flipped during `mise trust` now carries (above).
