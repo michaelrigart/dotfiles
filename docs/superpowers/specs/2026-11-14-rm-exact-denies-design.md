@@ -1,0 +1,160 @@
+# rm: deny the roots, drop the two ask rules
+
+**Status:** In progress (awaiting sign-off)
+**Date:** 2026-11-14
+**Sign-off:** pending
+**Branch:** `fix/rm-exact-denies`, in the `wt` checkout `~/.local/share/chezmoi-fix-rm-exact-denies`,
+from `main` at `f292740`
+**Source:** item 22 of the vault note `2026-11-11-agent-setup-full-review` ("`rm` takes literal
+absolute paths ... Replace those two rules with exact denies for every sandbox-writable root").
+
+## 1. Why
+
+`permissions.ask` holds `Bash(rm -rf ~/*)`, `Bash(rm -r ~/*)` and the same two with
+`/Users/michael/*`. Each is a prefix rule, so it asks on every recursive delete of a literal home
+path written with `-rf` or `-r`: a `build/` directory, a `__pycache__`, a probe in a repository's
+`tmp/`. It gates the spelling, not the danger. A whole-home delete written `rm -fr ~` never matched
+it, and neither did `rm -R`, `rm -r -f` or `/bin/rm`.
+
+Michael's rule for prompts (memory `prompt-budget-destructive-only`): only dangerous destructive
+actions ask; a silent deny beats the classifier, and the classifier beats an ask. An ask rule cannot
+be narrowed by a hook (memory `ask-rule-beats-hook-allow`), so the rule has to go, and what it should
+have protected moves to deny rules.
+
+## 2. Measured
+
+Every Bash call that runs `rm`, in all Claude Code transcripts on this Mac from 2026-11-01 to
+2026-11-14 (1,071 calls, 191 in main sessions), joined to the `permissionDecision` recorded on its
+tool result. `reasonCode` says which mechanism decided.
+
+| Outcome | Calls | Mechanism (`reasonCode`) |
+|---|---|---|
+| Prompt, approved | 44 | `rule:userSettings`: the rm ask rules (every one of the 44 commands matches their shape and no other ask rule). 27 literal targets, 17 variable targets the matcher resolved (`W=/Users/michael/...; rm -rf $W/x`). 25 in main sessions, 19 in subagents |
+| Prompt, approved | 2 | `safetyCheck`, `circuitBreaker: dangerousRemoval`: Claude Code's built-in removal check, on loop variables |
+| Denied, no prompt | 24 | the same built-in check, in subagents (23) and one main session: `rm -rf $S/m1`, `rm -f $TMPDIR/*.orig` |
+| Denied, no prompt | 2 | the auto-mode classifier ("Destructive or Unwanted Actions"), both scratchpad deletes |
+| Denied, no prompt | 46 | guards firing on another part of the command (push guard 34, path guard 11, merge gate 1) |
+| Ran, classifier allowed | 952 | |
+| Prompt, rejected | 0 | |
+
+The 44 are 27% of the 160 Bash prompts in the prompt audit log over the same days. All were
+approved. No rm call named a root (§3.1), a repository or an organisation directory: the targets
+were scratchpads and `$TMPDIR` (324 arguments), build output, `__pycache__`, `.superpowers/` and
+repository `tmp/`.
+
+The review's attribution (28 of 50 from the built-in check, 7 from the ask rules, repeated in its
+"Withdrawn" list) does not survive the `reasonCode` join: the variable-target prompts it gave to the
+built-in check were the ask rules matching a resolved variable. The recommendation is unchanged;
+the expected saving is about six times larger.
+
+How the matcher treats an rm deny rule, measured with `claude -p` (Claude Code 2.1.325, haiku) on
+throwaway directories under this checkout's git-ignored `.superpowers/`, with a control run for
+each claim. The last round used the real setting shape: sandbox on, auto-allow on, auto mode, no
+allow rule.
+
+| Rule shape | Denies | Does not deny |
+|---|---|---|
+| `Bash(rm * R)` | `rm -rf R`, `rm -fr R`, `rm -r -f R`, `rm -Rf -- R`, `/bin/rm -rf R`, `command rm -rf R`, `rm -rf "R"`, `rm -rf R\ x` for a path with a space, `rm -rf $HOME/...R`, `rm -rf "$HOME"/...R`, `rm -rf X R`; also as one command of a compound | `rm -rf R/sub`, `rm -rf ${HOME}/...R`, a `~` spelling of R |
+| `Bash(rm * R *)` | `rm -rf R X` | `rm -rf R/sub X` |
+| `Bash(rm * R/)` | `rm -rf R/`, `rm -fr R/` | |
+| `Bash(rm * R/\*)` | `rm -rf R/*` (the control, with no such rule, deletes) | `rm -rf R/sub`: `\*` is a literal star |
+| `Bash(rm * R/.\*)` | `rm -rf R/.*` | |
+| exact `Bash(rm -rf R)` | `rm -rf R`, `rm -rf "R"` | `rm -fr R`, `rm -r -f R`, `rm -rf R/`: why the design uses the wildcard shape |
+
+A variable set in the command (`D=...; rm -rf $D/x`) is refused by the built-in check whatever the
+rules say. `$HOME` is expanded before matching; `${HOME}` and `~` are not.
+
+## 3. Design
+
+### 3.1 Deny every spelling of a root
+
+The roots are `~` and the four `sandbox.filesystem.allowWrite` entries: `~/Code`,
+`~/.local/share/chezmoi`, `~/Documents` and `~/Library/Mobile Documents/iCloud~md~obsidian`. A
+sandboxed `rm` can reach only these (plus the session's own directory and `$TMPDIR`); an
+unsandboxed one can reach `~`. Each root is written twice, as `~/...` and as the absolute path the
+modify script builds from `$HOME` at apply time, and gets eight rules:
+
+```
+Bash(rm * R)    Bash(rm * R/)    Bash(rm * R/\*)    Bash(rm * R/.\*)
+Bash(rm * R *)  Bash(rm * R/ *)  Bash(rm * R/\* *)  Bash(rm * R/.\* *)
+```
+
+80 rules, generated by jq from one list. The list is the `allowWrite` list plus `~`, defined once
+and used by both, so a root added to `allowWrite` gets its rm denies with it. A deny is silent and
+cannot be answered with yes. A deny rule carries no reason of its own, so the instruction of §3.3
+says that the roots are denied.
+
+### 3.2 Remove the four ask rules
+
+`Bash(rm -rf ~/*)`, `Bash(rm -rf /Users/michael/*)`, `Bash(rm -r ~/*)` and
+`Bash(rm -r /Users/michael/*)` leave `permissions.ask`. A delete below a root then goes where every
+other rm spelling already goes: the classifier when sandboxed, which can delete only inside the
+writable roots; the built-in check when the target is a variable, a glob it cannot resolve, or a
+home or system directory.
+
+| Target | Today | After |
+|---|---|---|
+| A root, `-rf`/`-r`, `~` or absolute | ask | deny |
+| A root, `-fr`, `-R`, `-r -f`, `/bin/rm`, `command rm`, `$HOME/...` | classifier | deny |
+| Below a root, `-rf`/`-r`, literal or resolved variable | ask | classifier (D1) |
+| Below a root, any other spelling | classifier | classifier |
+| A variable target the matcher cannot resolve | built-in check | built-in check |
+
+### 3.3 One instruction: literal absolute paths in rm
+
+Without the ask rules, the 17 variable-target deletes would meet the built-in check instead: a
+prompt in a main session, a denial and a wasted turn in a subagent (already 24 in the window). Two
+places carry one sentence, because Sonnet subagents act on a rule in their first turn, not in their
+system prompt (memory `sonnet-ignores-agent-body-rules`):
+
+- `.chezmoitemplates/agents/claude-code.md`, a bullet beside the path-resolution guard: name each
+  `rm` target as a literal absolute path, never through a variable, loop or substitution; the roots
+  are denied.
+- the SubagentStart line in `dot_claude/hooks/executable_subagent-shell-context.sh`, which already
+  says "Name every file by its absolute path": it adds that an `rm` target is a literal absolute
+  path, never a variable.
+
+### 3.4 Tests
+
+- `tests/claude-settings.test.sh`: the expected ask set loses the four rules; the expected deny set
+  gains the 80, built by the suite from its own copy of the root list; a section pins the 80 by
+  shape against the rule model. The model learns `\*` as a literal star, calibrated on fixture rows
+  that mirror §2. Rows: every shape of every root is denied in both spellings; `rm -rf <root>/sub`,
+  a repository path, a scratchpad path and `rm -rf ~/Code/x/build` are not; no ask rule names `rm`.
+- `tests/subagent-shell-context.test.sh`: its pinned line follows the new text.
+- `tests/agent-instructions.test.sh`: the fragment stays within its 50-line cap.
+- A live run (D2) of the rendered deny list through `claude -p`, with the modify script rendered
+  under a throwaway `HOME` so every root is a throwaway directory, before the PR.
+
+## 4. Net prompt change
+
+Over the 14 days measured: the ask rules' 44 prompts go to 0. If agents still write variable
+targets, up to 9 come back as built-in prompts in main sessions (the 8 in subagents become
+denials). Expected: 35 to 44 fewer prompts per 14 days, and fewer built-in denials in subagents.
+The root denies matched none of the 1,071 calls, so they add no denial to ordinary work.
+
+## 5. Limits
+
+- `${HOME}/Code` and `~` spellings the rules do not list (`~michael`) are not matched. A root
+  spelled through `${HOME}` empties into a top-level path, which the built-in check refuses by its
+  own description; that was not measured on a real root, and is not, since a miss deletes it.
+- A relative target (`rm -rf ../..`), `find -delete`, `xargs rm`, an interpreter (`shutil.rmtree`)
+  and odd paths (`R/./`, `R//`) reach the classifier, as every spelling the ask rules missed does
+  today.
+- Guards are frozen: nothing here touches a hook that decides.
+
+## 6. Decisions
+
+- **D1. A delete below a root but above ordinary work** (a whole repository, an organisation
+  directory, the vault folder under the iCloud root) moves from a prompt to the classifier, when
+  written `-rf`/`-r` with a literal or resolved path. Options: (a) accept; (b) also deny, by name,
+  `~/Code/Netronix`, `~/Code/ViuMore` and the vault's `Documents` folder (+48 rules, a static list;
+  top-level repositories under `~/Code` stay with the classifier). Recommendation: (a). None of the
+  1,071 calls targeted one; all 44 prompts were approved, the reflex the prompt budget exists to
+  avoid; committed work has forge copies; the classifier refused even two scratchpad deletes.
+- **D2. Live check.** (a) one run before the PR, its result in the PR (the recorded probes of §2
+  plus the rendered list); (b) also a committed canary, `tests/live-rm-denies.test.sh`
+  (unsandboxed + model, skipped by default, run after each Claude Code upgrade like
+  `live-deny-modes`). The design rests on four undocumented matcher behaviours (`\*` literal,
+  `$HOME` expanded, `/bin/rm` and `command` normalised, wildcards crossing spaces); an upgrade that
+  changes one silently drops a root deny. Recommendation: (b).
