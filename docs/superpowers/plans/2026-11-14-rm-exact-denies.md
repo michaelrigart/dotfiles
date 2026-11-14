@@ -43,7 +43,8 @@ the modify script under a throwaway `HOME` and drives `claude -p` against throwa
 - A root as a non-last argument (`rm -rf ~/Code /tmp/x`) is denied (Task 1, rows YES).
 - The vault root's space survives rendering and matching (Task 1 rows; Task 3 live case).
 - The live canary never touches a real root: every command it sends names a path under its
-  throwaway base, and `$HOME/...` commands resolve under that base (Task 3).
+  throwaway home `H`, and `$HOME/...` commands resolve under `H` (Task 3). A denial it records
+  counts only when the same command without the rules deletes (Task 3, BARE runs).
 
 ---
 
@@ -179,7 +180,7 @@ git commit -m "Tell agents to write rm targets as literal absolute paths"
 - Modify: `AGENTS.md` (the gated-suites table: a `live-rm-denies` row beside `live-deny-modes`)
 
 **Interfaces:**
-- Consumes: the rendered `.permissions.deny` of Task 1, taken as the rules containing the base path.
+- Consumes: the rendered `.permissions.deny` of Task 1, taken as the rules containing `$H`.
 
 - [ ] **Step 1: Write the suite**
 
@@ -187,25 +188,40 @@ Header: `# test-requires: unsandboxed, model`, a comment naming what it proves (
 matcher facts on the rendered list) and "run after each Claude Code upgrade".
 
 - Guards, exit 2: `claude`, `jq` or the modify script missing.
-- `base=$(mktemp -d "$HOME/.cache/live-rm-denies.XXXXXX")`; render with
-  `printf '{}' | HOME="$base" PATH="<dir with an op stub that exits 1>:$PATH" /bin/bash <modify script>`;
-  keep the deny rules that contain `$base` (expect 60; fewer is a FAIL of its own).
-- Overlay: `{"permissions":{"allow":["Bash(rm:*)"],"deny":<those 60>}}`. Each case recreates the
-  tree `Code/x`, `.local/share/chezmoi/x`, `Documents/x`,
-  `Library/Mobile Documents/iCloud~md~obsidian/x`, `.hidden` under `base`, then runs
+- `wrap=$(mktemp -d "$HOME/.cache/live-rm-denies.XXXXXX")`, `H=$wrap/home` (the rendered home).
+  `wrap` is every run's working directory, so `H` is never the session directory (the built-in
+  check guards that) and every path a case names is inside the working directory (a path outside
+  it draws a denial of its own). Render with
+  `printf '{}' | HOME="$H" PATH="<dir with an op stub that exits 1>:$PATH" /bin/bash <modify script>`;
+  keep the deny rules that contain `$H` (`EXPECT_RULES=60`; another count is a FAIL of its own).
+- Overlays: RULES = `{"permissions":{"allow":["Bash(rm:*)"],"deny":<those rules>}}`, BARE =
+  `{"permissions":{"allow":["Bash(rm:*)"]}}`. Before every run, recreate the tree under `H`, each
+  directory holding a file `f`: `Code/x`, `.local/share/chezmoi/x`, `Documents/x`,
+  `Library/Mobile Documents/iCloud~md~obsidian/x`, `.hidden`. A run is
   `claude -p "Run exactly this one Bash command, verbatim, once, and nothing else: <cmd>"` from
-  `base` with `--setting-sources project --settings <overlay> --permission-mode auto
+  `wrap` with `--setting-sources project --settings <overlay> --permission-mode auto
   --output-format json --max-turns 2 --max-budget-usd 0.5 --no-session-persistence --model haiku`.
-- Control (must delete): `rm -rf <base>/Code/x`; if it does not, INCONCLUSIVE, exit 2, no case run.
-- Deny cases (target still there and a denial recorded = ok; gone with no denial = FAIL; anything
-  else INCONCLUSIVE): `rm -rf <base>/Code`; `rm -fr <base>/.local/share/chezmoi/`;
-  `rm -r -f <base>/Documents/*`; `/bin/rm -rf "<base>/Library/Mobile Documents/iCloud~md~obsidian"`;
-  `command rm -rf $HOME/<base relative to HOME>/Code/ <base>/Documents/x` (every path in a case
-  stays under `base`: a path outside the working directory draws a denial of its own and would
-  read as a pass); `rm -rf <base>/Documents/**`;
-  `rm -rf <base>/.*`; `rm -rf <base>`.
+- Over-match control: `rm -rf <H>/Code/x` under RULES must remove `Code/x/f`; otherwise
+  INCONCLUSIVE, exit 2, no case run.
+- Each deny case is run twice, with BARE and with RULES, and names its sentinels (files under `H`):
+
+  | Command | Sentinels |
+  |---|---|
+  | `rm -rf <H>/Code` | `Code/x/f` |
+  | `rm -fr <H>/.local/share/chezmoi/` | `.local/share/chezmoi/x/f` |
+  | `rm -r -f <H>/Documents/*` | `Documents/x/f` |
+  | `/bin/rm -rf "<H>/Library/Mobile Documents/iCloud~md~obsidian"` | `Library/Mobile Documents/iCloud~md~obsidian/x/f` |
+  | `command rm -rf $HOME/<H relative to HOME>/Code/ <H>/Documents/x` | `Code/x/f`, `Documents/x/f` |
+  | `rm -rf <H>/Documents/**` | `Documents/x/f` |
+  | `rm -rf <H>/.*` | `.hidden/f`, `.local/share/chezmoi/x/f` |
+  | `rm -rf <H>` | `Code/x/f` |
+
+  Verdict: ok when the BARE run removed every sentinel and the RULES run kept every one and recorded
+  a denial. FAIL when the BARE run removed them and the RULES run removed any. INCONCLUSIVE
+  otherwise, with the reason: a BARE run that removed nothing means something other than the rules
+  refuses that command, so a RULES denial proves nothing.
 - Output `  ok  <case>` / `  FAIL <case> (<why>)` / `INCONCLUSIVE: <case>: <why>`; exit 1 on any
-  FAIL, else 2 on any INCONCLUSIVE, else 0. Remove `base` on exit.
+  FAIL, else 2 on any INCONCLUSIVE, else 0. Remove `wrap` on exit. About 17 haiku runs.
 
 - [ ] **Step 2: Wire it**
 
@@ -225,13 +241,15 @@ git commit -m "Add a live canary for the rm root denies"
 
 ### Task 4: Drop the four rm ask rules (GATED on D1)
 
-**Depends on:** Task 1, and Michael's D1 answer relayed by the driver. Do not start without it.
+**Depends on:** Task 1, Task 3 (for (b), which edits the canary), and Michael's D1 answer relayed
+by the driver. Do not start without it.
 
 **Files:**
 - Modify: `dot_claude/modify_private_settings.json:252-253` (the two ask lines)
 - Modify: `tests/claude-settings.test.sh:108-109` (`EXP_ASK`), `:666-685` (the section G comment
   and the danger-gate loop entry `Bash(rm -rf ~/*)`), section T
 - Modify: the spec §6 D1 (his answer, dated) and, for (b), §3.1
+- Modify, for (b) only: `tests/live-rm-denies.test.sh` (`EXPECT_RULES=96`, the tree and one case)
 
 - [ ] **Step 1: Failing rows**
 
@@ -240,17 +258,21 @@ Section G: replace the `Bash(rm -rf ~/*)` loop entry with `jq_is` that no ask ru
 `EXP_ASK` loses the four rules. For D1 (b) also: the roots gain `~/Code/Netronix`,
 `~/Code/ViuMore` and `~/Library/Mobile Documents/iCloud~md~obsidian/Documents` (rm denies only,
 never `allowWrite`); the count becomes 192; YES rows for each; NO row
-`rm -rf ~/Code/Netronix/curato`.
+`rm -rf ~/Code/Netronix/curato`. In the canary, for (b): `EXPECT_RULES=96`; the tree gains
+`Code/Netronix/r/f`; a case `rm -rf <H>/Code/Netronix` with sentinel `Code/Netronix/r/f`; the
+over-match control becomes `rm -rf <H>/Code/Netronix/r` (it must still delete).
 Run: `./tests/claude-settings.test.sh` — Expected: those rows FAIL.
 
 - [ ] **Step 2: Implement**
 
 Delete the two ask lines. For (b) only, bind `$rm_dirs` (the three) and generate from
-`$rm_roots + $rm_dirs`.
+`$rm_roots + $rm_dirs`, and make the canary changes of Step 1.
 
 - [ ] **Step 3: Run and commit**
 
-Run: `./tests/claude-settings.test.sh` — Expected: 0 failed.
+Run: `./tests/claude-settings.test.sh` (and, for (b), `bash -n tests/live-rm-denies.test.sh`;
+the controller runs the canary itself) — Expected: 0 failed. For (b), add
+`tests/live-rm-denies.test.sh` to the `git add` below.
 
 ```bash
 git add dot_claude/modify_private_settings.json tests/claude-settings.test.sh docs/superpowers/specs/2026-11-14-rm-exact-denies-design.md
