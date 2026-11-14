@@ -105,8 +105,6 @@ EXP_ASK='["Read(~/.kube/config)",
  "Bash(glab mr merge*)","Bash(sudo *)",
  "Bash(git reset --hard*)",
  "Bash(git clean -f*)","Bash(git branch -D*)","Bash(git filter-branch*)",
- "Bash(rm -rf ~/*)","Bash(rm -rf /Users/michael/*)",
- "Bash(rm -r ~/*)","Bash(rm -r /Users/michael/*)",
  "Bash(brew uninstall*)","Bash(brew remove*)","Bash(kubectl delete*)",
  "Bash(borg *)","Bash(vorta *)",
  "Bash(op item create*)","Bash(op item edit*)","Bash(op item delete*)",
@@ -241,6 +239,7 @@ d_is 'rm -rf /r/*'        yes "model: \\* is a literal star"
 d_is 'rm -rf /r/* /x'     yes "model: a trailing ' *' takes more arguments"
 d_is 'rm -rf /r/sub'      no  "model: \\* does not match a name"
 d_is 'rm -rf /r/*/*/b'    no  "model: the operand ends at a space or the end"
+d_is 'rm /r/*'            no  "model: the rm-star lead needs a word before the path"
 OUT='{"permissions":{"deny":["Bash(rm /r/\\*)","Bash(rm /r/\\* *)"]}}'
 d_is 'rm /r/*'            yes "model: a lead without a star matches the flagless form"
 d_is 'rm /r/* /x'         yes "model: a lead without a star still takes a trailing ' *'"
@@ -310,7 +309,7 @@ for c in 'rm -rf ~/Code/*/*/build' 'rm -rf ~/Code/*/build' 'rm -f ~/Documents/*.
          'rm -f ~/Documents/{a,b}.pdf' 'rm -rf ~/Code/x/build' 'rm -rf ~/Code2' 'rm -rf ~/Documents.bak' \
          'rm -f ~/.zshrc' 'rm notes.txt~' 'rm ~/notes.txt' 'rm ~/Documents/a.txt' 'rm ~/Code/x/*'; do
   d_is "$c" no "no rm deny: $c"
-  d_is "${c//\~/$HOME}" no "no rm deny: ${c//\~/$HOME}"
+  d_is "${c// \~/ $HOME}" no "no rm deny: ${c// \~/ $HOME}"
 done
 d_is "rm -rf $HOME/.local/share/chezmoi-fix-x" no "no rm deny: a wt sibling, HOME expanded"
 d_is 'rm -rf /private/tmp/claude-501/x/scratchpad/m1' no "no rm deny: a scratchpad path"
@@ -737,11 +736,13 @@ jq_is '.permissions.ask | index("Bash(dangerouslyDisableSandbox:true)")' null \
       "the mechanism-based gate is gone — escaping the sandbox is not itself dangerous"
 jq_is '.permissions.ask | index("Bash(docker *)")' null \
       "blanket docker gate is gone — read-only docker no longer prompts"
-# rm -rf is pinned to LITERAL home paths on purpose. Rules match the command as written, and
-# scratchpad/$TMPDIR cleanup never spells one: of ~154 rm -rf calls in 30 days, 110 targeted
-# $TMPDIR/scratchpad and only 10 a real path. A blanket "Bash(rm -rf *)" would have re-created
-# 107 of the prompts this change exists to remove.
-for r in "Bash(terraform destroy*)" "Bash(git reset --hard*)" "Bash(rm -rf ~/*)" \
+# The rm root denies (section T, spec 2026-11-14-rm-exact-denies) replaced the rm asks: no ask rule
+# starts with Bash(rm . Rules match the command as written and scratchpad/$TMPDIR cleanup never
+# spells a root, so the denies leave it alone, where a blanket "Bash(rm -rf *)" ask would have
+# prompted on most of the rm -rf calls of a month.
+jq_is '[.permissions.ask[] | select(startswith("Bash(rm "))] | length' 0 \
+      "no ask rule starts with Bash(rm : the root denies replaced them"
+for r in "Bash(terraform destroy*)" "Bash(git reset --hard*)" \
          "Bash(sudo *)" "Bash(borg *)" "Bash(op item edit*)"; do
   jq_is ".permissions.ask | index(\"$r\") != null" true "danger gate present: $r"
 done

@@ -1,9 +1,9 @@
 # rm: deny the roots, drop the two ask rules
 
-**Status:** In progress (awaiting sign-off)
+**Status:** In progress
 **Date:** 2026-11-14
-**Sign-off:** D2 (b) by the driver session on Michael's delegation, 2026-11-14. D1 is Michael's,
-pending. Codex spec review: approve in round 3 (`xr-1794664170-b520bb27`; round 1,
+**Sign-off:** D2 (b) was ruled by the driver session on Michael's delegation and D1 (a) by
+Michael, both 2026-11-14. Codex spec review: approve in round 3 (`xr-1794664170-b520bb27`; round 1,
 `xr-1794663800-0efa37b0`, two P1s, and round 2, `xr-1794664059-c104a548`, one P2, all fixed).
 **Branch:** `fix/rm-exact-denies`, in the `wt` checkout `~/.local/share/chezmoi-fix-rm-exact-denies`,
 from `main` at `f292740`
@@ -182,8 +182,8 @@ The root denies matched none of the 1,071 calls, so they add no denial to ordina
   item 22 not done. Recommendation: (a). None of the 1,071 calls targeted (i) or (ii); all 44
   prompts were approved, the reflex the prompt budget exists to avoid; the same deletes in any
   other flag spelling already reach the classifier today; committed work has forge copies; the
-  classifier refused even two scratchpad deletes. **Open: Michael's call** (it loosens a deletion
-  boundary, so it is not ruled on delegation).
+  classifier refused even two scratchpad deletes. **Decided (a)** by Michael, 2026-11-14 ("1. A"),
+  relayed by the driver session.
 - **D2. Live check.** (a) one run before the PR, its result in the PR (the recorded probes of §2
   plus the rendered list); (b) also a committed canary, `tests/live-rm-denies.test.sh`
   (unsandboxed + model, skipped by default, run after each Claude Code upgrade like

@@ -252,7 +252,7 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",
           "mcp__claude_ai_Microsoft_365__outlook_set_vacation"
           # The rm root denies, generated above: 240 rules, the only deny rules that start
-          # Bash(rm . The four rm ask rules below stay as they are.
+          # Bash(rm . They replaced the four rm ask rules.
         ] + $rm_denies,
         "ask": [
           "Read(~/.kube/config)",
@@ -273,8 +273,6 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
           # force push to main. git-forge-guard.sh rule 4 gates pushes instead.
           "Bash(git reset --hard*)",    "Bash(git clean -f*)",
           "Bash(git branch -D*)",       "Bash(git filter-branch*)",
-          "Bash(rm -rf ~/*)",           "Bash(rm -rf /Users/michael/*)",
-          "Bash(rm -r ~/*)",            "Bash(rm -r /Users/michael/*)",
           "Bash(brew uninstall*)",      "Bash(brew remove*)",
           "Bash(kubectl delete*)",
           "Bash(borg *)",               "Bash(vorta *)",
