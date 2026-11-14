@@ -69,10 +69,10 @@ backslash (`\!` included, in a non-interactive shell: measured).
   quotes, the shells open a nested string there instead (row 17), and a `'` inside the nested
   string is text, which `lex` takes for the start of a single-quoted one (row 18). The shells'
   rule depends on the operator: after `:-` a `'` is literal, after `/` it quotes (measured).
-- **`lex`** finds a `$(` by looking two characters ahead in the raw text. Inside double quotes,
-  and in an unquoted here-document body, bash joins a line continuation first, so a `$`, a
-  backslash-newline and a `(` are a substitution there; `lex` reads text (row 20: the inner bash
-  joins it, under every outer shell).
+- **`lex`** finds a `$(` by looking two characters ahead in the raw text. Inside double quotes
+  bash joins a line continuation first, so a `$`, a backslash-newline and a `(` are a
+  substitution there, while zsh reads text; in an unquoted here-document body both join. `lex`
+  reads text (row 20: the inner bash joins it, under every outer shell).
 
 ## 4. Design
 
@@ -98,8 +98,11 @@ R3 adds a deny for text the gate cannot read exactly, when `crude` finds a gated
   today. An exact reading would model each operator's quoting rule (§3) in two shells; the
   fallback needs none.
 - **R4, a line continuation inside `$(` or `${`.** In double quotes and in an unquoted
-  here-document body, `lex` looks for `$(`, and for R3's `${`, past backslash-newline pairs, as
-  bash joins them (ruling Q7). In plain shell text the lookaheads stay as they are (§5).
+  here-document body, `lex` looks for `$(`, and for R3's `${`, past backslash-newline pairs
+  (ruling Q7). A `$(` found only that way marks the text as R3's quote does, and `lex` reads on
+  as main does: zsh does not join it inside double quotes, so bash's reading may not replace
+  zsh's. `scan` applies R3's deny to a mark from the command and from each expanding
+  here-document body. In plain shell text the lookaheads stay as they are (§5).
 
 The top-level words stay the first reading. The two readings differ only by a backslash before
 `$` or a backtick, and every word the gate compares is either fixed text holding neither (a
@@ -127,6 +130,12 @@ quote context, so it is exact for this class.
 then decides). `crude` reads `lex`'s text too, so the error took that reading away:
 `git -C "$(`, a newline, `pwd`, a newline, `)" merge feature; printf '%s\n' "${MSG:-"done"}"`
 is denied by main, and was allowed (the plan review, round 1, found it).
+
+**Rejected: R4 as a joined reading that replaced the raw one** (a `$(` frame opened past the
+continuation). zsh reads `"$\`, a newline and `("` as text, so the frame swallowed commands zsh
+runs: `x="$\`, a newline, `("; git merge y; echo ")"`, which main denies, was allowed, and a
+`$((` joined that way skipped the arithmetic check and opened a here-document that hid the next
+line (the task review's re-review, round 1).
 
 **Rejected: making R1 the only reading.** It is exact, but it drops denies main makes today
 (`` bash -c "printf %s \"\\\`git merge feature\\\`\"" `` is denied by main and runs nothing). The
@@ -162,8 +171,9 @@ auto-mode classifier (rulings Q2, Q5, Q6).
 Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each new deny shown red on main first:
 - **Denied:** rows 1 to 9, 17, 18 and 20 of §2; row 18 with an escaped `}` in the default
   value; row 17 inside one more `bash -c '…'` with a line continuation between `$` and `{`; row
-  18 with a multi-line `git -C "$(…)"`; and R3's rejected form's command (§4), which main denies
-  already: it pins that R3 takes no reading away.
+  18 with a multi-line `git -C "$(…)"`; row 20 in a here-document body; and, each denied by
+  main already, R3's and R4's rejected forms' commands (§4): they pin that neither takes a
+  reading away.
 - **Allowed:** rows 12 to 16 and 19 of §2: the inner command's own quoting, an escaped
   substitution in the inner command's single quotes, the two places where `\"` stays escaped,
   and a nested quote in a command that mentions no gated verb.
