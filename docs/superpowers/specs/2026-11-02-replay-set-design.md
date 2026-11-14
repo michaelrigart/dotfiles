@@ -871,8 +871,10 @@ evidence, and the verdict stays inconclusive.
 Michael retired the harness on 2026-11-14 (item 37 of the 2026-11-11 setup review). The branch
 `chore/retire-process-replay` deletes `.scripts/process-replay.py`, `.scripts/process_replay/`,
 their suite, and `.scripts/xreview-replay.py` with its suite: the review-packets replay
-(2026-10-25-xreview-review-packets-design.md §5), which only this harness still used. This spec
-and both plans stay as the record. The basis:
+(2026-10-25-xreview-review-packets-design.md §5), which only this harness still used. With it go
+two `xreview-rpc` features that only these replays called, `thread-fork` and `turn-start --cwd`;
+`thread-unarchive` stays, as the archive-review-threads spec's recovery path. This spec and both
+plans stay as the record. The basis:
 
 - **§6 ran on 2026-11-14 and came back incomplete:** 4 of 10 cases assessable; recall A 0.6,
   A′ 0.6, B 0.4; no P0/P1 missed. The other 18 runs, every arm of six cases, were void twice: the
