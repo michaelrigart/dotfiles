@@ -40,8 +40,8 @@ read at `6fb6ce1`; Task 2's implementer re-reads each range before cutting it.
 
 ## Review focus
 
-1. A delete of the default branch (`--delete main`, `:main`), and `--all` or `--mirror` with a known
-   default branch, must be a silent deny with the section 4.2 reason, never an ask; `--prune` and a
+1. A delete of the default branch (`--delete main`, `:main`), `--all` and `--mirror` must be a
+   silent deny with the section 4.2 reason, never an ask; `--prune` and a
    delete of another branch still ask. Task 3 pins each.
 2. A dry run of a default-branch push: outside canonical text, the section 4.2 deny (M6); the
    canonical `git push -n origin main` stays allowed. Task 3 pins both.
@@ -61,7 +61,10 @@ delegation on 2026-11-14, and the rest stand as stated there.
 - Row 3557 (`git push origin feat:main` with a secret, "a secret beats an ask") is deleted: the
   section 4.2 deny now comes before the scan. Rows 3545 and 3553 keep the Tests bullet.
 - `tests/hook-path.test.sh` drives a default-branch push to reach the scan; it moves to
-  `git push --force origin feat` (an ask after the scan) so its hostile-configuration coverage stays.
+  `git push --force origin HEAD:feat` (an ask after the scan, with an outgoing commit) so its
+  hostile-configuration coverage stays.
+- M5's "where the remote's default branch is known" always holds: the helper's `default_branch`
+  falls back to `main`, so `--all` and `--mirror` are always denied.
 - `tests/run.test.sh`'s `DRIFT_PART_DIRS` entry `git-forge-guard:dot_claude` and its comment go:
   the only command line it served is in the deleted range.
 - `claude-code.md`'s Pushing paragraph stays: it is still true, and with the heavy tag staying (M7)
@@ -93,8 +96,10 @@ The judgement (spec 2.1, revision 3):
   `update` is merge-owner. A ruleset that is not active is ignored for this half: it enforces nothing.
 - `ok` needs the existing three-rule half and the `update` half.
 - Remedies, in this order: the `protect-main` POST and the `main-pr-only` POST as today; the
-  `main-merge-owner` POST when no ruleset is merge-owner; the existing UI notes; then, for each
-  active ruleset carrying `update` that is not merge-owner, one note:
+  `main-merge-owner` POST when no active ruleset carries `update` without the other three rules (an
+  `update`-only ruleset that is not merge-owner is fixed in place by its note, not joined by a
+  second one); the existing UI notes; then, for each active ruleset carrying `update` that is not
+  merge-owner, one note:
   - if it also carries `deletion`, `non_fast_forward` or `pull_request`:
     `in the UI: https://github.com/<repo>/rules/<id>: remove Restrict updates; main-merge-owner carries it`
   - otherwise: `in the UI: https://github.com/<repo>/rules/<id>: bypass list only Repository admin, For pull requests only`
@@ -215,7 +220,8 @@ starts only on a literal push word, a selector or an alias.
 - In `evaluate`, after the refspec loop, the push touches the default branch when a destination
   names it (the test of today's lines 3036–3039), a delete names it (`--delete`/`-d` with that ref,
   or a `:<default>` refspec, with `refs/heads/` stripped as today), or `--all` or `--mirror` is
-  given and `default` is known. Then `raise Deny(DEFAULT_DENY)`, before the merged-delete check, the
+  given (`default_branch` always resolves a name, falling back to `main`, so these two are always
+  denied). Then `raise Deny(DEFAULT_DENY)`, before the merged-delete check, the
   dry-run deny and the scan (M5, M6). The canonical dry run still returns earlier.
 - The `asks` entry "it updates <default>, the default branch of <remote>" goes; `--prune`, deletes
   of other branches, force without a lease and `--tags` keep their asks.
@@ -223,10 +229,11 @@ starts only on a literal push word, a selector or an alias.
   1227–1238 less the canonical 1238, 1304–1313, 1373, 1404, 1454, 1473, 1498, and the moved
   surrogate row) expects the deny with `DEFAULT_DENY`'s text; 1307 checks that text; 3557 goes; the
   header's lines 7–8 say a default-branch push is denied. New rows: `git push --prune origin` and
-  `git push origin --delete feat` still ask; `--all` against a remote whose default branch cannot be
-  read keeps its ask.
-- `tests/hook-path.test.sh`: `COMMANDS` and the control use `git push --force origin feat`, and the
-  control still expects the missing-scan reason.
+  `git push origin --delete feat` still ask; `--all` in a repository whose remote has no `HEAD`
+  (the fallback `main`) is denied too.
+- `tests/hook-path.test.sh`: `COMMANDS` and the control use `git push --force origin HEAD:feat`
+  (in `repo-plain` `HEAD` is the `ahead` commit, so the scan has an outgoing commit to read), and
+  the control still expects the missing-scan reason.
 
 - [ ] **Step 1:** Change the rows; run both suites; they fail.
 - [ ] **Step 2:** Implement in `evaluate`; update `dry_run_deny`'s docstring and the shell header.

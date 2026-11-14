@@ -873,8 +873,8 @@ is decided by the driver session on Michael's delegation, on 2026-11-14.
 - **M5. Deletes of the default branch, `--all` and `--mirror`.** Section 4.1's "deletes,
   `--mirror`, `--all`, `--prune` on other branches: ask" is read with "on other branches" governing
   the whole list. A delete of the default branch (`--delete main`, `:main`), and `--all` or
-  `--mirror` whenever the remote's default branch is known, are a silent deny with section 4.2's
-  reason: each pushes the default branch. `--prune` and deletes of other branches keep their ask.
+  `--mirror` (the guard always knows a default branch: it falls back to `main` when the remote
+  names none), are a silent deny with section 4.2's reason: each pushes the default branch. `--prune` and deletes of other branches keep their ask.
   Two more asks go; none is added.
 - **M6. A dry run of a default-branch push** outside canonical text gets section 4.2's deny, not the
   dry-run deny, which would tell the agent to confirm the push with Michael. The canonical
