@@ -399,6 +399,15 @@ CMD
 )
 is "B114 a bash 5.3 \${ cmd; } split by a line continuation marks the text too, in double quotes and in a here-document body" \
    "$(decision "$W" "$X32") $(decision "$W" "$X33")" "deny deny"
+X34=$(cat <<'CMD'
+echo "${x:-"'"}"; git -C "$(
+pwd
+)" mer\
+ge y; echo "'" #"
+CMD
+)
+is "B115 the nested-quote rule finds a verb split by a continuation in a command with a multi-line substitution" \
+   "$(decision "$W" "$X34")" deny
 is "B105 the inner command's own quoting, single quotes, \$( ), a here-document and a nested quote with no gated verb stay allowed" \
    "$(decision "$W" "$X12") $(decision "$W" "$X13") $(decision "$W" "$X14") $(decision "$W" "$X15") $(decision "$W" "$X16") $(decision "$W" "$X19")" \
    "allow allow allow allow allow allow"

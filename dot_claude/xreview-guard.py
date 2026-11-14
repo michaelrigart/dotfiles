@@ -796,7 +796,8 @@ def scan(cmd, depth=0):
     between that reading and the first is hidden. Nesting deeper than MAX_NESTING counts as
     hidden. Raises ValueError when cmd has unbalanced quotes, and Deny when lex is unsure of it
     (in the command or in an expanding here-document body) and it mentions a gated verb, read
-    as written or with its newlines flattened."""
+    as written, with its newlines flattened, or with its continuations joined first and then
+    its newlines flattened."""
     text, nested, expanding, unsure = lex(cmd)
     nested.extend(b for b in lex(cmd, everywhere=True)[1] if b not in nested)
     for body in expanding:
@@ -804,7 +805,8 @@ def scan(cmd, depth=0):
             _, subs, _, body_unsure = lex(body, body=True, everywhere=flag)
             nested.extend(b for b in subs if b not in nested)
             unsure = unsure or body_unsure
-    if unsure and (crude(cmd) or crude(cmd.replace("\n", " "))):
+    if unsure and (crude(cmd) or crude(cmd.replace("\n", " "))
+                   or crude(cmd.replace("\\\n", "").replace("\n", " "))):
         raise Deny(UNSURE)
     tokens = tokenize(text)
     # bash 3.2 (/bin/bash, macOS /bin/sh) ends $( at its first ) - a case pattern's or one in
