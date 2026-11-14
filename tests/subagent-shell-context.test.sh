@@ -20,7 +20,7 @@ trap 'rm -rf "$T"' EXIT
 
 # The line measured on 2026-11-14 (8 of 8 Sonnet 5.5 dispatches denied without it, none of the
 # first calls with it). Word for word: a reworded line is an unmeasured one.
-LINE="Shell: every Bash call starts fresh in the session's directory and a \`cd\` never carries over, so never begin a command with \`cd\` (the path guard denies it). Name every file by its absolute path."
+LINE="Shell: every Bash call starts fresh in the session's directory and a \`cd\` never carries over, so never begin a command with \`cd\` (the path guard denies it). Name every file by its absolute path, and write each \`rm\` target as a literal absolute path, never a variable."
 
 # fire <agent_type> [PATH for the hook] -> sets OUT, ERR and RC
 fire() {

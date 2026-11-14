@@ -12,6 +12,9 @@
 - **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths
   or `git -C`; a lone `cd` lasts only in the main session. Name directories, not a recursive
   `grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.
+- **`rm` targets.** Name each target as a literal absolute path, never through a variable, a loop
+  or a substitution: Claude Code's removal check refuses a target it cannot resolve. `~` and every
+  sandbox write root are denied, with all their contents.
 - **Cleanup never blocks a run.** Deletions and container removals wait until the run's work is
   done and go together, or into the final report as commands. A plan workspace: the `plan-run`
   skill.
