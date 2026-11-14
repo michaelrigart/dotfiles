@@ -44,7 +44,7 @@
 - Test: `tests/xreview.test.sh`
 
 **Interfaces:**
-- Produces: `FRONT_END` (`tui` | `app`) and `PANE_CMD` (`herdr` | `xreview-app-pane`), set once at the top; every pane call is `"$PANE_CMD" pane …`. `lock_pane <pane> <root>`: locks `$XDG_STATE_HOME/xreview/locks/<sha256-hex of root>.lock`; its messages still name `<pane>`.
+- Produces: `FRONT_END` (`tui` | `app`) and `PANE_CMD` (`herdr` | `xreview-app-pane`), set once at the top; every pane call is `"$PANE_CMD" pane …`. `lock_key <root>`: prints the lowercase SHA-256 hex of `<root>`'s bytes. `lock_pane <pane> <root>`: locks `$XDG_STATE_HOME/xreview/locks/$(lock_key <root>).lock`; its messages still name `<pane>`.
 - Consumes: nothing. `xreview-app-pane` arrives in Task 5; until then only the suite's stub exists.
 
 - [ ] **Step 1: Clear the front-end variables in the suite.** Add `HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID` to the `unset` at the top of `tests/xreview.test.sh` (beside `XREVIEW_MAX_ROUNDS`).
@@ -60,7 +60,7 @@
 - [ ] **Step 3: Write the failing lock cases.** Change `LOCKF` in section P to `$XDG_STATE_HOME/xreview/locks/$(printf '%s' "$CWD" | shasum -a 256 | cut -c1-64).lock`; P1's message stays `another dispatch is using the Codex pane w1:p2; …`. Add:
   - `P1b`: with that lock held, `HC_TERMINAL_ID=t9 XREVIEW_LOCK_WAIT=0.5` dispatch refuses with `another dispatch is using the Codex pane w1:p2` (the app stub reports the same pane id): the two front ends share the checkout's lock.
   - Change P7 to `lock_pane wP:p7 /a/b` and look for `locks/<sha256 of /a/b>.lock`; add `P7b`: `lock_pane x /a/b` held in one process does not block `lock_pane x /a_b` with `XREVIEW_LOCK_WAIT=0.5` in another; `P7c`: `lock_pane x "/$(printf 'd%.0s' {1..300})"` succeeds and its lock file name is 69 bytes.
-  - P4b's `grep -c 'cannot open .*w1_p2.lock'` becomes `cannot open .*\.lock`.
+  - P4b's `grep -c 'cannot open .*w1_p2.lock'` becomes `cannot open .*\.lock`, and P8's `(.*w1_p2.lock)` becomes `(.*/<the CWD digest>.lock)`. P8's interpreter swap (`sed` over `lock_pane`'s range) keeps reaching only the flock helper, because the digest is computed in `lock_key`, outside that range; P7's extracted source takes `lock_key` along with `lock_pane`.
 
 - [ ] **Step 4: Run them and see them fail.** Run: `./tests/run.sh xreview` (exact name: lifts the heavy gate). Expected: FE1, FE5, FE6, P1b, P7, P7b, P7c FAIL; everything else PASS.
 
@@ -69,7 +69,7 @@
   - The 11 call sites become `"$PANE_CMD" pane …`, arguments unchanged.
   - Messages: `cannot list herdr panes - is herdr running?` and `cannot read herdr's pane list` stay for `tui`; for `app` they read `cannot list the Herdr app's panes - is its window open?` and `cannot read the Herdr app's pane list`. The four `(herdr pane get)` / `(herdr pane process-info)` parentheticals name `$PANE_CMD` instead of the literal `herdr`.
   - `warn_pane_map_untrusted` is called only when `FRONT_END=tui`.
-  - `lock_pane <pane> <root>`: the file name is the lowercase SHA-256 hex of `<root>`'s bytes, computed with `/usr/bin/python3 -I -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$2"` (a failure dies `cannot name the lock for <pane>; no review was started. Michael's call: report this and stop.`). Both callers pass `"$(pane_root)"`.
+  - `lock_key <root>`, a function of its own defined just before `lock_pane`: `/usr/bin/python3 -I -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"`. `lock_pane <pane> <root>` names its file `$(lock_key "$2").lock` (a failed or empty key dies `cannot name the lock for the Codex pane <pane>; no review was started. Michael's call: report this and stop.`). Both callers pass `"$(pane_root)"`.
   - Update the header comment where it says the pane is a "herdr pane".
 
 - [ ] **Step 6: Run the suite and see it pass.** Run: `./tests/run.sh xreview` from this session's app terminal. Expected: every `xreview*` suite PASS, passed/total printed.
@@ -135,51 +135,56 @@
 
 - [ ] **Step 3: Re-run Tasks 1-3's suites** from this session's app terminal. Expected: PASS.
 
-### Task 5: The shim becomes `xreview-app-pane`, without the caller's hc identity
+### Task 5: The shim becomes `xreview-app-pane`, without the caller's hc identity; `xreview-app` becomes a wrapper
 
 **Depends on:** Task 4
 
 **Files:**
 - Move: `dot_config/herdr-app/xreview-shim/executable_herdr` → `dot_local/bin/executable_xreview-app-pane` (`git mv`, mode 755)
 - Move/split: the shim's cases from `tests/herdr-app-xreview.test.sh` → `tests/xreview-app-pane.test.sh` (zsh shebang); stubs and fixture stay in `tests/fixtures/herdr-app/`
-- Modify: `.chezmoiignore` (drop the `xreview-shim` re-include), `.scripts/test-audit/subjects.tsv`
+- Modify: `dot_config/herdr-app/bin/executable_xreview-app` (it checks for the shim today, so it changes in the commit that removes it), `.chezmoiignore` (drop the `xreview-shim` re-include), `.scripts/test-audit/subjects.tsv`
+- Test: `tests/herdr-app-xreview.test.sh` (its `xreview-app` section)
 
 **Interfaces:**
 - Consumes: Task 1's call forms (unchanged since the shim was written).
-- Produces: `~/.local/bin/xreview-app-pane pane <seven forms>`, behaviour as §5.3; every `hc` call made as `command env -u HC_TERMINAL_ID -u HC_SCOPE hc …` through one wrapper function. `tests/xreview-app-pane.test.sh` for Task 6 to leave alone.
+- Produces: `~/.local/bin/xreview-app-pane pane <seven forms>`, behaviour as §5.3; every `hc` call made as `command env -u HC_TERMINAL_ID -u HC_SCOPE hc …` through one wrapper function. `xreview-app [args…]`: `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, then `exec "${XREVIEW_APP_XREVIEW:-$HOME/.local/bin/xreview}" "$@"`.
 
 - [ ] **Step 1: Move the files.** `git mv` the shim and create `tests/xreview-app-pane.test.sh` holding every case of `tests/herdr-app-xreview.test.sh` that runs the shim (its find_pane, get, process-info, keys/run/read, report, refusal and shape sections), pointed at `dot_local/bin/executable_xreview-app-pane` and `tests/fixtures/herdr-app/`; the `xreview-app` section stays in `tests/herdr-app-xreview.test.sh`. Drop `.chezmoiignore`'s `xreview-shim` line. Subject rows: the helper (`zsh`, suite `xreview-app-pane`, loaded by `xreview-app-pane,xreview`), the new suite.
 
-- [ ] **Step 2: Write the failing cases.** The `hc` stub appends `id=${HC_TERMINAL_ID-unset} scope=${HC_SCOPE-unset}` to its log line; the suite exports `HC_TERMINAL_ID=t87 HC_SCOPE=s1` for every case and asserts, after the keys, run and read cases and one get, that every `hc` log line carries `id=unset scope=unset`. Replace the copied jq filters' line-number comments with a drift check: each copied xreview filter must appear verbatim (`grep -F`) in `dot_local/bin/executable_xreview`, one `PASS: drift: <function>` per filter.
+- [ ] **Step 2: Write the failing cases.**
+  - `xreview-app-pane.test.sh`: the `hc` stub appends `id=${HC_TERMINAL_ID-unset} scope=${HC_SCOPE-unset}` to its log line; the suite exports `HC_TERMINAL_ID=t87 HC_SCOPE=s1` for every case and asserts, after the keys, run and read cases and one get, that every `hc` log line carries `id=unset scope=unset`. Replace the copied jq filters' line-number comments with a drift check: each copied xreview filter must appear verbatim (`grep -F`) in `dot_local/bin/executable_xreview`, one `PASS: drift: <function>` per filter.
+  - `herdr-app-xreview.test.sh`'s `xreview-app` section: with a hostile PATH first (a folder holding `grep`, `jq` and `xreview` that touch a marker), `xreview-app round` runs the `$XREVIEW_APP_XREVIEW` stand-in, which records its arguments and PATH: the arguments arrive unchanged, the PATH it sees is `/usr/bin:/bin:/usr/sbin:/sbin`, no `PINNED_PATH` is set by the wrapper, and the marker never appears. The cases about the shim folder and xreview's PATH line are deleted.
 
-- [ ] **Step 3: Run and see it fail.** Run: `./tests/xreview-app-pane.test.sh`. Expected: the identity assertions FAIL; the moved cases and the drift checks PASS.
+- [ ] **Step 3: Run and see it fail.** Run: `./tests/xreview-app-pane.test.sh`, `./tests/herdr-app-xreview.test.sh`. Expected: the identity assertions and the new wrapper cases FAIL; the moved cases and the drift checks PASS.
 
-- [ ] **Step 4: Implement** the wrapper `hc_()` (or equivalent) in the helper and route its `hc get/keys/send/read` calls through it; update the header comment (it is xreview's app pane helper, called through `PANE_CMD`, not a `herdr` on PATH; the identity rule and why, citing §5.3).
+- [ ] **Step 4: Implement** the wrapper `hc_()` (or equivalent) in the helper and route its `hc get/keys/send/read` calls through it; update the header comment (it is xreview's app pane helper, called through `PANE_CMD`, not a `herdr` on PATH; the identity rule and why, citing §5.3). Replace `xreview-app`'s body with the Interfaces' two lines and a comment saying it remains for sessions recorded with its path until the TUI is retired (§5.7).
 
 - [ ] **Step 5: Run and see it pass.** Run: `./tests/xreview-app-pane.test.sh`, `./tests/run.sh herdr-app xreview`. Expected: PASS.
 
-- [ ] **Step 6: Commit.** `git add -A dot_local/bin/executable_xreview-app-pane dot_config/herdr-app/xreview-shim tests/xreview-app-pane.test.sh tests/herdr-app-xreview.test.sh .chezmoiignore .scripts/test-audit/subjects.tsv` then `git commit -m "Move the app pane shim into the dotfiles as xreview-app-pane, without the caller's hc identity"`.
+- [ ] **Step 6: Commit.** `git add -A dot_local/bin/executable_xreview-app-pane dot_config/herdr-app/xreview-shim dot_config/herdr-app/bin/executable_xreview-app tests/xreview-app-pane.test.sh tests/herdr-app-xreview.test.sh .chezmoiignore .scripts/test-audit/subjects.tsv` then `git commit -m "Move the app pane shim into the dotfiles as xreview-app-pane, without the caller's hc identity"`.
 
 ### Task 6: The app side becomes thin
 
 **Depends on:** Tasks 2, 5
 
 **Files:**
-- Modify: `dot_config/herdr-app/bin/executable_xreview-app`, `executable_wt-app`, `executable_claude-app`, `executable_open-space`, `executable_close-own-tab`, `dot_config/herdr-app/programs.json.tmpl`
-- Test: `tests/herdr-app-xreview.test.sh`, `tests/herdr-app.test.sh`
+- Modify: `dot_config/herdr-app/bin/executable_wt-app`, `executable_claude-app`, `executable_open-space`, `executable_close-own-tab`, `dot_config/herdr-app/programs.json.tmpl`
+- Test: `tests/herdr-app.test.sh`
 
 **Interfaces:**
-- Consumes: `dev`'s app path (Task 2), `xreview-app-pane` (Task 5).
+- Consumes: `dev`'s app path (Task 2): `DEV_OPEN_SPACE` names the `open-space` it runs.
 - Produces: compatibility wrappers per §5.6; `open-space`/`close-own-tab` with a pinned PATH.
 
-- [ ] **Step 1: Write the failing cases.**
-  - `herdr-app-xreview.test.sh` (the `xreview-app` section): with a hostile PATH first (a folder holding `grep`, `jq` and `xreview` that touch a marker), `xreview-app round` runs `$XREVIEW_APP_XREVIEW` (kept for tests) with its arguments unchanged, the marker never appears, and the started process sees PATH `/usr/bin:/bin:/usr/sbin:/sbin`; no `PINNED_PATH` is set by the wrapper. Cases about the shim folder and xreview's PATH line are deleted.
-  - `herdr-app.test.sh`: `wt-app --no-focus newbranch` creates the checkout through `wt` (assert the `wt` log or the `open-space` stub's `--no-focus <dest>` and focus given back as today); `wt-app --prompt` with `newbranch` on stdin closes its own tab; `claude-app --x y` starts `claude --x y` and nothing else; a new space's Claude tab argv is `["claude"]`, and `programs.json` renders with no `claude` override; `open-space` and `close-own-tab`, run with a PATH whose first folder shadows `herdr-app` and `jq` with marker-touching stubs, never touch the marker.
+- [ ] **Step 1: Write the failing cases.** First the fixture: once `open-space` and `close-own-tab` pin PATH, the suite's stubs on the caller's PATH no longer reach them. The suite's scratch `HOME` gets a `.local/bin` holding the trusted stubs (`herdr-app`, `hc`, `fzf`, `claude`, `wt-rm`), exported `HOME` covers every case, and `DEV_OPEN_SPACE` points at the rendered `open-space`, so `wt-app` → `wt` → `dev` runs the script under test. Then, in `herdr-app.test.sh`:
+  - `wt-app --no-focus newbranch` creates the checkout through `wt`: the stub log shows `space.new` for `<dest>` and the focus given back, as today.
+  - `wt-app --prompt` with `newbranch` on stdin closes its own tab (`tab.close` logged).
+  - `claude-app --x y` starts `claude --x y` and nothing else.
+  - A new space's Claude tab argv is `["claude"]`; the reopen default too; `programs.json` renders with no `claude` override.
+  - `open-space` and `close-own-tab`, run with a PATH whose first folder shadows `herdr-app` and `jq` with marker-touching stubs: each succeeds, the trusted stub log shows its expected calls (`space.new`/`pane.split`, `tab.close`), and the marker never appears.
 
 - [ ] **Step 2: Run and see them fail.** Run: `./tests/run.sh herdr-app`. Expected: the new cases FAIL.
 
 - [ ] **Step 3: Implement** per §5.6:
-  - `xreview-app`: `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, then `exec "${XREVIEW_APP_XREVIEW:-$HOME/.local/bin/xreview}" "$@"`.
   - `wt-app`: `--prompt`/`--no-focus` handling as now; source `~/.config/zsh/functions` and call `wt ${nofocus:+--no-focus} "$@"`; close the tab as now. Caller PATH kept.
   - `claude-app`: `exec claude "$@"`.
   - `open-space` and `close-own-tab`: the pinned PATH as their first command.
@@ -189,7 +194,7 @@
 
 - [ ] **Step 4: Run and see them pass.** Run: `./tests/run.sh herdr-app`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** `git add dot_config/herdr-app tests/herdr-app.test.sh tests/herdr-app-xreview.test.sh` then `git commit -m "Shrink the Herdr app's xreview, wt and claude adapters to compatibility wrappers"`.
+- [ ] **Step 5: Commit.** `git add dot_config/herdr-app tests/herdr-app.test.sh tests/fixtures/herdr-app` then `git commit -m "Shrink the Herdr app's wt and claude adapters to wrappers and pin the app scripts' PATH"`.
 
 ### Task 7: Pre-merge verification (controller)
 
