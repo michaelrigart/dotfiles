@@ -11,7 +11,8 @@ from `main` at `4c76ec4`
 **Source:** item 24 of the 2026-11-11 agent setup review: "the MCP barrier waits only on `starting`
 or `notStarted` (17 failures); quit the pane with SIGTERM instead of the ctrl+c ladder (28
 failures, cause inferred); escalate after a second identical refusal." Approved by Michael on
-2026-11-12, to run after `fix/xreview-trust`.
+2026-11-12, to run after `fix/xreview-trust`. Its counts covered 14 days; §2 recounts the whole
+history (20 and 43).
 **Related:** `2026-10-01-xreview-reliable-codex-pane-design.md` (§4.4 the ladder and its
 2026-10-15 barrier amendment, §8 the rejected kill), `2026-11-12-xreview-trust-design.md`,
 `2026-11-13-instruction-weight-design.md` (part C: every refusal ends with its next step).
@@ -42,8 +43,9 @@ Other refusals counted (the size cap, 24; usage errors) are not reliability fail
 **Repeated identical refusals.** Streaks of the same refusal in one session: pane exit up to 17,
 MCP up to 4, daemon environment 3 and 4. All of them predate part C of the instruction weight
 line (merged 2026-11-14). Since part C, each of those refusals ends either with
-"Michael's call: report this and stop" (pane exit, daemon environment, no pane) or, for the MCP
-one, goes away under §3.1.
+"Michael's call: report this and stop" (pane exit, daemon environment, no pane). The MCP one
+loses its measured cause under §3.1 (a null); a server still `starting` or `notStarted` after
+30 s gets the same refusal as before, with no next step of its own. None was counted.
 
 ### 2.1 The pane that will not exit
 
@@ -67,8 +69,9 @@ one, goes away under §3.1.
   `notStarted | starting | connected | authenticationRequired | failed | cancelled | disabled`,
   or null "when unavailable or the configuration changed". In all 20 refusals the null held for
   the full 30 s.
-- The incidents named only servers disabled in Codex's configuration (`node_repl`, `cua_repl`,
-  `codex_app`).
+- The incidents named only servers that are disabled: `node_repl` and `cua_repl` in Codex's
+  configuration, and `codex_app`, which today's daemon lists as `disabled` beside the enabled
+  `codex_apps`.
 - A probe on today's daemon (up since 2026-11-12) read every disabled server as `disabled`, on a
   fresh thread and on the same thread cold-loaded (archive, unarchive, resume). The one enabled
   server, `codex_apps`, read `starting` from the first poll and `connected` about 1 s later. So
@@ -88,8 +91,14 @@ one, goes away under §3.1.
 - An empty list, a list error, an unreadable answer and the 30 s bound behave as today.
 - What it keeps: the race the barrier exists for (a turn started while a server is `starting`)
   is still held, and that is the only state measured on a cold load.
-- What it gives up: a server that reports null while it is in fact starting would no longer be
-  waited for. No such status has been seen.
+- What it gives up:
+  - A server that reports null while it is in fact starting is no longer waited for. No such
+    status has been seen.
+  - A status the barrier does not know no longer holds the turn. If a Codex upgrade added or
+    renamed a starting state, the 2026-10-15 cold-load race could come back, and would show
+    first as a pane that will not exit. The check is the `live-codex-daemon` canary, which
+    Michael runs after every Codex upgrade. Holding on unknown strings instead fails the other
+    way: a new status that is in fact settled would refuse every dispatch, as the null did.
 
 ### 3.2 The pane step stays as it is; a signal fallback is the option (D2)
 
@@ -173,8 +182,8 @@ all, so the suite would stub it on `PINNED_PATH`, like `kill`.
 
 ### 3.3 No tool-side counter for repeated refusals (D3)
 
-Not built. Since part C, every refusal that streaked ends with Michael's call, and §3.1 removes
-the MCP one. The refusals left with an action clause are waits ("another dispatch is using the
+Not built. Since part C, every refusal that streaked ends with Michael's call, except the MCP
+one, whose measured cause §3.1 removes (§2). The refusals left with an action clause are waits ("another dispatch is using the
 Codex pane", "mid-turn"), where a repeat is the expected path while a long review holds the
 pane. A counter would either repeat what those messages say, or stop a legitimate wait.
 
@@ -197,6 +206,7 @@ pane. A counter would either repeat what those messages say, or stop a legitimat
 | Leave the pane step as it is, since it has not failed since 11-04 | Adopted (D2 B) |
 | A signal fallback after the ladder | The option, if pane-quit refusals return (§3.2) |
 | Treat a null status as settled only for servers disabled in `config.toml` | Rejected |
+| Let null and a missing status settle, and keep holding on any other unknown string | Rejected (final review, ruled by the line) |
 | Restart the daemon when the barrier sees null | Rejected |
 | A counter that adds Michael's call on a second identical refusal | Rejected (D3) |
 
@@ -206,8 +216,9 @@ Table-driven, one row per rule. Each row passes the revert check.
 
 | Suite | Row | Catches |
 |---|---|---|
-| `xreview-rpc` | MB2 rewritten: `starting` and `notStarted` hold, then refuse at the bound; null, a missing field and an unknown value start the turn at once | A barrier that waits on a status that cannot settle |
-| | MB (the mixed list): the refusal names `node_repl=starting` and not the null server | A refusal naming servers it does not wait for |
+| `xreview-rpc` | MB2 rewritten: `notStarted` holds (MB2a); null, a missing field, an unknown string, a number and a non-object entry start the turn at once (MB2b) | A barrier that waits on a status that cannot settle |
+| | MB5 extended: a null beside a connected server on page 1 does not hold, a starting one on page 2 does | Pagination mixing the two |
+| | MB6 extended: `[starting, notStarted, null]` refuses at the bound naming `node_repl=starting, a=notStarted`, and no `x=` | A refusal naming servers it does not wait for |
 
 ## 7. Records
 
