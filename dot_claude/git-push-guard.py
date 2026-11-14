@@ -1225,7 +1225,8 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
             deleted.append(dst)
             continue
         if deleting:
-            deleted.append(s)                          # these name refs to delete
+            # these name refs to delete; the current-branch forms name the checked-out branch
+            deleted.append(branch if spec in CURRENT_BRANCH and branch else s)
             continue
         if src.startswith("-"):
             raise Deny("Push guard: cannot read the refspec " + spec + ".")
@@ -1280,10 +1281,6 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
     scan_sources = list(sources)
     if "--tags" in flags:
         scan_sources.append("--tags")
-    if "--all" in flags:
-        scan_sources.append("--branches")
-    if "--mirror" in flags:
-        scan_sources.append("--all")
 
     # A delete-only push of merged branches, each pinned to the tip read here and written
     # bare (canonical text, nothing before git or between git and push), needs no ask; merged

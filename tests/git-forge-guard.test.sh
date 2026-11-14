@@ -661,17 +661,10 @@ expect deny  "git -c core.pager running a push"       "$R"   "git -c core.pager=
 expect deny  "a comment after an inert command"       "$R"   'git status # git push'
 expect deny  "ANSI-C quoting hiding a push"           "$R"   "echo \$'\\'' ; git push origin main ; echo \$'\\''"
 
-echo "== rule 4: pushes that ask =="
+echo "== rule 4: a push of the default branch is denied =="
 expect_default "HEAD:main"                              "$R" 'git push origin HEAD:main'
 expect_default "refs/heads/main as the destination"     "$R" 'git push origin feat:refs/heads/main'
 expect_default "a lease on the default branch"          "$R" 'git push --force-with-lease origin main'
-expect ask   "a + refspec"                            "$R" 'git push origin +feat'
-expect ask   "--force on a feature branch"            "$R" 'git push --force origin feat'
-expect ask   "-f bundled as -fu"                      "$R" 'git push -fu origin feat'
-expect ask   "a :ref refspec"                         "$R" 'git push origin :old'
-expect ask   "--delete"                               "$R" 'git push --delete origin old'
-expect ask   "-d"                                     "$R" 'git push -d origin old'
-expect ask   "--prune"                                "$R" 'git push --prune origin feat'
 expect_default "--mirror"                               "$R" 'git push --mirror origin'
 expect_default "--all"                                  "$R" 'git push --all origin'
 expect_default "--delete of the default branch"         "$R" 'git push --delete origin main'
@@ -680,9 +673,18 @@ expect_default "a :<default> refspec"                   "$R" 'git push origin :m
 # git resolves heads/<name> to refs/heads/<name>, so a delete names the branch either way.
 expect_default "--delete of heads/<default>"            "$R" 'git push --delete origin heads/main'
 expect_default "a :heads/<default> refspec"             "$R" 'git push origin :heads/main'
+expect_default "a +: refspec deleting the default branch" "$R" 'git push origin +:main'
+
+echo "== rule 4: pushes that ask =="
+expect ask   "a + refspec"                            "$R" 'git push origin +feat'
+expect ask   "--force on a feature branch"            "$R" 'git push --force origin feat'
+expect ask   "-f bundled as -fu"                      "$R" 'git push -fu origin feat'
+expect ask   "a :ref refspec"                         "$R" 'git push origin :old'
+expect ask   "--delete"                               "$R" 'git push --delete origin old'
+expect ask   "-d"                                     "$R" 'git push -d origin old'
+expect ask   "--prune"                                "$R" 'git push --prune origin feat'
 expect ask   "--delete of heads/<another branch>"     "$R" 'git push --delete origin heads/feat'
 expect ask   "a :heads/<another branch> refspec"      "$R" 'git push origin :heads/feat'
-expect_default "a +: refspec deleting the default branch" "$R" 'git push origin +:main'
 expect ask   "--prune alone"                          "$R" 'git push --prune origin'
 expect ask   "--delete of another branch"             "$R" 'git push origin --delete feat'
 
@@ -1274,6 +1276,8 @@ ONMAIN=$(clone onmain); git -C "$ONMAIN" switch -q main
 expect_default "a bare push while on main"              "$ONMAIN" 'git push'
 expect_default "push <remote> while on main"            "$ONMAIN" 'git push origin'
 expect_default "push HEAD while on main"                "$ONMAIN" 'git push origin HEAD'
+expect_default "a delete through --show-current, on main" "$ONMAIN" 'git push origin --delete "$(git branch --show-current)"'
+expect_default "-d through rev-parse --abbrev-ref, on main" "$ONMAIN" 'git push -d origin "$(git rev-parse --abbrev-ref HEAD)"'
 has_reason   "the deny is the default-branch text" "$DEFAULT_DENY" "$R" 'git push origin main'
 TRUNK=$(clone trunk); git -C "$TRUNK" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
 git -C "$TRUNK" branch trunk
@@ -1373,7 +1377,7 @@ has_reason   "the deny names the key and value" \
              "push.recurseSubmodules=on-demand, which also pushes submodule commits" "$RSDEMAND" 'git push origin feat'
 RSCHECK=$(clone recurse-check); git -C "$RSCHECK" config push.recurseSubmodules check
 expect allow "push.recurseSubmodules=check is evaluated normally" "$RSCHECK" 'git push origin feat'
-expect_default "and a push to main under it still asks" "$RSCHECK" 'git push origin main'
+expect_default "and a push to main under it is the default-branch deny" "$RSCHECK" 'git push origin main'
 RSLATE=$(clone recurse-check-then-true)
 git -C "$RSLATE" config push.recurseSubmodules check; git -C "$RSLATE" config submodule.recurse true
 expect deny  "check, then submodule.recurse=true: git recurses" "$RSLATE" 'git push origin feat'
@@ -1442,7 +1446,7 @@ expect deny  "a tags/ destination"                    "$R" 'git push origin feat
 expect deny  "a remotes/ destination"                 "$R" 'git push origin feat:remotes/origin/main'
 expect deny  "a refs/tags/ destination"               "$R" 'git push origin HEAD:refs/tags/v1'
 has_reason   "the DWIM deny names the destination" "the destination heads/main" "$R" 'git push origin feat:heads/main'
-expect_default "HEAD:refs/heads/main still asks"        "$R" 'git push origin HEAD:refs/heads/main'
+expect_default "HEAD:refs/heads/main is the default-branch deny"        "$R" 'git push origin HEAD:refs/heads/main'
 expect allow "a destination with a slash is a branch" "$R" 'git push origin HEAD:feat/x'
 # The scan lists the commits of every source, so a source must name a ref that exists.
 SLASH=$(clone slash); git -C "$SLASH" branch topic/x
@@ -1937,9 +1941,10 @@ else
   expect ask   "a clean force push is scanned, then asks"     "$CLEAN" 'git push --force origin feat'
   expect allow "a leaky feature push is left to the hook"     "$LEAKY" 'git push origin feat'
   expect allow "a dry run is never scanned"                   "$LEAKY" 'git push --dry-run origin feat'
-  # --tags, --all and --mirror push refs the scan does not name one by one, so it cannot show an
-  # exception is committed on each of them: with an exception file in the worktree they are
-  # refused. Here the secret is tagged v1 on feat, and the exception is committed on scratch only.
+  # --tags pushes refs the scan does not name one by one, so it cannot show an exception is
+  # committed on each of them: with an exception file in the worktree the push is refused. --all
+  # and --mirror never get that far: they are the default-branch deny. Here the secret is tagged
+  # v1 on feat, and the exception is committed on scratch only.
   TAGGED=$(clone tagged)
   printf '%s\n' "$SECRET_LINE" > "$TAGGED/creds.txt"
   git -C "$TAGGED" add creds.txt && git -C "$TAGGED" commit -q -m "add creds"
