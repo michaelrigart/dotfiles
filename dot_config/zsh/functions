@@ -539,13 +539,11 @@ _wt_manifest() {
 # _wt_mise_show <dir> — what mise says about the config files of one checkout, as one
 # `trusted<TAB><rel>` or `untrusted<TAB><rel>` line each (rel is relative to it, may hold `/`).
 # Returns 1, printing nothing, when mise fails or prints a line it does not recognise: a
-# partial answer is not an answer.
-#
-# `mise trust --show` also lists configs above <dir> and the global one; those are dropped on
-# path text alone (mise prints $HOME as `~/` and -C canonicalised, nothing else resolved), so
-# only <dir> is canonicalised. A path may contain `: `, so a line splits on its trailing
-# `: trusted` or `: untrusted`. A newline in a filename prints raw and reads as two lines, so
-# every entry must be absolute once `~/` is mapped and a blank line is never skipped.
+# partial answer is not an answer. `--show` also lists parents and the global config; entries
+# outside <dir> are dropped on path text alone, as mise prints it (`~/` for $HOME, -C
+# canonicalised, nothing else resolved). A path may contain `: `, so a line splits on its
+# trailing `: trusted` or `: untrusted`. A filename newline prints raw and reads as two lines,
+# so every entry must be absolute once `~/` is mapped and a blank line is never skipped.
 _wt_mise_show() {
   emulate -L zsh
   (( $+commands[mise] )) || return 0
@@ -571,14 +569,13 @@ _wt_mise_show() {
 }
 
 # _wt_mise_candidates <main> <dest> — the checkouts of one repository that may vouch for the
-# mise config of the existing worktree at <dest> (spec 2026-10-27 §2). Sets _WT_MISE_CANDS and
-# returns 0; returns 1 when Git's worktree list cannot be read or has no records, because
-# nothing can then vouch and wt trusts nothing.
-#
-# Order: <main> exactly as passed, then the others in Git's order, each root once. Left out:
-# <dest> itself, a path that is not a directory, and any root whose Git common dir is not
-# <main>'s (a path since reused by another repository). A detached checkout is still a
-# candidate. NUL porcelain, parsed as _wt_worktree_record does.
+# mise config of the worktree at <dest> (specs 2026-10-27 §2, 2026-11-14). Sets _WT_MISE_CANDS
+# and returns 0; returns 1 when Git's worktree list cannot be read or has no records, because
+# nothing can then vouch and wt trusts nothing. Order: <main> as passed, then the others in
+# Git's order, each once, with no base branch. Left out: <dest>, a path that is not a
+# directory, and any root whose Git common dir is not <main>'s (a path since reused by another
+# repository). A detached checkout is still a candidate. NUL porcelain, parsed as
+# _wt_worktree_record does.
 _wt_mise_candidates() {
   emulate -L zsh
   local main="$1" dest="${2:A}" rec root common maincommon rc
@@ -646,13 +643,11 @@ _wt_mise_plain() {
 
 # _wt_mise_trust_report <main> <dest> <reason<TAB>rel>... — the refusal lines for configs that
 # stay untrusted: what is wrong, how to look at it, how to trust it by hand (spec 2026-10-27
-# §4). The path is the last field of a record and is never cut at a tab; only the reason, which
-# has none, is split off the front.
-#
-# The review is a diff only for a "matches no trusted copy" record, and only against <main>'s
-# copy when that is a plain file, listed `trusted` in _WT_MISE_SHOWN (this run's reads; mise is
-# never called here) and different from the worktree's. Against anything else a diff would show
-# nothing, or nothing that was ever looked at, so the file itself is shown.
+# §4). The path is the last field of a record and is never cut at a tab. The review is a diff
+# only for a "matches no trusted copy" record, and only against <main>'s copy (spec
+# 2026-11-14) when that is plain, listed `trusted` in _WT_MISE_SHOWN (this run's reads; mise
+# is never called here) and different; against anything else a diff would show nothing that
+# was ever looked at, so the file itself is shown.
 _wt_mise_trust_report() {
   emulate -L zsh
   local main="$1" dest="$2" entry rel reason dp review
@@ -679,40 +674,30 @@ _wt_mise_trust_report() {
 }
 
 # _wt_mise_ident <file> — the file's inode and change time (ns) as one line, from `stat`
-# without following a symlink; returns 1 when it cannot be read. A write, truncate, rename or
-# replacement moves one of the two, a writer cannot put a change time back (`touch` sets atime
-# and mtime only), and a file swapped for a symlink is a new inode. Not seen, and accepted at
-# parity with a `mise trust` typed by hand: a directory above the file swapped, a symlink's
-# target swapped, a write through a mapping the writer already holds, a mount over the path,
-# and a change inside the clock's resolution (spec 2026-10-27 §3).
+# without following a symlink; returns 1 when it cannot be read. Any write, truncate, rename
+# or replacement moves one, and a writer cannot put a change time back (`touch` sets atime
+# and mtime only). What it cannot see is accepted (spec 2026-10-27, accepted residuals).
 _wt_mise_ident() {
   emulate -L zsh
   /usr/bin/stat -f '%i %Fc' -- "$1" 2>/dev/null </dev/null || return 1
 }
 
-# _wt_mise_trust <main> <dest> — carry mise's trust from the checkouts of this repository into
-# the existing worktree <dest>, for each config byte-identical to one trusted there, and
-# explain every other one (specs 2026-10-19 and 2026-10-27 §2–§4). Returns 0 when nothing was
-# left untrusted, 1 when a config stays untrusted or a read or trust call failed.
-# _WT_MISE_CARRIED counts the files carried. A <dest> that is a symlink trusts nothing: `mise
-# trust` would land on the checkout it points to.
+# _wt_mise_trust <main> <dest> — carry mise's trust into the existing worktree <dest> from the
+# repository's other checkouts, for each config byte-identical to one trusted there, and
+# explain every other one (specs 2026-10-19, 2026-10-27 §2–§4, 2026-11-14). Returns 0 when
+# nothing was left untrusted, 1 otherwise; _WT_MISE_CARRIED counts the files carried. A <dest>
+# that is a symlink trusts nothing: `mise trust` would land on its target.
 #
-# Paranoid mode ties trust to content, and the sandbox can rewrite a branch's committed
-# mise.toml or the main checkout's mise.local.toml, so a config nobody has looked at is never
-# trusted. A candidate (_wt_mise_candidates; the first to vouch wins) vouches only when both
-# copies are plain files, mise lists its copy `trusted` and `cmp` finds them identical. After
-# `mise trust` the same facts are read again, bound to that voucher; a file that no longer
-# holds up is untrusted at once and no other candidate is tried.
+# Paranoid mode ties trust to content and the sandbox can rewrite a branch's committed
+# mise.toml or the main checkout's mise.local.toml, so an unreviewed config is never trusted.
+# `cmp` and `mise trust` are two reads of a file a writer may be changing: the identity
+# (_wt_mise_ident) of <dest>/<rel> and the voucher's copy is pinned before the plainness check
+# and compared after the last `cmp`, and the re-check after `mise trust` reads afresh, never
+# from _WT_MISE_SHOWN. A file that fails it is untrusted at once; no other candidate is tried.
 #
-# `cmp` and `mise trust` are two reads of a file a writer may be changing, so the identity
-# (_wt_mise_ident) of <dest>/<rel> and of the voucher's copy is pinned before the plainness
-# check and compared after the last `cmp`; a stat that fails is a change.
-#
-# Each candidate's `trust --show` is read once per run (_WT_MISE_SHOWN). A failed read skips
-# that candidate with one "cannot vouch" line (it can only mean fewer files carried); a failed
+# A failed candidate read skips that candidate (it only means fewer files carried); a failed
 # read of <dest>, a failed trust and a failed re-check stop at once, because nothing said after
-# them can be believed, and the one call still made is the untrust of a file just trusted.
-# Refusals are collected and printed together at the end.
+# them can be believed. The one call still made then is the untrust of a file just trusted.
 _wt_mise_trust() {
   emulate -L zsh
   typeset -g _WT_MISE_CARRIED=0
@@ -796,8 +781,7 @@ _wt_mise_trust() {
           continue
         fi
       fi
-      # Withdraw the trust just given. An untrust that fails (it does when the file is gone) can
-      # leave the file trusted with whatever `mise trust` hashed, so it is its own line.
+      # Withdraw the trust just given; a failed untrust (file gone) can leave it trusted.
       command mise trust --untrust "$dp" >/dev/null 2>&1 </dev/null; failed=$?
       if (( failed || unread )); then
         _wt_mise_trust_report "$main" "$dest" $refused
@@ -862,11 +846,10 @@ _wt_do_prepare() {
   return 0
 }
 
-# _wt_mise_reopen_carry <main> <dest> <branch> — on a reopen, run the same carry as a
-# creation (spec 2026-10-27 §6); it never stops or runs a hook, so it returns 0. What is left
-# untrusted prints the opening-anyway line; a file carried prints the never-prepared line,
-# because a creation that stopped at the mise step never ran its setup hook. Either sets
-# _WT_NOTICE, so `wt-prompt` keeps the popup open.
+# _wt_mise_reopen_carry <main> <dest> <branch> — on a reopen, run the same carry as a creation
+# (spec 2026-10-27 §6); it never stops or runs a hook, so it returns 0. What is left untrusted
+# prints the opening-anyway line; a carried file prints the never-prepared line, since a
+# creation that stopped at the mise step never ran its setup hook. Either sets _WT_NOTICE.
 _wt_mise_reopen_carry() {
   emulate -L zsh
   local qb="$(_wt_q "$3")"
