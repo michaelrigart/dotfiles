@@ -175,18 +175,24 @@ moves or deletes anything under `LIVE` or `~/.config/herdr`.
     `xreview-shim/executable_herdr`.
   - No assertion is changed, dropped or weakened.
 
-- [ ] **Step 2: Add the allowlist cases to `herdr-app.test.sh`** (spec acceptance 3). Make a
-  scratch home holding `.config/herdr-app/{view.json, shared.json, data/x/s.json,
-  layouts/.state/michael.json, mods/michael-spaces/main.js, mods/spaces/main.js,
-  mods/nav/gpui-kit.d.ts, mods/nav/jsconfig.json}` plus `bin/new-script` (mode 755). Run
-  `chezmoi add` on each path, one call per path, against a scratch source made the same way
-  as in the render.
-  - `check "chezmoi add of <path> adds nothing"` for each runtime or shipped path: the
-    source's file list is unchanged.
-  - `check "chezmoi add of a new script in bin/ adds it as executable_new-script"`: the
+- [ ] **Step 2: Add the allowlist cases to `herdr-app.test.sh`** (spec acceptance 3).
+  - **The scratch home** holds `.config/herdr-app/{view.json, shared.json, data/x/s.json,
+    layouts/.state/michael.json, mods/michael-spaces/main.js, mods/spaces/main.js,
+    mods/nav/gpui-kit.d.ts, mods/nav/jsconfig.json}`, plus `bin/new-script` (mode 755). It holds
+    no templated target such as `keys.json`, so `chezmoi add` never stops at its
+    "remove template attribute" TTY prompt. Each `chezmoi add` call gets `</dev/null`, so an
+    unexpected prompt fails instead of hanging.
+  - **Each case** uses a fresh scratch source made the same way as the render, and its own
+    `aux` dir outside the home's ancestors. It compares the source's file list before and
+    after.
+  - **The directory cases:** `check "chezmoi add of <path> adds nothing"` for each of
+    `view.json`, `shared.json`, `data`, `layouts/.state`, `mods/michael-spaces`, `mods/spaces`
+    (a shipped mod), `mods/nav/gpui-kit.d.ts` and `mods/nav/jsconfig.json`. The source's file
+    list is unchanged.
+  - **The whole-tree case:** `check "chezmoi add of the whole tree adds only the new script"`.
+    `chezmoi add <home>/.config/herdr-app` leaves exactly one new source file,
+    `dot_config/herdr-app/bin/executable_new-script`. That is both the recursive check and the
     positive control, so the cases can't pass on an allowlist that refuses everything.
-  - Add paths one by one: adding the whole directory stops at the templated `keys.json`'s TTY
-    prompt.
 
 - [ ] **Step 3: Run the moved suites.**
   Run: `./tests/herdr-app.test.sh; ./tests/herdr-app-xreview.test.sh` (sandboxed)
@@ -198,7 +204,11 @@ moves or deletes anything under `LIVE` or `~/.config/herdr`.
   Expected: the `SKIP: … the 10 patch-mod checks did not run` line, `12 skipped`, 10 fewer
   PASS lines, and exit 0.
 
-- [ ] **Step 5: Add the missing-subject rows**, in name order in `tests/missing-subject.test.sh`:
+- [ ] **Step 5: Stage the new files, then add the missing-subject rows.**
+  `tests/missing-subject.test.sh` (and the test audit) copies only files git tracks
+  (`git ls-files`), so first `git -C $CO add` the two suites and `tests/fixtures/herdr-app/`.
+  Stage them; don't commit. Then add the rows, in name order in
+  `tests/missing-subject.test.sh`:
   ```
   missing herdr-app             dot_config/herdr-app/bin/executable_retire
   missing herdr-app             dot_config/zsh/functions
@@ -209,14 +219,22 @@ moves or deletes anything under `LIVE` or `~/.config/herdr`.
   ones.
 
 - [ ] **Step 6: Add the subject-map rows** in `.scripts/test-audit/subjects.tsv`, sorted and in
-  the file's format:
-  - one row per file the suites load: each `bin/executable_*` (lang from its shebang: zsh,
-    `py` for `folder-gone` and `patch-mod`, `sh` for `session-written`),
-    `xreview-shim/executable_herdr`, and `claude-settings.json.tmpl` and `programs.json.tmpl`
-    (`data`, loaded by `herdr-app`'s claude-app checks)
-  - the stubs, `tui-shapes.json` and `render.zsh`, with own_suite `-`
-  - `herdr-app,herdr-app-xreview` added to `.chezmoiignore`'s `loaded_by`, and `herdr-app` to
-    `dot_config/zsh/functions`'s
+  the file's format. The renderer copies and renders all 27 files of `dot_config/herdr-app`,
+  so every one of them gets a row with `herdr-app,herdr-app-xreview` in `loaded_by`:
+  - **Executed and asserted:** each `bin/executable_*`. Its lang comes from the shebang: zsh,
+    `py` for `folder-gone` and `patch-mod`, `sh` for `session-written`. own_suite is
+    `herdr-app`, except `herdr-app-xreview` for `xreview-app`.
+    `xreview-shim/executable_herdr` is zsh with own_suite `herdr-app-xreview`.
+  - **Asserted data:** `claude-settings.json.tmpl` and `programs.json.tmpl` (`data`, own_suite
+    `herdr-app`, whose claude-app checks read them).
+  - **Copied and rendered, never asserted:** `keys.json.tmpl`, `create_settings.json`,
+    `layouts/michael.json`, `themes/tokyo-night.json`, `patches/*.js`, and the four mods'
+    `main.js` and `mod.json`. Their lang is `data` and their own_suite is `-`, so the audit
+    plans no mutant no suite could catch.
+  - **Suite fixtures:** the stubs, `tui-shapes.json` and `render.zsh`, with own_suite `-` and
+    their suite(s) in `loaded_by`.
+  - **Existing rows:** add `herdr-app,herdr-app-xreview` to `.chezmoiignore`'s `loaded_by`, and
+    `herdr-app` to `dot_config/zsh/functions`'s.
 
   Run: `./tests/run.sh test-audit`. Expected: green.
 
@@ -272,13 +290,21 @@ Tasks 2 and 3 get the controller's check.
 
 ## After the last task (controller)
 
-1. Run Task 1 step 4 again (review focus 1). If a live file has moved, copy it in, re-run Task 2
-   step 3, and commit "Take the live <file>".
-2. Run `./tests/run.sh --changed`, and quote its heavy-suite lines.
-3. Preview: `command chezmoi --source $CO apply --dry-run --verbose ~/.config/herdr-app` writes
-   nothing. `command chezmoi --source $CO cat ~/.config/homebrew/Brewfile` differs from main's
-   render only by the cask line.
-4. Final review (`sp-architect`), then Codex's pre-merge review. Before opening the PR, run
-   step 1 once more.
-5. Set the spec to `**Status:** Implemented` (citing the PR) and mark this plan completed, in the
-   final pre-merge commit.
+Every gate below (the full run, the final review, Codex's pre-merge review) must see the
+branch's final commit. Any later commit sends the sequence back to step 3.
+
+1. **Live check.** Run Task 1 step 4 again (review focus 1). If a live file has moved, copy it in,
+   re-run Task 2 step 3, and commit "Take the live <file>".
+2. **Records.** Set the spec to `**Status:** Implemented` (branch `chore/herdr-app-in-chezmoi`,
+   its PR against `main`), and mark this plan completed. Commit both.
+3. **Full run.** Run `./tests/run.sh --changed` on that commit, and quote its heavy-suite lines.
+4. **Preview.** `command chezmoi --source $CO apply --dry-run --verbose ~/.config/herdr-app`
+   writes nothing. `command chezmoi --source $CO cat ~/.config/homebrew/Brewfile` differs from
+   main's render only by the cask line.
+5. **Reviews.** The final review (`sp-architect`), then Codex's pre-merge review. A fix wave
+   commits, then returns to step 3.
+6. **Last live check.** Run step 1 again just before pushing and opening the PR. If it imports a
+   file, return to step 3.
+7. **Push and open the PR** (merge-request skill). Then run the live check once more, just
+   before the final report. If a file has moved by then, import it, return to step 3, and push
+   again before reporting.
