@@ -105,8 +105,6 @@ EXP_ASK='["Read(~/.kube/config)",
  "Bash(glab mr merge*)","Bash(sudo *)",
  "Bash(git reset --hard*)",
  "Bash(git clean -f*)","Bash(git branch -D*)","Bash(git filter-branch*)",
- "Bash(rm -rf ~/*)","Bash(rm -rf /Users/michael/*)",
- "Bash(rm -r ~/*)","Bash(rm -r /Users/michael/*)",
  "Bash(brew uninstall*)","Bash(brew remove*)","Bash(kubectl delete*)",
  "Bash(borg *)","Bash(vorta *)",
  "Bash(op item create*)","Bash(op item edit*)","Bash(op item delete*)",
@@ -127,8 +125,24 @@ EXP_ASK='["Read(~/.kube/config)",
  "Bash(terraform -chdir=* destroy*)","Bash(terraform apply -destroy*)",
  "Bash(terraform -chdir=* apply -destroy*)"]'
 
+# The rm root denies (spec 2026-11-14-rm-exact-denies): the suite owns its own copy of the five
+# roots, so a root dropped from the script fails here. Each root is written in its ~ form and
+# with $HOME expanded, and each path gets two leads (rm * and rm), six operand forms, each with
+# and without trailing arguments. A backslash-star in a rule is a literal star.
+WRITE_ROOTS=('~/Code' '~/.local/share/chezmoi' '~/Documents' '~/Library/Mobile Documents/iCloud~md~obsidian')
+RM_ROOTS=('~' "${WRITE_ROOTS[@]}")
+RM_PATHS=(); for r in "${RM_ROOTS[@]}"; do RM_PATHS+=("$r" "$HOME${r#\~}"); done
+RM_RULES=$(for p in "${RM_PATHS[@]}"; do
+  for lead in 'rm * ' 'rm '; do
+    for op in '' '/' '/\*' '/\*/' '/\*\*' '/.\*'; do
+      printf 'Bash(%s%s)\nBash(%s%s *)\n' "$lead" "$p$op" "$lead" "$p$op"
+    done
+  done
+done | jq -R . | jq -sc .)
+EXP_DENY=$(jq -cn --argjson a "$EXP_DENY" --argjson b "$RM_RULES" '$a + $b')
+
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
-jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
+jq_is "(.permissions.ask | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
 
 # Belt and braces: every rule is a COMPLETE, closed form naming a tool we actually use:
 # Read/Edit/Bash(spec), or one MCP tool named in full (mcp__<server>__<tool>, no wildcard).
@@ -181,10 +195,11 @@ jq_is '[.permissions.allow[] | select(startswith("Bash(git push") or startswith(
 # " *" that is the rule's only * also matches the bare command; the legacy trailing ":*" is a
 # prefix, read as " *".
 MATCHES='def esc: gsub("(?<c>[.+?()\\[\\]{}|^$\\\\])"; "\\" + .c);
-  def hit($cmd): (.[5:-1] | if endswith(":*") then .[:-2] + " *" else . end) as $s
-    | ($s | esc | gsub("\\*"; ".*")) as $re
+  def hit($cmd): (.[5:-1] | if endswith(":*") then .[:-2] + " *" else . end
+                          | gsub("\\\\\\*"; "\u0001")) as $s
+    | ($s | esc | gsub("\\*"; ".*") | gsub("\u0001"; "\\*")) as $re
     | ($cmd | test("^" + $re + "$"))
-      or (($s | endswith(" *")) and (($s | split("*") | length) == 2) and ($cmd == $s[:-2]));'
+      or (($s | endswith(" *")) and (($s | split("*") | length) == 2) and ($cmd == ($s[:-2] | gsub("\u0001"; "*"))));'
 n_match() { # n_match <command> -> how many allow rules match it
   printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.allow[] | select(startswith("Bash(")) | select(hit($c))] | length'
 }
@@ -219,6 +234,16 @@ m_is 'gitk' 0 "model: no rule matches gitk"
 m_is 'ls' 1 "model: legacy 'ls:*' matches bare 'ls'"
 m_is 'ls -la' 1 "model: legacy 'ls:*' matches 'ls -la'"
 m_is 'lsof' 0 "model: legacy 'ls:*' does not match 'lsof'"
+OUT='{"permissions":{"deny":["Bash(rm * /r/\\*)","Bash(rm * /r/\\* *)"]}}'
+d_is 'rm -rf /r/*'        yes "model: \\* is a literal star"
+d_is 'rm -rf /r/* /x'     yes "model: a trailing ' *' takes more arguments"
+d_is 'rm -rf /r/sub'      no  "model: \\* does not match a name"
+d_is 'rm -rf /r/*/*/b'    no  "model: the operand ends at a space or the end"
+d_is 'rm /r/*'            no  "model: the rm-star lead needs a word before the path"
+OUT='{"permissions":{"deny":["Bash(rm /r/\\*)","Bash(rm /r/\\* *)"]}}'
+d_is 'rm /r/*'            yes "model: a lead without a star matches the flagless form"
+d_is 'rm /r/* /x'         yes "model: a lead without a star still takes a trailing ' *'"
+d_is 'rm -f /r/*'         no  "model: a lead without a star takes no extra word before the path"
 OUT=$FIX_SAVE
 SHA=0123456789abcdef0123456789abcdef01234567
 for c in 'git push' 'git push origin main' "git push --force-with-lease=b:$SHA origin --delete b" \
@@ -251,6 +276,43 @@ jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command
 jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command
         | select(test("\\.(sh|py)\\b")) | select(startswith("/opt/homebrew/bin/bash ") | not)] | length' 0 \
       "every hook and statusline script runs under /opt/homebrew/bin/bash"
+
+echo "T. rm: every root is denied in every operand form"
+emit '{}'
+jq_is ".sandbox.filesystem.allowWrite == $(printf '%s\n' "${WRITE_ROOTS[@]}" | jq -R . | jq -sc .)" true \
+      "allowWrite is exactly the four write roots"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm "))] | length' 240 \
+      "240 rm deny rules: five roots, two spellings, two leads, six operands, two tails"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm * "))] | length' 120 \
+      "120 rm deny rules have the rm-star lead"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm ~") or startswith("Bash(rm /"))] | length' 120 \
+      "120 rm deny rules have the plain rm lead"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm ")) | .[5:-1]
+        | sub("^rm (\\* )?"; "") | sub(" \\*$"; "") | gsub("\\\\\\*"; "") | select(contains("*"))] | length' 0 \
+      "no rm deny rule has a wildcard besides the rm-star lead, an escaped star and a trailing ' *'"
+for p in "${RM_PATHS[@]}"; do
+  d_is "rm -rf $p"                    yes "rm deny: $p"
+  d_is "rm -fr $p/"                   yes "rm deny: $p/"
+  d_is "rm -r -f $p/*"                yes "rm deny: $p/*"
+  d_is "rm -rf $p/*/"                 yes "rm deny: $p/*/"
+  d_is "rm -rf $p/**"                 yes "rm deny: $p/**"
+  d_is "rm -rf $p/.*"                 yes "rm deny: $p/.*"
+  d_is "rm -rf $p /tmp/x"             yes "rm deny: $p then another operand"
+  d_is "rm -rf /tmp/a $p/* /tmp/b"    yes "rm deny: $p/* between other operands"
+  d_is "rm $p/*"                      yes "rm deny: flagless $p/*"
+  d_is "rm $p/**"                     yes "rm deny: flagless $p/**"
+  d_is "rm $p/.*"                     yes "rm deny: flagless $p/.*"
+  d_is "rm $p/* /tmp/x"               yes "rm deny: flagless $p/* then another operand"
+  d_is "rm -rf $p/sub"                no  "no rm deny: $p/sub"
+done
+for c in 'rm -rf ~/Code/*/*/build' 'rm -rf ~/Code/*/build' 'rm -f ~/Documents/*.log' \
+         'rm -f ~/Documents/{a,b}.pdf' 'rm -rf ~/Code/x/build' 'rm -rf ~/Code2' 'rm -rf ~/Documents.bak' \
+         'rm -f ~/.zshrc' 'rm notes.txt~' 'rm ~/notes.txt' 'rm ~/Documents/a.txt' 'rm ~/Code/x/*'; do
+  d_is "$c" no "no rm deny: $c"
+  d_is "${c// \~/ $HOME}" no "no rm deny: ${c// \~/ $HOME}"
+done
+d_is "rm -rf $HOME/.local/share/chezmoi-fix-x" no "no rm deny: a wt sibling, HOME expanded"
+d_is 'rm -rf /private/tmp/claude-501/x/scratchpad/m1' no "no rm deny: a scratchpad path"
 
 echo "B. layer 1 — read/edit pairing on every secret pattern"
 for p in '**/secrets.*.yml' '**/.env.production*' '**/*.key' '**/*.pem' \
@@ -674,11 +736,13 @@ jq_is '.permissions.ask | index("Bash(dangerouslyDisableSandbox:true)")' null \
       "the mechanism-based gate is gone — escaping the sandbox is not itself dangerous"
 jq_is '.permissions.ask | index("Bash(docker *)")' null \
       "blanket docker gate is gone — read-only docker no longer prompts"
-# rm -rf is pinned to LITERAL home paths on purpose. Rules match the command as written, and
-# scratchpad/$TMPDIR cleanup never spells one: of ~154 rm -rf calls in 30 days, 110 targeted
-# $TMPDIR/scratchpad and only 10 a real path. A blanket "Bash(rm -rf *)" would have re-created
-# 107 of the prompts this change exists to remove.
-for r in "Bash(terraform destroy*)" "Bash(git reset --hard*)" "Bash(rm -rf ~/*)" \
+# The rm root denies (section T, spec 2026-11-14-rm-exact-denies) replaced the rm asks: no ask rule
+# starts with Bash(rm . Rules match the command as written and scratchpad/$TMPDIR cleanup never
+# spells a root, so the denies leave it alone, where a blanket "Bash(rm -rf *)" ask would have
+# prompted on most of the rm -rf calls of a month.
+jq_is '[.permissions.ask[] | select(startswith("Bash(rm "))] | length' 0 \
+      "no ask rule starts with Bash(rm : the root denies replaced them"
+for r in "Bash(terraform destroy*)" "Bash(git reset --hard*)" \
          "Bash(sudo *)" "Bash(borg *)" "Bash(op item edit*)"; do
   jq_is ".permissions.ask | index(\"$r\") != null" true "danger gate present: $r"
 done

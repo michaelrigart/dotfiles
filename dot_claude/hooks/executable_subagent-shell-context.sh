@@ -7,7 +7,8 @@
 # does not act on it there: with the rule in its body, 4.0% of an sp-standard's Bash calls were
 # still denied, against 3.5% without it. The same line in the first user turn stops it (measured
 # 2026-11-14: 8 of 8 dispatches denied on their first call without it, 0 of 6 with it in the
-# brief, and 0 of 3 first calls with it from this hook). The text is that measured line.
+# brief, and 0 of 3 first calls with it from this hook). The text is that measured line, plus the
+# `rm` clause from spec 2026-11-14-rm-exact-denies §3.3, which was not part of the measured line.
 #
 # It never decides: it prints context only, and SubagentStart cannot block a dispatch anyway. It
 # never reads the payload. It fails open and silent: any error leaves stdout and stderr empty and
@@ -20,6 +21,6 @@ set -uo pipefail
 # Drain stdin: leaving the payload unread hands the writer an EPIPE.
 cat >/dev/null 2>&1 || exit 0
 
-line="Shell: every Bash call starts fresh in the session's directory and a \`cd\` never carries over, so never begin a command with \`cd\` (the path guard denies it). Name every file by its absolute path."
+line="Shell: every Bash call starts fresh in the session's directory and a \`cd\` never carries over, so never begin a command with \`cd\` (the path guard denies it). Name every file by its absolute path, and write each \`rm\` target as a literal absolute path, never a variable."
 jq -cn --arg c "$line" '{hookSpecificOutput:{hookEventName:"SubagentStart",additionalContext:$c}}' 2>/dev/null
 exit 0

@@ -68,6 +68,7 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
   --arg op_state "$op_state" \
   --arg sl "/opt/homebrew/bin/bash $HOME/.claude/statusline.sh" \
   --arg herdr_hook "/opt/homebrew/bin/bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
+  --arg home "$HOME" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
   --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
   # Start from the LIVE file and overlay the owned keys with +, which replaces each named
@@ -99,6 +100,27 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
   | "Deleting a remote branch that is already merged into the remote" as $rule_opening
   # Any other retired rule text, deleted by name like the retired keys below. None yet.
   | [] as $retired_rules
+  # The roots an rm may never name (spec 2026-11-14-rm-exact-denies): the home directory and the
+  # four sandbox write roots, which are exactly allowWrite below. Each is written in its tilde
+  # form and with the real home directory in place of the tilde, since Claude Code 2.1.325
+  # expands $HOME before matching but never the tilde or a braced HOME.
+  | ["~/Code", "~/.local/share/chezmoi", "~/Documents",
+     "~/Library/Mobile Documents/iCloud~md~obsidian"] as $write_roots
+  | (["~"] + $write_roots) as $rm_roots
+  # One deny rule per lead, path, operand form and tail. Rules read the command text after quotes
+  # are stripped and /bin/rm and command rm are normalised. A star matches any text, spaces
+  # included, and a star after a backslash is a literal star. The operand ends at the next
+  # space or the end of the command, so a path under a root stays allowed. A tail of space-star
+  # takes more arguments after the operand. Both leads are needed: the rm-star lead wants at
+  # least one word (the flags) between rm and the path, so a flagless rm of a root contents
+  # would slip past it, and the plain rm lead wants the path right after rm, so a command with
+  # flags would slip past that one.
+  | [("rm * ", "rm ") as $lead
+     | $rm_roots[] as $r
+     | ($r, $home + $r[1:]) as $path
+     | ("", "/", "/\\*", "/\\*/", "/\\*\\*", "/.\\*") as $operand
+     | ("", " *") as $tail
+     | "Bash(" + $lead + $path + $operand + $tail + ")"] as $rm_denies
   # Tokens: read from 1Password when it answered (an unlisted item is absent), else the live
   # values, so an unreachable 1Password changes nothing. Only string values are carried.
   | (if $op_state == "reachable" then
@@ -229,7 +251,9 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",
           "mcp__claude_ai_Microsoft_365__outlook_set_vacation"
-        ],
+          # The rm root denies, generated above: 240 rules, the only deny rules that start
+          # Bash(rm . They replaced the four rm ask rules.
+        ] + $rm_denies,
         "ask": [
           "Read(~/.kube/config)",
           # NOTE: no Edit() rules here on purpose. The infra gates (~/.kube/config,
@@ -249,8 +273,6 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
           # force push to main. git-forge-guard.sh rule 4 gates pushes instead.
           "Bash(git reset --hard*)",    "Bash(git clean -f*)",
           "Bash(git branch -D*)",       "Bash(git filter-branch*)",
-          "Bash(rm -rf ~/*)",           "Bash(rm -rf /Users/michael/*)",
-          "Bash(rm -r ~/*)",            "Bash(rm -r /Users/michael/*)",
           "Bash(brew uninstall*)",      "Bash(brew remove*)",
           "Bash(kubectl delete*)",
           "Bash(borg *)",               "Bash(vorta *)",
@@ -511,12 +533,7 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
           # ~/.config and ~/.local/bin are out on purpose (spec 2026-10-16, sandbox write
           # boundary): what is written there runs later outside the sandbox, as shell
           # startup, git, mise, herdr, the hooks and the excluded commands.
-          "allowWrite": [
-            "~/Code",
-            "~/.local/share/chezmoi",
-            "~/Documents",
-            "~/Library/Mobile Documents/iCloud~md~obsidian"
-          ],
+          "allowWrite": $write_roots,
           # What is written under a work root can run outside the sandbox later: git hooks
           # (also inside submodules), git configuration (fsmonitor, filters and the like, run
           # by Starship, lazygit, herdr and the rest on every prompt), the vault plugins, and
