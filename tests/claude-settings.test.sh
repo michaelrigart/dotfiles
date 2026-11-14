@@ -129,14 +129,16 @@ EXP_ASK='["Read(~/.kube/config)",
 
 # The rm root denies (spec 2026-11-14-rm-exact-denies): the suite owns its own copy of the five
 # roots, so a root dropped from the script fails here. Each root is written in its ~ form and
-# with $HOME expanded, and each path gets six operand forms, each with and without trailing
-# arguments. A backslash-star in a rule is a literal star.
+# with $HOME expanded, and each path gets two leads (rm * and rm), six operand forms, each with
+# and without trailing arguments. A backslash-star in a rule is a literal star.
 WRITE_ROOTS=('~/Code' '~/.local/share/chezmoi' '~/Documents' '~/Library/Mobile Documents/iCloud~md~obsidian')
 RM_ROOTS=('~' "${WRITE_ROOTS[@]}")
 RM_PATHS=(); for r in "${RM_ROOTS[@]}"; do RM_PATHS+=("$r" "$HOME${r#\~}"); done
 RM_RULES=$(for p in "${RM_PATHS[@]}"; do
-  for op in '' '/' '/\*' '/\*/' '/\*\*' '/.\*'; do
-    printf 'Bash(rm * %s)\nBash(rm * %s *)\n' "$p$op" "$p$op"
+  for lead in 'rm * ' 'rm '; do
+    for op in '' '/' '/\*' '/\*/' '/\*\*' '/.\*'; do
+      printf 'Bash(%s%s)\nBash(%s%s *)\n' "$lead" "$p$op" "$lead" "$p$op"
+    done
   done
 done | jq -R . | jq -sc .)
 EXP_DENY=$(jq -cn --argjson a "$EXP_DENY" --argjson b "$RM_RULES" '$a + $b')
@@ -239,6 +241,10 @@ d_is 'rm -rf /r/*'        yes "model: \\* is a literal star"
 d_is 'rm -rf /r/* /x'     yes "model: a trailing ' *' takes more arguments"
 d_is 'rm -rf /r/sub'      no  "model: \\* does not match a name"
 d_is 'rm -rf /r/*/*/b'    no  "model: the operand ends at a space or the end"
+OUT='{"permissions":{"deny":["Bash(rm /r/\\*)","Bash(rm /r/\\* *)"]}}'
+d_is 'rm /r/*'            yes "model: a lead without a star matches the flagless form"
+d_is 'rm /r/* /x'         yes "model: a lead without a star still takes a trailing ' *'"
+d_is 'rm -f /r/*'         no  "model: a lead without a star takes no extra word before the path"
 OUT=$FIX_SAVE
 SHA=0123456789abcdef0123456789abcdef01234567
 for c in 'git push' 'git push origin main' "git push --force-with-lease=b:$SHA origin --delete b" \
@@ -276,13 +282,15 @@ echo "T. rm: every root is denied in every operand form"
 emit '{}'
 jq_is ".sandbox.filesystem.allowWrite == $(printf '%s\n' "${WRITE_ROOTS[@]}" | jq -R . | jq -sc .)" true \
       "allowWrite is exactly the four write roots"
-jq_is '[.permissions.deny[] | select(startswith("Bash(rm "))] | length' 120 \
-      "120 rm deny rules: five roots, two spellings, six operands, two tails"
-jq_is '[.permissions.deny[] | select(startswith("Bash(rm "))] | map(startswith("Bash(rm * ")) | all' true \
-      "every rm deny rule opens with the rm wildcard"
-jq_is '[.permissions.deny[] | select(startswith("Bash(rm * ")) | .[10:-1]
-        | sub(" \\*$"; "") | gsub("\\\\\\*"; "") | select(contains("*"))] | length' 0 \
-      "no rm deny rule has a wildcard besides the leading rm * and a trailing ' *'"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm "))] | length' 240 \
+      "240 rm deny rules: five roots, two spellings, two leads, six operands, two tails"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm * "))] | length' 120 \
+      "120 rm deny rules have the rm-star lead"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm ~") or startswith("Bash(rm /"))] | length' 120 \
+      "120 rm deny rules have the plain rm lead"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm ")) | .[5:-1]
+        | sub("^rm (\\* )?"; "") | sub(" \\*$"; "") | gsub("\\\\\\*"; "") | select(contains("*"))] | length' 0 \
+      "no rm deny rule has a wildcard besides the rm-star lead, an escaped star and a trailing ' *'"
 for p in "${RM_PATHS[@]}"; do
   d_is "rm -rf $p"                    yes "rm deny: $p"
   d_is "rm -fr $p/"                   yes "rm deny: $p/"
@@ -292,15 +300,18 @@ for p in "${RM_PATHS[@]}"; do
   d_is "rm -rf $p/.*"                 yes "rm deny: $p/.*"
   d_is "rm -rf $p /tmp/x"             yes "rm deny: $p then another operand"
   d_is "rm -rf /tmp/a $p/* /tmp/b"    yes "rm deny: $p/* between other operands"
+  d_is "rm $p/*"                      yes "rm deny: flagless $p/*"
+  d_is "rm $p/**"                     yes "rm deny: flagless $p/**"
+  d_is "rm $p/.*"                     yes "rm deny: flagless $p/.*"
+  d_is "rm $p/* /tmp/x"               yes "rm deny: flagless $p/* then another operand"
   d_is "rm -rf $p/sub"                no  "no rm deny: $p/sub"
 done
 for c in 'rm -rf ~/Code/*/*/build' 'rm -rf ~/Code/*/build' 'rm -f ~/Documents/*.log' \
          'rm -f ~/Documents/{a,b}.pdf' 'rm -rf ~/Code/x/build' 'rm -rf ~/Code2' 'rm -rf ~/Documents.bak' \
-         'rm -f ~/.zshrc'; do
+         'rm -f ~/.zshrc' 'rm notes.txt~' 'rm ~/notes.txt' 'rm ~/Documents/a.txt' 'rm ~/Code/x/*'; do
   d_is "$c" no "no rm deny: $c"
   d_is "${c//\~/$HOME}" no "no rm deny: ${c//\~/$HOME}"
 done
-d_is 'rm -rf $HOME/.local/share/chezmoi-fix-x' no "no rm deny: a wt sibling spelled with HOME"
 d_is "rm -rf $HOME/.local/share/chezmoi-fix-x" no "no rm deny: a wt sibling, HOME expanded"
 d_is 'rm -rf /private/tmp/claude-501/x/scratchpad/m1' no "no rm deny: a scratchpad path"
 
