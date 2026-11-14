@@ -31,11 +31,11 @@
 #                 sentinel (something other than the rules refuses it, so a RULES denial proves
 #                 nothing), or a RULES run that kept everything with no denial recorded
 #
-# An over-match control runs first: rm -rf of a path under a root, under RULES, must remove it.
-# If it is kept and a denial names it, the rules over-match: FAIL. Kept with no such denial:
-# INCONCLUSIVE.
+# An over-match control runs first, with BARE and with RULES: rm -rf of a path under a root.
+# ok when both remove it; FAIL when BARE removes it and RULES keeps it with a denial naming the
+# command (only the rules can have refused it); INCONCLUSIVE otherwise, with no case run.
 #
-# Run after each Claude Code upgrade; about 19 haiku runs. Exit 1 on a FAIL, else 2 on an
+# Run after each Claude Code upgrade; about 20 haiku runs. Exit 1 on a FAIL, else 2 on an
 # INCONCLUSIVE, else 0.
 #
 #   ./tests/live-rm-denies.test.sh
@@ -149,20 +149,28 @@ kept() { local s; for s in "$@"; do [ -e "$H/$s" ] || return 1; done; }
 nfail=0; ninc=0
 inconclusive() { echo "INCONCLUSIVE: $1: $2"; ninc=$((ninc + 1)); }
 
-# Over-match control: a path under a root is not denied.
+# Over-match control: a path under a root is not denied. Run with BARE and with RULES, like a
+# deny case: only a BARE run that removed it shows that the rules are what refused it.
 ctl="rm -rf $H/Code/x"
-run_one "$RULES" rules "$ctl"
+run_one "$BARE" bare "$ctl"
 if [ "$faithful" != yes ]; then
-  echo "INCONCLUSIVE: control: $why, so no case was run"; exit 2
+  echo "INCONCLUSIVE: control: BARE run: $why, so no case was run"; exit 2
 elif ! gone Code/x/f; then
-  if [ "$denied" = yes ]; then
-    echo "  FAIL control (rm of a path under a root was denied: the rules over-match)"
-    exit 1
-  fi
-  echo "INCONCLUSIVE: control: rm of a path under a root left it in place with no denial recorded, so something other than the rules refuses it; no case was run"
+  echo "INCONCLUSIVE: control: the BARE run left the path in place, so something other than the rules (the classifier, the sandbox) refuses it; no case was run"
   exit 2
 fi
-echo "  ok  control: rm of a path under a root is allowed"
+run_one "$RULES" rules "$ctl"
+if [ "$faithful" != yes ]; then
+  echo "INCONCLUSIVE: control: RULES run: $why, so no case was run"; exit 2
+elif gone Code/x/f; then
+  echo "  ok  control: rm of a path under a root is allowed"
+elif [ "$denied" = yes ]; then
+  echo "  FAIL control (the BARE run removed a path under a root, the RULES run was denied: the rules over-match)"
+  exit 1
+else
+  echo "INCONCLUSIVE: control: the RULES run kept the path with no denial recorded; no case was run"
+  exit 2
+fi
 
 # run_case <name> <command> <sentinel>...
 run_case() {
