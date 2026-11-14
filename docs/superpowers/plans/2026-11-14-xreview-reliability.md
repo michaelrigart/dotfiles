@@ -46,23 +46,23 @@
   - Split the MB2 loop in two:
     - MB2a: `{"name":"node_repl","runtimeStatus":"notStarted"}` then `OK` holds: `"$rc/$(order)"` is `"0/mcpServerStatus/list,mcpServerStatus/list,turn/start"`.
     - MB2b: each of `{"name":"node_repl","runtimeStatus":null}`, `{"name":"node_repl"}`, `{"name":"node_repl","runtimeStatus":"warmingUp"}`, `{"name":"node_repl","runtimeStatus":7}` and the non-object entry `"node_repl"` starts after one call: `"0/mcpServerStatus/list,turn/start"`. The row names say "settles, so the start does not wait".
-  - MB5b: page 1 `{result:{data:[{"name":"x","runtimeStatus":null}], nextCursor:"c2"}}`, page 2 `[ST]`, then page 1 again and page 2 `[OK]`: the start follows four list calls, as MB5.
+  - MB5b: page 1 `{result:{data:[{"name":"x","runtimeStatus":null}], nextCursor:"c2"}}`, page 2 `[ST]`, then page 1 again and page 2 `[OK]`: the start follows exactly four list calls, as MB5. (Before the fix, page 1's null holds too, so the fake's repeated last answer makes it five: MB5b is a red row.)
   - MB6: the list `[node_repl=starting, x=null]` still refuses at the bound (1, no `turn/start`). Replace its stderr row with: names `node_repl=starting` (`grep -c 'within [0-9.]*s (node_repl=starting); no review was started'` is 1) and does not name `x` (`grep -c 'x=null'` is 0).
   - MB6b: `[{"name":"a","runtimeStatus":"notStarted"},{"name":"b","runtimeStatus":null}]` refuses at the bound with `(a=notStarted)`.
 
 - [ ] **Step 2: Run the suite and see the new rows fail**
 
 Run: `./tests/xreview-rpc.test.sh 2>&1 | grep -E 'FAIL|MB2b|MB6' | head -30`
-Expected: MB2b rows (null, missing, `warmingUp`, 7, non-object) and the new MB6/MB6b stderr rows FAIL; MB2a and MB5b pass already.
+Expected: the MB2b rows (null, missing, `warmingUp`, 7, non-object), MB5b and the new MB6/MB6b stderr rows FAIL; MB2a passes already.
 
-- [ ] **Step 3: Change `mcp_barrier`** in `dot_local/bin/executable_xreview-rpc`: replace `MCP_SETTLED` with `MCP_STARTING`. `held` is `[(name, status) for s in servers if s.get("runtimeStatus") in MCP_STARTING]`. With `held` holding only strings, `what` drops the `None` → `null` branch. Rewrite the constant's comment and the docstring to say what holds and why null settles: the schema's "unavailable or the configuration changed", which never turns into a status. Keep the "status was not readable" branch as it is.
+- [ ] **Step 3: Change `mcp_barrier`** in `dot_local/bin/executable_xreview-rpc`: replace `MCP_SETTLED` with `MCP_STARTING`. In the `held` comprehension keep the tuple expression `(s.get("name"), s.get("runtimeStatus"))` as it is and change only its condition to `s.get("runtimeStatus") in MCP_STARTING`. With `held` holding only those two strings as statuses, `what` drops the `None` → `null` branch. Rewrite the constant's comment and the docstring to say what holds and why null settles: the schema's "unavailable or the configuration changed", which never turns into a status. Keep the "status was not readable" branch as it is.
 
 - [ ] **Step 4: Run the suite and see it pass**
 
 Run: `./tests/xreview-rpc.test.sh 2>&1 | tail -3`
 Expected: the summary reports every row passed (`passed/total` equal). The 5-second timing row is a known load flake: if it alone fails, rerun the suite alone and report both runs.
 
-- [ ] **Step 5: Revert check.** Temporarily restore `MCP_SETTLED` and its `not in` test, run `./tests/xreview-rpc.test.sh 2>&1 | grep -c FAIL`, and expect at least the MB2b and MB6 rows to fail. Restore the change: `git diff` shows only Step 3's edit.
+- [ ] **Step 5: Revert check.** Temporarily restore `MCP_SETTLED` and its `not in` test, run `./tests/xreview-rpc.test.sh 2>&1 | grep -c FAIL`, and expect the MB2b, MB5b, MB6 and MB6b rows to fail. Restore the change: `git diff` shows only Step 3's edit.
 
 - [ ] **Step 6: Amend the 2026-10-01 spec.** After the "2026-10-15 — amended" note under §4.4, add a quoted note in the same style:
   "> **2026-11-14 — amended.** The barrier now holds only while a server is `starting` or `notStarted`; null, a missing status and any other value let the turn start. Between 2026-11-01 and 11-11 a null status refused 20 dispatches, because a null never settles (spec `2026-11-14-xreview-reliability-design.md`, §2.2 and §3.1)."
