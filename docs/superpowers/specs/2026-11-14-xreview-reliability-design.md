@@ -92,13 +92,16 @@ one, goes away under §3.1.
 When the ladder ends with Codex still in the foreground, `pane_quit` signals the TUI before it
 refuses:
 
-1. Re-read `process-info`. Go on only if the foreground process group is the same one the
-   ladder worked on, a Codex process leads it, and it is not the shell's group (pid reuse, or
-   Michael restarting the pane, would change one of these).
-2. Send `SIGTERM` to that process group. Poll for the shell to return, for up to
+1. **The TUI's identity** is its leader's pid together with that process's start time
+   (`ps -o lstart=`), read once from the observation the guard judged, before the first
+   `ctrl+c`. A pid alone is not an identity: a replacement process can reuse it.
+2. Re-read `process-info` and the leader's start time. Go on only if the foreground process
+   group is still led by the same pid, that process is Codex with the same start time, and the
+   group is not the shell's. A start time that cannot be read counts as a mismatch.
+3. Send `SIGTERM` to that process group. Poll for the shell to return, for up to
    `XREVIEW_RUNG_WAIT` (5 s).
-3. Still not free: re-check as in step 1, send `SIGKILL`, and poll the same way.
-4. Still not free, or a check in step 1 or 3 fails: refuse with today's message, which part C
+4. Still not free: re-check as in step 2, send `SIGKILL`, and poll the same way.
+5. Still not free, or a check in step 2 or 4 fails: refuse with today's message, which part C
    left as it is ("…did not exit its session within 20s; no review was started. Michael's call:
    report this and stop."). The screen follows, as today.
 
@@ -111,6 +114,10 @@ refuses:
   through Codex's own quit, which restores the terminal.
 
 **Bound.** At most 30 s in the pane step (today 20 s), within dispatch's 300 s tool timeout.
+
+**Accepted limit.** The start time has one-second resolution. A replacement passes only if it
+reuses the pid and starts in the same second the original started, so the original would have
+to start, be observed, exit and have its pid come back within one second.
 
 **The terminal after a signal (not measured).** `SIGKILL`, and possibly `SIGTERM`, ends the TUI
 without restoring the terminal: raw mode, the alternate screen and the keyboard protocol may be
@@ -169,7 +176,7 @@ Table-driven, one row per rule. Each row passes the revert check.
 | `xreview` (heavy) | K1: a TUI that ignores `ctrl+c` and exits on `SIGTERM`: dispatch succeeds, one TERM to the foreground group, no KILL, the pane resumes | The pane that will not exit |
 | | K2: one that ignores TERM and dies on KILL: TERM, then KILL, then success | A TUI whose loop ignores TERM |
 | | K3: a TUI that quits on `ctrl+c`: no signal at all | A change to the working path |
-| | K4: the foreground group changes before the signal, or is the shell's: no signal | Signalling the wrong process |
+| | K4: before TERM and again before KILL, each of: another group, the shell's group, the same pid with another start time, an unreadable start time: no signal, and the refusal | Signalling a process the guard never judged |
 | | K5: nothing frees it: today's refusal, unchanged, after TERM and KILL | A lost refusal |
 | | K6: no signal once the turn exists (a failed resume) | Breaking C1 |
 | | Existing `STUCK_TUI` rows: the stub ignores signals too, so they still pin the refusal | |
@@ -177,7 +184,11 @@ Table-driven, one row per rule. Each row passes the revert check.
 ## 7. Measured in the plan, before the code that rests on it
 
 - The stub's process model: how `process-info` reports the group, so K1–K5 drive the same
-  observations as a real pane.
+  observations as a real pane; `ps` is stubbed on `PINNED_PATH` like `kill`.
+- Measured on 2026-11-14, outside the sandbox (where `xreview` runs): `ps -o lstart= -p <pid>`
+  prints the same start time on every read of a live process, to the second, and exits 1 for a
+  pid that does not exist. Inside the sandbox `ps` is not permitted at all, which only the suite
+  sees, and it stubs `ps`.
 - Optional, Michael's (an agent's probe is refused): on an idle Codex pane, `kill -TERM` its
   foreground group, then let the next dispatch resume it. That would turn the terminal risk in
   §3.2 into a fact. The design does not depend on the outcome.
