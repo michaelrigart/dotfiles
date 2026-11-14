@@ -12,9 +12,10 @@ repository. This line puts the files he authored there under chezmoi, so they ar
 a new machine gets them, and adds the cask to the Brewfile. The app must behave exactly as it
 does today.
 
-A parallel line, `feat/herdr-app-native-tools`, makes xreview and wt app-native and will later
-remove `xreview-shim/`, `bin/xreview-app` and `bin/claude-app` (and the `claude-app` hint in
-`programs.json`). This line merges first, and the parallel line rebases onto it.
+A parallel line, `feat/herdr-app-native-tools`, makes xreview and wt app-native. It moves
+`xreview-shim/` into the dotfiles and shrinks `xreview-app`, `wt-app` and `claude-app` to thin
+wrappers. Those three wrappers, and `claude-settings.json`, stay until the TUI is retired. This
+line merges first, and the parallel line rebases onto it.
 
 ## Goals
 
