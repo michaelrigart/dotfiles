@@ -50,8 +50,9 @@
 {{- /* Resume in the shell's current directory, never on the directory chooser: Codex asks
        for the resume directory, on a screen before the session loads, only while this is
        unset, and its "Always use current directory" saves this same value. xreview resumes
-       with -C, which takes precedence. Set here, never with -c: any -c override makes a
-       TUI leave the shared daemon.                                                     */ -}}
+       with -C, which takes precedence. herdr's restore resumes without it (spec 2026-10-01
+       G4), so a restored pane moves its thread to the pane shell's directory. Set here,
+       never with -c: any -c override makes a TUI leave the shared daemon.              */ -}}
 {{- $config = setValueAtPath "tui.resume_cwd" "current" $config -}}
 {{- /* No in-TUI update prompt. Homebrew owns Codex upgrades (the Brewfile). The prompt is a
        screen Codex shows BEFORE it loads a session: a pane xreview resumes stops on it, and
