@@ -210,12 +210,13 @@ line (items 30, 29, 33) once `chore/test-audit` is on main, C as the shadow revi
 
 ### Pilot B: running on `chore/suite-speed` (from 2026-11-14)
 
-The driver opened `chore/suite-speed` from main `4c76ec4` on 2026-11-14, and Michael relaunches
-its pane with the `--settings` line from "To paste". Its transcripts
+The driver opened `chore/suite-speed` from main `4c76ec4` on 2026-11-14. Switch: Michael
+relaunched its pane with the `--settings` line from "To paste" and confirmed it in the driver
+session at about 11:45 CET ("relaunched", relayed by the driver); the relaunched session is
+`chezmoi-chore-suite-speed-ae`, briefed after that. Its transcripts
 (`~/.claude/projects/-Users-michael--local-share-chezmoi-chore-suite-speed`) did not exist yet
-at 10:06 UTC, so the count covers the whole line. The first refusal under the key confirms the
-flag is on and fixes the interactive denial text to count; with no refusal at all, Michael
-confirms the relaunch. Counted once the line has finished, by the protocol above.
+at 10:06 UTC, so the count covers the whole line. The first refusal under the key fixes the
+interactive denial text to count. Counted once the line has finished, by the protocol above.
 
 ### Pilot A: not run (2026-11-13)
 
