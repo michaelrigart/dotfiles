@@ -5,9 +5,8 @@
 """xreview-packet - the review packet xreview sends to the reviewer.
 
 Managed by chezmoi (source: dot_claude/xreview-packet.py). xreview builds every packet through
-this module, and the replay harness imports it, so the packets it tests are the ones dispatch
-sends. It lives in ~/.claude beside the ledger, so neither xreview nor the gate runs code from a
-directory the sandbox can write.
+this module. It lives in ~/.claude beside the ledger, so neither xreview nor the gate runs code
+from a directory the sandbox can write.
 Design: docs/superpowers/specs/2026-10-25-xreview-review-packets-design.md, sections 3.1
 (framing), 3.2 (the fit check), 3.3 (slices), 3.4 (delta rounds), 3.5 (plans covered by their
 plan review) and 3.8 (switches).

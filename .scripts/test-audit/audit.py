@@ -31,7 +31,7 @@ import rules  # noqa: E402
 DEFAULT_SEED = 20261111
 BASELINE_TIMEOUT = 1800
 LANGS = {"bash", "zsh", "sh", "py", "prose", "data", "deployed"}
-HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8, "process-replay": 2}
+HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8}
 KINDS = {"code": "sample", "targeted": "targeted", "rule": "rules"}
 CHECK_SUITE = "check"
 SAFETY_SUITES = {

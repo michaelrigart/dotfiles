@@ -73,9 +73,8 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   and reads each repository's forge protection, skipping the ones listed in the owner's
   `~/.config/forge-protection/exceptions`. Its output names repositories and is never committed;
   agents run it only through its mocked suite, never with a write verb.
-  The scripts are mode `755` (not the 644 policy file), except `process-replay.py`'s package
-  `process_replay/`, plain 644 modules — git stores only the exec bit, so a clone yields 755,
-  never 700.
+  The scripts are mode `755` (not the 644 policy file, nor a module a script imports, such as
+  `test-audit/mutators.py`) — git stores only the exec bit, so a clone yields 755, never 700.
 - The global pre-push hook and its secret scan live in `dot_config/git/hooks/` and deploy to
   `~/.config/git/hooks` (`core.hooksPath`, which replaces each repository's `.git/hooks`; the hook
   runs the repository's own one after its scan). Edit the source; never the deployed copy.
