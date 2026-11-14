@@ -1,6 +1,7 @@
 # Push protection moves to the forge
 
-**Status:** In progress
+**Status:** Implemented
+**Pull request:** from `feat/forge-push-protection`; opened after the verification of section 6, so no number yet.
 **Date:** 2026-11-12
 **Branch:** `feat/forge-push-protection`
 
@@ -891,6 +892,18 @@ Counts only; no repository is named.
 
 - **Merge 1** is on `main` at `1ca66ad`, applied on 2026-11-13. **Merge 2** is on `main` at
   `50f0421`, applied on 2026-11-14.
+- **Merge 3** (measured on 2026-11-15, written and held for the verification of section 6): the
+  helper `dot_claude/git-push-guard.py` went from 3,182 to 1,360 lines (section 4.4 expected about
+  1,300), the shell fast path `dot_claude/executable_git-forge-guard.sh` from 626 to 578, and the
+  suite `tests/git-forge-guard.test.sh` from 3,869 to 2,256 (expected about 1,700). The merge
+  removes 3,772 lines and adds 412 across `dot_claude`, `tests` and `.scripts`; section 4.4
+  expected about 4,400 removed, a figure counted before merge 1 moved the scan out of the helper,
+  and correction M1 keeps three older sections of the suite. The guard suite takes 142 s (was 242 s), still over the
+  heavy threshold, so it keeps its `heavy` tag (M7). The check judges `main-merge-owner`: an active
+  ruleset carrying `update` alone, with a bypass list of exactly the Repository admin role in
+  `pull_request` mode; a missing one prints the `main-merge-owner` POST, a wrong one a UI note
+  naming the ruleset. The guard now denies every push of a default branch, a delete of it, `--all`
+  and `--mirror`.
 - **Baseline check** (his step 1, 2026-11-13): 100 repositories; 1 ok, 81 drift, 18 unreadable,
   0 excepted; 4 checkouts without an `origin` skipped.
 - **Scope** (step 8, 2026-11-14): all 41 of his own GitHub repositories in the check are in scope,

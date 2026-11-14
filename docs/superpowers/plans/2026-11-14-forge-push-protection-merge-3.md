@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (merge 3, branch feat/forge-push-protection; pull request held until the verification of spec section 6)
+**Status:** Implemented (merge 3, branch feat/forge-push-protection)
+
+> **Completed on 2026-11-15. Do not run this plan again.** The pull request is held until the verification of spec section 6.
 
 **Goal:** Retire the guard's spelling hunt, make every push of a default branch a silent deny, make
 `forge-protection check` judge `main-merge-owner`, and bring the instructions and Michael's steps

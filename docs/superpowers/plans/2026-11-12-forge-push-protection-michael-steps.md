@@ -5,9 +5,9 @@
 **Spec:** `docs/superpowers/specs/2026-11-12-forge-push-protection-design.md` (sections 1.1, 2, 3, 6 and 7, and "Revision 2", which you signed on 2026-11-14).
 **Plan:** `docs/superpowers/plans/2026-11-12-forge-push-protection-merge-1.md` (Task 9, "Michael's steps"), rewritten here for revision 2.
 
-**Where things stand (2026-11-14).** Merge 1 is merged and applied (2026-11-13), and you have run the baseline check: 100 repositories, 1 ok, 81 drift, 18 unreadable, 0 excepted. The line lands in three merges: merge 1 (done); merge 2, which removes the machine-account plumbing, makes the check print the GitHub target of revision 2 and moves the dotfiles to a pull request you merge (it changes no guard verdict); and merge 3, the retirement of the spelling hunt, the first dotfiles line to land through a pull request.
+**Where things stand (2026-11-15).** Merges 1 and 2 are merged and applied (2026-11-13 and 2026-11-14). GitHub is done: the rulesets are on every repository in scope, `main-merge-owner` included (all 43 repositories, since 2026-11-14). Outstanding: GitLab (steps 2 to 4) and Azure DevOps (step 5), which keep the check at exit 1 until they are done, and the verification of steps 14 to 16. Merge 3, the retirement of the spelling hunt, is written and held on `feat/forge-push-protection` for that verification; its steps are group E (steps 17 to 20), and the first of them needs the check at exit 0.
 
-**GitHub waits for merge 2.** The check on `main` today still prints the old GitHub target: two rulesets, one of them `main-owner-only`, which is never created now. **Ignore every `gh api --method POST …/rulesets` line the check prints until merge 2 is applied (step 7), and paste none of them.** GitLab, Azure DevOps and the exceptions file (steps 1 to 6) can be done now, from today's check; every GitHub step (8 to 13) follows step 7.
+**Steps 7 to 13 are done.** They stay below as the reference and the rollback. The check on `main` now prints the GitHub target of revision 2; do not run a printed GitHub POST again unless a row reads `drift`.
 
 Run the commands from your own terminal unless a step says the agent session. Never use `!` in a session for a step here. In a session `gh` carries `GH_TOKEN`, the fine-grained token of your own account (item `GitHub Agent Token`, step 10), which cannot merge or push over HTTPS; `git` over SSH is your own key, as it was before merge 1.
 
@@ -51,6 +51,14 @@ Three decisions come first ([Three decisions first](#three-decisions-first)). Th
     Verify: `AUTH=READY`, `GITLAB_SSH=READY`, exit 0, `GH_TOKEN` named as the source; the other commands: [Step 15](#step-15) below.
 16. Tell the line the results by the template in [Step 16](#step-16), with no repository names; no command.
     Verify: the line has the results and puts them in the spec's Implementation notes.
+17. Merge 3, group E: `~/.local/share/chezmoi-feat-forge-push-protection/.scripts/forge-protection.sh check; echo "exit $?"` ([Step 17](#step-17)).
+    Verify: `exit 0`, the GitHub rows `ok` (now judging `main-merge-owner`); then tell the line, which opens the pull request.
+18. `gh pr merge <number> --merge --admin --match-head-commit <sha>`, `git -C ~/.local/share/chezmoi pull --ff-only`, `chezmoi apply` ([Step 18](#step-18)).
+    Verify: `git -C ~/.local/share/chezmoi status --short --branch` prints `## main...origin/main` with no `ahead`.
+19. In a new agent session: `./tests/run.sh git-forge-guard`; from your terminal, the check from the main checkout ([Step 19](#step-19)).
+    Verify: the suite passes; `exit 0`.
+20. `wt-rm feat/forge-push-protection` ([Step 20](#step-20)).
+    Verify: `git -C ~/.local/share/chezmoi worktree list` has no entry for it.
 
 Rollbacks: sections "Rollback, steps 2 to 4 (GitLab)", "step 5 (Azure)", "step 6 (exceptions)", "step 7 (merge 2 and the hook)" and "steps 8 to 13 (tokens and GitHub)". Steps 1 and 14 to 16 change nothing. Accepted limits: section "Accepted limits and rulings".
 
@@ -827,6 +835,8 @@ gh api repos/<owner>/<repo>/rules/branches/<branch> --jq '[.[].type] | sort'
 
 Expected: `["deletion","non_fast_forward","pull_request"]`. Then re-run step 1's command; each in-scope row reads `ok`.
 
+**Done on 2026-11-14 (revision 3):** `main-merge-owner`, the ruleset of spec section 2.1 that carries `update` alone with the Repository admin role as its only bypass actor in `pull_request` mode, was added to all 43 repositories, verified with GET calls. Merge 2's check does not read it; merge 3's does (step 17).
+
 If it fails:
 - A POST returning 403 or 404: your `gh` login lacks `repo` scope or admin there (`gh auth status`). A 403 about the plan on a private repository: see step 8, which allows no exception for a repository agents work in.
 - A POST returning 422 `name must be unique`: a ruleset of that name exists; list with `gh api repos/<owner>/<repo>/rulesets --jq '.[] | [.id, .name, .enforcement]'` and fix it in the UI.
@@ -1008,6 +1018,92 @@ type id matched, whether the empty acesDictionary case or a prefix-scoped policy
 Implementation notes and write the plan for merge 3.
 ```
 
+## Group E: merge 3 (steps 17 to 20; after step 16)
+
+Merge 3 is written and held on `feat/forge-push-protection`: the spelling hunt is gone from the push helper, its shell fast path and their suite, every push of a default branch is a silent deny ("Push guard: the default branch is Michael's; push the branch and open a merge request or pull request."), and `forge-protection check` judges `main-merge-owner`. Agents never push `main`, and your own pushes of it are refused by GitHub anyway. It lands through a pull request the line opens only after step 17.
+
+### Step 17. The check from the line's checkout, before the pull request <a id="step-17"></a>
+
+The line's checkout holds merge 3's check, which the main checkout does not have yet. From your own terminal, never a session:
+
+```
+~/.local/share/chezmoi-feat-forge-push-protection/.scripts/forge-protection.sh check; echo "exit $?"
+```
+
+Expected: `exit 0`; every row `ok` or `excepted`, the GitHub rows `ok` now judging `main-merge-owner` (an active ruleset carrying `update` alone, whose bypass list is exactly the Repository admin role in `pull_request` mode); the excepted count as in step 14. It needs the GitLab and Azure rows done (steps 2 to 5) or excepted (step 6): until then it exits 1 and this step cannot pass. Then tell the line the exit code and the counts `a ok / d excepted`, with no repository names; it opens the pull request, ready for review and assigned to you.
+
+If it fails:
+- A GitHub row `drift` for a missing `main-merge-owner` prints its `gh api --method POST …/rulesets` line: filter it into a file and run it as in step 12, with `want` set to the repository.
+- A row that prints a `# in the UI: https://github.com/<owner>/<repo>/rules/<ruleset-id>: …` note has a `main-merge-owner` that is wrong (not active, a second rule, another bypass actor or mode): fix that page as the note says.
+- Any other row: the step of its forge (2 to 6, 12).
+
+No rollback: it changes nothing.
+
+### Step 18. The merge, the pull, the apply <a id="step-18"></a>
+
+From a terminal of your own, never `!` in a session, with the number and head commit the line's report gives:
+
+```
+gh pr merge <number> --merge --admin --match-head-commit <sha>
+```
+
+`--admin` is needed since `main-merge-owner`: the Repository admin role bypasses it in `pull_request` mode and nothing else does. Run it inside the main checkout, or add `--repo <owner>/<dotfiles-repo>`. Then:
+
+```
+git -C ~/.local/share/chezmoi pull --ff-only
+chezmoi apply
+```
+
+Plain `chezmoi apply`, as in step 7 (never `diff` or `--verbose`: the settings hold the tokens).
+
+Verify:
+
+```
+git -C ~/.local/share/chezmoi status --short --branch
+```
+
+Expected: `## main...origin/main` with no `ahead`.
+
+If it fails: a merge refused for the head commit means the branch moved after the review: tell the line, do not force it. A merge refused as "base branch policy" means `--admin` was left out or your login is not the Repository admin on that repository. If `pull --ff-only` refuses, `main` is not clean or has moved: tell the line.
+
+### Step 19. After the apply: the guard suite and the check <a id="step-19"></a>
+
+Start a **new** Claude Code session after step 18's apply, in the main checkout, and ask it to run with its Bash tool, sandboxed (never with `!`):
+
+```
+./tests/run.sh git-forge-guard
+```
+
+Expected: the suite passes, its `passed/total` line with no failure (about 142 s; it is a heavy suite, so the exact name is what runs it). Then, from your own terminal:
+
+```
+~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"
+```
+
+Expected: `exit 0`, as in step 17, now from the main checkout.
+
+If it fails: a failed suite is the line's to fix: tell it the failing rows. A check that no longer exits 0 after the apply while step 17 did means the main checkout's script differs from the line's: tell the line. Do not run the live suites with the sandbox off.
+
+### Step 20. Remove the line's checkout <a id="step-20"></a>
+
+When the pull request is merged and the main checkout is pulled, from your own terminal:
+
+```
+wt-rm feat/forge-push-protection
+```
+
+Never before: the line's checkout is where step 17 ran. The line never runs `wt-rm` itself.
+
+Verify:
+
+```
+git -C ~/.local/share/chezmoi worktree list
+```
+
+Expected: no `chezmoi-feat-forge-push-protection` entry.
+
+If it fails: `wt-rm` refuses an unmerged branch; confirm step 18 merged it and the main checkout was pulled.
+
 ## Accepted limits and rulings
 
 Recorded so you can overrule any of them; none is a code change in merge 2.
@@ -1023,7 +1119,7 @@ Recorded so you can overrule any of them; none is a code change in merge 2.
 
 ## What stays owed after these steps
 
-- **Merge 3 has no plan yet.** Its plan is written only after your verification results are in the spec's Implementation notes (step 16): deleting the hidden-spelling machinery, the default-branch push going from ask to deny, and the `global.md` wording (section 4). It is the first dotfiles line to land through a pull request. Until it is applied, the full local guard stays live.
+- **Merge 3 is written and held** (group E): deleting the hidden-spelling machinery, the default-branch push going from ask to deny, the check's `main-merge-owner` and the `global.md` wording (section 4). Its pull request opens after step 17. Until it is applied, the full local guard stays live.
 - **A private in-scope repository on Free** (step 8) is made public, covered by Pro or taken out of agent work before merge 3.
 - **The line's checkout** stays until merge 3 is merged; the final report gives the `wt-rm <branch>` command to run then, and nothing before.
 - If your steps have not happened when merge 2 is done, the line stops there and is reported as waiting on you.
