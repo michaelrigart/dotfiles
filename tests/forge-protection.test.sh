@@ -227,6 +227,12 @@ for rs in 1 2; do
     rc_is 1 "github ruleset $rs without bypass_actors, current_user_can_bypass ${spec%%|*}: exit 1"
   done
 done
+# a ruleset the login cannot fetch at all (a token without the permission) is unreadable too
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+ans gh "api repos/$R/rulesets/2" '{"message":"Not Found"}' 1 "gh: Not Found (HTTP 404)"
+run check
+row_is unreadable "github.com/$R.*HTTP 404" "github the pull_request ruleset cannot be fetched: unreadable"
+rc_is 1 "github the pull_request ruleset cannot be fetched: exit 1"
 
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
 gh_rules "$R" "$PM_RULES"
@@ -286,8 +292,8 @@ gh_rs "$R" 1 '{"id":1,"enforcement":"active","bypass_actors":[],"current_user_ca
 run check
 eval_remedy '"name":"main-pr-only"'
 if [ "$EXTRA" -eq 0 ] && [ "$(printf '%s' "$BODY" | jq -r '.name' 2>/dev/null)" = main-pr-only ]; then
-  _pass "hostile default branch: the main-pr-only line pastes back to its own body"
-else _fail "hostile default branch: the main-pr-only line pastes back to its own body (got $BODY)"; fi
+  _pass "the main-pr-only line pastes back to its own body"
+else _fail "the main-pr-only line pastes back to its own body (got $BODY)"; fi
 
 # the repo path comes from the origin URL: the printed remedy must quote it
 HR='o/r$(touch pwned)'

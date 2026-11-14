@@ -197,6 +197,30 @@ Printed for `drift`:
   on Michael's delegation to the driver (he is away); spec section 3 carries the sentence. Cost:
   a check run with a login that is not shown the lists cannot read a GitHub row `ok`; his own
   run, the one the verification uses, is not affected.
+- Task 2, implementer: a UI note is printed only for a ruleset that is not closed and carries a
+  rule with no closed carrier elsewhere, and no note beside the `protect-main` POST, which alone
+  reaches the target. Rules add up, so a note for a rule already closed elsewhere would ask for a
+  change the target does not need. The task review agreed.
+- Task 3: the Finishing rule reads "open the PR ready for review; Michael merges." without the
+  plan's final "it": the plan's wording made line 119 of `global.md` 102 columns wide, and the
+  file is at its 150-line limit.
+- Task 1 review: two `AGENTS.md` passages described the proxy suite's deleted template and
+  cold-cache rows; removed (`958c4b1`). The plan's file list had missed them.
+- Task 2 review, given code: a ruleset the login cannot fetch is `unreadable`; that path predates
+  this merge but had no row, and a token without the permission is a real caller. One row added.
+- Task 2 review, no code:
+  - a `bypass_actors` that is an object, string or number reads as empty; a `current_user_can_bypass`
+    other than `never` beside an empty list is ignored; a `pull_request` rule without
+    `ruleset_id` gives `drift` with no printed line; a rules list holding a non-object gives
+    `drift` with no line — theoretical: GitHub's rules and rulesets answers have none of these
+    shapes, the check's input comes from the forge to the owner's own run, and the last two still
+    fail the check (merge 1's ruling on untyped forge answers);
+  - the rules endpoint omits rules of `evaluate` and `disabled` rulesets, so a disabled
+    `main-pr-only` makes the check print a POST GitHub may refuse as a duplicate name —
+    theoretical: the owner would have disabled it himself, and the refusal names the ruleset;
+  - `out_hasnt 'main-owner-only'` and one row without `rc_is` — style;
+  - the proxy rows run the real `/usr/bin/ssh -G` rather than a stub — style: the proxy hard-codes
+    that path, and the rows detect the `-F` the review focus names.
 
 ## Left for Michael after the apply
 
