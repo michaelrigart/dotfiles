@@ -1,0 +1,69 @@
+{
+  "_": "Structure of the herdr TUI replies to `herdr pane list`, `get` and `process-info` on one Codex pane, and to a pane that does not exist: keys and JSON types only, no values. Captured 2026-11-14 with read-only calls.",
+  "envelope": {
+    "id": "string",
+    "result": [
+      "pane",
+      "type"
+    ]
+  },
+  "list_pane": {
+    "agent": "string",
+    "agent_session": "object",
+    "agent_status": "string",
+    "cwd": "string",
+    "focused": "boolean",
+    "foreground_cwd": "string",
+    "pane_id": "string",
+    "revision": "number",
+    "scroll": "object",
+    "state_labels": "object",
+    "tab_id": "string",
+    "terminal_id": "string",
+    "terminal_title": "string",
+    "terminal_title_stripped": "string",
+    "workspace_id": "string"
+  },
+  "get_pane": {
+    "agent": "string",
+    "agent_session": "object",
+    "agent_status": "string",
+    "cwd": "string",
+    "focused": "boolean",
+    "foreground_cwd": "string",
+    "pane_id": "string",
+    "revision": "number",
+    "scroll": "object",
+    "state_labels": "object",
+    "tab_id": "string",
+    "terminal_id": "string",
+    "terminal_title": "string",
+    "terminal_title_stripped": "string",
+    "workspace_id": "string"
+  },
+  "process_info": {
+    "foreground_process_group_id": "number",
+    "foreground_processes": "array",
+    "pane_id": "string",
+    "shell_pid": "number"
+  },
+  "process": {
+    "argv": "array",
+    "argv0": "string",
+    "cmdline": "string",
+    "cwd": "string",
+    "name": "string",
+    "pid": "number"
+  },
+  "not_found": {
+    "top": [
+      "error",
+      "id"
+    ],
+    "error": [
+      "code",
+      "message"
+    ],
+    "code": "pane_not_found"
+  }
+}

@@ -77,6 +77,10 @@ missing dev                   dot_config/herdr/executable_tab-goto.sh
 missing dev                   dot_config/herdr/config.toml
 missing dev                   dot_config/nvim/lua/plugins/smart-splits.lua
 missing git-forge-guard       dot_claude/executable_git-forge-guard.sh
+missing herdr-app             dot_config/herdr-app/bin/executable_retire
+missing herdr-app             dot_config/zsh/functions
+missing herdr-app-xreview     dot_config/herdr-app/bin/executable_xreview-app
+missing herdr-app-xreview     dot_config/herdr-app/xreview-shim/executable_herdr
 missing herdr-phase           dot_config/herdr/executable_phase.sh
 missing live-rm-denies        dot_claude/modify_private_settings.json
 missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
