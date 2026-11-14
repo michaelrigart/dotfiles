@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: load the `plan-run` skill and run this plan with it (it overrides superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented (completed 2026-11-14; do not run again)
 
 **Goal:** Deny `rm` of `~` and every sandbox write root in every operand form, tell agents to write
 rm targets as literal absolute paths, add a live canary for the matcher, and (gated on D1) drop the
@@ -66,7 +66,7 @@ the modify script under a throwaway `HOME` and drives `claude -p` against throwa
   in the jq program; Task 4 (b) appends to `$rm_roots`. The 240 rules sit at the end of
   `.permissions.deny`, and are the only deny rules starting `Bash(rm `.
 
-- [ ] **Step 1: Teach the suite's rule model a literal star**
+- [x] **Step 1: Teach the suite's rule model a literal star**
 
 In `MATCHES` (`:184-190`), `hit` splits the rule on the two characters `\*`, turns each other `*`
 into `.*`, escapes the rest, and joins the parts with the regex for a literal star. Calibration rows
@@ -80,7 +80,7 @@ d_is 'rm -rf /r/sub'      no  "model: \\* does not match a name"
 d_is 'rm -rf /r/*/*/b'    no  "model: the operand ends at a space or the end"
 ```
 
-- [ ] **Step 2: Write the failing section T**
+- [x] **Step 2: Write the failing section T**
 
 `echo "T. rm: every root is denied in every operand form"`, after `emit '{}'`:
 
@@ -101,7 +101,7 @@ d_is 'rm -rf /r/*/*/b'    no  "model: the operand ends at a space or the end"
 Run: `./tests/claude-settings.test.sh` — Expected: section T and the `:130` comparison FAIL; the
 model calibration rows PASS.
 
-- [ ] **Step 3: Generate the rules in the modify script**
+- [x] **Step 3: Generate the rules in the modify script**
 
 Add `--arg home "$HOME"`. Before `$live + {`, bind `$write_roots` and `$rm_roots`, and
 `$rm_denies`: for each R in `$rm_roots`, for each of R and `$home + R[1:]`, for each operand of the
@@ -110,12 +110,12 @@ tail + ")"`. `allowWrite` becomes `$write_roots`; `deny` becomes the existing li
 A comment above the deny rules (no backslash, no apostrophe) says why: the roots, both spellings,
 the operand boundary, the measured matcher facts, and the spec path.
 
-- [ ] **Step 4: Run the suite**
+- [x] **Step 4: Run the suite**
 
 Run: `./tests/claude-settings.test.sh` — Expected: every row passes; the totals line shows 0
 failed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add dot_claude/modify_private_settings.json tests/claude-settings.test.sh
@@ -135,7 +135,7 @@ git commit -m "Deny rm of the home directory and every sandbox write root"
 - Modify: `dot_claude/hooks/executable_subagent-shell-context.sh` (`line=` and the header comment)
 - Test: `tests/subagent-shell-context.test.sh:23` (`LINE`), `tests/agent-instructions.test.sh`
 
-- [ ] **Step 1: Pin the new text in the tests**
+- [x] **Step 1: Pin the new text in the tests**
 
 `rules.tsv` row (tab-separated):
 `cc-rm-targets`, `.chezmoitemplates/agents/claude-code.md`, `` **`rm` targets.** ``, `yes`,
@@ -148,19 +148,22 @@ git commit -m "Deny rm of the home directory and every sandbox write root"
 Run: `./tests/agent-instructions.test.sh` and `./tests/subagent-shell-context.test.sh` —
 Expected: the new rule row and the line rows FAIL.
 
-- [ ] **Step 2: Write the bullet and the line**
+- [x] **Step 2: Write the bullet and the line**
 
 The bullet, wrapped at 100 columns like its neighbours:
 ``- **`rm` targets.** Name each target as a literal absolute path, never through a variable, a loop or a substitution: Claude Code's removal check refuses a target it cannot resolve. `~` and every sandbox write root are denied, with all their contents.``
+*Amendment (fix round 1):* "with all their contents" became "Deleting `~` or a sandbox write root
+itself, or all of its contents at once, is denied.", because the old wording read as if every
+delete below a root were denied.
 The hook's `line=` takes the `LINE` text above; its header comment adds that the `rm` clause comes
 from spec `2026-11-14-rm-exact-denies` §3.3 and was not part of the measured line.
 
-- [ ] **Step 3: Run both suites**
+- [x] **Step 3: Run both suites**
 
 Run: `./tests/agent-instructions.test.sh` and `./tests/subagent-shell-context.test.sh` —
 Expected: 0 failed; `claude-code.md` at most 50 lines.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add .chezmoitemplates/agents/claude-code.md tests/fixtures/agent-instructions/rules.tsv \
@@ -185,7 +188,7 @@ git commit -m "Tell agents to write rm targets as literal absolute paths"
 **Interfaces:**
 - Consumes: the rendered `.permissions.deny` of Task 1, taken as the rules containing `$H`.
 
-- [ ] **Step 1: Write the suite**
+- [x] **Step 1: Write the suite**
 
 Header: `# test-requires: unsandboxed, model`, a comment naming what it proves (the spec's §2
 matcher facts on the rendered list) and "run after each Claude Code upgrade".
@@ -235,19 +238,28 @@ matcher facts on the rendered list) and "run after each Claude Code upgrade".
 - Output `  ok  <case>` / `  FAIL <case> (<why>)` / `INCONCLUSIVE: <case>: <why>`; exit 1 on any
   FAIL, else 2 on any INCONCLUSIVE, else 0. Remove `wrap` on exit. About 19 haiku runs.
 
-- [ ] **Step 2: Wire it**
+- [x] **Step 2: Wire it**
 
 The `subjects.tsv`, `missing-subject` and `AGENTS.md` rows above. Run:
 `./tests/missing-subject.test.sh`, `./tests/run.test.sh` and `./tests/agent-instructions.test.sh`
 (it reads `AGENTS.md`) — Expected: 0 failed each. Do not run the canary itself in this task: it
 needs the sandbox off and model calls, which the controller runs at the end.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/live-rm-denies.test.sh .scripts/test-audit/subjects.tsv tests/missing-subject.test.sh AGENTS.md
 git commit -m "Add a live canary for the rm root denies"
 ```
+
+*Amendment (fix rounds):*
+- The nested sessions run sandboxed, with no escape and no allow rule, so a rewritten command
+  cannot reach a real path. The rejected design was unsandboxed overlays with
+  `allow: Bash(rm:*)`.
+- The control is paired with a BARE run, so a classifier denial is not read as an over-match.
+- The final fix wave added the retry of an unfaithful run, the trace of what the model sent, the
+  split of the `command rm` case and the `~` case (through rules derived from the rendered ones).
+  The run count is about 24.
 
 ---
 
@@ -256,6 +268,8 @@ git commit -m "Add a live canary for the rm root denies"
 **Depends on:** Task 1, Task 3 (for (b), which edits the canary), and Michael's D1 answer relayed
 by the driver. Do not start without it.
 
+*Amendment:* it ran in the (a) shape (the four ask rules dropped, no extra roots).
+
 **Files:**
 - Modify: `dot_claude/modify_private_settings.json:252-253` (the two ask lines)
 - Modify: `tests/claude-settings.test.sh:108-109` (`EXP_ASK`), `:666-685` (the section G comment
@@ -263,7 +277,7 @@ by the driver. Do not start without it.
 - Modify: the spec §6 D1 (his answer, dated) and, for (b), §3.1
 - Modify, for (b) only: `tests/live-rm-denies.test.sh` (`EXPECT_RULES=192`, the tree and one case)
 
-- [ ] **Step 1: Failing rows**
+- [x] **Step 1: Failing rows**
 
 Section G: replace the `Bash(rm -rf ~/*)` loop entry with `jq_is` that no ask rule starts with
 `Bash(rm `; rewrite the `:677-680` comment to say the root denies replaced the rm asks (spec path).
@@ -275,12 +289,12 @@ never `allowWrite`); the count becomes 384; YES rows for each; NO row
 over-match control becomes `rm -rf <H>/Code/Netronix/r` (it must still delete).
 Run: `./tests/claude-settings.test.sh` — Expected: those rows FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 Delete the two ask lines. For (b) only, bind `$rm_dirs` (the three) and generate from
 `$rm_roots + $rm_dirs`, and make the canary changes of Step 1.
 
-- [ ] **Step 3: Run and commit**
+- [x] **Step 3: Run and commit**
 
 Run: `./tests/claude-settings.test.sh` (and, for (b), `bash -n tests/live-rm-denies.test.sh`;
 the controller runs the canary itself) — Expected: 0 failed. For (b), add
