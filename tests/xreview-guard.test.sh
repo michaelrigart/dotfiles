@@ -254,7 +254,10 @@ is "B50 so does a shell's -c" \
    "$(decision "$W" "bash -c 'git merge feature'") $(decision "$W" "zsh -c 'git merge feature'") $(decision "$W" "sh -lc 'git merge feature'")" \
    "deny deny deny"
 # A shell's -c string passes through the outer shell first: inside double quotes it drops the
-# backslash of \$ and \` (and of \" in a backtick body), and a ${...} there nests quotes.
+# backslash of \$ and \` (and of \" in a backtick body), and a ${...} there nests quotes (B99 to
+# B106). A $( or ${ split by a line continuation in double quotes or in a here-document body is
+# read by bash and not by zsh; the gate marks it and denies it when a gated verb stands in the
+# command (B107 to B114).
 is "B99 a backtick body in a double-quoted -c string runs when the inner shell reads it" \
    "$(decision "$W" 'bash -c "echo \`git merge feature\`"') $(decision "$W" 'bash -c "echo \`glab mr merge 7\`"') $(decision "$W" 'sh -c "x=\`gh pr merge 9\`"')" \
    "deny deny deny"
@@ -278,9 +281,13 @@ X11=$(cat <<'CMD'
 bash -c "bash -c 'echo \`git merge feature\`'"
 CMD
 )
-is "B103 a mixed-quoted string, a shell inside a shell and a \$\"...\" string are read as the shell hands them on" \
-   "$(decision "$W" "$X10") $(decision "$W" "$X11") $(decision "$W" 'bash -c $"echo \`git merge feature\`"')" \
-   "deny deny deny"
+X10b=$(cat <<'CMD'
+printf '%s\n' '"a' && bash -c "echo \`git merge feature\`"
+CMD
+)
+is "B103 a mixed-quoted string, a shell inside a shell, a \$\"...\" string and one after a single-quoted double quote are read as the shell hands them on" \
+   "$(decision "$W" "$X10") $(decision "$W" "$X11") $(decision "$W" 'bash -c $"echo \`git merge feature\`"') $(decision "$W" "$X10b")" \
+   "deny deny deny deny"
 X17='bash -c "${x:-"git merge y"}"'
 X18=$(cat <<'CMD'
 echo "${x:-"'"}"; git merge y; echo "'" #"
@@ -378,6 +385,20 @@ CMD
 )
 is "B113 a split \$( in an expanding here-document body stays denied, as does a real one after it" \
    "$(decision "$W" "$X30") $(decision "$W" "$X31")" "deny deny"
+X32=$(cat <<'CMD'
+/opt/homebrew/bin/bash -c 'echo "$\
+{ git merge y; }"'
+CMD
+)
+X33=$(cat <<'CMD'
+/opt/homebrew/bin/bash -c 'cat <<EOF
+$\
+{ git merge y; }
+EOF'
+CMD
+)
+is "B114 a bash 5.3 \${ cmd; } split by a line continuation marks the text too, in double quotes and in a here-document body" \
+   "$(decision "$W" "$X32") $(decision "$W" "$X33")" "deny deny"
 is "B105 the inner command's own quoting, single quotes, \$( ), a here-document and a nested quote with no gated verb stay allowed" \
    "$(decision "$W" "$X12") $(decision "$W" "$X13") $(decision "$W" "$X14") $(decision "$W" "$X15") $(decision "$W" "$X16") $(decision "$W" "$X19")" \
    "allow allow allow allow allow allow"

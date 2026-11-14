@@ -313,8 +313,7 @@ def funsub(cmd, i):
 
 
 def joined(cmd, i, n):
-    """(text, end): the next n characters of cmd from i with every backslash-newline pair
-    skipped, as bash joins them inside double quotes, and the index just past them."""
+    """The next n characters of cmd from i, every backslash-newline pair skipped."""
     chars, j = [], i
     while len(chars) < n and j < len(cmd):
         if cmd.startswith("\\\n", j):
@@ -322,7 +321,7 @@ def joined(cmd, i, n):
         else:
             chars.append(cmd[j])
             j += 1
-    return "".join(chars), j
+    return "".join(chars)
 
 
 def word_at(cmd, i):
@@ -421,9 +420,10 @@ def lex(cmd, body=False, everywhere=False, naive=False):
     \\" undone, as the shells read it. expanding are the bodies of the here-documents whose
     delimiter is unquoted. unsure says the text holds what the shells read by rules lex does
     not model: a " or ' inside a ${...} that is itself inside double quotes, or, in double
-    quotes or an expanding here-document body, a $( found only past a backslash-newline, which
-    bash joins and zsh does not (lex opens no substitution for it, as it never has). R3's ${
-    is counted past a backslash-newline too; an escaped character never counts.
+    quotes or an expanding here-document body, a $( or a bash 5.3 ${ cmd; } found only past a
+    backslash-newline. Such a $( or ${ marks the text and is not opened, so the reading lex
+    always made stays. A ${ inside double quotes is counted past a backslash-newline too; an
+    escaped character never counts.
     Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
     here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
     arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
@@ -516,9 +516,10 @@ def lex(cmd, body=False, everywhere=False, naive=False):
                 stack.append(["${", len(out), 1, 0, 0])
                 i += 2
             else:
-                if c == "$" and joined(cmd, i, 2)[0] == "$(":
-                    unsure = True
-                if kind == '"' and c == "$" and joined(cmd, i, 2)[0] == "${":
+                ahead = joined(cmd, i, 3) if c == "$" else ""
+                if ahead.startswith("$(") or funsub(ahead, 0):
+                    unsure = True                   # the raw text opens neither, or it would above
+                if kind == '"' and ahead.startswith("${"):
                     frame[2] += 1
                 elif kind == '"' and c == "}" and frame[2]:
                     frame[2] -= 1
