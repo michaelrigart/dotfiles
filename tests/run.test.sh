@@ -278,7 +278,7 @@ mkjq() {
 mkdir -p "$J/relative-dir"
 printf '#!/bin/sh\n[ "$1" = --version ] && { echo jq-1.8.2; exit 0; }\necho relative\n' > "$J/relative-dir/jq"
 chmod 755 "$J/relative-dir/jq"
-mkjq real jq-1.8.2; mkjq old jq-1.7.1-apple; mkjq odd garbage; mkjq floor jq-1.8.1; mkjq ten jq-1.10.0
+mkjq real jq-1.8.2; mkjq old jq-1.7.1-apple; mkjq odd garbage; mkjq floor jq-1.8.1; mkjq ten jq-1.10.0; mkjq patch jq-1.8.0
 ln -s ../mise "$J/shims/jq"
 ln -s ../mise "$J/shims2/jq"
 cp "$RUN" "$J/run.sh"
@@ -329,6 +329,7 @@ refused() {
   eq "$1: that line is the only one" 1 "$(printf '%s\n' "$jq_err" | wc -l | tr -d ' ')"
 }
 refused "a jq older than 1.8.1" "$J/shims:$J/old:$NARROW" 1.7.1
+refused "a jq one patch level older than 1.8.1" "$J/shims:$J/patch:$NARROW" 1.8.0
 refused "a jq whose version does not parse" "$J/shims:$J/odd:$NARROW" garbage
 jqrun "$J/shims:$J/floor:$NARROW"
 eq "a jq at exactly 1.8.1 runs" real "$jq_says"
