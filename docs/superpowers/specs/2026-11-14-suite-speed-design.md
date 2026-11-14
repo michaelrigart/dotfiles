@@ -210,8 +210,8 @@ dispatched first (§3).
 ## Validation
 
 - **Same assertions.** Every suite's assertion labels at the tip equal those at the base, label
-  for label, from a default and a heavy run at each; §4 and §5 keep their labels, so no
-  difference is expected.
+  for label, from a default and a heavy run at each, except `run`, which gains only the new rows
+  for §1 and §3; §4 and §5 keep their labels.
 - **Mutants.** With `.scripts/test-audit/audit.py targeted` at the tip, every mutant killed:
   - `process-replay`: the 16 rows of `.scripts/test-audit/targeted.jsonl` (the concurrency);
   - `xreview-rpc`: its 3 rows (6 mutants), plus `HOOKS_STATUS_BUDGET` 5.0 → 6.0 and
