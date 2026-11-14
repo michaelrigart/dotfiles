@@ -971,6 +971,11 @@ emit '{}'
 got=$(hook_matchers PermissionRequest '/opt/homebrew/bin/bash $HOME/.claude/hooks/prompt-audit.sh')
 if [ "$got" = "*" ]; then _pass "the prompt-audit hook runs once, on every tool"; else _fail "the prompt-audit hook runs once, on every tool" "$got"; fi
 jq_is '.hooks.PermissionRequest | length' 1 "no other PermissionRequest hook"
+# The subagent path line reaches every agent type, so the entry carries no matcher.
+jq_is '[.hooks.SubagentStart[]? | select(has("matcher") | not) | .hooks[]
+        | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/hooks/subagent-shell-context.sh" and .timeout == 10)] | length' 1 \
+      "the subagent path-line hook: no matcher, timeout 10"
+jq_is '.hooks.SubagentStart | length' 1 "no other SubagentStart hook"
 
 echo "U. autoMode: the classifier rule for merged-branch deletes"
 # Spec 2026-10-28-reload-functions-merged-deletes, section 2: the classifier may allow the plain
@@ -1249,9 +1254,11 @@ for agent in "$SRC"/dot_claude/agents/*.md; do
     _fail "$stem's declared name matches its filename" "declared '$declared'"
   fi
   # The sp-* bodies restate the cd/grep rule. It was dropped on 2026-09-30 (spec 2026-09-30
-  # section 3.3), and sp-* subagents then went from 0.03 to 0.67-0.84 guard denials per
-  # dispatch. It lives in each body, the subagent's own system prompt; the guard stays the
-  # enforcement.
+  # section 3.3) as sp-* subagents went from 0.03 to 0.67-0.84 guard denials per dispatch; the
+  # rise came with Sonnet 5.5 and Opus 5.5, not the drop (measured 2026-11-14). In the body,
+  # the subagent's own system prompt, the rule still steers Opus 5.5 (sp-reviewer 0.48 to 0.14
+  # once restored); Sonnet 5.5 acts on it only in its first user turn, which the SubagentStart
+  # hook provides. The guard stays the enforcement.
   case "$stem" in sp-*)
     if grep -qF -- '- Never chain commands after a leading `cd`, and never give a recursive `grep` or `rg` a bare' "$agent" \
       && grep -qF -- '  `.`: the path guard denies both. In a subagent a lone `cd` does not carry over to the next' "$agent" \

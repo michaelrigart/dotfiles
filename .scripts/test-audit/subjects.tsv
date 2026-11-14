@@ -75,6 +75,7 @@ dot_claude/git-push-guard.py	py	git-forge-guard	git-forge-guard,hook-path
 dot_claude/hooks/executable_herdr-agent-state.sh	sh	hook-path	hook-path
 dot_claude/hooks/executable_memory-health.sh	bash	memory-health	memory-health,hook-path
 dot_claude/hooks/executable_prompt-audit.sh	bash	prompt-audit	prompt-audit,hook-path
+dot_claude/hooks/executable_subagent-shell-context.sh	bash	subagent-shell-context	subagent-shell-context,hook-path
 dot_claude/modify_private_settings.json	bash	claude-settings	claude-settings,hook-path,ssh-credential-inventory
 dot_claude/skills/api-review/SKILL.md	prose	claude-settings	claude-settings
 dot_claude/skills/cross-review/SKILL.md	prose	xreview-skill	xreview-skill,agent-instructions,claude-settings,review
