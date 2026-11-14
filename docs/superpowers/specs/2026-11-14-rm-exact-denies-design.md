@@ -1,12 +1,15 @@
-# rm: deny the roots, drop the two ask rules
+# rm: deny the roots, drop the four ask rules
 
-**Status:** In progress
+**Status:** Implemented — the pull request from fix/rm-exact-denies against main (its number goes in the merge commit)
 **Date:** 2026-11-14
-**Sign-off:** D2 (b) was ruled by the driver session on Michael's delegation and D1 (a) by
-Michael, both 2026-11-14. Codex spec review: approve in round 3 (`xr-1794664170-b520bb27`; round 1,
-`xr-1794663800-0efa37b0`, two P1s, and round 2, `xr-1794664059-c104a548`, one P2, all fixed).
+**Sign-off:** the spec was signed off by the driver session on Michael's delegation (2026-11-14),
+with D1 (a) decided by Michael ("1. A") and D2 (b) ruled by the driver session on the same
+delegation. Codex spec review: approve in round 3 (`xr-1794664170-b520bb27`; round 1,
+`xr-1794663800-0efa37b0`, two P1s, and round 2, `xr-1794664059-c104a548`, one P2, all fixed). The
+240-rule amendment (the flagless lead of §3.1) came after the spec review, from the Task 1 review;
+the Codex pre-merge review covers it.
 **Branch:** `fix/rm-exact-denies`, in the `wt` checkout `~/.local/share/chezmoi-fix-rm-exact-denies`,
-from `main` at `f292740`
+rebased onto `main`
 **Source:** item 22 of the vault note `2026-11-11-agent-setup-full-review` ("`rm` takes literal
 absolute paths ... Replace those two rules with exact denies for every sandbox-writable root").
 
@@ -149,8 +152,10 @@ system prompt (memory `sonnet-ignores-agent-body-rules`):
 - `tests/agent-instructions.test.sh`: the fragment stays within its 50-line cap.
 - A live run (D2) of the rendered deny list through `claude -p`, with the modify script rendered
   under a throwaway `HOME` below the real one, so every absolute root is a throwaway directory and
-  a `$HOME/...` spelling of it is too; the `~` spelling is covered by the §2 probe and the model
-  rows, since a live `~` always names the real home.
+  a `$HOME/...` spelling of it is too. The `~` spelling is checked live through derived rules:
+  the canary replaces the throwaway-home prefix of each rendered rule with `~/<throwaway home
+  relative to HOME>`, so those rules mirror the `~`-spelled rules of the real render, and runs
+  `rm -rf ~/<that path>/Code`, which names only the throwaway directory.
 
 ## 4. Net prompt change
 
@@ -168,6 +173,9 @@ The root denies matched none of the 1,071 calls, so they add no denial to ordina
   not measured on a real root, and is not, since a miss deletes it.
 - A relative target (`rm -rf ../..`), `find -delete`, `xargs rm` and an interpreter
   (`shutil.rmtree`) reach the classifier, as every spelling the ask rules missed does today.
+- The parent directories of a root (`~/.local/share`, `~/.local`, `~/Library/Mobile Documents`,
+  `~/Library`) are not denied. Deleting one empties the root inside it; it reaches the classifier,
+  and no measured call did it.
 - Guards are frozen: nothing here touches a hook that decides.
 
 ## 6. Decisions
