@@ -35,6 +35,9 @@
 #                 RULES denial proves nothing), or a RULES run that kept everything with no
 #                 denial recorded
 #
+# Every run appends a system prompt telling the model to pass the command byte for byte: without
+# it haiku drops a leading `command` (measured: unfaithful in both attempts, faithful 3 of 3 with).
+#
 # A run that is not faithful is rebuilt over a fresh tree and run once more (haiku sometimes
 # drops `command` or rewrites a path); only a second unfaithful run makes its case INCONCLUSIVE,
 # and the commands the model sent are printed on an indented line under that result.
@@ -94,11 +97,16 @@ if [ "$rel" = "$H" ]; then echo "INCONCLUSIVE: $H is not under $HOME"; exit 2; f
 tilde='~'"/$rel"  # a literal tilde, as the rules spell it
 tilde_rules=$(printf '%s' "$rules" | jq -c --arg h "$H" --arg t "$tilde" '[.[] | split($h) | join($t)]') \
   || { echo "INCONCLUSIVE: cannot derive the tilde rules"; exit 2; }
-tcount=$(printf '%s' "$tilde_rules" | jq --arg h "$H" --arg t "$tilde" '[.[] | select(contains($t) and (contains($h) | not))] | length')
-if [ "$tcount" != "$EXPECT_RULES" ]; then
-  echo "  FAIL derived tilde rules (got $tcount rules naming $tilde, expected $EXPECT_RULES)"
+# Pin the mirror: mapped back to ~, the derived rules equal the render's own ~-spelled rm rules.
+mirror=$(jq -cn --argjson t "$tilde_rules" --argjson r "$rendered" --arg h "$H" --arg p "$tilde" '
+  ([$t[] | split($p) | join("~")] | sort)
+  == ([$r.permissions.deny[]? | select(startswith("Bash(rm") and (contains($h) | not))] | sort)') \
+  || { echo "INCONCLUSIVE: cannot compare the tilde rules"; exit 2; }
+if [ "$mirror" != true ]; then
+  echo "  FAIL derived tilde rules (mapped back to ~, they differ from the render's own ~-spelled rm rules)"
   exit 1
 fi
+VERBATIM="You pass the user's command to the Bash tool byte for byte. Never drop, add or change a word, including a leading 'command' word."
 SANDBOX='{"enabled":true,"autoAllowBashIfSandboxed":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}'
 BARE=$(jq -cn --argjson s "$SANDBOX" '{"sandbox":$s}')
 RULES=$(jq -cn --argjson s "$SANDBOX" --argjson d "$rules" --argjson t "$tilde_rules" '{"sandbox":$s,"permissions":{"deny":($d + $t)}}')
@@ -156,6 +164,7 @@ attempt() {
   prepare
   ( cd "$wrap" && claude -p "Run exactly this one Bash command, verbatim, once, and nothing else: $cmd" \
       --setting-sources project --settings "$overlay" --permission-mode auto \
+      --append-system-prompt "$VERBATIM" \
       --output-format stream-json --verbose --max-turns 2 --max-budget-usd 0.5 \
       --no-session-persistence --model haiku </dev/null >"$stream" 2>"$wrap/err.$runs" )
   s=$(summary "$cmd" "$stream")
