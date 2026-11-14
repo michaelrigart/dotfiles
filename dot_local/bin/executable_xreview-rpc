@@ -20,13 +20,11 @@ tests' fake daemon cannot listen on one.
                                                              for the herdr-codex-pane-map.py hook; nothing and exit 1 when
                                                              the method is refused or the answer unreadable, exit 5 when
                                                              the daemon is unreachable (budget 5 s in all)
-  turn-start      --thread ID --input FILE --schema FILE [--known FILE] [--cwd DIR]   prints the turn id
+  turn-start      --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
   turn-wait       --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
                   [--report FILE] [--raw FILE]    on exit 0 or 4, --report writes {"turn", "compacted": bool|null};
                   on exit 4, --raw writes the answer's text to a new FILE (mode 0600) and prints nothing
   thread-archive  --thread ID                               a refused archive is still 0 when the archived listing shows the thread
-  thread-unarchive --thread ID
-  thread-fork     --thread ID [--last-turn ID] [--cwd DIR]   prints the new thread's id
   thread-turns    --thread ID    {"turns": [{"id", "status", "compacted"}], "thread_compactions"}
                   oldest first; thread_compactions is null when items were not shown
                   Spec: docs/superpowers/specs/2026-10-25-xreview-review-packets-design.md
@@ -597,8 +595,6 @@ def cmd_turn_start(c, a):
               "outputSchema": schema,
               "sandboxPolicy": {"type": "readOnly"},
               "approvalPolicy": "never"}
-    if a.cwd:
-        params["cwd"] = a.cwd    # this turn and the later ones run there
     try:
         r = c.call("turn/start", params)
     except NotSent as e:
@@ -718,35 +714,6 @@ def cmd_thread_archive(c, a):
                 return 0
         err("thread/archive refused: " + json.dumps(r["error"]))
         return 1
-    return 0
-
-
-def cmd_thread_unarchive(c, a):
-    r = c.call("thread/unarchive", {"threadId": a.thread})
-    if "error" in r:
-        err("thread/unarchive refused: " + json.dumps(r["error"]))
-        return 1
-    return 0
-
-
-def cmd_thread_fork(c, a):
-    """Fork a.thread through a.last_turn (inclusive; the whole thread without it), in a.cwd.
-    The fork keeps the thread's turns up to and including lastTurnId; excludeTurns only leaves
-    them out of the answer, which is read for nothing but the new thread's id. Prints that id."""
-    params = {"threadId": a.thread, "excludeTurns": True}
-    if a.last_turn:
-        params["lastTurnId"] = a.last_turn
-    if a.cwd:
-        params["cwd"] = a.cwd
-    r = c.call("thread/fork", params)
-    if "error" in r:
-        err("thread/fork refused: " + json.dumps(r["error"]))
-        return 1
-    tid = (((r.get("result") or {}).get("thread")) or {}).get("id")
-    if not isinstance(tid, str) or not tid:
-        err("thread/fork answered with no thread id: " + json.dumps(r.get("result")))
-        return 1
-    print(tid)
     return 0
 
 
@@ -2348,13 +2315,7 @@ def main(argv=None):
     p.add_argument("--input", required=True)
     p.add_argument("--schema", required=True)
     p.add_argument("--known")
-    p.add_argument("--cwd")
-    p = sub.add_parser("thread-fork")
-    p.add_argument("--thread", required=True)
-    p.add_argument("--last-turn")
-    p.add_argument("--cwd")
-    for name in ("thread-turns", "thread-unarchive"):
-        sub.add_parser(name).add_argument("--thread", required=True)
+    sub.add_parser("thread-turns").add_argument("--thread", required=True)
     p = sub.add_parser("turn-wait")
     p.add_argument("--thread", required=True)
     which = p.add_mutually_exclusive_group(required=True)
@@ -2413,10 +2374,6 @@ def main(argv=None):
             return cmd_turn_start(c, a)
         if a.cmd == "thread-turns":
             return cmd_thread_turns(c, a)
-        if a.cmd == "thread-fork":
-            return cmd_thread_fork(c, a)
-        if a.cmd == "thread-unarchive":
-            return cmd_thread_unarchive(c, a)
         return cmd_thread_archive(c, a)
     except (Unreachable, Closed) as e:
         err(f"Codex daemon connection lost: {e}")
