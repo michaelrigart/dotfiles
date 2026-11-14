@@ -164,6 +164,9 @@ auto-mode classifier (rulings Q2, Q5, Q6).
 - **Line continuations in plain shell text.** A backslash-newline inside `$((`, `$'`, `<(`, a
   bash 5.3 `${ ` or a here-document operator is joined by the shells, while `lex` reads the
   parts. Most such spellings are denied anyway, since a lone `(` is a token.
+- **A hex-escaped verb inside a split `$(`.** R4's mark is acted on by `crude`, which does not
+  decode a `$'…'` that `lex` reads as double-quoted text: `echo "$\`, a newline, then
+  `($'\x67it' merge y)"` runs the merge under bash, and main and this line allow it.
 - `eval` and a script fed to a shell stay out of scope, as the threat model says.
 
 ## 6. Tests
@@ -182,12 +185,18 @@ Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each new deny shown r
 
 Every distinct Bash command in the Claude Code transcripts on this Mac (253,468, from 6,910
 transcript files), read by main's `scan` and by this line's, each command sorted into clear,
-gated, hidden or unparseable: no command changed, for a prototype of R1 and R2 and for the
-built R1 to R3. In 29 of them the two readings hand a nested shell different strings; 28 are
-clear and one is gated (a verb at its top level) under both. No command holds a quote inside a
-double-quoted `${…}` as `lex` reads it (a rough scan before the build counted 32, JavaScript
-template literals and the like). The replay is rerun on the final gate before the pre-merge
-review.
+gated, hidden or unparseable: no command changed, for a prototype of R1 and R2 and for each
+built round (R1 to R3, then R4's two forms). In 29 of them the two readings hand a nested shell
+different strings; 28 are clear and one is gated (a verb at its top level) under both. No
+command holds a quote inside a double-quoted `${…}` as `lex` reads it (a rough scan before the
+build counted 32, JavaScript template literals and the like).
+
+**No command main denies is allowed** (the driver's condition for shipping). Measured against
+main's gate on 123,566 commands: every case of this line and both review rounds, and a composed
+corpus of 18 wrappers (the nested shells, substitutions, here-documents and quote forms of
+§2 to §4) nested up to three deep around four gated verbs in five forms. The final gate turns
+none from deny to allow; R4's rejected form turned 1,827. The suite's rows run against main's
+gate fail only on this line's new denies.
 
 ## 8. Rulings
 
