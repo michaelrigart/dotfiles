@@ -111,7 +111,7 @@ PLAIN_WORDS = ("plain words: git push and its arguments, each made of letters, d
 DRY_REFUSED = "Push guard: this dry run is refused because it is not written in " + PLAIN_WORDS + "."
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 GIT_WORD_RE = re.compile(r"\bgit\b")
-PUSH_WORD_RE = re.compile(r"\bpush\b")
+PUSH_WORD_RE = re.compile(r"\b(?:push|send-pack)\b")
 SEGMENT_SPLIT = re.compile(r"[;&|\n]")
 
 
@@ -138,7 +138,8 @@ def tails_match(tails, regex):
 
 
 def push_shape(text):
-    """PUSH_SHAPE.search(text) is not None, in linear time."""
+    r"""Could this text run git push? A git word, then push or send-pack as a word, within one
+    segment of the text: the pattern \bgit\b[^;&|\n]*\b(?:push|send-pack)\b, in linear time."""
     return tails_match(git_tails(text), PUSH_WORD_RE)
 
 
@@ -603,7 +604,7 @@ def inert_command(seg):
 
 
 def inert_text(cmd, tokens):
-    """The text could_push matches PUSH_SHAPE and the alias regex against: cmd with the
+    """The text could_push matches push_shape and alias_text_hit against: cmd with the
     arguments of provably inert simple commands dropped. Everything that can execute or
     re-parse text stays: a command the tokenizer cannot split reliably (unbalanced quotes,
     here-document, backtick, $( ), <( ), >( ), $'..', a # comment), every command word that is

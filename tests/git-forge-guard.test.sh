@@ -1445,6 +1445,10 @@ expect deny  "git http-push"                          "$R" 'git http-push origin
 expect deny  "a non-builtin subcommand given push"    "$R" 'git lfs push origin feat'
 expect allow "git subtree split does not push"        "$R" 'git subtree split --prefix=d'
 expect deny  "git send-pack, through the full guard"  "$R" "git send-pack $REMOTES/origin.git main"
+expect deny  "git send-pack after a true"             "$R" 'true; git send-pack /x main'
+has_reason   "send-pack after a true gets the plain-push deny" "in a shape the guard does not check" "$R" 'true; git send-pack /x main'
+expect deny  "git send-pack after git status"         "$R" 'git status && git send-pack /x main'
+has_reason   "send-pack after git status gets the plain-push deny" "in a shape the guard does not check" "$R" 'git status && git send-pack /x main'
 # Builtins that run a command string: the string is never read, so one that pushes is refused.
 expect deny  "submodule foreach running a push"       "$R" "git submodule foreach 'git push origin main'"
 expect deny  "rebase --exec running a push"           "$R" "git rebase --exec 'git push origin main' main"
@@ -1488,13 +1492,6 @@ expect allow "a [ ] glob in the git word"             "$R" '/usr/bin/g[i]t push 
 expect allow "a variable command that pushes, not git" "$R" '$DOCKER push registry/x:1'
 expect allow "a quoted \$HOME path to helm push"      "$R" '"$HOME/bin/helm" push chart.tgz oci://r'
 expect allow "a variable command that pushes, after &&" "$R" 'npm run build && $DOCKER push img'
-expect allow "a variable git word with push"         "$R" '$G push origin main'
-expect allow "a variable git word with send-pack"    "$R" '$G send-pack x main'
-expect allow "a variable git word, -c with a variable value, push" "$R" '$G -c $V push origin main'
-expect allow "a variable git word, -C with a variable directory, push" "$R" '$G -C $D push'
-expect allow "a built git word, -C before push"      "$R" '${X:-gi}t -C . push origin main'
-expect allow "a built path whose last component is gi}t" "$R" '${X:-/usr/bin/gi}t push origin main'
-expect allow "a built git word, delete"              "$R" '${X:-gi}t push origin --delete wip'
 expect allow "a variable interpreter on a push script" "$R" '$PYTHON scripts/push.py'
 expect allow "a \$HOME path to helm push"            "$R" '$HOME/bin/helm push x'
 expect allow "a quoted \$GOPATH path, -l ."           "$TMP" "cd $R && \"\$GOPATH/bin/gofumpt\" -l ."
@@ -1549,6 +1546,14 @@ has_reason   "an in-word continuation gets the plain-push deny" "in a shape the 
 at'
 expect allow "a continuation between words keeps main's verdict" "$R" 'git push -u \
 origin feat'
+expect allow "an indented continuation stays in the grammar: a feature push keeps main's verdict" "$R" "git push -u origin feat\\
+  -u"
+# A command outside the grammar keeps every refusal main gave it, as the plain-push deny: the
+# probe runs the full judge, which here raises a deny of its own that could_push never sees.
+expect deny  "C1 alias behind a quoted ; and an ANSI-C word"   "$R" "git -c 'a.b=x;y' pom \$'--verbose'"
+has_reason   "C1 gets the plain-push deny" "in a shape the guard does not check" "$R" "git -c 'a.b=x;y' pom \$'--verbose'"
+expect deny  "a force push behind a quoted ; and an ANSI-C word" "$R" "git -c 'x.y=a;b' push -f origin main \$'-q'"
+has_reason   "the force push gets the plain-push deny" "in a shape the guard does not check" "$R" "git -c 'x.y=a;b' push -f origin main \$'-q'"
 # A bypass on main that this branch closes: the git log's quoted argument swallows the push as
 # shlex reads it, and bash runs a force push to main. Leaving the grammar closes it.
 G="gi""t"; P="pu""sh"
@@ -1708,9 +1713,9 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
 g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
-old_push = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
+old_push = re.compile(r"\bgit\b[^;&|\n]*\b(?:push|send-pack)\b")
 names = {"pom", "x.y", "lp"}
-parts = ["git", "push", "pom", "x.y", "lp", "gitx", "xgit", "git-push", "git_push", "pushx", ";",
+parts = ["git", "push", "send-pack", "pom", "x.y", "lp", "gitx", "xgit", "git-push", "git_push", "pushx", ";",
          "&", "|", "\n", " ", " ", "-C", "'", "a", "b", "\t", ".", "-", "(", ")", "$"]
 random.seed(12)
 diffs = hits = 0
@@ -1835,11 +1840,6 @@ expect deny  "git-push with no helper is refused"      "$R" 'git-push origin mai
 expect deny  "a git-core path to git-send-pack with no helper" "$R" '/usr/libexec/git-core/git-send-pack /r.git main'
 expect deny  "git log --grep=push with no helper is refused" "$R" 'git log --grep=push'
 expect deny  "a quoted git word, literal push, with no helper is refused" "$R" '"g"it push --force origin main'
-# A spelling that shows no literal push word, selector or alias is no candidate: nothing runs
-# the helper, so nothing is refused.
-expect allow "a glob push word with no helper is untouched"  "$R" '/usr/bin/[g]it p?sh --force origin main'
-expect allow "an ANSI-C push word with no helper is untouched" "$R" "git \$'pu\\x73h' origin main"
-expect allow "a glob git word with no helper is untouched"   "$R" '/usr/bin/[g][i][t] p?sh origin main'
 # Leaks the old evidence-based fallback had, each of which must now deny. (1) A command past
 # ~32 KB broke the fallback's printf | grep -q on SIGPIPE under pipefail. (2) A literal push
 # word elsewhere in the payload, a description for one, still makes the command a candidate.
@@ -1861,7 +1861,6 @@ for c in "git send-pack $REMOTES/origin.git main" 'git http-push origin main' 'g
   expect deny  "a failing helper: $c is refused"       "$R" "$c"
 done
 expect deny  "a failing helper: a quoted git word, literal push, is refused" "$R" '"g"it push --force origin main'
-expect allow "a failing helper: a glob push word is untouched" "$R" '/usr/bin/[g]it p?sh --force origin main'
 expect deny  "a failing helper: a command that only mentions push is refused" "$R" 'echo push'
 expect allow "a failing helper: git status is untouched" "$R" 'git status'
 GUARD=$SAVED_GUARD

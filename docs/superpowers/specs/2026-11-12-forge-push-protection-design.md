@@ -863,7 +863,9 @@ is decided by the driver session on Michael's delegation, on 2026-11-14.
   run time (`X=push; git $X origin main`) and on a glob command word (`/usr/bin/gi? push …`), which
   main denied.
 - **M3. Section 4.1's last bullet is main's segment rule.** Text holds "the literal words git and
-  push" when both stand in one segment between `;`, `&`, `|` and newlines, as before 2026-10-29. A
+  push" when both stand in one segment between `;`, `&`, `|` and newlines, as before 2026-10-29;
+  `send-pack` counts as `push`, so `true; git send-pack …` stays denied (decided at the task review
+  of the retirement, 2026-11-14). A
   quoted separator between them (`true; git -c 'x.y=a;b' push origin main`) makes the command
   silent. M2 and M3 are spellings the guard leaves to the forge; Residual names where the forge
   does not cover them.
