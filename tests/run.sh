@@ -30,8 +30,9 @@
 # machine (timing assertions, fixed ports, shared state) carries a `# test-serial` line and
 # runs alone after the parallel ones; so does every suite gated on a condition other than
 # `heavy` (a live herdr, a pty, the real daemon), which --all or an exact name selects.
-# A suite marked `# test-slow` is dispatched before the others, so a long one does not start last;
-# the marker orders dispatch only, and a serial or gated suite is unaffected by it.
+# A suite marked `# test-slow` is dispatched ahead of the unmarked ones in the parallel phase (a
+# `heavy` one too, when a run selects it), so a long one does not start last; the marker orders
+# dispatch only, and a serial suite, or one gated on something other than `heavy`, is unaffected.
 #
 # One runner per machine: every invocation, filtered or not, takes a lockf lock on
 # RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock). The runner that holds it writes
