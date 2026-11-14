@@ -273,6 +273,10 @@ mkjq() {
   printf '#!/bin/sh\n[ "$1" = --version ] && { echo "%s"; exit 0; }\necho real\n' "$2" > "$J/$1/jq"
   chmod 755 "$J/$1/jq"
 }
+# relative-dir/jq sits where the runner (which runs from $J) would find a relative PATH entry.
+mkdir -p "$J/relative-dir"
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo jq-1.8.2; exit 0; }\necho relative\n' > "$J/relative-dir/jq"
+chmod 755 "$J/relative-dir/jq"
 mkjq real jq-1.8.2; mkjq old jq-1.7.1-apple; mkjq odd garbage; mkjq floor jq-1.8.1; mkjq ten jq-1.10.0
 ln -s ../mise "$J/shims/jq"
 ln -s ../mise "$J/shims2/jq"
