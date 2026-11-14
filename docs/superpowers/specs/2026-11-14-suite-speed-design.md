@@ -14,8 +14,20 @@ and its effect was measured with a prototype before this spec was written.
 ## Measured
 
 On fenrir (14 CPUs, so `RUN_JOBS` defaults to 7), sandboxed, under the real runner and its lock,
-on 2026-11-14. Per-suite and per-case times come from timestamping each line of the runner's
-buffered suite output from outside the runner; the runner was not changed for the measurement.
+on 2026-11-14, with the runner unchanged. How each number was taken:
+
+- **Per suite and per case.** `run.sh --run-one` sends each suite's stdout and stderr to
+  `$RUN_SH_WORK/<name>.out` as the suite runs, and writes `<name>.rc` when it exits. A poller
+  outside the runner (every 0.1 s) timestamps each new line of each `.out` file: a suite starts
+  when its file appears and ends when its `.rc` appears, and a case's time is the gap since the
+  previous line. This is the suites' own output as they write it, not the runner's report.
+- **Inside a wrapper that buffers.** `process-replay` printed `== <module>` before running each
+  module and its output after, so a module's time is the gap between headers; `t_inject.py` was
+  then profiled alone with `cProfile`. `xreview-replay` prints its in-process block at the end,
+  so only its total is used.
+- **Inside `xreview`.** A `BASH_ENV` trace of the script under test (timestamp and pid on each
+  line) gave the count of each external command it starts.
+- **Process start-up.** Ten to twenty calls of each command, timed, outside the runner.
 
 | Run | Before | After (prototype) |
 |---|---|---|
@@ -56,9 +68,11 @@ Process start-up, per call: `bash -c :` 7 ms, `git` 7 ms, `/usr/bin/jq` 5 ms, Ho
    (240 s, everything else ends by 210 s).
 3. **Dispatch order.** `xargs` starts suites in name order, so long suites late in the alphabet
    (`process-replay`, the `xreview-*` suites) started behind short ones.
-4. **`xreview-rpc`'s budget rows.** Two rows check that a 5.0 s budget ends within 5 s, timed with
-   `$SECONDS` (whole seconds): 5.1 s of real time reads 5 or 6 depending on where the second
-   boundary falls. The second row failed two of three measured runs (`got: 5//`).
+4. **`xreview-rpc`'s budget rows.** Two rows check that `hooks-status` against a silent daemon
+   ends within 5 s, timed with `$SECONDS` (whole seconds): the silent-`initialize` row runs out
+   the 5.0 s budget, and 5.1 s of real time reads 5 or 6 depending on where the second boundary
+   falls. It failed two of three measured runs (`got: 5//`). The silent-`hooks/list` row ends at
+   the 3 s call timeout, so its 5 s bound cannot tell that timeout from the budget.
 5. **`xreview` serial.** Its tag cites T4b, a dispatch that must return inside
    `XREVIEW_PANE_WAIT=2`. With the shim gone a dispatch takes about 0.9 s alone and T4b took
    1.21 s beside the other heavy suites: green, but with too little margin for a 2 s bound.
@@ -178,9 +192,12 @@ the measured runs after §1: `process-replay`, `xreview-replay`, `herdr-phase`, 
 
 ### 4. `xreview-rpc`'s budget rows time in milliseconds
 
-The two rows read `EPOCHREALTIME` before and after and pass when the call ended within the 5 s
-budget plus 0.75 s for interpreter start-up. A call that runs past its budget (what the rows
-catch) still fails: a budget of 6 s instead of 5 fails the second row. No product change.
+The two rows read `EPOCHREALTIME` before and after, and each passes when the call ended within
+its own bound plus 0.75 s for interpreter start-up: the silent `hooks/list` row within the 3 s
+call timeout (`HOOKS_STATUS_CALL`), the silent `initialize` row within the 5 s budget
+(`HOOKS_STATUS_BUDGET`). A call that runs past its bound (what the rows catch) still fails: a
+call timeout of 6 s, which the 5 s budget caps at about 5 s, fails the first row, and a budget of
+6 s fails the second. No product change.
 
 ### 5. `xreview` leaves the serial phase
 
