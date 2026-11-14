@@ -1,6 +1,6 @@
 # Pre-merge gate: read a nested shell's string as the shell hands it on
 
-**Status:** In progress
+**Status:** Implemented (branch `fix/gate-dquote-c-string`; its PR is opened after the pre-merge review)
 **Date:** 2026-11-14
 **Sign-off:** the driver session, on Michael's delegation, 2026-11-14: Q1 to Q7 as recommended
 (§8). Codex spec review: approve in round 1 (`xr-1794658687-c52304dd`), before the cold review

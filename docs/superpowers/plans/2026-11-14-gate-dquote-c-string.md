@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented. Completed on 2026-11-14 (Task 1, two fix rounds and the final review's fix wave); do not run it again.
 
 **Goal:** The gate reads a `-c` or `env -S` string, and a backtick body inside double quotes, as
 the shells hand it on, and treats a quote inside a double-quoted `${…}` as unreadable.
