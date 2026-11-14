@@ -1000,6 +1000,15 @@ is "TT5 and newest first, so the pages follow in order" "$(jq -r 'select(.method
 is "TT5 a turn whose only item is a compaction counts as a thread-level one" "$(printf '%s' "$out" | jq -c .thread_compactions)" 1
 is "TT5 and is compacted too" "$(printf '%s' "$out" | jq -c '[.turns[].compacted]')" '[false,true,false]'
 
+echo "TU. thread-unarchive"
+scenario '{}'
+rpc thread-unarchive --thread th; rc=$?
+is "TF3 thread-unarchive exits 0" "$rc" 0
+is "TF3 and sends thread/unarchive for that thread" "$(params thread/unarchive | jq -r .threadId)" th
+scenario '{"responses":{"thread/unarchive":{"error":{"code":-1,"message":"no such thread"}}}}'
+rpc thread-unarchive --thread th 2>/dev/null
+is "TF3 a refused unarchive exits 1" "$?" 1
+
 echo "TW. turn-wait --report"
 plain="$(turn completed "$ANSWER")"
 withc="$(printf '%s' "$plain" | jq -c --argjson c "$CMPT" '.items += [$c]')"
