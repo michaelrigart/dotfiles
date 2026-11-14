@@ -9,6 +9,8 @@ Extends [wt carries mise trust into new worktrees](2026-10-19-wt-mise-trust-desi
 stays `Implemented`. Its rules hold unless a section below replaces them; "old §X" names its
 sections.
 
+Changed on 2026-11-14 by [Shrink wt's mise-trust carry](2026-11-14-wt-mise-trust-shrink-design.md), which drops the base branch (§2, §4).
+
 ## Problem
 
 Measured 2026-10-26/27, mise 2026.10.19.
