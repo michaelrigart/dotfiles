@@ -167,11 +167,21 @@ beside the others (§5) recovers most of what sharding would.
 In the locked runner, before any suite starts: walk `PATH` in order and take the first
 executable `jq` that is not a mise shim (a link whose target's name is `mise`); create
 `$RUN_SH_WORK/bin/jq` as a symlink to it and prepend `$RUN_SH_WORK/bin` to the `PATH` the suites
-inherit. When there is none, `PATH` is unchanged and the suites run as today. The `--run-one`
-children inherit it through `xargs`. A suite that builds its own `PATH` or stubs `jq` is
-unaffected. Nothing else on `PATH` changes.
+inherit. The `--run-one` children inherit it through `xargs`. A suite that builds its own `PATH`
+or stubs `jq` is unaffected.
 
-`run.sh --help` and `AGENTS.md` (Testing) say so in one sentence each, with the reason.
+Amended 2026-11-14 on Michael's word (through the driver), so that bypassing mise in the tests
+cannot surprise anyone later:
+
+1. Nothing outside the runner's own child processes changes: no mise configuration, no shim, no
+   agent-shell or hook `PATH`.
+2. The private directory holds only `jq`, linked to the binary the shim resolves to today (the
+   first non-shim `jq` on `PATH`), so the suites run the same `jq` as now, minus the lookup.
+3. When no non-shim `jq` is found, the runner stops with exit 2 and one line naming what is
+   missing, and runs no suite: never a silent fallback. (This replaces "`PATH` is unchanged".)
+4. One sentence in `AGENTS.md` (Testing) says what the runner does with `jq` and why (measured
+   about 90 ms a call through the shim against 6 ms), so it reads as deliberate; `run.sh --help`
+   says the same.
 
 ### 2. `process-replay` runs its modules concurrently
 

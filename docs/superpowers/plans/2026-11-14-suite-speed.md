@@ -81,31 +81,42 @@ fixture suite call (`bash`, `env`, `lockf`, `mktemp`, `rm`, `mkdir`, `ln`, `read
   - J1 `PATH=$T/jq/shims:$T/jq/real:<narrowed>`: `jq.says` is `real`.
   - J2 `PATH=$T/jq/shims:$T/jq/shims2:$T/jq/real:<narrowed>`: `real` (a second shim is skipped
     too).
-  - J3 `PATH=$T/jq/shims:<narrowed>`: `shim`, and `jq.path` equals the `PATH` the runner was
-    given.
+  - J3 `PATH=$T/jq/shims:<narrowed>` (no non-shim `jq`): the runner exits 2, prints one line on
+    stderr naming the missing `jq` (it contains `jq`), and runs no suite (`jq.says` is absent).
+  - J6 under J1, the directory first on the suite's `PATH` (from `jq.path`) holds exactly one
+    entry, `jq`, and it resolves to `$T/jq/real/jq`.
   - J4 `PATH=:relative-dir:$T/jq/dirjq:$T/jq/shims:$T/jq/real:<narrowed>`: `real`, and the
     runner's stderr is empty.
-  - J5 the runner's whole output (report line and closing totals) under J1 equals its output under
-    J3: the link changes nothing in the report.
+  - J5 the runner's report line and closing totals under J1 equal those of the same fixture run
+    with `real/jq` alone on the narrowed `PATH` (no shim): the link changes nothing in the report.
 
 - [ ] **Step 2: Run the rows; J1, J2 and J4 fail**
 
 Run: `./tests/run.sh run`
-Expected: FAIL on J1, J2, J4 (`jq.says` is `shim`); J3 and J5 pass.
+Expected: FAIL on J1, J2, J4 (`jq.says` is `shim`), J3 (the runner does not stop) and J6.
 
 - [ ] **Step 3: Implement the link in `tests/run.sh`**
 
 Walk `PATH` split on `:`; skip an empty or non-absolute entry, a non-executable `jq`, a
 directory named `jq`, and a `jq` whose `readlink` target's last component is `mise`; take the
 first other one. Link it as `$RUN_SH_WORK/bin/jq` and prepend `$RUN_SH_WORK/bin`; with none,
-leave `PATH` alone. Restore `IFS` after the split. Add one help line under the runner's comment
-block: suites get the first `jq` on `PATH` that is not a mise shim, because an inactive mise shim
+print one line on stderr naming what is missing (`run.sh: no jq on PATH other than a mise shim;
+the suites need one`) and exit 2 before any suite runs. Restore `IFS` after the split. Add one
+help line under the runner's comment block: suites get the first `jq` on `PATH` that is not a
+mise shim, because an inactive mise shim
 costs about 90 ms a call. Add the same as one sentence to `AGENTS.md` (Testing).
 
 - [ ] **Step 4: Run the rows; all pass**
 
 Run: `/bin/bash -n tests/run.sh && ./tests/run.sh run`
-Expected: `ok    run  N/N` with J1-J5 passing.
+Expected: `ok    run  N/N` with J1-J6 passing.
+
+- [ ] **Step 4b: Check the change stays inside the runner**
+
+Run: `git diff --name-only <base>` (the commit before this task).
+Expected: only `tests/run.sh`, `tests/run.test.sh`, `AGENTS.md`: no mise configuration, shim,
+shell start-up file, hook or settings file. The `AGENTS.md` sentence gives the measured cost
+(about 90 ms a call through the shim against 6 ms).
 
 - [ ] **Step 5: Commit**
 
