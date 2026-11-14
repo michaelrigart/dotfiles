@@ -9,7 +9,7 @@ rm targets as literal absolute paths, add a live canary for the matcher, and (ga
 four rm ask rules.
 
 **Architecture:** One root list in the jq program of `dot_claude/modify_private_settings.json`
-feeds both `sandbox.filesystem.allowWrite` and 120 generated `Bash(rm * …)` deny rules. The
+feeds both `sandbox.filesystem.allowWrite` and 240 generated `Bash(rm …)` deny rules. The
 instruction goes in the Claude Code fragment and the SubagentStart line. A new live suite renders
 the modify script under a throwaway `HOME` and drives `claude -p` against throwaway roots.
 
@@ -23,9 +23,12 @@ the modify script under a throwaway `HOME` and drives `claude -p` against throwa
   `~/Library/Mobile Documents/iCloud~md~obsidian`. The last four are exactly `allowWrite`.
 - Each root R is written twice: the `~` form, and `$HOME` + the part after `~` (the modify script
   takes `--arg home "$HOME"`). Never a hardcoded `/Users/michael` in the source.
-- Operands per R: `R`, `R/`, `R/\*`, `R/\*/`, `R/\*\*`, `R/.\*`; each rule is `Bash(rm * <R><operand>)`
-  and `Bash(rm * <R><operand> *)`. 12 per path, 120 in all, appended after the existing deny rules.
-- In a rule, `\*` is a literal star; the only wildcards are the leading `rm *` and the trailing ` *`.
+- Operands per R: `R`, `R/`, `R/\*`, `R/\*/`, `R/\*\*`, `R/.\*`; each rule is
+  `Bash(<lead><R><operand>)` and `Bash(<lead><R><operand> *)` for each lead `rm * ` and `rm `
+  (amended after the Task 1 review: `rm * R` does not deny a flagless `rm R/*`). 24 per path, 240
+  in all, appended after the existing deny rules.
+- In a rule, `\*` is a literal star; the only wildcards are the `*` of the `rm * ` lead and the
+  trailing ` *`.
 - The jq program is one single-quoted shell string: no apostrophe anywhere in it, and no backslash
   in a jq comment.
 - Guards (deciding PreToolUse hooks) are not touched. `global.md` is not touched.
@@ -60,7 +63,7 @@ the modify script under a throwaway `HOME` and drives `claude -p` against throwa
 
 **Interfaces:**
 - Produces: `$write_roots` (the four allowWrite entries) and `$rm_roots` (`["~"] + $write_roots`)
-  in the jq program; Task 4 (b) appends to `$rm_roots`. The 120 rules sit at the end of
+  in the jq program; Task 4 (b) appends to `$rm_roots`. The 240 rules sit at the end of
   `.permissions.deny`, and are the only deny rules starting `Bash(rm `.
 
 - [ ] **Step 1: Teach the suite's rule model a literal star**
@@ -82,8 +85,8 @@ d_is 'rm -rf /r/*/*/b'    no  "model: the operand ends at a space or the end"
 `echo "T. rm: every root is denied in every operand form"`, after `emit '{}'`:
 
 - The suite's own copy of the roots (the five above) builds `RM_PATHS` (both spellings, with
-  `$HOME`) and the expected 120 rules; `EXP_DENY` at `:130` is compared as `EXP_DENY` + those.
-- `jq_is` that `allowWrite` equals the four write roots and that the rm deny rules number 120.
+  `$HOME`) and the expected 240 rules; `EXP_DENY` at `:130` is compared as `EXP_DENY` + those.
+- `jq_is` that `allowWrite` equals the four write roots and that the rm deny rules number 240.
 - `jq_is` that no rm deny rule has a `*` other than the leading `rm *`, an escaped `\*`, or a
   trailing ` *`.
 - YES rows (`d_is … yes`), for every path P in `RM_PATHS`: `rm -rf P`, `rm -fr P/`,
@@ -193,11 +196,12 @@ matcher facts on the rendered list) and "run after each Claude Code upgrade".
   check guards that) and every path a case names is inside the working directory (a path outside
   it draws a denial of its own). Render with
   `printf '{}' | HOME="$H" PATH="<dir with an op stub that exits 1>:$PATH" /bin/bash <modify script>`;
-  keep the deny rules that contain `$H` (`EXPECT_RULES=60`; another count is a FAIL of its own).
+  keep the deny rules that contain `$H` (`EXPECT_RULES=120`; another count is a FAIL of its own).
 - Overlays: RULES = `{"permissions":{"allow":["Bash(rm:*)"],"deny":<those rules>}}`, BARE =
   `{"permissions":{"allow":["Bash(rm:*)"]}}`. Before every run, recreate the tree under `H`, each
   directory holding a file `f`: `Code/x`, `.local/share/chezmoi/x`, `Documents/x`,
-  `Library/Mobile Documents/iCloud~md~obsidian/x`, `.hidden`. A run is
+  `Library/Mobile Documents/iCloud~md~obsidian/x`, `.hidden`; plus a top-level file
+  `Documents/top`. A run is
   `claude -p "Run exactly this one Bash command, verbatim, once, and nothing else: <cmd>"` from
   `wrap` with `--setting-sources project --settings <overlay> --permission-mode auto
   --output-format stream-json --verbose --max-turns 2 --max-budget-usd 0.5 --no-session-persistence
@@ -221,6 +225,7 @@ matcher facts on the rendered list) and "run after each Claude Code upgrade".
   | `rm -rf <H>/Documents/**` | `Documents/x/f` |
   | `rm -rf <H>/.*` | `.hidden/f`, `.local/share/chezmoi/x/f` |
   | `rm -rf <H>` | `Code/x/f` |
+  | `rm <H>/Documents/*` (flagless) | `Documents/top` |
 
   Verdict, for a case whose two runs were both faithful: ok when the BARE run removed every
   sentinel and the RULES run kept every one and recorded a denial of the command. FAIL when the
@@ -228,7 +233,7 @@ matcher facts on the rendered list) and "run after each Claude Code upgrade".
   BARE run that removed nothing means something other than the rules refuses that command, so a
   RULES denial proves nothing. The over-match control also has to be faithful.
 - Output `  ok  <case>` / `  FAIL <case> (<why>)` / `INCONCLUSIVE: <case>: <why>`; exit 1 on any
-  FAIL, else 2 on any INCONCLUSIVE, else 0. Remove `wrap` on exit. About 17 haiku runs.
+  FAIL, else 2 on any INCONCLUSIVE, else 0. Remove `wrap` on exit. About 19 haiku runs.
 
 - [ ] **Step 2: Wire it**
 
@@ -256,7 +261,7 @@ by the driver. Do not start without it.
 - Modify: `tests/claude-settings.test.sh:108-109` (`EXP_ASK`), `:666-685` (the section G comment
   and the danger-gate loop entry `Bash(rm -rf ~/*)`), section T
 - Modify: the spec §6 D1 (his answer, dated) and, for (b), §3.1
-- Modify, for (b) only: `tests/live-rm-denies.test.sh` (`EXPECT_RULES=96`, the tree and one case)
+- Modify, for (b) only: `tests/live-rm-denies.test.sh` (`EXPECT_RULES=192`, the tree and one case)
 
 - [ ] **Step 1: Failing rows**
 
@@ -264,8 +269,8 @@ Section G: replace the `Bash(rm -rf ~/*)` loop entry with `jq_is` that no ask ru
 `Bash(rm `; rewrite the `:677-680` comment to say the root denies replaced the rm asks (spec path).
 `EXP_ASK` loses the four rules. For D1 (b) also: the roots gain `~/Code/Netronix`,
 `~/Code/ViuMore` and `~/Library/Mobile Documents/iCloud~md~obsidian/Documents` (rm denies only,
-never `allowWrite`); the count becomes 192; YES rows for each; NO row
-`rm -rf ~/Code/Netronix/curato`. In the canary, for (b): `EXPECT_RULES=96`; the tree gains
+never `allowWrite`); the count becomes 384; YES rows for each; NO row
+`rm -rf ~/Code/Netronix/curato`. In the canary, for (b): `EXPECT_RULES=192`; the tree gains
 `Code/Netronix/r/f`; a case `rm -rf <H>/Code/Netronix` with sentinel `Code/Netronix/r/f`; the
 over-match control becomes `rm -rf <H>/Code/Netronix/r` (it must still delete).
 Run: `./tests/claude-settings.test.sh` — Expected: those rows FAIL.
