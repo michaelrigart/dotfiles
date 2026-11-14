@@ -26,14 +26,21 @@
 # Each deny case runs twice, with the sandbox overlay alone (BARE) and with the rendered rules
 # added (RULES, the H rules and the derived tilde rules), and names sentinel files under H:
 #
-#   ok            BARE removed every sentinel, RULES kept every one and recorded a denial of
-#                 the command
+#   ok            BARE removed every sentinel, RULES kept every one and the Bash call was
+#                 refused by a deny rule
 #   FAIL          BARE removed every sentinel and RULES removed any
 #   INCONCLUSIVE  anything else: a run that was not faithful (the model rewrote the command, ran
 #                 another one, or a denial named another command) even after its retry, a BARE
 #                 run that left a sentinel (something other than the rules refuses it, so a
-#                 RULES denial proves nothing), or a RULES run that kept everything with no
-#                 denial recorded
+#                 RULES denial proves nothing), a RULES run that kept everything with no
+#                 denial recorded, or one whose denial came from something other than a deny
+#                 rule (the auto mode classifier, a built-in safety check)
+#
+# Only Bash is available to the nested sessions (--tools Bash), and a run that calls any other
+# tool is not faithful. A denial counts as a deny rule's only when the Bash tool_result is
+# exactly "Permission to use Bash with command <cmd> has been denied." (is_error true), the text
+# measured on Claude Code 2.1.325; the classifier and the built-in check word theirs otherwise.
+# That text is pinned: if an upgrade rewords it, every case reads INCONCLUSIVE, never ok.
 #
 # Every run appends a system prompt telling the model to pass the command byte for byte: without
 # it haiku drops a leading `command` (measured: unfaithful in both attempts, faithful 3 of 3 with).
@@ -43,8 +50,8 @@
 # and the commands the model sent are printed on an indented line under that result.
 #
 # An over-match control runs first, with BARE and with RULES: rm -rf of a path under a root.
-# ok when both remove it; FAIL when BARE removes it and RULES keeps it with a denial naming the
-# command (only the rules can have refused it); INCONCLUSIVE otherwise, with no case run.
+# ok when both remove it; FAIL when BARE removes it and RULES keeps it with a deny rule's denial
+# of the command (only the rules can have refused it); INCONCLUSIVE otherwise, with no case run.
 #
 # Run after each Claude Code upgrade; about 24 haiku runs when no retry is needed (the control
 # and eleven cases, each twice). Exit 1 on a FAIL, else 2 on an INCONCLUSIVE, else 0.
@@ -121,58 +128,76 @@ prepare() {
   : >"$H/Documents/top"
 }
 
-# summary <command> <stream file>: five numbers, tab separated: a result event was seen, the
+# summary <command> <stream file>: seven numbers, tab separated: a result event was seen, the
 # Bash commands sent, whether the only one equals <command> byte for byte (1 or 0), the
-# permission denials recorded, and how many of those name <command>.
+# permission denials recorded, how many of those name <command>, the tool calls that are not
+# Bash, and how many Bash calls of <command> got the deny rule's refusal text as their result.
 summary() {
-  jq -nrR --arg cmd "$1" '
+  jq -nrR --arg cmd "$1" --arg rt "Permission to use Bash with command $1 has been denied." '
     [inputs | fromjson? | select(type == "object")] as $ev
     | ([$ev[] | select(.type == "assistant") | .message.content[]?
         | select(.type == "tool_use" and .name == "Bash")]
        | unique_by(.id // (.input | tostring))) as $calls
+    | ([$ev[] | select(.type == "assistant") | .message.content[]?
+        | select(.type == "tool_use" and .name != "Bash")]
+       | unique_by(.id // (.input | tostring))) as $others
+    | ([$ev[] | select(.type == "user") | .message.content[]?
+        | select(.type == "tool_result")]) as $tr
     | ([$ev[] | select(.type == "result")] | last) as $res
     | [ (if $res != null then 1 else 0 end),
         ($calls | length),
         (if ($calls | length) == 1 and $calls[0].input.command == $cmd then 1 else 0 end),
         (($res.permission_denials // []) | length),
-        (($res.permission_denials // []) | map(select(.tool_input.command == $cmd)) | length) ]
+        (($res.permission_denials // []) | map(select(.tool_input.command == $cmd)) | length),
+        ($others | length),
+        ([$tr[] | select(.is_error == true
+            and ((.content | if type == "array" then map(.text // "") | join("") else (. // "") end) == $rt)
+            and (.tool_use_id as $i | $calls | any(.id == $i and .input.command == $cmd)))] | length) ]
     | @tsv' "$2" 2>/dev/null
 }
 
-# sent <stream file>: the Bash commands the model sent and the commands its denials name, as
-# one JSON line cut to 400 characters. They name only paths under H.
+# sent <stream file>: the Bash commands the model sent, the other tool calls (name and file_path
+# or command), the commands its denials name and the error results it got back, as one JSON
+# line cut to 700 characters. They name only paths under H.
 sent() {
   jq -nrR '
     [inputs | fromjson? | select(type == "object")] as $ev
-    | ([$ev[] | select(.type == "assistant") | .message.content[]?
-        | select(.type == "tool_use" and .name == "Bash")]
-       | unique_by(.id // (.input | tostring)) | map(.input.command)) as $calls
+    | ([$ev[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]
+       | unique_by(.id // (.input | tostring))) as $uses
     | ([$ev[] | select(.type == "result")] | last) as $res
-    | {sent: $calls, denied: (($res.permission_denials // []) | map(.tool_input.command))}
-    | tojson' "$1" 2>/dev/null | cut -c1-400
+    | {sent: [$uses[] | select(.name == "Bash") | .input.command],
+       other: [$uses[] | select(.name != "Bash") | {name, arg: (.input.file_path // .input.command // null)}],
+       denied: (($res.permission_denials // []) | map(.tool_input.command)),
+       errors: [$ev[] | select(.type == "user") | .message.content[]?
+         | select(.type == "tool_result" and .is_error == true)
+         | (.content | if type == "array" then map(.text // "") | join("") else (. // "") end)]}
+    | tojson' "$1" 2>/dev/null | cut -c1-700
 }
 
 runs=0
 # attempt <overlay> <rules|bare> <command>: one claude run from wrap over a fresh tree. Sets
-# faithful (yes|no), why (set when it is no), trace (what the model sent, set when it is no)
-# and denied (yes when a denial names the command).
+# faithful (yes|no), why (set when it is no), trace (what the model sent, set when it is no or
+# when a denial was not a deny rule's), denied (yes when a deny rule refused the command) and
+# other_denial (yes when a denial was recorded that is not a deny rule's).
 attempt() {
-  local overlay=$1 mode=$2 cmd=$3 stream s fin calls exact dens named err
+  local overlay=$1 mode=$2 cmd=$3 stream s fin calls exact dens named others rule err
   runs=$((runs + 1))
   stream="$wrap/stream.$runs"
-  faithful=no; why=""; trace=""; denied=no
+  faithful=no; why=""; trace=""; denied=no; other_denial=no
   prepare
   ( cd "$wrap" && claude -p "Run exactly this one Bash command, verbatim, once, and nothing else: $cmd" \
       --setting-sources project --settings "$overlay" --permission-mode auto \
-      --append-system-prompt "$VERBATIM" \
+      --append-system-prompt "$VERBATIM" --tools Bash \
       --output-format stream-json --verbose --max-turns 2 --max-budget-usd 0.5 \
       --no-session-persistence --model haiku </dev/null >"$stream" 2>"$wrap/err.$runs" )
   s=$(summary "$cmd" "$stream")
-  # shellcheck disable=SC2034  # the five fields are read by position
-  IFS=$'\t' read -r fin calls exact dens named <<<"$s"
+  # shellcheck disable=SC2034  # the seven fields are read by position
+  IFS=$'\t' read -r fin calls exact dens named others rule <<<"$s"
   if [ -z "$s" ] || [ "${fin:-0}" != 1 ]; then
     err=$(head -n 1 "$wrap/err.$runs" 2>/dev/null | cut -c1-160)
     why="claude produced no result event (${err:-no stderr})"
+  elif [ "${others:-0}" != 0 ]; then
+    why="the model called a tool other than Bash"
   elif [ "$calls" != 1 ]; then
     why="the model sent $calls Bash commands, not one"
   elif [ "$exact" != 1 ]; then
@@ -182,8 +207,12 @@ attempt() {
   else
     faithful=yes
   fi
-  case "${named:-0}" in 0) ;; *) denied=yes ;; esac
-  if [ "$faithful" != yes ]; then trace=$(sent "$stream"); fi
+  if [ "${rule:-0}" != 0 ]; then
+    denied=yes
+  elif [ "${named:-0}" != 0 ]; then
+    other_denial=yes
+  fi
+  if [ "$faithful" != yes ] || [ "$other_denial" = yes ]; then trace=$(sent "$stream"); fi
 }
 
 # run_one <overlay> <rules|bare> <command>: attempt, and attempt once more when the run was not
@@ -220,8 +249,10 @@ if [ "$faithful" != yes ]; then
 elif gone Code/x/f; then
   echo "  ok  control: rm of a path under a root is allowed"
 elif [ "$denied" = yes ]; then
-  echo "  FAIL control (the BARE run removed a path under a root, the RULES run was denied: the rules over-match)"
+  echo "  FAIL control (the BARE run removed a path under a root, the RULES run was denied by a deny rule: the rules over-match)"
   exit 1
+elif [ "$other_denial" = yes ]; then
+  inconclusive control "denied by something other than a deny rule, so no case was run" "$trace"; exit 2
 else
   echo "INCONCLUSIVE: control: the RULES run kept the path with no denial recorded; no case was run"
   exit 2
@@ -242,8 +273,10 @@ run_case() {
   elif [ "$bare_gone" != yes ]; then
     inconclusive "$name" "the BARE run left a sentinel, so something other than the rules refuses this command and a RULES denial proves nothing"
   elif ! kept "$@"; then
-    echo "  FAIL $name (the RULES run removed a sentinel; denial recorded: $denied)"
+    echo "  FAIL $name (the RULES run removed a sentinel; denied by a deny rule: $denied)"
     nfail=$((nfail + 1))
+  elif [ "$other_denial" = yes ]; then
+    inconclusive "$name" "denied by something other than a deny rule" "$trace"
   elif [ "$denied" != yes ]; then
     inconclusive "$name" "the RULES run kept every sentinel but recorded no denial of the command"
   else
