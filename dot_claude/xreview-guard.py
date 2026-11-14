@@ -21,11 +21,12 @@
 # updates a title or description (-f/-F fields, no --input) is never gated, and neither is a
 # merge of origin's default branch (origin/<name> or refs/remotes/origin/<name>), which lands
 # only what origin's default branch already holds, in a directory the gate can read. Each must
-# be a command of its own, written in plain words (letters, digits and _ . / : @ % + , = -;
-# the API call's words may also be quoted, a double-quoted one holding no $, backtick or
-# backslash) with no redirection but >, >>, 2>, 2>>, &> and 2>&1, so no shell can read it as
-# anything else; the merge takes only git's -C and the flags --ff-only, --no-edit and the
-# like. Run some other way (a substitution, a subshell, sh -c), it is gated like any other
+# be a command of its own, and the whole command must be plain: every segment between ;, &, |
+# and newline in plain words (letters, digits and _ . / : @ % + , = -, or quoted, a
+# double-quoted one holding no $, backtick or backslash) with no redirection but >, >>, 2>,
+# 2>>, &> and 2>&1, and no substitution, group or glob anywhere. Then no shell can read any
+# segment as anything else, nor let one hide another. The merge takes no quotes, and only git's
+# -C and the flags --ff-only, --no-edit and the like. Otherwise it is gated like any other
 # write. Any gated verb left beside it decides.
 #
 # glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
@@ -713,8 +714,9 @@ PLAIN_REDIRECT = re.compile(r"([12]?>>?|&>)[ \t]*")
 def plain_argv(segment, quotes):
     """The words a segment of raw (lexed, not redirection-stripped) text passes to its
     command, or None when any part of it is not plain. A word is plain runs, and with quotes
-    also '...' strings and "..." strings holding no $, backtick or backslash; it may not start
-    with an unquoted = (zsh expands =name to a path), and ~ is not plain at all. The
+    also '...' strings and "..." strings holding no $, backtick or backslash; its first
+    non-empty part may not be an unquoted run starting with = (zsh expands =name to a path,
+    after empty quotes too), and ~ is not plain at all. The
     redirections of PLAIN_REDIRECT are dropped, each followed by a plain run or &1 or &2 as
     a whole word. Whatever shell reads the segment, these are the words it passes on."""
     words, i, n = [], 0, len(segment)
@@ -736,12 +738,12 @@ def plain_argv(segment, quotes):
                 return None
             i = j
             continue
-        start, parts = i, []
+        parts = []
         while i < n and segment[i] not in " \t":
             c = segment[i]
             run = PLAIN_RUN.match(segment, i)
             if run:
-                if i == start and c == "=":
+                if c == "=" and not "".join(parts):
                     return None
                 parts.append(run.group())
                 i = run.end()
@@ -903,11 +905,12 @@ EXEMPT_PATH = {
     "gh": re.compile(r"repos/{}/pulls/(?:\d+/comments(?:/\d+/replies)?|comments/\d+)"
                      .format(GITHUB_PROJECT)),
 }
-# GitLab runs quick actions in a note's body, and a merge_request_diff_head_sha field makes
-# /merge merge, so a note or thread is exempt only while every field name is one it may carry.
+# GitLab runs quick actions in a note's body, and a head sha (merge_request_diff_head_sha, or one
+# in a position or commit_id) makes /merge merge, so a note or thread is exempt only while every
+# field name is one that cannot carry it.
 GITLAB_NOTE_PATH = re.compile(r"projects/{}/merge_requests/\d+/(?:notes(?:/\d+)?|discussions"
                               r"(?:/[0-9a-f]+(?:/notes(?:/\d+)?)?)?)".format(GITLAB_PROJECT))
-GITLAB_NOTE_FIELD = re.compile(r"body|resolved|commit_id|position\[[a-z_]+\](?:\[[a-z_]+\])*")
+GITLAB_NOTE_FIELD = re.compile(r"body|resolved")
 UPDATE_PATH = {
     "glab": (re.compile(r"projects/{}/merge_requests/\d+".format(GITLAB_PROJECT)), "PUT",
              {"title", "description"}),
@@ -1267,7 +1270,8 @@ def parse_plain(tokens, cwd):
     i = 0
     if len(t) >= 3 and t[0] == "cd" and t[2] == "&&" and not is_operator(t[1]):
         target = os.path.expanduser(t[1])
-        if not literal(target) or target == "-":
+        # zsh reads a target starting with - or + as an option or a directory-stack entry.
+        if not literal(target) or target[:1] in ("-", "+"):
             return None
         cwd, i = os.path.normpath(os.path.join(cwd, target)), 3
     if i < len(t) and t[i] == "sudo":
@@ -1539,32 +1543,32 @@ def is_exempt_api(segment):
     return api_exempt(words[2:], words[0])
 
 
-def without_exempt(text, cwd, ledger):
-    """text with each sync or exempt API segment replaced by the word :, every separator kept,
-    or None when it holds none. Each is read from the plain words of its own segment, so the
-    gate's reading is the shell's. The directory a sync runs in is the hook's, moved by a
-    leading cd <path> && as parse_plain reads it; a cd, chdir, pushd or popd word in any other
-    earlier segment, quoted or not, moves it where the gate cannot follow. ledger is None when
-    the command holds no merge, and then no segment is a sync."""
+def without_exempt(cmd, cwd, ledger):
+    """cmd's lexed text with each sync or exempt API segment replaced by the word :, every
+    separator kept, or None when nothing is exempt. A command is exempt only when all of it is
+    plain: every segment reads as plain words (plain_argv), and the lexer found no substitution
+    or expanding here-document and reads the text the same under bash 3.2. One segment the
+    gate cannot read as the shell does may change what the others run, as a bash 3.2
+    substitution, a glob or a group can, so then nothing is exempt. A sync is read without
+    quotes, an API call with them. A cd, chdir, pushd or popd word in any segment before a
+    sync moves it where the gate cannot follow, and only an absolute -C names the repository
+    then. ledger is None when the command holds no merge, and then no segment is a sync."""
+    text, substitutions, expanding = lex(cmd)
+    if substitutions or expanding or text != lex(cmd, naive=True)[0]:
+        return None
     parts = split_commands(text)
-    first = plain_argv(parts[0][0], False)
-    lead = None
-    if first and len(first) == 2 and first[0] == "cd" and first[1] != "-" and parts[0][1] == "&&":
-        lead = os.path.normpath(os.path.join(cwd, first[1]))
+    argv = [plain_argv(segment, True) for segment, _ in parts]
+    if any(words is None for words in argv):
+        return None
     out, found, moved = [], False, False
-    for k, (segment, separator) in enumerate(parts):
-        words = plain_argv(segment, False) if ledger is not None else None
-        if (words and is_sync(words, cwd if lead is None else lead, moved, ledger)
-                or is_exempt_api(segment)):
+    for (segment, separator), words in zip(parts, argv):
+        bare = plain_argv(segment, False) if ledger is not None else None
+        if (bare and is_sync(bare, cwd, moved, ledger)) or is_exempt_api(segment):
             out.append(" : " + separator)
             found = True
         else:
             out.append(segment + separator)
-        if k or lead is None:
-            try:
-                moved = moved or any(w in DIR_CHANGERS for w in tokenize(segment))
-            except ValueError:
-                moved = True
+        moved = moved or any(w in DIR_CHANGERS for w in words)
     return "".join(out) if found else None
 
 
@@ -2582,7 +2586,7 @@ def main():
             # compound, so whatever gated verb remains decides.
             if "merge-local" in kinds:
                 ledger = load_ledger()
-            rewritten = without_exempt(lex(cmd)[0], cwd, ledger)
+            rewritten = without_exempt(cmd, cwd, ledger)
             if rewritten is not None:
                 tokens = tokenize(rewritten)
                 if not gated_anywhere(tokens):

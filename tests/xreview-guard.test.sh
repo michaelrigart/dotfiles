@@ -469,8 +469,10 @@ echo "C2. a merge of origin's default branch in a compound (rows S1-S13)"
 is "S1a a sync after a switch, piped" "$(decision "$W" 'git switch main && git merge --ff-only origin/main | tail -1')" allow
 is "S1b -C <abs> from another directory, then a read" \
    "$(decision / "git -C $W merge -q --ff-only origin/main && git -C $W log -1")" allow
-is "S1c cd <abs> && fetch && a sync by its full name, then a status" \
-   "$(decision "$ROOT" "cd $W && git fetch -q origin && git merge refs/remotes/origin/main; git status -sb")" allow
+is "S1c cd <abs> && fetch && a relative sync is denied: the cd leaves only an absolute -C" \
+   "$(decision "$ROOT" "cd $W && git fetch -q origin && git merge refs/remotes/origin/main; git status -sb")" deny
+is "S1c2 the same with an absolute -C, a sync by its full name, then a status" \
+   "$(decision "$ROOT" "cd $W && git fetch -q origin && git -C $W merge refs/remotes/origin/main; git status -sb")" allow
 is "S1d a sync with its output piped, from a feature branch" "$(decision "$SIDE" 'git merge --no-edit origin/main 2>&1 | tail -3')" allow
 is "S1e two syncs" "$(decision "$W" 'git merge --ff-only origin/main && git merge --ff-only origin/main')" allow
 # S2: what only looks like a sync. feature is moved onto origin's main for the first row, and
@@ -570,6 +572,43 @@ is "S15a -C through a symlink and .. names the other repository" "$(decision "$W
 rm "$W/link"
 is "S15b a redirected sync by an absolute -C" "$(decision / "git -C $W merge --ff-only origin/main 2> err.log && git log -1")" allow
 is "S15c and one whose output is dropped" "$(decision / "git -C $W merge --ff-only origin/main >/dev/null 2>&1 || echo failed")" allow
+# W: an exemption needs the whole command in plain or quoted words. One substitution, glob or
+# group anywhere can change what runs, as bash 3.2 or zsh reads it, so then nothing is exempt.
+M1='echo "$(echo ${x//)/} " ; glab mr merge 7 ; ")"'
+GP='glab api -X POST projects/:id/merge_requests/7/pipelines'
+is "W1a a pipeline start hiding a bash 3.2 merge" "$(decision "$W" "$GP ; $T1")" deny
+is "W1b a comment hiding one behind a case pattern" "$(decision "$W" "gh api repos/acme/app/pulls/9/comments -f body=hi ; $V1")" deny
+is "W1c the same hiding a forge merge" "$(decision "$W" "$GP ; $M1")" deny
+is "W1d a sync hiding a merge" "$(decision "$W" "git fetch && git merge --ff-only origin/main ; $T1")" deny
+# zsh reads +0 and -q as a stack entry and an option and stays put, where a path of that name
+# would move the gate to another repository: in DEV (default develop) they lead to W.
+ln -s "$W" "$DEV/+0"; ln -s "$W" "$DEV/-q"
+is "W2a cd +0 is a directory-stack entry in zsh" "$(decision "$DEV" 'cd +0 && git fetch && git merge --ff-only origin/main')" deny
+is "W2b cd -q is an option" "$(decision "$DEV" 'cd -q && git fetch && git merge origin/main')" deny
+rm "$DEV/+0" "$DEV/-q"
+is "W2c a function substitution that changes directory" "$(decision "$W" ': ${ cd ../dev; } && git merge --ff-only origin/main')" deny
+is "W2d a variable anywhere" "$(decision "$W" 'echo $HOME && git merge --ff-only origin/main')" deny
+is "W2e a substitution after it" "$(decision "$W" 'git merge --ff-only origin/main && echo "$(date)"')" deny
+is "W2f a merge in an if" "$(decision "$ROOT" "if true; then git -C $W merge origin/main; fi")" deny
+is "W2g a merge in a group" "$(decision "$W" '{ git merge origin/main; }')" deny
+is "W2h a negated merge" "$(decision "$W" '! git merge origin/main')" deny
+is "W2i a timed merge" "$(decision "$W" 'time git merge origin/main')" deny
+is "W2j an assignment segment holds no directory change" "$(decision "$W" 'X=1; git merge --ff-only origin/main')" allow
+is "W2k a read before it, piped" "$(decision "$W" 'git log --format=%h -1 | cat && git merge --ff-only origin/main')" allow
+is "W2l a background sync is harmless" "$(decision "$W" 'git merge origin/main &')" allow
+is "W2m a cd and a relative sync, from another directory, is the plain form" "$(decision "$ROOT" "cd $W && git merge --ff-only origin/main")" allow
+is "W3a an absolute -C after a cd" "$(decision "$ROOT" "cd $W && git -C $W merge --ff-only origin/main && git log -1")" allow
+is "W3b quotes in a later segment" "$(decision "$W" "git -C $W merge --ff-only -q origin/main && git -C $W log --format='%h %s' -1 | cat")" allow
+is "W3c a quoted jq program after a pipeline start" "$(decision "$W" "$GP | jq -r '\"\\(.id) \\(.status)\"'")" allow
+is "W3d a single-quoted body holding backticks and \$( )" \
+   "$(decision "$W" "gh api repos/acme/app/pulls/9/comments/55/replies -f body=${SQ}done; see \`x\` and \$(y)${SQ} --jq .html_url")" allow
+is "W4a a variable in a redirection target" "$(decision "$W" "$GP > "'$TMPDIR/p.json')" deny
+is "W4b a \$? after it" "$(decision "$W" "$GP | jq .id"'; echo $?')" deny
+is "W4c zsh expands =glab after empty quotes" "$(decision "$W" "''=glab api -X POST projects/:id/merge_requests/7/pipelines")" deny
+is "W4d a note with a position field" "$(decision "$W" "glab api -X POST projects/:id/merge_requests/7/notes -f ${SQ}position[new_line]=3${SQ}")" deny
+is "W4e a note with a commit id" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f commit_id=abc')" deny
+is "W5a cd -0 before a merge is no plain command" "$(reason "$W" 'cd -0 && git merge feature' | grep -c 'plain command of its own')" 1
+is "W5b cd +0 before a creation" "$(reason "$W" 'cd +0 && glab mr create --target-branch main' | grep -c 'plain command of its own')" 1
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
@@ -1119,7 +1158,7 @@ is "R3b the same name in the query string is denied" "$(decision "$W" "glab api 
 is "R3c a note with --input is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes --input note.json')" deny
 is "R3d a note with an unknown field is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=x -f other=y')" deny
 is "R3e a discussion with --input is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/discussions --input d.json')" deny
-is "R3f a diff discussion with position fields and a body file is allowed" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/discussions -F body=@c.md -f "position[position_type]=text" -f "position[new_line]=3" -f commit_id=abc')" allow
+is "R3f a diff discussion with position fields is denied: a position can carry a head sha" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/discussions -F body=@c.md -f "position[position_type]=text" -f "position[new_line]=3" -f commit_id=abc')" deny
 is "R3g a GitHub comment with --input is allowed" "$(decision "$W" 'gh api repos/acme/app/pulls/9/comments --input c.json')" allow
 is "R3h a pipeline start with --input is allowed" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/pipelines --input x.json')" allow
 # An option or a field the gate cannot read leaves the call gated.
@@ -1157,8 +1196,8 @@ is "R6c a pipeline start redirected to a file, then a read" \
    "$(decision "$W" 'glab api -X POST "projects/acme%2Fapp/merge_requests/7/pipelines" > out.json; jq .id out.json')" allow
 is "R6d a quoted description from a file, its stderr piped" \
    "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7 -F "description=@tmp/d.md" --silent 2>&1 | jq .iid')" allow
-is "R6e a diff discussion after a cd" \
-   "$(decision "$ROOT" "cd $W && glab api -X POST projects/:id/merge_requests/7/discussions -F body=@c.md -f ${SQ}position[position_type]=text${SQ} -f ${SQ}position[new_line]=3${SQ}")" allow
+is "R6e a diff discussion with position fields, after a cd, is denied" \
+   "$(decision "$ROOT" "cd $W && glab api -X POST projects/:id/merge_requests/7/discussions -F body=@c.md -f ${SQ}position[position_type]=text${SQ} -f ${SQ}position[new_line]=3${SQ}")" deny
 # What the table leaves out stays gated: it lands, rewrites or approves a change.
 is "R1a a rebase is denied" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/rebase')" deny
 is "R1b an approval is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/approve')" deny
