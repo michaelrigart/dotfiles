@@ -92,7 +92,6 @@ dot_codex/executable_herdr-agent-state.sh	sh	hook-path	hook-path
 dot_codex/executable_herdr-codex-pane-map.py	py	herdr-codex-pane-map	herdr-codex-pane-map,hook-path
 dot_codex/modify_private_config.toml	data	codex-config	codex-config
 dot_codex/modify_private_hooks.json	data	codex-config	codex-config
-dot_config/agent-identity/ssh_config	data	ssh-sandbox-proxy	ssh-sandbox-proxy,claude-settings,live-agent-auth
 dot_config/agents/GLOBAL.md.tmpl	data	agent-instructions	agent-instructions
 dot_config/agents/plugins.conf	data	claude-settings	claude-settings
 dot_config/git/allowed_signers.tmpl	data	git-signing-config	git-signing-config
@@ -141,7 +140,6 @@ dot_local/bin/executable_wt-teardown	zsh	wt-teardown	wt-teardown,wt-functions,de
 dot_local/bin/executable_xreview	bash	xreview	xreview,xreview-apply-guard,xreview-skill,live-codex-daemon,hook-path
 dot_local/bin/executable_xreview-rpc	py	xreview-rpc	xreview-rpc,xreview,xreview-packet,live-codex-daemon,hook-path
 dot_zshrc	zsh	zshrc-reload	zshrc-reload,zshrc
-private_dot_ssh/private_github-agent.pub.tmpl	data	ssh-sandbox-proxy	ssh-sandbox-proxy,claude-settings,live-agent-auth
 tests/AGENTS.md	prose	agent-instructions	agent-instructions
 tests/fixtures/test-audit/bin/esc.py	py	-	test-audit
 tests/fixtures/test-audit/bin/loop.sh	bash	-	test-audit

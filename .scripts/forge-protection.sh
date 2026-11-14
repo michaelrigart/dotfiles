@@ -159,16 +159,18 @@ shq() {
   esac
 }
 
-# The two rulesets of spec 2026-11-12 section 2.1, as compact JSON.
-body_protect_main() {  # <ref>
-  jq -nc --arg ref "$1" '{name:"protect-main",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:[$ref],exclude:[]}},rules:[{type:"deletion"},{type:"non_fast_forward"}]}'
+# The rulesets of spec 2026-11-12 section 2.1, as compact JSON: protect-main for a repository with
+# none, main-pr-only for one whose deletion and non_fast_forward rules are already carried.
+PR_RULE='{"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":false,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"allowed_merge_methods":["merge"]}}'
+body_protect_main() {
+  jq -nc --argjson pr "$PR_RULE" '{name:"protect-main",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[{type:"deletion"},{type:"non_fast_forward"},$pr]}'
 }
-body_main_owner_only() {
-  jq -nc '{name:"main-owner-only",target:"branch",enforcement:"active",bypass_actors:[{actor_type:"RepositoryRole",actor_id:5,bypass_mode:"always"}],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[{type:"update"},{type:"creation"}]}'
+body_main_pr_only() {
+  jq -nc --argjson pr "$PR_RULE" '{name:"main-pr-only",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[$pr]}'
 }
 
 check_github() {  # <remote> <owner/repo>
-  local remote=$1 repo=$2 def enc rules ids id st v n want name blocks msg
+  local remote=$1 repo=$2 def enc rules ids id st v n
   case "$repo" in
     */*/*|*/|/*) row unreadable "$remote" "not an owner/repo path"; return ;;
     */*) ;;
@@ -186,66 +188,53 @@ check_github() {  # <remote> <owner/repo>
   if ! printf '%s' "$rules" | jq -e 'type == "array"' >/dev/null 2>&1; then
     row unreadable "$remote" "the rules answer is not a list"; return
   fi
-  ids=$(printf '%s' "$rules" | jq -r '[.[].ruleset_id | select(. != null)] | unique | .[]')
+  # Only a ruleset that carries deletion, non_fast_forward or pull_request is read; update and
+  # creation are not part of the target. An active one must show its bypass list: that this login
+  # cannot bypass does not say the list is empty, so a ruleset without the list is unreadable.
+  ids=$(printf '%s' "$rules" | jq -r '[.[] | select(.type | IN("deletion", "non_fast_forward", "pull_request")) | .ruleset_id | select(. != null)] | unique | .[]')
   st='{}'
   for id in $ids; do
     if ! gh_get "repos/$repo/rulesets/$id"; then row unreadable "$remote" "$(fc_reason)"; return; fi
     if ! st=$(printf '%s' "$FC_OUT" | jq -c --argjson st "$st" --arg id "$id" '
-        .bypass_actors as $b | .current_user_can_bypass as $c
-        | if $b == null and $c == null then error("no bypass information")
-          else $st + {($id): {
-            active: (.enforcement == "active"),
-            name: (.name | if type == "string" then . else "" end),
-            closed: (.enforcement == "active" and (($b != null and ($b | length) == 0) or ($b == null and $c == "never"))),
-            owner: (.enforcement == "active" and (($b != null and ($b | length) > 0 and ($b | all(.actor_type == "RepositoryRole" and .actor_id == 5 and .bypass_mode == "always"))) or ($b == null and $c == "never")))
-          }} end' 2>/dev/null); then
-      row unreadable "$remote" "ruleset $id shows neither bypass_actors nor current_user_can_bypass"; return
+        .bypass_actors as $b
+        | if .enforcement == "active" and $b == null then error("no bypass list")
+          else $st + {($id): {closed: (.enforcement == "active" and ($b | length) == 0)}} end' 2>/dev/null); then
+      row unreadable "$remote" "ruleset $id does not show its bypass list to this login; run the check with the owner's login"; return
     fi
   done
-  # A rule pair is "carried" by a ruleset of any enforcement; the POST for a pair is printed only
-  # when no ruleset carries it, otherwise the carrier gets a UI note. A ruleset holding update or
-  # creation (the rejected merged design included) is judged as the owner-only carrier and is never
-  # told to empty its bypass list: protect-main is posted beside it. Owner-only means the repository
-  # admin role as the only bypass actor, with bypass mode always: an empty list, another actor or
-  # pull_requests_only leaves Michael unable to push the default branch. GitHub enforces every
-  # applicable ruleset, so every active one holding update or creation must be owner-only, not just
-  # one of them; a ruleset that is not active enforces nothing and is not judged. Protection rules
-  # only add up, so deletion and non_fast_forward need one closed carrier, not all of them.
+  # The target: each of deletion, non_fast_forward and pull_request comes from at least one closed
+  # ruleset (active, empty bypass list); rules of several rulesets add up. A ruleset that is not
+  # active enforces nothing, so it is never closed (GitHub lists only active rulesets' rules here; an
+  # inactive carrier is robustness). A ruleset carrying both deletion and non_fast_forward is not
+  # replaced: protect-main is posted only when none does, and it brings pull_request too.
+  # main-pr-only is posted only when no ruleset carries pull_request at all. Otherwise each ruleset
+  # that carries a rule lacking a closed carrier gets a UI note.
   v=$(jq -nc --argjson r "$rules" --argjson st "$st" '
-    def types($id): [$r[] | select(.ruleset_id == $id) | .type];
-    def pair($id; $a; $b): (types($id) | (index($a) != null and index($b) != null));
-    def pm($id): pair($id; "deletion"; "non_fast_forward");
-    def oo($id): pair($id; "update"; "creation");
-    def uc($id): (types($id) | (index("update") != null or index("creation") != null));
-    def carried($t; $k): any($r[]; .type == $t and $st[(.ruleset_id | tostring)][$k]);
-    def blocker($id): uc($id) and $st[($id | tostring)].active and ($st[($id | tostring)].owner | not);
-    ([$r[].ruleset_id | select(. != null)] | unique) as $ids
-    | {ok: (carried("deletion"; "closed") and carried("non_fast_forward"; "closed") and carried("update"; "owner") and carried("creation"; "owner") and ([$ids[] | select(blocker(.))] | length == 0)),
-       protect_post: ([$ids[] | select(pm(.) and (uc(.) | not))] | length == 0),
-       owner_post: ([$ids[] | select(oo(.))] | length == 0),
-       ui: ([$ids[] | select(pm(.) and (uc(.) | not) and ($st[tostring].closed | not)) | {id: ., want: "none"}]
-          + [$ids[] | select(uc(.) and ($st[tostring].owner | not)) | {id: ., want: "Repository admin with bypass mode \"always\"", name: $st[tostring].name, blocks: blocker(.)}])}')
+    ([$r[] | select(.type | IN("deletion", "non_fast_forward", "pull_request")) | .ruleset_id | select(. != null)] | unique) as $ids
+    | def carries($id; $t): any($r[]; .ruleset_id == $id and .type == $t);
+      def closed($id): $st[($id | tostring)].closed;
+      def closed_carrier($t): any($r[]; .type == $t and closed(.ruleset_id));
+      def pm_carried: any($ids[]; carries(.; "deletion") and carries(.; "non_fast_forward"));
+      [("deletion", "non_fast_forward", "pull_request") | select(closed_carrier(.) | not)] as $missing
+    | {ok: ($missing | length == 0),
+       protect_post: (pm_carried | not),
+       pr_post: (pm_carried and (any($r[]; .type == "pull_request") | not)),
+       ui: (if pm_carried then [$ids[] | . as $id | select((closed($id) | not) and any($missing[]; carries($id; .)))] else [] end)}')
   if [ "$(printf '%s' "$v" | jq -r '.ok')" = true ]; then
     row ok "$remote" "default branch $def"; return
   fi
   row drift "$remote" "default branch $def"
   if [ "$(printf '%s' "$v" | jq -r '.protect_post')" = true ]; then
-    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_protect_main "refs/heads/$def")"))"
+    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_protect_main)"))"
   fi
-  if [ "$(printf '%s' "$v" | jq -r '.owner_post')" = true ]; then
-    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_main_owner_only)"))"
+  if [ "$(printf '%s' "$v" | jq -r '.pr_post')" = true ]; then
+    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_main_pr_only)"))"
   fi
   n=$(printf '%s' "$v" | jq -r '.ui | length')
   while [ "$n" -gt 0 ]; do
     n=$((n - 1))
-    id=$(printf '%s' "$v" | jq -r ".ui[$n].id")
-    want=$(printf '%s' "$v" | jq -r ".ui[$n].want")
-    msg="in the UI: https://github.com/$repo/rules/$id: Enforcement Active, bypass list $want"
-    if [ "$(printf '%s' "$v" | jq -r ".ui[$n].blocks // false")" = true ]; then
-      name=$(printf '%s' "$v" | jq -r ".ui[$n].name")
-      msg="$msg; ruleset $(shq "$name") blocks the owner's direct push of the default branch until then (or drop its update and creation rules)"
-    fi
-    note "$msg"
+    id=$(printf '%s' "$v" | jq -r ".ui[$n]")
+    note "in the UI: https://github.com/$repo/rules/$id: Enforcement Active, bypass list none"
   done
 }
 

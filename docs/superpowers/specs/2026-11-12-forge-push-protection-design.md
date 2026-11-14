@@ -13,6 +13,14 @@ terminal, and he was told. Codex approved the spec in review round 5 (`xr-179452
 [spec 2026-10-29](2026-10-29-push-guard-escaped-spellings-design.md), section 7, and changes rule 4
 of [spec 2026-09-30](2026-09-30-safe-autonomy-design.md), section 1.1.
 
+**Revision 2 (2026-11-14), signed by Michael on 2026-11-14** in the driver session ("I follow your recommendations. go"), after Codex approved it in spec round 4 (`xr-1794611710-5ee4cd19`). Michael declined the GitHub machine
+account on 2026-11-13 and chose, on 2026-11-14 in the driver session ("ok, lets go with A then"),
+that GitHub's default branches take changes only through a pull request, his own included. Sections
+1.1, 2.1, 4.3 and 6 and the lines that named the account are rewritten below; the section
+"Revision 2" at the end lists every change, what is documented, inferred and his to test, and the
+decisions he took at signature. The text as signed on 2026-11-12 is this file at
+commit `1ca66ad`.
+
 This repository is public. Client organisations, groups, projects and hosts are never named here,
 in the plan, in code or in tests; the tooling reads them from the local checkouts at run time.
 
@@ -91,29 +99,36 @@ GitLab projects already land through merge requests he merges, and on the dotfil
 direct push of `main`. It does change one thing he does today, the push of the dotfiles' `main`
 by an agent on his word; section 4.3 says what replaces it.
 
+**Revision 2: A on every forge.** The GitHub half of C needed a second account, which is visible
+as the pusher of feature branches, in the collaborator list and as a profile; Michael declined it.
+GitHub has no way to limit one credential of an account to branches other than the default (an
+SSH account key acts as the whole user; a fine-grained token is scoped by repository and
+permission, not by branch), so with his own key an agent is the repository admin and any rule the
+admin may bypass lets it through. What is left is A: nobody pushes the default branch. The cost in
+A's column is now his: the dotfiles' local merge and push of `main` becomes a pull request he
+merges. Considered and not taken: keeping the local guard as GitHub's only refusal (the spelling
+hunt could then not be retired, because a hidden spelling is a push whose remote the guard cannot
+read); one deploy key per repository (whether a deploy key gets past a ruleset whose bypass list
+holds the admin role is not documented, and the 2024-04-30 changelog suggests it once did); a
+GitHub App (a visible second identity).
+
 ## 1. Agent identity
 
-### 1.1 GitHub: a machine account
+### 1.1 GitHub: a fine-grained token of Michael's account
 
-GitHub's terms allow one free machine account beside a personal account.
+No second account, as on GitLab.
 
-- Michael creates the account, with two-factor authentication, its credentials in 1Password.
-- It is a collaborator (write) on the two repositories. A collaborator on a personal repository
-  cannot reach its settings, so it cannot edit rulesets.
-- It gets an SSH key held in 1Password (served by the same agent socket) and a personal access
-  token for `gh`. A fine-grained token cannot reach another user's personal repository, so this is
-  a classic token with the `public_repo` scope; the plan verifies that against the live API before
-  anything depends on it.
-- Agent sessions use it by default:
-  - `git` over SSH to `github.com` offers only the machine account's key. The session's
-    `GIT_SSH_COMMAND` (today `ssh-sandbox-proxy`, set by the SessionStart hook) selects an agent
-    SSH configuration that pins `IdentityFile` to the public key and sets `IdentitiesOnly yes` for
-    `github.com`, then includes Michael's configuration for every other host. The public key file
-    is added to the sandbox's readable `~/.ssh` list.
-  - `gh` reads the token from `GH_TOKEN` in the `env` block of the settings template.
-- Commits stay authored and signed by Michael's key, as today. Only the pusher differs.
-- Michael's shells are untouched: none of this is in `zshenv`, the global git config or his SSH
-  configuration.
+- `git` over SSH to `github.com` keeps using Michael's key. The forge cannot tell the agent from
+  him there, which is why section 2.1 protects the default branch against everyone.
+- Michael creates one fine-grained personal access token of his own account for `gh`, limited to
+  the repositories agents work in: Metadata read, Contents **read**, Pull requests write, Issues
+  write. Without Contents write it cannot merge a pull request or push over HTTPS, and without
+  Administration it cannot touch rulesets. Agent sessions read it from `GH_TOKEN` in the `env`
+  block of the settings template (in place since merge 1; `gh` prefers it to the keyring).
+- Pull requests, issues and comments an agent opens are his, like the commits.
+- The agent SSH configuration, the pinned key and the `GITHUB_SSH` probe that merge 1 added for
+  the machine account are removed (section 6).
+- Michael's shells are untouched, as before.
 
 ### 1.2 GitLab: a fine-grained token of Michael's account
 
@@ -151,28 +166,42 @@ written down anywhere.
 
 ### 2.1 GitHub
 
-Both repositories get two rulesets on the default branch:
+The target, on the default branch of every repository agents work in: the rules `deletion`,
+`non_fast_forward` and `pull_request`, each carried by an active ruleset with an **empty bypass
+list**. Nobody deletes the branch, force-pushes it or pushes it directly, Michael included; a
+change lands when a pull request is merged.
 
-1. `protect-main`, as it exists on the dotfiles: `deletion` and `non_fast_forward`, no bypass. It
-   keeps binding Michael too. Created on the second repository with the command from spec
-   2026-10-29, section 6.
-2. `main-owner-only`, new: the `update` and `creation` rules, with the repository admin role as the
-   only bypass actor. Michael pushes `main`; the machine account, a collaborator, cannot, by push or
-   by merging a pull request.
+- A repository with no ruleset gets one:
 
-```json
-{"name": "main-owner-only", "target": "branch", "enforcement": "active",
- "bypass_actors": [{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}],
- "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
- "rules": [{"type": "update"}, {"type": "creation"}]}
-```
+  ```json
+  {"name": "protect-main", "target": "branch", "enforcement": "active", "bypass_actors": [],
+   "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+   "rules": [{"type": "deletion"}, {"type": "non_fast_forward"},
+             {"type": "pull_request", "parameters": {"required_approving_review_count": 0,
+              "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false,
+              "require_last_push_approval": false, "required_review_thread_resolution": false,
+              "allowed_merge_methods": ["merge"]}}]}
+  ```
 
-`gh api --method POST repos/<owner>/<repo>/rulesets --input <file>`, then
-`gh api --method PUT repos/<owner>/<repo>/collaborators/<machine account> -f permission=push`.
-The plan confirms that role id 5 is admin from the API's answer before Michael runs it.
-
-Two separate rulesets, because a bypass actor bypasses every rule of its ruleset: merged into one,
-Michael could force-push `main` again.
+- The dotfiles already have `protect-main` with the first two rules. It gets a second ruleset,
+  `main-pr-only`, with the `pull_request` rule alone and the same empty bypass list; the existing
+  one is not edited. Rules of several rulesets add up.
+- No approval is required: Michael is the only account, and an author cannot approve his own pull
+  request. The author can merge it.
+- `allowed_merge_methods` is `["merge"]`: a merge commit keeps his signed commits as they are and
+  adds a merge commit GitHub signs; "rebase" would rewrite them unsigned and "squash" replaces
+  them. Decided by Michael on 2026-11-14.
+- An `update` rule ("Restrict updates") is not part of the target: with an empty bypass list it
+  would refuse the merge of a pull request too. `main-owner-only` is never created.
+- Scope: the repositories agents work in (seven by the baseline of 2026-11-13). The dormant ones
+  are archived or go into his exceptions file, his choice per repository.
+- Rulesets on a private repository of a personal account need GitHub Pro; on Free they exist for
+  public repositories only. A GitHub repository agents work in must reach the target: one that is
+  private on Free is made public, covered by Pro, or taken out of agent work, before merge 3. It
+  is never excepted while agents still work in it, because after the retirement a hidden push
+  with his key would meet no refusal there. A dormant private repository can be excepted like any
+  other dormant one. Michael confirms which of his repositories are private before the first
+  ruleset.
 
 ### 2.2 GitLab (28 projects)
 
@@ -268,8 +297,12 @@ that stubs `gh`, `glab` and `az`.
   outside the sandbox's writable paths and outside this repository; the script reads it and prints
   how many rows it excepted. Without the file nothing is excepted.
 - It works with the agent identity: the GitLab token can read branch protection (section 1.2),
-  and the GitHub rules of a public repository are readable by the machine account. The suite pins
-  that a 403 on the protection read is `unreadable`, and that `unreadable` fails.
+  and the GitHub token reads a repository's rules. A ruleset's bypass list is returned to
+  repository admins only, so that the list is empty shows when Michael runs the check with his
+  own login. A ruleset that does not show its list to the login in use makes the row
+  `unreadable`: that this login cannot bypass does not show the list is empty (tightened at the
+  plan review of merge 2, 2026-11-14). The suite pins that
+  a 403 on the protection read is `unreadable`, and that `unreadable` fails.
 - It never writes to a forge. There is no apply mode: Michael runs the printed commands. The suite
   pins that the script contains no write verb (`POST`, `PUT`, `PATCH`, `DELETE`, `create`,
   `update`) outside the strings it prints.
@@ -292,32 +325,45 @@ The plain grammar of the helper's header and everything `evaluate` decides for i
 ### 4.2 Changes
 
 - **A plain push that updates the default branch is a silent deny**, no longer an ask: "the default
-  branch is Michael's; push the branch and open a merge request, or he pushes it from his own terminal".
+  branch is Michael's; push the branch and open a merge request or pull request".
   This is the one prompt removed. It holds on every remote, the unprotected ones included, and on
-  the dotfiles (section 4.3). It lands with merge 2.
+  the dotfiles (section 4.3). It lands with merge 3.
 
 ### 4.3 The dotfiles' `main`, and every other default branch
 
 Today an agent merges a finished dotfiles branch into `main` in the main checkout and pushes it
-when Michael approves the ask. After merge 2 no agent pushes a default branch, on his word or
-otherwise: rule 4 denies the plain form, and GitHub refuses the machine account.
+when Michael approves the ask. Under revision 2 nobody pushes a GitHub default branch: the forge
+refuses the push, his own included, and after merge 3 rule 4 denies the plain form everywhere.
 
-- The agent still does the local merge, through the merge gate as today, and its report ends with
-  the command for Michael: `git -C ~/.local/share/chezmoi pom`, **run in a terminal of his own,
-  not with `!` in the session**. A `!` command runs in the session's shell with the session's
-  environment, so it would push as the machine account and be refused. His own shell has neither
-  the session's `GIT_SSH_COMMAND` nor its tokens (section 1.1), pushes as him, and the ruleset
-  lets the owner through. He types one command where he clicks a prompt today.
-- Between merge 1 and merge 2 the ask still exists, but once the GitHub rules are set the push it
-  approves is refused by the forge, because the session pushes as the machine account. From that
-  moment his own terminal is the way. The verification of section 6 includes this handoff:
-  from his own terminal `ssh -T git@github.com` greets Michael, while the session's transport
-  greets the machine account.
+- **The dotfiles land through a pull request.** The line's session pushes its branch, as today,
+  and opens a pull request against `main` with `gh pr create` (through the pre-merge gate, which
+  already requires the approved pre-merge review of that exact head; assigned to Michael; no
+  agent attribution). Its final report ends with the pull request and the two commands for him,
+  **run in a terminal of his own, not with `!` in the session**:
+  `gh pr merge <number> --merge --match-head-commit <sha>` (or the merge button), then
+  `git -C ~/.local/share/chezmoi pull --ff-only`, which the `chezmoi` wrapper needs before
+  `chezmoi apply`: it deploys only from a clean `main` equal to origin's. A `!` command runs with
+  the session's `GH_TOKEN`, which cannot merge.
+- The pull request is opened ready for review, not as a draft: the reviews are done when it is
+  opened, and nobody else reads the repository's pull requests. Decided by Michael on 2026-11-14.
+- **No agent merges on GitHub, on his word or otherwise.** The agent token cannot (section 1.1),
+  as on GitLab. The driver no longer merges a dotfiles line into `main` or pushes `main`; it
+  collects the line's report and hands Michael the two commands. The local merge into the main
+  checkout is gone, so the main checkout only ever fast-forwards.
+- Every dotfiles line becomes a pull request in a public repository, under his own name.
+- `wt-rm` needs no change: it already recognises a branch whose work reached the base by a merge
+  commit, a rebase or a squash. It finds it merged once the main checkout has been pulled.
 - On GitLab and Azure nothing changes: agents never pushed those default branches.
-- The global instructions change with merge 2: in `global.md`, "pushing to the default branch"
-  leaves the list of actions an agent confirms first and becomes a thing an agent never does; the
-  finishing rule for the dotfiles names Michael's push. `tests/agent-instructions.test.sh` pins
-  the wording and the line limits still hold.
+- The global instructions change in two steps. With merge 2: the Finishing rule loses its
+  dotfiles exception ("for the dotfiles, the pushed branch is the end" becomes: push the branch
+  and open a pull request Michael merges, ready for review), and `AGENTS.md` describes the flow
+  above. With merge 3: "pushing to the default branch" leaves the list of actions an agent
+  confirms first and becomes a thing an agent never does. `tests/fixtures/agent-instructions/
+  rules.tsv` pins the rules and the line limits still hold.
+- **Transition.** Until merge 2 is applied the current flow stays: local merge, the ask, the push
+  of `main`. From the apply of merge 2 the flow is the pull request, which works with or without
+  the ruleset. Once Michael has set the ruleset on the dotfiles, a direct push of `main` is
+  refused for everyone. The full local guard stays live until merge 3 is applied.
 
 ### 4.4 Goes
 
@@ -379,57 +425,78 @@ swaps them and no push goes unscanned.
 
 ## 6. Order
 
-`chezmoi apply` deploys origin's `main`, so nothing on a branch is live. The line therefore lands
-in two merges, each with its own pre-merge review, and the retirement is the second.
+`chezmoi apply` deploys origin's `main`, so nothing on a branch is live. Under revision 2 the line
+lands in three merges, each with its own pre-merge review; the retirement is the third.
 
-**Merge 1, changes no verdict of rule 4.** `forge-protection check`; the `pre-push` hook with the
-scan moved out of the helper (one commit, so that one apply swaps them); the agent identity
-plumbing, inert until the 1Password items exist (no item: no variable, no SSH override, sessions
-behave as today). Pushed, reviewed, merged by Michael.
+**Merge 1, changes no verdict of rule 4. Done: on `main` at `1ca66ad`, applied on 2026-11-13.**
+`forge-protection check`; the `pre-push` hook with the scan moved out of the helper; the agent
+identity plumbing, inert until the 1Password items exist.
 
-**Michael's forge actions** (list below), in this order: the accounts, tokens and 1Password items;
-`chezmoi apply` of merge 1 and a new Claude Code session; then the forge rules, from the commands
-the deployed check prints.
+**Merge 2, the GitHub respec; changes no verdict of rule 4 either.** Landed by the current flow
+(local merge, Michael's push of `main`). In this order:
 
-**Verification**, from a new agent session, recorded under Implementation notes with repository
-names left out:
+1. The machine-account plumbing of merge 1 is removed, first: the agent SSH configuration
+   (`dot_config/agent-identity/ssh_config`), the key template
+   (`private_dot_ssh/private_github-agent.pub.tmpl`), the `-F` branch of `ssh-sandbox-proxy` (the
+   proxy and the session's `GIT_SSH_COMMAND` predate merge 1 and stay), the sandbox's read entry
+   for `~/.ssh/github-agent.pub`, the `GITHUB_SSH` probe of `live-agent-auth`, their test rows and
+   subject-map rows. About 60 lines of code and 250 of tests. It touches sandbox settings and
+   authentication, so it is reviewed like the rest and not shipped alone. `GH_TOKEN` and
+   `GITLAB_TOKEN` stay.
+2. `check_github` judges the target of section 2.1: the owner-only carrier, the bypass-mode
+   reading and the second POST go; `deletion`, `non_fast_forward` and `pull_request` must each
+   come from an active ruleset with an empty bypass list, and the printed line is the one POST of
+   section 2.1 (or `main-pr-only` where `protect-main` exists).
+3. Michael's steps file is rewritten for revision 2.
+4. The dotfiles flow of section 4.3: the Finishing rule in `global.md`, `AGENTS.md`.
 
-- `forge-protection check` exits 0. Every row is `ok` or `excepted`, and the excepted rows are the
-  repositories of section 2.4 and no others (Michael confirms the count);
+**Michael's forge actions** (list below). GitLab, Azure DevOps and the exceptions file do not
+depend on merge 2 and can be done now, from the check on `main`. The GitHub token and rulesets
+follow the apply of merge 2, from the commands the new check prints.
+
+**Verification**, recorded under Implementation notes with repository names left out:
+
+- `forge-protection check`, run by Michael with his own logins, exits 0. Every row is `ok` or
+  `excepted`, and the excepted rows are the repositories of section 2.4, the dormant GitHub
+  repositories and the shared GitLab projects of correction 11, and no others (he confirms the
+  count);
 - `gh api repos/<owner>/<repo>/rules/branches/<default> --jq '[.[].type] | sort'` prints
-  `["creation","deletion","non_fast_forward","update"]` for both GitHub repositories, and
-  `gh api repos/<owner>/<repo>/collaborators/<machine account>/permission --jq .permission`
-  prints `write`;
-- from Michael's own terminal `ssh -T git@github.com` greets Michael (the handoff of section
-  4.3 depends on it);
-- the session's own git transport greets the machine account: `$GIT_SSH_COMMAND -T
-  git@github.com`, the wrapper and configuration git uses, not a bare `ssh`, which reads
-  Michael's configuration and would greet him;
-- with the agent token, a GET of one project's protected branches succeeds (the check depends on
-  it) and `glab api personal_access_tokens/self` lists no merge, approve, protect or project-update
-  permission.
+  `["deletion","non_fast_forward","pull_request"]` for each GitHub repository in scope;
+- in a new agent session `gh auth status` names `GH_TOKEN` as the source of the active GitHub
+  login (so `gh` is not on his keyring login), a GET of one repository's rules succeeds, and the
+  three tests of "Revision 2" below have been run once;
+- with the agent's GitLab token, a GET of one project's protected branches succeeds (the check
+  depends on it) and `glab api personal_access_tokens/self` lists no merge, approve, protect or
+  project-update permission.
 
-These verify configuration, not a refused push. No live push against a default branch is
-attempted: a probe that the forge failed to refuse would itself move the branch.
+Apart from Michael's three tests these verify configuration, not a refused push: no agent
+attempts a live push against a default branch.
 
-**Merge 2, the retirement** (section 4). Its commits are written only after the verification
-results are in the spec, on the same branch rebased onto the new `main`, with a fresh pre-merge
-review. Until merge 2 is applied the full local guard is live, so there is no moment at which
-neither the forge nor the guard refuses.
+**Merge 3, the retirement** (section 4), the first dotfiles line to land through a pull request.
+Its commits are written only after the verification results are in the spec, with their own plan
+and a fresh pre-merge review. Until merge 3 is applied the full local guard is live, so there is
+no moment at which neither the forge nor the guard refuses.
 
-If Michael's actions have not happened when merge 1 is done, the line stops there and is reported
+If Michael's actions have not happened when merge 2 is done, the line stops there and is reported
 as waiting on him.
 
 ### Michael's forge actions
 
-1. Create the GitHub machine account; add its SSH key and token to 1Password.
-2. GitHub: `main-owner-only` on both repositories, `protect-main` on the second, the collaborator
-   invitation on both (accepted from the machine account).
-3. GitLab: create the fine-grained token; after the apply, run the commands `forge-protection
-   check` prints for the 28 projects (in place, never unprotecting).
-4. Azure DevOps: read the three repositories' policies and his effective permissions, set what
-   section 2.3 names, or report which he cannot edit.
-5. Write `~/.config/forge-protection/exceptions` with the remotes he accepts as unprotected.
+1. GitLab: create the fine-grained token; run the commands `forge-protection check` prints for
+   the projects where he alone pushes the default branch (in place, never unprotecting).
+2. Azure DevOps: set what section 2.3 names on the repositories the check reports as drift, or
+   report which he cannot edit.
+3. After the apply of merge 2, GitHub, in this order:
+   1. create the scratch repository and give it the ruleset of section 2.1;
+   2. create the fine-grained token of section 1.1, with the scratch repository among its
+      repositories, and store it in 1Password;
+   3. `chezmoi apply` again (the tokens are rendered only at apply; the same holds for the GitLab
+      token of action 1) and start a new agent session; `gh auth status` there names `GH_TOKEN`;
+   4. run the three tests on the scratch repository. Any failure stops here, before a real
+      repository is touched;
+   5. create the ruleset the check prints on each repository agents work in;
+   6. delete the scratch repository.
+4. Write `~/.config/forge-protection/exceptions` with the remotes he accepts as unprotected.
 
 ## 7. Rollback
 
@@ -438,7 +505,9 @@ as waiting on him.
 - The hook: unset `core.hooksPath` (one line in the global git config) and revert the commit that
   moved the scan.
 - The identity: delete the two 1Password references from the settings template; sessions fall back
-  to Michael's logins. Forge side, remove the collaborator and revoke the tokens.
+  to Michael's logins. Forge side, revoke the tokens.
+- The pull-request flow on GitHub: delete the `pull_request` rule (or the `main-pr-only` ruleset)
+  and the direct push of `main` works again; the Finishing rule is one reverted commit.
 - A forge rule: each is one DELETE or one UI switch, Michael's.
 
 ## Residual
@@ -446,12 +515,34 @@ as waiting on him.
 - Michael's credentials stay reachable from an agent session: the 1Password socket serves all his
   keys, and unsetting `GH_TOKEN` or `GITLAB_TOKEN`, or an unsandboxed command, reaches his logins.
   That takes a deliberate act the classifier sees, not a spelling. With his login an agent can
-  still merge on GitLab and Azure, and unprotect a branch; the existing asks (`glab mr merge`,
+  still merge on GitHub, GitLab and Azure, and unprotect a branch; the existing asks (`glab mr merge`,
   `glab api` writes) and the merge gate stay in front of that.
 - A hidden spelling of a force push or delete on a branch other than the default is no longer
   refused locally. The classifier sees it; the damage is one branch, usually the agent's own.
 - The remotes of section 2.4.
 - gitleaks can be skipped (section 5).
+- **GitHub Actions can merge for an agent** (recorded 2026-11-14 on Michael's delegation to the
+  driver; inferred from GitHub's documented `GITHUB_TOKEN` behaviour, untested; it predates this
+  line). With his SSH key an agent pushes a branch holding a workflow (`on: push`,
+  `permissions: contents: write`); an SSH push is not limited by the token's missing
+  Workflows permission. It opens a pull request with its own token, and the workflow's
+  `GITHUB_TOKEN` merges it: the `pull_request` rule with no approvals and an empty bypass list
+  is satisfied by any merge, and a workflow's `permissions` key can raise its token above the
+  repository's default. A deliberate act in three steps, visible in the Actions log; before
+  revision 2 a workflow could push `main` directly. Decision for Michael before merge 3's plan:
+  - an `update` rule whose only bypass actor is the Repository admin role with bypass mode
+    `pull_request`: direct pushes stay refused for everyone, his pull-request merge passes,
+    a merge by `GITHUB_TOKEN` (not a bypass actor) is refused. It changes the check's target
+    and needs a fourth scratch test (a workflow's merge refused, his merge allowed); untested
+    whether GitHub applies `update` to a pull-request merge that way;
+  - evaluated, not built: a local refusal of an agent change under `.github/workflows/`. A
+    deny rule on the edit tools is a speed bump, not a boundary: a shell command writes the
+    same file, the class of hidden spelling merge 3 stops chasing. A refusal in the global
+    `pre-push` hook would hold for any spelling of the change but can be skipped like the
+    scan (section 5), and it binds his own pushes too unless it tells an agent session from
+    his (an environment variable, which an agent can unset). Its cost to him is small on
+    these seven repositories (one workflow, in the dotfiles), but it would also refuse agents'
+    ordinary CI work in GitHub repositories outside the seven.
 
 ## Tests
 
@@ -474,18 +565,22 @@ as waiting on him.
   **silent** on it (so a later change cannot bring a half-hunt back unnoticed); the plain-grammar,
   inert-text, merged-delete and fail-closed sections stay.
 - `tests/claude-settings.test.sh`: the two variables render when the items exist and are absent
-  when they do not; the agent SSH configuration is readable in the sandbox.
-- `live-agent-auth` gains a probe, run sandboxed in a fresh session after apply, through the
-  session's `GIT_SSH_COMMAND`: `github.com` greets the machine account, and `gitlab.com` Michael.
+  when they do not. Revision 2: the rows for the agent SSH configuration and key go with them.
+- `live-agent-auth`: revision 2 removes the `GITHUB_SSH` probe; `github.com` and `gitlab.com` both
+  greet Michael through the session's transport, as before merge 1.
+- `tests/forge-protection.test.sh`, revision 2: the GitHub rows follow section 2.1. All three
+  rules from closed rulesets is `ok`; `pull_request` missing is `drift` with the one POST, and
+  carried only by a ruleset with a bypass actor, `drift` with a note to empty that list; the
+  owner-only rows go.
 
 ## After Michael's apply
 
-1. After merge 1: the verification of section 6. After merge 2: `forge-protection check` still
-   exits 0, with the same excepted rows.
+1. After merge 2 and his forge actions: the verification of section 6. After merge 3:
+   `forge-protection check` still exits 0, with the same excepted rows.
 2. `./tests/run.sh git-forge-guard` and the new suites pass; the heavy tag is gone if the time
    allows.
-3. A push of a feature branch from an agent session to GitHub shows the machine account as pusher
-   and Michael as commit author with a valid signature.
+3. A dotfiles line ends in a pull request under Michael's name; after his merge and the pull of
+   the main checkout, `chezmoi apply` deploys it and `wt-rm` finds the branch merged.
 4. `git push origin main` from an agent session is a silent deny; no prompt appears.
 
 ## Corrections from planning (2026-11-12, after sign-off)
@@ -576,7 +671,80 @@ unchanged; each correction is listed here for Michael, and the text above stands
 
 ## Left to the plan
 
-- The rendering mechanism for the two tokens, and the exact agent SSH configuration.
+- The rendering mechanism for the two tokens, and the exact agent SSH configuration (the latter
+  removed by revision 2).
 - The exact fine-grained permission names on GitLab, and the GitHub token type, each checked
   against the live forms.
 - The line and second counts of section 4.4.
+
+## Revision 2 (2026-11-14): GitHub without a second account
+
+Signed by Michael on 2026-11-14. He declined the machine account on 2026-11-13 ("I don't like that.
+So this is not something that I want to introduce": it would show as the pusher of feature
+branches, in the collaborator list and as a profile) and chose pull requests only on 2026-11-14
+("ok, lets go with A then"), both in the driver session.
+
+**Rewritten:** the Approaches note, sections 1.1, 2.1, 4.3 and 6 with its list of forge actions;
+single lines in sections 3, 4.2 and 7, Residual, Tests and "After Michael's apply". **Superseded
+corrections:** 8 (the bypass list still shows only to an admin; the machine account in it is
+gone), 10 (decided on 2026-11-13 for his own token; the collaborator half is gone) and 16 (the
+SSH pin is removed). Sections 1.2, 1.3, 2.2 to 2.4, 4.1, 4.4 and 5 stand.
+
+**What is documented, inferred, and his to test** (GitHub's documentation, read on 2026-11-13):
+
+| Claim | Status |
+|---|---|
+| No credential of an account can be limited to branches other than the default | no such feature found: fine-grained tokens scope by repository and permission, SSH account keys not at all |
+| Merging a pull request by API needs Contents write | documented (the fine-grained permission table lists the merge endpoint under Contents write only) |
+| A token with Pull requests write and Contents read cannot merge and cannot push over HTTPS | inferred from that table: **test 1** |
+| With an empty bypass list the `pull_request` rule refuses a direct push by the admin too | inferred (bypass is opt-in in rulesets, unlike classic branch protection): **test 2** |
+| With 0 required approvals the author merges his own pull request | inferred ("it must be opened", it need not be approved): **test 3** |
+| `allowed_merge_methods` is a parameter of the `pull_request` rule | from the REST schema, not checked against a live answer: the POST of test 2's ruleset shows it |
+| Rulesets on a private personal repository need GitHub Pro | documented for Pro, and for public repositories on Free |
+
+The three tests, once (his steps give the commands). All three run on a scratch public repository
+he creates for it, gives the ruleset of section 2.1 and deletes afterwards, **before** any real
+repository gets the ruleset: a merge or push the forge failed to refuse would otherwise stay on a
+real `main`, where the force push that removes it is refused. He runs them from his own terminal;
+in an agent session the local merge gate would refuse test 1 before it reached GitHub and prove
+nothing about the token.
+
+1. With the agent token read from 1Password into `GH_TOKEN` for the one command: `gh pr merge` of
+   a pull request on the scratch repository is refused, and so is a write through the Contents
+   API to a branch **other than the default** (`PUT repos/<owner>/<scratch>/contents/<file>` with
+   `branch=<scratch branch>`; on `main` the ruleset would refuse it whatever the token holds), the
+   permission an HTTPS push needs. The pull request itself is created with the agent token first:
+   that needs Pull requests write on the scratch repository, so a later refusal is the missing
+   permission and not a token that does not include the repository (reading a public repository
+   would prove nothing).
+2. With his own login: `git push origin main` with a new commit on the scratch `main` is refused
+   by the forge.
+3. With his own login: the pull request of test 1 merges with `gh pr merge <n> --merge`.
+
+A failed test stops his steps there: no real repository gets a ruleset, the scratch repository
+stays until the line has seen the result, and the line does not write merge 3. If test 2 fails
+(the admin gets through), the boundary does not hold. If test 1 fails, the token's permissions
+are wrong or the inference is. If test 3 fails, he could not land a change, so the pull-request
+design does not work as specified. In each case the line returns to Michael with what the forge
+answered; nothing real has changed.
+
+**Decided at signature (2026-11-14), each as recommended:**
+
+- the merge method, `merge` only (section 2.1);
+- the scope: the repositories agents work in, the dormant ones archived or excepted per
+  repository (section 2.1);
+- the dotfiles' pull request opened ready for review, not as a draft (section 4.3);
+- three merges, with the pull-request flow starting at merge 2 and the retirement at merge 3
+  (section 6);
+- the scan's proof-only exclusion and the size of `tests/forge-protection.test.sh` stay as built.
+
+Read on 2026-11-14 with GET calls: the seven repositories in scope are all public, so the Pro
+question of section 2.1 does not arise for them.
+
+**Inventory.** Correction 9's figures are superseded by Michael's own baseline run of the check
+on 2026-11-13, the first to read Azure DevOps: 100 repositories, 1 ok, 81 drift, 18 unreadable,
+none excepted.
+
+**What changes for the driver:** it no longer merges a dotfiles line into `main`, and no agent
+pushes `main` or merges on GitHub. A line's final report carries the pull request and Michael's
+two commands.

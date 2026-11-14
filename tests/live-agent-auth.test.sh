@@ -97,25 +97,10 @@ else
   exit 1
 fi
 
-# The identities: sessions' GitHub identity is the machine account (inert until its 1Password
-# items exist), GitLab keeps the sandbox key. Greetings are matched, never printed, and the
-# ssh stderr is captured with them.
+# GitLab keeps the sandbox key. Greetings are matched, never printed, and the ssh stderr is
+# captured with them.
 failed=()
 probe() { sh -c "$GIT_SSH_COMMAND -T -o BatchMode=yes -o ConnectTimeout=15 git@$1" 2>&1 </dev/null; }
-
-if [ -r "$HOME/.ssh/github-agent.pub" ] && [ -r "$HOME/.config/agent-identity/ssh_config" ]; then
-  greeting=$(probe github.com)
-  login=$(printf '%s\n' "$greeting" | sed -n 's/^Hi \([^!]*\)!.*/\1/p' | head -n 1 | tr '[:upper:]' '[:lower:]')
-  if [ -z "$login" ]; then
-    echo "GITHUB_SSH=NO_GREETING"; failed+=(GITHUB_SSH)
-  elif [ "$login" = "michaelrigart" ]; then
-    echo "GITHUB_SSH=MICHAEL"; failed+=(GITHUB_SSH)
-  else
-    echo "GITHUB_SSH=AGENT"
-  fi
-else
-  echo "GITHUB_SSH=INERT"
-fi
 
 greeting=$(probe gitlab.com)
 if printf '%s\n' "$greeting" | grep -q 'Welcome to GitLab, @'; then

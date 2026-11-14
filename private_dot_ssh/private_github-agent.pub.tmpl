@@ -1,7 +1,0 @@
-{{- $listed := false -}}
-{{- range output "op" "item" "list" "--vault" "Private" "--format" "json" | fromJson -}}
-{{-   if eq .title "GitHub Agent SSH Key" }}{{ $listed = true }}{{ end -}}
-{{- end -}}
-{{- if $listed -}}
-{{ onepasswordRead "op://Private/GitHub Agent SSH Key/public key" }}
-{{ end -}}

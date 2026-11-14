@@ -489,8 +489,7 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
             "~/.ssh/huginn.pub",
             "~/.ssh/michael.pub",
             "~/.ssh/michael_rsa.pub",
-            "~/.ssh/viumore_rsa.pub",
-            "~/.ssh/github-agent.pub"
+            "~/.ssh/viumore_rsa.pub"
           ],
           # Ordinary work only: source trees, the chezmoi source, documents and the vault. A
           # dotfiles wt checkout is a sibling, ~/.local/share/chezmoi-<branch>, and is written
