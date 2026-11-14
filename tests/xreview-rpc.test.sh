@@ -358,14 +358,19 @@ mb_scn "[$(mcp "[$ST]"),$(mcp "[$OK]")]"
 out="$(rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA")"; rc=$?
 is "MB1 a server that is starting holds turn/start back until connected" "$rc/$out" "0/turn-mb"
 is "MB1 and the start follows the second list call" "$(order)" "mcpServerStatus/list,mcpServerStatus/list,turn/start"
-for odd in '{"name":"node_repl","runtimeStatus":"notStarted"}' \
-           '{"name":"node_repl","runtimeStatus":null}' \
+mb_scn "[$(mcp '[{"name":"node_repl","runtimeStatus":"notStarted"}]'),$(mcp "[$OK]")]"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+is "MB2a notStarted is unresolved, so the start waits" \
+   "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,turn/start"
+for odd in '{"name":"node_repl","runtimeStatus":null}' \
            '{"name":"node_repl"}' \
-           '{"name":"node_repl","runtimeStatus":"warmingUp"}'; do
+           '{"name":"node_repl","runtimeStatus":"warmingUp"}' \
+           '{"name":"node_repl","runtimeStatus":7}' \
+           '"node_repl"'; do
   mb_scn "[$(mcp "[$odd]"),$(mcp "[$OK]")]"
   rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
-  is "MB2 $(printf '%s' "$odd" | jq -c 'if has("runtimeStatus") then .runtimeStatus else "missing-field" end') is unresolved, so the start waits" \
-     "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,turn/start"
+  is "MB2b $(printf '%s' "$odd" | jq -c 'if type=="object" then (if has("runtimeStatus") then .runtimeStatus else "missing-field" end) else "non-object" end') settles, so the start does not wait" \
+     "$rc/$(order)" "0/mcpServerStatus/list,turn/start"
 done
 mb_scn "[$(mcp '[{"name":"a","runtimeStatus":"connected"},{"name":"b","runtimeStatus":"authenticationRequired"},{"name":"c","runtimeStatus":"failed"},{"name":"d","runtimeStatus":"cancelled"},{"name":"e","runtimeStatus":"disabled"}]')]"
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
@@ -383,7 +388,7 @@ for odd in '{"result":{}}' '{"result":null}' '{"result":{"data":"x"}}'; do
      "$(grep -c "cannot read the thread's MCP server status: unexpected answer .*no review was started" "$T/err")" 1
 done
 
-p1="$(jq -nc --argjson o "$OK" '{result:{data:[$o], nextCursor:"c2"}}')"
+p1="$(jq -nc --argjson o "$OK" '{result:{data:[$o,{"name":"x","runtimeStatus":null}], nextCursor:"c2"}}')"
 p2s="$(mcp "[$ST]")"; p2ok="$(mcp "[$OK]")"
 mb_scn "[$p1,$p2s,$p1,$p2ok]"
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
@@ -394,13 +399,13 @@ is "MB5 the first page has no cursor, the second carries it" \
 is "MB5 the next round starts from the first page again" \
    "$(jq -r 'select(.method=="mcpServerStatus/list") | .params.cursor // "none"' "$FAKE_LOG" | sed -n 3p)" none
 
-mb_scn "[$(mcp '[{"name":"node_repl","runtimeStatus":"starting"},{"name":"x","runtimeStatus":null}]')]"
+mb_scn "[$(mcp '[{"name":"node_repl","runtimeStatus":"starting"},{"name":"a","runtimeStatus":"notStarted"},{"name":"x","runtimeStatus":null}]')]"
 XREVIEW_MCP_WAIT=0.4 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
 is "MB6 a server that never settles refuses at the bound (1)" "$rc" 1
 is "MB6 and never calls turn/start" "$(nsent turn/start)" 0
-is "MB6 stderr names each server and its status, null shown as null" \
-   "$(grep -c 'node_repl=starting, x=null' "$T/err")" 1
-is "MB6 and says no review was started" "$(grep -c 'no review was started' "$T/err")" 1
+is "MB6 stderr names only the servers still starting or notStarted" \
+   "$(grep -c 'within [0-9.]*s (node_repl=starting, a=notStarted); no review was started' "$T/err")" 1
+is "MB6 and does not name the null one" "$(grep -c 'x=' "$T/err")" 0
 
 mb_scn '[{"error":{"code":-32600,"message":"thread not found: th"}}]'
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
