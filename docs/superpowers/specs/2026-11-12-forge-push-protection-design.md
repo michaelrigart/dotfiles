@@ -588,6 +588,11 @@ as waiting on him.
   `glab api` writes) and the merge gate stay in front of that.
 - A hidden spelling of a force push or delete on a branch other than the default is no longer
   refused locally. The classifier sees it; the damage is one branch, usually the agent's own.
+- After merge 3 the guard relies on the forge for every spelling it no longer reads (section 4.4,
+  corrections M2 and M3 below), on the default branch too. Where the forge does not refuse, a hidden spelling
+  meets only the classifier: the remotes of section 2.4 (the excepted ones in Michael's file, the
+  other owners' repositories, a new repository before he protects it, Azure until section 2.3 is
+  done) and any branch other than the default.
 - The remotes of section 2.4.
 - gitleaks can be skipped (section 5).
 - **A workflow holding a credential of Michael's.** The route recorded on 2026-11-14 (with his
@@ -841,6 +846,42 @@ pull request until those are in the spec and merge 3's own check, run by Michael
 (section 6). Merge 3's content
 does not depend on those results, and the invariant that the forge or the guard always refuses
 depends on when it is merged and applied, which stays after the verification.
+
+## Corrections from planning merge 3 (2026-11-14)
+
+Planning merge 3 against the code found wording in sections 4.1 and 4.4 that does not hold. Each
+is decided by the driver session on Michael's delegation, on 2026-11-14.
+
+- **M1. Section 4.4's suite range starts too early.** "Ways a push to the default branch could
+  hide", "commands that name git without running it" and "expansion in option values" predate the
+  2026-10-29 work and test grammar that stays (destinations git resolves as ref paths, expanded
+  words, `send-pack` and `subtree`, commands that run a command string). The governing sentence is
+  "everything spec 2026-10-29 added": only that is deleted, and those three sections are edited.
+- **M2. `dynamic_git_word` and the glob reading predate 2026-10-29,** although section 4.4 names
+  them. They go as listed: main's versions could crash on a backwards range or run past the hook's
+  timeout, both of which let the command through. The guard becomes silent on a push word built at
+  run time (`X=push; git $X origin main`) and on a glob command word (`/usr/bin/gi? push …`), which
+  main denied.
+- **M3. Section 4.1's last bullet is main's segment rule.** Text holds "the literal words git and
+  push" when both stand in one segment between `;`, `&`, `|` and newlines, as before 2026-10-29. A
+  quoted separator between them (`true; git -c 'x.y=a;b' push origin main`) makes the command
+  silent. M2 and M3 are spellings the guard leaves to the forge; Residual names where the forge
+  does not cover them.
+- **M4. `outside_grammar` and `probe_refuses` stay,** though written on 2026-10-29: without them
+  an ANSI-C quote makes `git log --grep $'a\'b' ; git push -f origin main # '` read as one `git log`
+  and pass. They read the grammar faithfully; they hunt no spelling.
+- **M5. Deletes of the default branch, `--all` and `--mirror`.** Section 4.1's "deletes,
+  `--mirror`, `--all`, `--prune` on other branches: ask" is read with "on other branches" governing
+  the whole list. A delete of the default branch (`--delete main`, `:main`), and `--all` or
+  `--mirror` whenever the remote's default branch is known, are a silent deny with section 4.2's
+  reason: each pushes the default branch. `--prune` and deletes of other branches keep their ask.
+  Two more asks go; none is added.
+- **M6. A dry run of a default-branch push** outside canonical text gets section 4.2's deny, not the
+  dry-run deny, which would tell the agent to confirm the push with Michael. The canonical
+  `git push -n origin main` stays allowed: it updates nothing.
+- **M7. The heavy threshold** section 4.4 refers to is not defined anywhere: it is 60 s. Above it
+  the suite keeps `test-requires: heavy` and its timing is updated, in the suite and in
+  `AGENTS.md`.
 
 ## Implementation notes
 
