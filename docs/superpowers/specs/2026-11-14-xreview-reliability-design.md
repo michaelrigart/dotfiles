@@ -1,7 +1,11 @@
-# xreview reliability: a barrier that can settle, and a pane that always frees
+# xreview reliability: an MCP barrier that can settle
 
 **Status:** In progress (branch `fix/xreview-reliability`; no MR, a dotfiles line)
 **Date:** 2026-11-14
+**Sign-off:** the driver session, on Michael's delegation, 2026-11-14: D1 yes, D2 B (no change to
+the pane step; the signal fallback is kept as the structural option), D3 not built (§9). Codex
+spec review: approve in round 2 (`xr-1794648428-d416cc11`; round 1 `xr-1794648330-6c1c72a4`,
+one P2, fixed).
 **Branch:** `fix/xreview-reliability`, in the `wt` checkout `~/.local/share/chezmoi-fix-xreview-reliability`,
 from `main` at `4c76ec4`
 **Source:** item 24 of the 2026-11-11 agent setup review: "the MCP barrier waits only on `starting`
@@ -87,10 +91,25 @@ one, goes away under §3.1.
 - What it gives up: a server that reports null while it is in fact starting would no longer be
   waited for. No such status has been seen.
 
-### 3.2 A pane that ignores `ctrl+c` gets a signal (D2)
+### 3.2 The pane step stays as it is; a signal fallback is the option (D2)
 
-When the ladder ends with Codex still in the foreground, `pane_quit` signals the TUI before it
-refuses:
+**Ruled B: not built.** The pane step, the ladder and its refusal are unchanged. The reasons:
+- No incident in 283 fresh-thread dispatches since 11-05.
+- The kill's effect on the live view is unmeasured. The 2026-10-01 spec rejected it for that
+  reason, and the probe was refused to an agent.
+
+**When to revisit.** A pane-quit refusal ("did not exit its session") recurs, in particular
+after a Codex upgrade. Before building the option:
+1. Read the evidence while the daemon's logs still hold it, within about two days: the screen
+   the refusal printed, the Codex version, and the daemon's log rows for the pane's thread
+   (`~/.codex/logs_2.sqlite`).
+2. Michael runs the hand check: on an idle Codex pane, `kill -TERM -- -<foreground group>` (the
+   group from `herdr pane process-info --pane <id>`), then the next dispatch. Does the shell
+   come back usable, and does the resume show the review? That measures what this spec could
+   not.
+
+**The option, as reviewed by Codex.** When the ladder ends with Codex still in the foreground,
+`pane_quit` signals the TUI before it refuses:
 
 1. **The TUI's identity** is its leader's pid together with that process's start time
    (`ps -o lstart=`), read once from the observation the guard judged, before the first
@@ -135,8 +154,22 @@ then and again on 2026-11-14. What bounds the risk:
 receives it. In production `PATH` is pinned and resolves the system `kill`. The suite's panes
 are fake, and a real signal to a stub's process-group number could reach an unrelated process.
 
-**What changes in the 10-01 spec.** A dated amendment under §4.4 and §8 names this spec. No
-point-in-time text is rewritten.
+**Measured for the option (2026-11-14, outside the sandbox, where `xreview` runs).**
+`ps -o lstart= -p <pid>` prints the same start time on every read of a live process, to the
+second, and exits 1 for a pid that does not exist. Inside the sandbox `ps` is not permitted at
+all, so the suite would stub it on `PINNED_PATH`, like `kill`.
+
+**The option's tests.**
+- K1: a TUI that ignores `ctrl+c` and exits on `SIGTERM`. Dispatch succeeds, with one TERM to
+  the foreground group and no KILL, and the pane resumes.
+- K2: a TUI that also ignores TERM and dies on KILL: TERM, then KILL, then success.
+- K3: a TUI that quits on `ctrl+c` gets no signal at all.
+- K4: before TERM and again before KILL, each of these sends no signal and ends in the refusal:
+  another group, the shell's group, the same pid with another start time, an unreadable start
+  time.
+- K5: when nothing frees it, today's refusal, unchanged, after TERM and KILL.
+- K6: no signal once the turn exists (a failed resume).
+- The existing `STUCK_TUI` rows keep a stub that ignores signals too.
 
 ### 3.3 No tool-side counter for repeated refusals (D3)
 
@@ -149,6 +182,7 @@ pane. A counter would either repeat what those messages say, or stop a legitimat
 
 - No change to refusal texts, the skill or its three refusal rules, the review loop, guards or
   prompts.
+- No change to the pane step (D2).
 - No headless review, no second pane, no daemon restart by an agent.
 - Not item 39 (slicing, delta packets, thread housekeeping).
 - Anti-goal: anything that changes the working path. The ladder and the barrier's wait on
@@ -160,7 +194,8 @@ pane. A counter would either repeat what those messages say, or stop a legitimat
 |---|---|
 | Signal the TUI instead of the ladder (item 24's wording) | Rejected |
 | Type `/quit` and Enter as a fourth rung | Rejected |
-| Leave the pane step as it is, since it has not failed since 11-04 | Rejected (D2 option B) |
+| Leave the pane step as it is, since it has not failed since 11-04 | Adopted (D2 B) |
+| A signal fallback after the ladder | The option, if pane-quit refusals return (§3.2) |
 | Treat a null status as settled only for servers disabled in `config.toml` | Rejected |
 | Restart the daemon when the barrier sees null | Rejected |
 | A counter that adds Michael's call on a second identical refusal | Rejected (D3) |
@@ -173,30 +208,18 @@ Table-driven, one row per rule. Each row passes the revert check.
 |---|---|---|
 | `xreview-rpc` | MB2 rewritten: `starting` and `notStarted` hold, then refuse at the bound; null, a missing field and an unknown value start the turn at once | A barrier that waits on a status that cannot settle |
 | | MB (the mixed list): the refusal names `node_repl=starting` and not the null server | A refusal naming servers it does not wait for |
-| `xreview` (heavy) | K1: a TUI that ignores `ctrl+c` and exits on `SIGTERM`: dispatch succeeds, one TERM to the foreground group, no KILL, the pane resumes | The pane that will not exit |
-| | K2: one that ignores TERM and dies on KILL: TERM, then KILL, then success | A TUI whose loop ignores TERM |
-| | K3: a TUI that quits on `ctrl+c`: no signal at all | A change to the working path |
-| | K4: before TERM and again before KILL, each of: another group, the shell's group, the same pid with another start time, an unreadable start time: no signal, and the refusal | Signalling a process the guard never judged |
-| | K5: nothing frees it: today's refusal, unchanged, after TERM and KILL | A lost refusal |
-| | K6: no signal once the turn exists (a failed resume) | Breaking C1 |
-| | Existing `STUCK_TUI` rows: the stub ignores signals too, so they still pin the refusal | |
 
-## 7. Measured in the plan, before the code that rests on it
+## 7. Records
 
-- The stub's process model: how `process-info` reports the group, so K1–K5 drive the same
-  observations as a real pane; `ps` is stubbed on `PINNED_PATH` like `kill`.
-- Measured on 2026-11-14, outside the sandbox (where `xreview` runs): `ps -o lstart= -p <pid>`
-  prints the same start time on every read of a live process, to the second, and exits 1 for a
-  pid that does not exist. Inside the sandbox `ps` is not permitted at all, which only the suite
-  sees, and it stubs `ps`.
-- Optional, Michael's (an agent's probe is refused): on an idle Codex pane, `kill -TERM` its
-  foreground group, then let the next dispatch resume it. That would turn the terminal risk in
-  §3.2 into a fact. The design does not depend on the outcome.
+- The 2026-10-01 spec gets a dated amendment under §4.4, after its 2026-10-15 note: the barrier
+  now holds only on `starting` and `notStarted` (this spec, §3.1). No point-in-time text is
+  rewritten.
+- The pane step's option and its revisit condition live here (§3.2), not in the 10-01 spec.
 
 ## 8. Rollout
 
-- About 40 lines of non-test code (`xreview` about 35, `xreview-rpc` about 3). Not small by
-  the brief (a spec and Codex reviews were asked for), so it gets a plan.
+- About 3 lines of non-test code, in `xreview-rpc`. That is a small change, but the brief asked
+  for a spec and Codex reviews, so it gets a plan too.
 - Deploys at `chezmoi apply`. No state, receipt, packet or schema changes, so in-flight reviews
   are unaffected.
 - Pre-merge: `./tests/run.sh --changed` (the heavy `xreview` suite is selected) and a full-range
@@ -205,12 +228,14 @@ Table-driven, one row per rule. Each row passes the revert check.
 
 ## 9. Decisions
 
-- **D1, the barrier (§3.1).** Recommended: hold only on `starting` and `notStarted`. It removes
-  a refusal that can never resolve on its own, with no measured cost.
-- **D2, the pane step (§3.2).**
-  - A (recommended): signal fallback after the ladder, TERM then KILL. It turns the worst
-    measured failure into, at worst, a review without the live view. About 35 lines.
-  - B: no change. The failure has not occurred in 283 fresh-thread dispatches since 11-05, and
-    part C now stops the agent at the first refusal. Its cost is a line stalled until Michael
-    whenever the failure returns.
-- **D3, the counter (§3.3).** Recommended: not built.
+Ruled by the driver session on Michael's delegation, 2026-11-14.
+
+- **D1, the barrier (§3.1): yes.** Hold only on `starting` and `notStarted`. It removes a
+  refusal that can never resolve on its own, with no measured cost.
+- **D2, the pane step (§3.2): B, no change.** The options were:
+  - A (the line's recommendation): a signal fallback after the ladder, TERM then KILL. At
+    worst it turns the measured failure into a review without the live view. About 35 lines.
+  - B (ruled): no change. The failure has not occurred in 283 fresh-thread dispatches since
+    11-05, the kill's effect on the live view is unmeasured, and the probe was refused to an
+    agent. A stays the structural option, with the revisit condition in §3.2.
+- **D3, the counter (§3.3): not built.**
