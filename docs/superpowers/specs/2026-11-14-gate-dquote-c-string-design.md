@@ -2,9 +2,11 @@
 
 **Status:** In progress
 **Date:** 2026-11-14
-**Sign-off:** the driver session, on Michael's delegation, 2026-11-14: Q1 to Q6 as recommended
+**Sign-off:** the driver session, on Michael's delegation, 2026-11-14: Q1 to Q7 as recommended
 (§8). Codex spec review: approve in round 1 (`xr-1794658687-c52304dd`), before the cold review
-added R3, §5's further limits and §9; the plan review covers those.
+added R3, §5's further limits and §9; the plan review (approve in round 2,
+`xr-1794660626-2e107721`) covers those. R4 (Q7) came from the task review, after both; the
+pre-merge review is its first cross-model review.
 **Branch:** `fix/gate-dquote-c-string`, in the `wt` checkout
 `~/.local/share/chezmoi-fix-gate-dquote-c-string`, from `main` at `045a931`
 **Related:** `2026-11-13-merge-gate-allowlist-design.md` §11.5, first bullet (the hole this
@@ -16,9 +18,10 @@ from the shells). `2026-11-12-xreview-trust-design.md` (the gate's threat model;
 The gate denies a command that hands a gated verb to another shell (`bash -c '…'`,
 `env -S '…'`). It rescans the string it hands on, but reads a different string than the inner
 shell gets when that string carries an escaped `$` or backtick inside double quotes. Every
-shell then runs a merge the gate allowed. A cold review of the design found a third reading of
-double quotes that differs from the shells': a quote inside a `${…}` that stands inside double
-quotes (§3). This line closes those three; other quote forms are recorded limits (§5).
+shell then runs a merge the gate allowed. The reviews found two more readings of double quotes
+that differ from the shells': a quote inside a `${…}` that stands inside double quotes, and a
+`$(` split by a line continuation (§3). This line closes those four; other quote forms are
+recorded limits (§5).
 
 ## 2. Measured
 
@@ -98,10 +101,11 @@ R3 adds a deny for text the gate cannot read exactly, when `crude` finds a gated
   today. An exact reading would model each operator's quoting rule (§3) in two shells; the
   fallback needs none.
 - **R4, a line continuation inside `$(` or `${`.** In double quotes and in an unquoted
-  here-document body, `lex` looks for `$(`, and for R3's `${`, past backslash-newline pairs
-  (ruling Q7). A `$(` found only that way marks the text as R3's quote does, and `lex` reads on
-  as main does: zsh does not join it inside double quotes, so bash's reading may not replace
-  zsh's. `scan` applies R3's deny to a mark from the command and from each expanding
+  here-document body, `lex` looks for `$(`, bash 5.3's `${ cmd; }` and R3's `${` past
+  backslash-newline pairs (ruling Q7). A `$(` or `${ ` found only that way marks the text as
+  R3's quote does, and `lex` reads on as main does: zsh does not join it inside double quotes,
+  so bash's reading may not replace zsh's, and reading on as main does is what keeps every deny
+  main makes. `scan` applies R3's deny to a mark from the command and from each expanding
   here-document body. In plain shell text the lookaheads stay as they are (§5).
 
 The top-level words stay the first reading. The two readings differ only by a backslash before
@@ -109,11 +113,14 @@ The top-level words stay the first reading. The two readings differ only by a ba
 tool, a verb, an option) or must be `literal`, which refuses both characters (a ref, a `-C`
 path, a `cd` target, an endpoint, a field). The mutation names it searches a GraphQL query for
 hold neither either, and a backslash before a `$` leaves their word boundaries where they were.
-So a plain command is judged as today, unless R3 denies it.
+So a plain command is judged as today, unless R3 or R4 denies it.
 
 **R3's cost.** A command with a quote in a double-quoted `${…}` that also mentions a gated verb
-is denied where main allowed it: `git commit -m "${MSG:-"merge notes"}"`. No command in the
-transcripts (§7) holds such a quote.
+anywhere is denied where main allowed it, read-only verbs included, since `crude` matches a
+tool and a word: `git commit -m "${MSG:-"merge notes"}"`,
+`base="${BASE:-"$(git merge-base HEAD origin/main)"}"`, or a loop over
+`"${(f)"$(gh pr list …)"}"`. No command in the transcripts (§7) holds such a quote; their
+`${(f)"…"}` uses stand outside double quotes, where `lex` reads them as the shells do.
 
 **R1's cost.** Every word after a `-c` string is read as a shell string, as on main, so R1 reads
 `$0` and `$1` too: `bash -c 'echo' "\`git merge feature\`"` runs nothing, and is denied. So is
@@ -148,8 +155,9 @@ verified by running it. They are deliberate spellings, which the threat model le
 auto-mode classifier (rulings Q2, Q5, Q6).
 - **`env -S`'s own grammar.** BSD `env -S` splits its string itself, with escapes no shell has:
   `\_` separates words outside quotes and is a blank inside double quotes, `\t` is a tab that
-  separates nothing, `\'` does not end a single-quoted string, and `${X}` expands. `env -S 'git\_merge\_feature'` runs
-  the merge, and so does `env -S 'bash -c "git\tmerge\tfeature"'`, where the tabs reach bash.
+  separates nothing, `\'` does not end a single-quoted string, and `${X}` expands.
+  `env -S 'git\_merge\_feature'` runs the merge, and so does
+  `env -S 'bash -c "git\tmerge\tfeature"'`, where the tabs reach bash.
   Main's gate and this line allow both. R1 still reads `env -S`'s string as the outer shell
   hands it on.
 - **zsh's `$'…'`.** zsh drops the backslash of an escape it does not know (`` \` ``, `\ `,
@@ -164,9 +172,11 @@ auto-mode classifier (rulings Q2, Q5, Q6).
 - **Line continuations in plain shell text.** A backslash-newline inside `$((`, `$'`, `<(`, a
   bash 5.3 `${ ` or a here-document operator is joined by the shells, while `lex` reads the
   parts. Most such spellings are denied anyway, since a lone `(` is a token.
-- **A hex-escaped verb inside a split `$(`.** R4's mark is acted on by `crude`, which does not
-  decode a `$'…'` that `lex` reads as double-quoted text: `echo "$\`, a newline, then
-  `($'\x67it' merge y)"` runs the merge under bash, and main and this line allow it.
+- **A hex-escaped verb under R3's or R4's mark.** The mark is acted on by `crude`, which does
+  not decode a `$'…'` that `lex` reads as quoted text: `echo "$\`, a newline, then
+  `($'\x67it' merge y)"` runs the merge under bash, and
+  `echo "${x:-"'"}"; $'\x67it' merge y; echo "'" #"` under every shell; main and this line
+  allow both.
 - `eval` and a script fed to a shell stay out of scope, as the threat model says.
 
 ## 6. Tests
@@ -174,7 +184,9 @@ auto-mode classifier (rulings Q2, Q5, Q6).
 Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each new deny shown red on main first:
 - **Denied:** rows 1 to 9, 17, 18 and 20 of §2; row 18 with an escaped `}` in the default
   value; row 17 inside one more `bash -c '…'` with a line continuation between `$` and `{`; row
-  18 with a multi-line `git -C "$(…)"`; row 20 in a here-document body; and, each denied by
+  18 with a multi-line `git -C "$(…)"`; row 20 in a here-document body; a split bash 5.3
+  `${ git merge y; }` inside double quotes; a `-c` string after a single-quoted `"`, which pins
+  that R1's rewrite skips single quotes; and, each denied by
   main already, R3's and R4's rejected forms' commands (§4): they pin that neither takes a
   reading away.
 - **Allowed:** rows 12 to 16 and 19 of §2: the inner command's own quoting, an escaped
