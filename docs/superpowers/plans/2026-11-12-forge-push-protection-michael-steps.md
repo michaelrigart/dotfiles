@@ -897,18 +897,35 @@ for r in <repo-a> <repo-b>; do gh api repos/<owner>/$r/rules/branches/<branch> -
 
 Expected, for each in-scope GitHub repository: `["deletion","non_fast_forward","pull_request","update"]`. The `update` rule is `main-merge-owner` (spec revision 3); a list without it means that repository lacks the ruleset.
 
-The Actions secrets of your own repositories, for the condition of spec section 2.1: no secret may hold a credential of yours with Contents write, since a workflow using it would merge as you. It lists names only, never values, and the names of repositories, so it stays on your screen:
+The check of merge 2 does not read the bypass list of an `update` ruleset, and the list above shows only that the rule exists. The next loop shows, for each of your repositories, every ruleset that carries `update`, with its bypass list, and every Actions secret name, for the condition of spec section 2.1: no secret may hold a credential of yours with Contents write, since a workflow using it would merge as you. It prints names only, never a secret's value, and the names of repositories, so it stays on your screen. Any request that fails prints a `FAILED` line instead of passing silently:
 
 ```
-gh repo list <owner> --no-archived --limit 200 --json nameWithOwner --jq '.[].nameWithOwner' | while read -r r; do
-  gh secret list --repo "$r" --json name --jq '.[].name' | sed "s|^|$r: |"
-  gh api "repos/$r/environments" --jq '.environments[].name' 2>/dev/null | while read -r e; do
-    gh secret list --repo "$r" --env "$e" --json name --jq '.[].name' | sed "s|^|$r ($e): |"
+repos=$(gh repo list <owner> --no-archived --limit 200 --json nameWithOwner --jq '.[].nameWithOwner') || echo "FAILED: the repository list"
+printf '%s\n' "$repos" | while read -r r; do
+  [ -n "$r" ] || continue
+  ids=$(gh api --paginate "repos/$r/rulesets" --jq '.[].id') || { echo "FAILED: $r rulesets"; continue; }
+  printf '%s\n' "$ids" | while read -r id; do
+    [ -n "$id" ] || continue
+    u=$(gh api "repos/$r/rulesets/$id" --jq 'select(any(.rules[]?; .type == "update")) | "\(.name) \(.enforcement) \(.bypass_actors | tojson)"') || { echo "FAILED: $r ruleset $id"; continue; }
+    [ -z "$u" ] || echo "ruleset $r: $u"
+  done
+  s=$(gh api --paginate "repos/$r/actions/secrets" --jq '.secrets[].name') || { echo "FAILED: $r secrets"; continue; }
+  [ -z "$s" ] || printf '%s\n' "$s" | sed "s|^|secret $r: |"
+  envs=$(gh api --paginate "repos/$r/environments" --jq '.environments[].name') || { echo "FAILED: $r environments"; continue; }
+  printf '%s\n' "$envs" | while read -r e; do
+    [ -n "$e" ] || continue
+    s=$(gh api --paginate "repos/$r/environments/$(jq -rn --arg e "$e" '$e | @uri')/secrets" --jq '.secrets[].name') || { echo "FAILED: $r environment $e secrets"; continue; }
+    [ -z "$s" ] || printf '%s\n' "$s" | sed "s|^|secret $r ($e): |"
   done
 done
 ```
 
-Expected: every line it prints is a secret you know, and none is a token, key or app credential of yours that can write contents. If one is, delete it in the repository's Settings > Secrets and variables > Actions, or replace it with a credential without Contents write. Tell the line how many secrets it printed and how many you removed.
+Expected:
+- no `FAILED` line;
+- exactly one `ruleset` line for each in-scope repository, reading `main-merge-owner active` and a bypass list of one actor with `"actor_id":5`, `"actor_type":"RepositoryRole"` and `"bypass_mode":"pull_request"` (in any key order);
+- every `secret` line names a secret you know, and none is a token, key or app credential of yours that can write contents.
+
+A second `update` ruleset, another actor or mode, `null` for the list, or an enforcement other than `active` is drift: stop and tell the line. A credential that can write contents: delete it in the repository's Settings > Secrets and variables > Actions, or replace it with one without Contents write. Tell the line the number of `ruleset` lines and how many secrets it printed and you removed. Merge 3's check judges the `update` rulesets itself; its pull request opens only after that check, run by you, exits 0 (spec section 6).
 
 If it fails: the first command's remaining rows say which step to repeat.
 
@@ -981,7 +998,7 @@ Tell the line, in the session or by paste, with no repository names:
 ```
 Merge 2 is applied and the GitHub steps are done. Results: <check exit codes and the counts a ok / d excepted, own terminal and
 session>; GitHub rules as expected on <n> repositories; tests 1 <token merge and write refused yes/no>, 2 <direct push of main
-refused yes/no>, 3 <own merge worked yes/no>; Actions secrets <n printed, n removed>; live-agent-auth <keys and values>; gh auth status names GH_TOKEN <yes/no>.
+refused yes/no>, 3 <own merge worked yes/no>; update rulesets <n lines, all main-merge-owner active with the one actor yes/no>; Actions secrets <n printed, n removed>; FAILED lines <none / which kind>; live-agent-auth <keys and values>; gh auth status names GH_TOKEN <yes/no>.
 Decisions: b <which projects patched>; c <keep>; the four decisions of a <unchanged, or what you changed>.
 Confirmed or corrected: fine-grained GitHub token permission names <list>; the refusal wordings (generic shape only);
 allowed_merge_methods accepted <yes/no>; private repositories in scope <none / public / Pro>; session check GitHub rows

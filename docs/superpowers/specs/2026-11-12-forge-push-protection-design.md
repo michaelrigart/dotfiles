@@ -504,8 +504,11 @@ follow the apply of merge 2, from the commands the new check prints.
   count);
 - `gh api repos/<owner>/<repo>/rules/branches/<default> --jq '[.[].type] | sort'` prints
   `["deletion","non_fast_forward","pull_request","update"]` for each GitHub repository in scope
-  (revision 3; the check of merge 2 does not read `update`, so it is this line that shows it before
-  merge 3 is applied);
+  (revision 3);
+- every ruleset carrying `update` on his repositories shows a bypass list of exactly the admin role
+  in `pull_request` mode, and no Actions secret holds a credential of his with Contents write: the
+  check of merge 2 reads neither, so his steps list both with a loop that fails loudly on any
+  request it cannot complete (revision 3);
 - in a new agent session `gh auth status` names `GH_TOKEN` as the source of the active GitHub
   login (so `gh` is not on his keyring login), a GET of one repository's rules succeeds, and the
   three tests of "Revision 2" below have been run once;
@@ -529,7 +532,9 @@ with its own plan and a fresh pre-merge review. It holds:
 
 Revision 3 moves its start: merge 3 is written, reviewed and executed while the GitLab and Azure
 results are still outstanding, and its pull request is opened only once the verification results
-of every forge are in the spec and the check, run by Michael, exits 0. GitLab or Azure results
+of every forge are in the spec and the check **of merge 3**, run by Michael from the line's
+checkout, exits 0. That is the check that judges the `update` rulesets' bypass lists; the
+check of merge 2 does not read them. GitLab or Azure results
 that change the design revise its plan before the pull request. Until merge 3 is applied the full
 local guard is live, and it is merged only after the verification, so there is still no moment at
 which neither the forge nor the guard refuses.
@@ -832,7 +837,8 @@ new "Implementation notes". The rest of revision 2 stands.
 
 **Merge 3's start.** Revision 2 wrote merge 3's commits only after the verification results.
 Revision 3 lets them be written and executed before the GitLab and Azure results, and holds the
-pull request until those are in the spec and the check exits 0 (section 6). Merge 3's content
+pull request until those are in the spec and merge 3's own check, run by Michael, exits 0
+(section 6). Merge 3's content
 does not depend on those results, and the invariant that the forge or the guard always refuses
 depends on when it is merged and applied, which stays after the verification.
 
