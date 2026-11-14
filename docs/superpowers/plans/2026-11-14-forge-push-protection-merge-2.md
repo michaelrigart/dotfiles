@@ -207,7 +207,7 @@ Printed for `drift`:
   plan's final "it": the plan's wording made line 119 of `global.md` 102 columns wide, and the
   file is at its 150-line limit.
 - Task 1 review: two `AGENTS.md` passages described the proxy suite's deleted template and
-  cold-cache rows; removed (`958c4b1`). The plan's file list had missed them.
+  cold-cache rows; removed (`7427458`). The plan's file list had missed them.
 - Task 2 review, given code: a ruleset the login cannot fetch is `unreadable`; that path predates
   this merge but had no row, and a token without the permission is a real caller. One row added.
 - Task 2 review, no code:
@@ -223,9 +223,22 @@ Printed for `drift`:
   - `out_hasnt 'main-owner-only'` and one row without `rc_is` — style;
   - the proxy rows run the real `/usr/bin/ssh -G` rather than a stub — style: the proxy hard-codes
     that path, and the rows detect the `-F` the review focus names.
+- Final review, given code or text: the `protect-main` body includes `~DEFAULT_BRANCH`, as spec
+  2.1 and the scratch test have it (it was `refs/heads/<default>`, so the body the owner pastes
+  differed from the one he vets); step 15 expects `unreadable` GitHub rows from an agent session;
+  the spec's Tests line on a bypass actor; step 11 names the scratch clone in full and step 13's
+  delete asks for the name (a missed variable acted on the current repository, a mistyped name
+  deleted without a prompt); stale signature wording.
+- Final review, recorded on Michael's delegation to the driver: the GitHub Actions route, now under
+  the spec's Residual and the steps' accepted limits, a decision for him before merge 3.
+- Final review, no code: no row pins the narrowed UI-note rule or the absence of notes beside the
+  `protect-main` POST — theoretical: undoing either prints a redundant note asking to tighten a
+  ruleset, never a wrong `ok`.
+- Codex pre-merge round 1: the steps record every existing GitHub ruleset before step 12 and the
+  rollback restores an edited one instead of deleting it.
 
 ## Left for Michael after the apply
 
 `rm -r ~/.config/agent-identity` (merge 1 deployed its `ssh_config`; nothing reads it after this
-merge, and `chezmoi apply` does not remove a file whose source is gone). Then steps 8 to 13 of
+merge, and `chezmoi apply` does not remove a file whose source is gone). Then steps 8 to 16 of
 `docs/superpowers/plans/2026-11-12-forge-push-protection-michael-steps.md`.

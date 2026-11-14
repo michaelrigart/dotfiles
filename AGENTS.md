@@ -204,7 +204,8 @@ suite that dies partway is reported `INCONSISTENT` instead of folded into a tota
 
 While chezmoi's external cache is cold (after adding or bumping an external, before the
 warm-up), `codex-config`, `claude-settings`, `live-feedback-skill` and `git-pre-push-hook` exit 2
-with an `INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row. That is not a regression. `xreview-guard-cli` does the same
+with an `INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
+That is not a regression. `xreview-guard-cli` does the same
 after a glab, gh or az upgrade changes the commands, or the `api` flags, the pre-merge gate was
 measured against: it exits 2 with an `INCONCLUSIVE:` line naming what was added or removed. It
 also exits 2 when a CLI, or the az extension directory, is missing. That is not a regression

@@ -521,6 +521,28 @@ as waiting on him.
   refused locally. The classifier sees it; the damage is one branch, usually the agent's own.
 - The remotes of section 2.4.
 - gitleaks can be skipped (section 5).
+- **GitHub Actions can merge for an agent** (recorded 2026-11-14 on Michael's delegation to the
+  driver; inferred from GitHub's documented `GITHUB_TOKEN` behaviour, untested; it predates this
+  line). With his SSH key an agent pushes a branch holding a workflow (`on: push`,
+  `permissions: contents: write`); an SSH push is not limited by the token's missing
+  Workflows permission. It opens a pull request with its own token, and the workflow's
+  `GITHUB_TOKEN` merges it: the `pull_request` rule with no approvals and an empty bypass list
+  is satisfied by any merge, and a workflow's `permissions` key can raise its token above the
+  repository's default. A deliberate act in three steps, visible in the Actions log; before
+  revision 2 a workflow could push `main` directly. Decision for Michael before merge 3's plan:
+  - an `update` rule whose only bypass actor is the Repository admin role with bypass mode
+    `pull_request`: direct pushes stay refused for everyone, his pull-request merge passes,
+    a merge by `GITHUB_TOKEN` (not a bypass actor) is refused. It changes the check's target
+    and needs a fourth scratch test (a workflow's merge refused, his merge allowed); untested
+    whether GitHub applies `update` to a pull-request merge that way;
+  - evaluated, not built: a local refusal of an agent change under `.github/workflows/`. A
+    deny rule on the edit tools is a speed bump, not a boundary: a shell command writes the
+    same file, the class of hidden spelling merge 3 stops chasing. A refusal in the global
+    `pre-push` hook would hold for any spelling of the change but can be skipped like the
+    scan (section 5), and it binds his own pushes too unless it tells an agent session from
+    his (an environment variable, which an agent can unset). Its cost to him is small on
+    these seven repositories (one workflow, in the dotfiles), but it would also refuse agents'
+    ordinary CI work in GitHub repositories outside the seven.
 
 ## Tests
 
@@ -547,8 +569,9 @@ as waiting on him.
 - `live-agent-auth`: revision 2 removes the `GITHUB_SSH` probe; `github.com` and `gitlab.com` both
   greet Michael through the session's transport, as before merge 1.
 - `tests/forge-protection.test.sh`, revision 2: the GitHub rows follow section 2.1. All three
-  rules from closed rulesets is `ok`; `pull_request` missing, or carried only by a ruleset with a
-  bypass actor, is `drift` with the one POST; the owner-only rows go.
+  rules from closed rulesets is `ok`; `pull_request` missing is `drift` with the one POST, and
+  carried only by a ruleset with a bypass actor, `drift` with a note to empty that list; the
+  owner-only rows go.
 
 ## After Michael's apply
 

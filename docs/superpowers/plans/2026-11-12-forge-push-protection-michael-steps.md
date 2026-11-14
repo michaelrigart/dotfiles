@@ -2,7 +2,7 @@
 
 **Status:** In progress
 
-**Spec:** `docs/superpowers/specs/2026-11-12-forge-push-protection-design.md` (sections 1.1, 2, 3, 6 and 7, and "Revision 2", which awaits your signature).
+**Spec:** `docs/superpowers/specs/2026-11-12-forge-push-protection-design.md` (sections 1.1, 2, 3, 6 and 7, and "Revision 2", which you signed on 2026-11-14).
 **Plan:** `docs/superpowers/plans/2026-11-12-forge-push-protection-merge-1.md` (Task 9, "Michael's steps"), rewritten here for revision 2.
 
 **Where things stand (2026-11-14).** Merge 1 is merged and applied (2026-11-13), and you have run the baseline check: 100 repositories, 1 ok, 81 drift, 18 unreadable, 0 excepted. The line lands in three merges: merge 1 (done); merge 2, which removes the machine-account plumbing, makes the check print the GitHub target of revision 2 and moves the dotfiles to a pull request you merge (it changes no guard verdict); and merge 3, the retirement of the spelling hunt, the first dotfiles line to land through a pull request.
@@ -62,7 +62,7 @@ Rollbacks: sections "Rollback, steps 2 to 4 (GitLab)", "step 5 (Azure)", "step 6
 
 **Decided.** You declined the GitHub machine account on 2026-11-13 and chose pull requests only on 2026-11-14 ("ok, lets go with A then"). GitHub now works like GitLab: no second identity; agents push feature branches with your own SSH key; `GH_TOKEN` is a fine-grained token of your own account (Metadata read, Contents read, Pull requests write, Issues write, limited to the repositories agents work in); the default branch of each in-scope repository takes only pull requests, yours included, through rulesets with an empty bypass list. `main-owner-only` is never created and there is no collaborator. The dotfiles land through a pull request you merge from your own terminal.
 
-**Still yours to change at signature of the spec**, with what each changes below:
+**Decided at your signature on 2026-11-14, each as recommended**, with what each would change if you revise it:
 
 - The merge method, `merge` only (the ruleset JSON of step 9; "rebase" would rewrite your signed commits unsigned, "squash" replaces them).
 - The scope: the repositories agents work in (step 8).
@@ -111,7 +111,7 @@ Each is marked **UNVERIFIED** at its step. You confirm it while doing the step a
 | `gh auth status` names `GH_TOKEN` in a session, and its wording | 10, 15 |
 | The `gh` flags and the delete scope round trip in steps 9 to 13 | 9, 13 |
 | `~/.ssh/github-agent.pub` and `~/.config/agent-identity/ssh_config` stay on disk after merge 2 | 7 |
-| In an agent session the check reads the GitHub rows with a token that has no Administration | 15 |
+| In an agent session the GitHub rows read `unreadable` (the token is not shown bypass lists) | 15 |
 | The keys `live-agent-auth` prints after merge 2 | 15 |
 | The exact permission names of the GitLab fine-grained token form, and what `personal_access_tokens/self` returns for one | 2, 15 |
 | GitLab accepts the printed PATCH (`_destroy` entries, `allowed_to_push`) on Free | 3 |
@@ -632,7 +632,7 @@ awk '/^[a-z]/ && $2 ~ /^github\.com\// { print $1, $2 }' ~/.local/state/forge-pr
 ```
 
 1. Write down the in-scope repositories of your own (`<repo-a>`, `<repo-b>`, …). The repositories of other owners stay out; they are the exceptions of step 6.
-2. Each dormant repository of yours: archive it (Settings > General > Danger Zone), or give it an exceptions line. As of merge 1 the check does not read the archived flag, so an archived repository needs the line too (UNVERIFIED that merge 2 changes it). With `want` set to the pattern of your in-scope repositories, as in step 12, print the lines, read them, and append them:
+2. Each dormant repository of yours: archive it (Settings > General > Danger Zone), or give it an exceptions line. As of merge 1 the check does not read the archived flag, so an archived repository needs the line too (merge 2 does not change that). With `want` set to the pattern of your in-scope repositories, as in step 12, print the lines, read them, and append them:
 
    ```
    want='^github\.com/<owner>/(<repo-a>|<repo-b>)$'
@@ -664,17 +664,16 @@ No rollback: it changes nothing on a forge.
 A throwaway public repository with one commit. The clone lives outside `~/Code`, so the check does not read it. **UNVERIFIED:** the `gh repo create` flags of your version (`gh repo create --help`).
 
 ```
-scratch=~/.cache/forge-scratch
-mkdir -p "$scratch"
-git -C "$scratch" init -b main
-printf 'one\n' > "$scratch/file.txt"
-git -C "$scratch" add file.txt
-git -C "$scratch" commit -m "first commit"
-gh repo create <owner>/<scratch-repo> --public --source "$scratch" --remote origin --push
-git -C "$scratch" remote set-url origin git@github.com:<owner>/<scratch-repo>.git
+mkdir -p ~/.cache/forge-scratch
+git -C ~/.cache/forge-scratch init -b main
+printf 'one\n' > ~/.cache/forge-scratch/file.txt
+git -C ~/.cache/forge-scratch add file.txt
+git -C ~/.cache/forge-scratch commit -m "first commit"
+gh repo create <owner>/<scratch-repo> --public --source ~/.cache/forge-scratch --remote origin --push
+git -C ~/.cache/forge-scratch remote set-url origin git@github.com:<owner>/<scratch-repo>.git
 ```
 
-The last line gives the clone the transport of your real repositories (your SSH key). Then the ruleset of spec section 2.1, the one the check prints for a repository without a ruleset:
+The last line gives the clone the transport of your real repositories (your SSH key). Then the ruleset of spec section 2.1, the same body the check prints for a repository without a ruleset:
 
 ```
 gh api --method POST repos/<owner>/<scratch-repo>/rulesets --input - <<'EOF'
@@ -730,13 +729,13 @@ If it fails: `bad credentials` means the token was copied wrongly or has expired
 
 ### Step 11. The three tests (needs step 10; your own terminal) <a id="step-11"></a>
 
-All three on the scratch repository, from your own terminal, none in an agent session: there the local merge gate would refuse test 1 before it reached GitHub and prove nothing about the token. In a new tab set `scratch=~/.cache/forge-scratch` again. First the pull request that tests 1 and 3 use:
+All three on the scratch repository, from your own terminal, none in an agent session: there the local merge gate would refuse test 1 before it reached GitHub and prove nothing about the token. The commands below name the clone `~/.cache/forge-scratch` in full, so a new tab needs no variable. First the pull request that tests 1 and 3 use:
 
 ```
-git -C "$scratch" switch -c scratch-branch
-printf 'two\n' > "$scratch/file.txt"
-git -C "$scratch" commit -am "second commit"
-git -C "$scratch" push -u origin scratch-branch
+git -C ~/.cache/forge-scratch switch -c scratch-branch
+printf 'two\n' > ~/.cache/forge-scratch/file.txt
+git -C ~/.cache/forge-scratch commit -am "second commit"
+git -C ~/.cache/forge-scratch push -u origin scratch-branch
 GH_TOKEN="$(op read 'op://Private/GitHub Agent Token/token')" gh pr create --repo <owner>/<scratch-repo> --head scratch-branch --base main --title scratch --body scratch
 ```
 
@@ -765,16 +764,16 @@ Expected: refused (403 or 404 with a message that the token cannot access the re
 **Test 2, the ruleset refuses your own push of `main`.**
 
 ```
-git -C "$scratch" switch main
-git -C "$scratch" merge --ff-only scratch-branch
-git -C "$scratch" push origin main
+git -C ~/.cache/forge-scratch switch main
+git -C ~/.cache/forge-scratch merge --ff-only scratch-branch
+git -C ~/.cache/forge-scratch push origin main
 ```
 
 Expected: refused by GitHub, in the generic shape `remote: error: GH013: Repository rule violations found` followed by lines naming the rule (**UNVERIFIED:** the exact text). Verify that `main` did not move:
 
 ```
-git -C "$scratch" ls-remote origin refs/heads/main
-git -C "$scratch" rev-parse HEAD~1
+git -C ~/.cache/forge-scratch ls-remote origin refs/heads/main
+git -C ~/.cache/forge-scratch rev-parse HEAD~1
 ```
 
 Expected: the same commit on both lines. **If the push is not refused, stop here:** the boundary does not hold. Create no ruleset on a real repository, delete nothing else, and tell the line; the line stops before merge 3.
@@ -839,7 +838,7 @@ Deleting needs the `delete_repo` scope, which you add for the command and take a
 
 ```
 gh auth refresh -h github.com -s delete_repo
-gh repo delete <owner>/<scratch-repo> --yes
+gh repo delete <owner>/<scratch-repo>
 gh auth refresh -h github.com -r delete_repo
 rm -rf -- ~/.cache/forge-scratch
 ```
@@ -958,7 +957,7 @@ The check as the agent:
 ~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"
 ```
 
-Expected: the GitHub and GitLab rows `ok`: with an empty bypass list `current_user_can_bypass` is `never` for the token too. **UNVERIFIED:** a fine-grained token without Administration may not read a ruleset, so a GitHub row may read `unreadable`. That is not a defect of the protection: step 14's run from your own terminal is the proof; tell the line what the rows read. The Azure rows will probably read `unreadable` (the first "no answer within 20s", the rest "az did not answer earlier in this run") while `az` still hangs from a session: that is the known hang, and it is why the exit-0 proof of step 14 comes from your own terminal. If the session shows `excepted 0` while the file has lines, the sandbox may not read it (UNVERIFIED); that is not a defect of the protection.
+Expected: the GitLab rows `ok`, and every GitHub row `unreadable` with "ruleset <id> does not show its bypass list to this login": GitHub shows a ruleset's bypass list only to an admin, and the agent token has no Administration, so the check cannot prove the list empty from a session. That is not a defect of the protection: step 14's run from your own terminal is the proof; tell the line what the rows read. The Azure rows will probably read `unreadable` (the first "no answer within 20s", the rest "az did not answer earlier in this run") while `az` still hangs from a session: that is the known hang, and it is why the exit-0 proof of step 14 comes from your own terminal. If the session shows `excepted 0` while the file has lines, the sandbox may not read it (UNVERIFIED); that is not a defect of the protection.
 
 If it fails: a GitHub row `unreadable` with `HTTP 403` or `404` for the agent means the token cannot read that repository's rules, or the repository is outside the token's selection (step 10).
 
@@ -989,6 +988,8 @@ Recorded so you can overrule any of them; none is a code change in merge 2.
 - **Printed GitLab commands carry `--hostname gitlab.com`.** The check reads `gitlab.com` only, so a project on another GitLab host is `unreadable` (unknown host) and goes to the exceptions file.
 - **An archived repository is not `ok`.** As of merge 1 the check does not read the archived flag, so an archived repository needs an exceptions line until a later change reads it.
 - **The scan skips history by tracking refs, which are evidence and not proof.** A remote's tracking refs are skipped only for a push whose destination is that remote's one fetch address. If you point a remote at another repository without pruning its tracking refs (`git remote set-url` and no `git fetch --prune`), a push to the new address still skips the old history, as the guard on main did. Parked for you: skipping only what the push handshake proves would close this, and would scan the whole history on each first push of a branch.
+
+- **GitHub Actions can merge for an agent (open; inferred, untested; predates this line).** With your SSH key an agent can push a branch holding a workflow file (`on: push`, `permissions: contents: write`), open a pull request with its own token, and let the workflow's `GITHUB_TOKEN` merge it: the `pull_request` rule with no approvals is satisfied by any merge. It is a deliberate act in three steps, visible in the repository's Actions log, and narrower than before this line, when a workflow could push `main` directly. Yours to decide before merge 3's plan: an `update` rule whose only bypass actor is the Repository admin role in `pull_request` mode (tested on the scratch repository first), or a local refusal of agent changes under `.github/workflows/`; the spec's Residual weighs both.
 
 ## What stays owed after these steps
 
