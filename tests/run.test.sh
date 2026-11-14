@@ -1026,9 +1026,8 @@ function expand(t,    pre, n, parts, i) {
 }
 AWK
 # Directories a heavy suite names without loading them whole; the map lists the files it loads.
-# wt-functions names dot_local/bin as the root of the two wrappers it runs; git-forge-guard names
-# dot_claude only in a command line it hands the guard.
-DRIFT_PART_DIRS="git-forge-guard:dot_claude wt-functions:dot_local/bin"
+# wt-functions names dot_local/bin as the root of the two wrappers it runs.
+DRIFT_PART_DIRS="wt-functions:dot_local/bin"
 # drift_loaded <root> <suite> <suite file>: the files the suite names, one per line; a directory
 # git cannot list is printed itself, so it fails the check rather than counting as empty.
 drift_loaded() {
