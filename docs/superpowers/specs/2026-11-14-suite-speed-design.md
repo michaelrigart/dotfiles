@@ -1,6 +1,6 @@
 # Suite speed: jq without the mise shim, process-replay in parallel, slow suites first
 
-**Status:** In progress (branch `chore/suite-speed`; spec awaiting sign-off)
+**Status:** In progress (branch `chore/suite-speed`; signed off 2026-11-14)
 
 ## Intent
 
