@@ -69,7 +69,9 @@ suites, `.scripts/test-audit/audit.py` for mutants.
 - [ ] **Step 1: Write the failing rows in `run.test.sh`**
 
 Fixtures under `$T/jq/`: `mise` (an executable printing `shim`), `shims/jq` (a symlink to
-`../mise`), `shims2/jq` (another symlink to `../mise`), `real/jq` (an executable printing `real`),
+`../mise`), `shims2/jq` (another symlink to `../mise`), `real/jq` (an executable that answers
+`--version` with `jq-1.8.2` and otherwise prints `real`), `old/jq` (answers `--version` with
+`jq-1.7.1-apple`), `odd/jq` (answers `--version` with `garbage`),
 `dirjq/jq/` (a directory). A fixture suite `jqprobe.test.sh` writes what `jq` prints to
 `$MARK/jq.says` and its `PATH` to `$MARK/jq.path`, then prints `  ok  probed` (the runner prints
 only a passing suite's report line, so the rows read the files, not the output).
@@ -85,6 +87,11 @@ fixture suite call (`bash`, `env`, `lockf`, `mktemp`, `rm`, `mkdir`, `ln`, `read
     stderr naming the missing `jq` (it contains `jq`), and runs no suite (`jq.says` is absent).
   - J6 under J1, the directory first on the suite's `PATH` (from `jq.path`) holds exactly one
     entry, `jq`, and it resolves to `$T/jq/real/jq`.
+  - J7 `PATH=$T/jq/shims:$T/jq/old:<narrowed>`: the runner exits 2, prints one line on stderr
+    naming `1.7.1` and `1.8.1`, and runs no suite; with `$T/jq/odd` instead of `old`, the same
+    exit and a line naming `garbage` and `1.8.1`. `PATH=$T/jq/shims:$T/jq/real:<narrowed>` with a
+    `real/jq` answering `jq-1.8.1` runs (the floor itself passes), and one answering `jq-1.10.0`
+    runs (versions compare as numbers, not text).
   - J4 `PATH=:relative-dir:$T/jq/dirjq:$T/jq/shims:$T/jq/real:<narrowed>`: `real`, and the
     runner's stderr is empty.
   - J5 the runner's report line and closing totals under J1 equal those of the same fixture run
@@ -93,7 +100,7 @@ fixture suite call (`bash`, `env`, `lockf`, `mktemp`, `rm`, `mkdir`, `ln`, `read
 - [ ] **Step 2: Run the rows; J1, J2 and J4 fail**
 
 Run: `./tests/run.sh run`
-Expected: FAIL on J1, J2, J4 (`jq.says` is `shim`), J3 (the runner does not stop) and J6.
+Expected: FAIL on J1, J2, J4 (`jq.says` is `shim`), J3 and J7 (the runner does not stop) and J6.
 
 - [ ] **Step 3: Implement the link in `tests/run.sh`**
 
@@ -101,7 +108,9 @@ Walk `PATH` split on `:`; skip an empty or non-absolute entry, a non-executable 
 directory named `jq`, and a `jq` whose `readlink` target's last component is `mise`; take the
 first other one. Link it as `$RUN_SH_WORK/bin/jq` and prepend `$RUN_SH_WORK/bin`; with none,
 print one line on stderr naming what is missing (`run.sh: no jq on PATH other than a mise shim;
-the suites need one`) and exit 2 before any suite runs. Restore `IFS` after the split. Add one
+the suites need one`) and exit 2 before any suite runs. Read the chosen one's `--version`
+(`jq-<major>.<minor>[.<patch>][-suffix]`); when it is older than 1.8.1 (compared as numbers) or
+does not parse, print one line naming the version found and `1.8.1`, and exit 2 the same way. Restore `IFS` after the split. Add one
 help line under the runner's comment block: suites get the first `jq` on `PATH` that is not a
 mise shim, because an inactive mise shim
 costs about 90 ms a call. Add the same as one sentence to `AGENTS.md` (Testing).

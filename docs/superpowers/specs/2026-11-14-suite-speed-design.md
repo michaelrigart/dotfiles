@@ -179,6 +179,14 @@ cannot surprise anyone later:
    first non-shim `jq` on `PATH`), so the suites run the same `jq` as now, minus the lookup.
 3. When no non-shim `jq` is found, the runner stops with exit 2 and one line naming what is
    missing, and runs no suite: never a silent fallback. (This replaces "`PATH` is unchanged".)
+   The same holds when the `jq` it finds reports a version older than 1.8.1, or one it cannot
+   read: the line names the version found and the one needed. 1.8.1 is the oldest version
+   measured to parse what the suites need (an operator expression as an object value, which
+   `dot_claude/modify_private_settings.json` uses): `/usr/bin/jq` 1.7.1 rejects it, mise's 1.8.1
+   and Homebrew's 1.8.2 accept it; 1.8.0 was not available to measure. Without Homebrew's `jq`
+   the first non-shim one would be `/usr/bin/jq` 1.7.1, so this refuses instead of failing
+   `claude-settings` 427 times. Homebrew's `jq` is in `dot_config/homebrew/Brewfile.tmpl`, so a
+   provisioned machine has it.
 4. One sentence in `AGENTS.md` (Testing) says what the runner does with `jq` and why (measured
    about 90 ms a call through the shim against 6 ms), so it reads as deliberate; `run.sh --help`
    says the same.
