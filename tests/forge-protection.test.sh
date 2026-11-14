@@ -232,7 +232,7 @@ done
 
 # the update half: the ruleset carrying update must bypass for the admin role in pull_request mode, alone
 NOTE4="# in the UI: https://github.com/$R/rules/4: bypass list only Repository admin, For pull requests only"
-for spec in "empty|[]" "a user in always|[{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}]" "the admin role in always|[$BYADMIN]" "the admin role in exempt|[{\"actor_type\":\"RepositoryRole\",\"actor_id\":5,\"bypass_mode\":\"exempt\"}]" "the admin role in pull_request and a user|[$OWNER,{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}]"; do
+for spec in "empty|[]" "a user in always|[{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}]" "the admin role in always|[$BYADMIN]" "the admin role in exempt|[{\"actor_type\":\"RepositoryRole\",\"actor_id\":5,\"bypass_mode\":\"exempt\"}]" "the GitHub Actions app in pull_request mode|[{\"actor_type\":\"Integration\",\"actor_id\":15368,\"bypass_mode\":\"pull_request\"}]" "another repository role in pull_request mode|[{\"actor_type\":\"RepositoryRole\",\"actor_id\":2,\"bypass_mode\":\"pull_request\"}]" "the admin role in pull_request and a user|[$OWNER,{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}]"; do
   reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
   gh_rs "$R" 4 "{\"id\":4,\"enforcement\":\"active\",\"bypass_actors\":${spec#*|},\"current_user_can_bypass\":\"never\"}"
   run check
@@ -264,6 +264,23 @@ rc_is 0 "github two merge-owner rulesets: exit 0"
 gh_rs "$R" 5 '{"id":5,"enforcement":"evaluate","bypass_actors":[],"current_user_can_bypass":"never"}'
 run check
 row_is ok "github.com/$R" "github an update ruleset in evaluate mode beside a merge-owner: ok"
+
+# a creation ruleset is not part of the target: never read
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$(join "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")" '[{"type":"creation","ruleset_id":9}]')"
+run check
+row_is ok "github.com/$R" "github a creation ruleset beside the four closed rules: ok"
+not_called "rulesets/9" "github a creation ruleset: its ruleset is never read"
+
+# a further ruleset carrying pull_request and update with the owner list is not merge-owner: remove update there, no second POST
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$(join "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")" '[{"type":"pull_request","ruleset_id":6},{"type":"update","ruleset_id":6}]')"
+gh_rs "$R" 6 "{\"id\":6,\"enforcement\":\"active\",\"bypass_actors\":[$OWNER],\"current_user_can_bypass\":\"never\"}"
+run check
+row_is drift "github.com/$R" "github pull_request and update in one ruleset with the owner list: drift"
+out_has "# in the UI: https://github.com/$R/rules/6: remove Restrict updates; main-merge-owner carries it" "github pull_request and update in one ruleset: the remove-Restrict-updates note naming rules/6"
+posts_are 0 "github pull_request and update in one ruleset: no POST, ruleset 4 carries update alone"
+rc_is 1 "github pull_request and update in one ruleset: exit 1"
 
 # the update ruleset hides its list, or cannot be fetched: unreadable
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
