@@ -1,6 +1,9 @@
 # Setup pilots: `/goal`, deny instead of prompting, Sonnet per-task reviewer
 
-**Status:** In progress (branch `chore/setup-pilots`; the dotfiles use no MR).
+**Status:** Implemented (branch `chore/setup-pilots`; PR to main after the pre-merge review)
+
+Completed 2026-11-14; do not run this plan again. Pilot A's protocol and the lines under "To
+paste" stay usable on a later line.
 
 **Source:** items 21, 25 and 18 (pilot part) of the 2026-11-11 setup review (vault note
 `1. Inbox/2026-11-11-agent-setup-full-review`), approved as pilots by Michael on 2026-11-12.
@@ -23,8 +26,8 @@ task, with the plan's path and task range filled in:
 
 If it stops to ask something, answer and paste the same line again. Off: `/goal clear`.
 
-**Pilot B** runs on `chore/suite-speed` from 2026-11-14 (see Results). In that line's Claude
-pane, right after `wt` creates it: exit the session, then
+**Pilot B** ran on `chore/suite-speed` on 2026-11-14 (see Results). To run it on another line:
+in that line's Claude pane, right after `wt` creates it, exit the session, then
 
 ```
 claude --continue --settings '{"permissions":{"denyInsteadOfPrompting":true}}'
@@ -208,15 +211,50 @@ Michael approved all three pairings on 2026-11-12: A on `feat/review-loop`, B on
 line (items 30, 29, 33) once `chore/test-audit` is on main, C as the shadow review of
 `fix/xreview-trust`.
 
-### Pilot B: running on `chore/suite-speed` (from 2026-11-14)
+### Pilot B: result on `chore/suite-speed` (2026-11-14, one host run, a sample of one)
 
 The driver opened `chore/suite-speed` from main `4c76ec4` on 2026-11-14. Switch: Michael
 relaunched its pane with the `--settings` line from "To paste" and confirmed it in the driver
 session at about 11:45 CET ("relaunched", relayed by the driver); the relaunched session is
 `chezmoi-chore-suite-speed-ae`, briefed after that. Its transcripts
 (`~/.claude/projects/-Users-michael--local-share-chezmoi-chore-suite-speed`) did not exist yet
-at 10:06 UTC, so the count covers the whole line. The first refusal under the key fixes the
-interactive denial text to count. Counted once the line has finished, by the protocol above.
+at 10:06 UTC, so the count covers the whole line. They hold one session, one process (a single
+session start, 10:43:37 UTC, Claude Code 2.1.323), running to 19:08 UTC; the line ended with
+PR #12 (head `57ce605`). Counted after it finished, over 18 transcripts (1 main, 17 subagent),
+with `measure-interventions.py` and a scan of every error tool result:
+
+- **Refusals under the key: 1** (main session, 14:50:40 UTC). The interactive text is the `-p`
+  text below: "Permission for this tool use was denied. It requires approval, and this session
+  has no approval surface — nobody can answer a permission prompt here — so it was denied
+  automatically. …". The call was one Bash line that byte-compiled
+  `.superpowers/suite-speed/profile.py`, removed its `__pycache__` and appended Task 3's lines
+  to the run's `progress.md`. Hand label: would have approved; all three touch only the run's
+  untracked execution state in that checkout. Next: 7 s later it checked the file with
+  `ast.parse`, which writes no cache, and wrote the ledger lines with Edit. It did not retry
+  the call, named the denial in its next progress message to the driver and went on to Task 5.
+- **Streak-ended turns: 0.**
+- **Needed calls refused: 0.** 28 `git commit`, 2 `git push`, 15 `xreview` and 2 `gh pr` calls,
+  none with an error.
+- **Human turns after the first: 0** (per-line baseline: median 3, range 0 to 42; it decides
+  nothing). The first was Michael's "hi" at 10:43:38, before the driver's brief.
+  `AskUserQuestion` calls: 0. Questions in prose at a turn end: none after the brief.
+- **Other denials, none from the key.** From the script: path-resolution guard 10 (1 main,
+  9 subagent; the scan finds 12 tool results with its opening text, 1 main and 11 subagent),
+  built-in safety check 1 (a subagent's `rm -rf "$S"` in a multi-line script, redone with
+  `mktemp -d` and no removal), classifier 0, `user-rejected` 0. The line's own report counted
+  three refusals under the key; two of them are path-resolution guard denials of `cd … &&`
+  chains, a hook denial whose text appears in 2,908 transcript files of other projects, which
+  ran without the key, so they would have happened anyway. The safety-check text appears in 57 transcript
+  files of 28 other projects.
+
+**Recommendation to the driver:** adopt, for unattended lines only, by the rule above: no turn
+ended on a streak, the one refusal was worked around without Michael, and no human turn came
+from a refusal. The numbers carry no more than that: one line, one refusal, and the prompt it
+replaced is one Michael would have approved. Two proposals for Michael, neither part of the
+pilot: start unattended `wt` lines with the `--settings` flag, per process and never in
+`~/.claude/settings.json` (an option to `wt` that adds it to the session it starts, say); and
+add the denial text to `DENIALS` in `measure-interventions.py` with a case in its suite, so
+later lines count refusals mechanically.
 
 ### Pilot A: not run (2026-11-13)
 
