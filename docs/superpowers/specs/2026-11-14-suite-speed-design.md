@@ -202,11 +202,17 @@ without a FAIL line" rule and the exit status are unchanged. Measured: 429 → 2
 ### 3. Slow suites first
 
 A suite may carry `# test-slow  # <seconds> s on <date>`. The runner dispatches the marked
-parallel suites before the unmarked ones, each group in name order. The marker changes nothing
-else: not the gate, the serial phase, the report or its order. It goes on the suites over 60 s in
-the measured runs after §1: `process-replay`, `xreview-replay`, `herdr-phase`, `run`,
-`xreview-guard`, `forge-protection`, `xreview-rpc`, and the heavy `xreview`, `wt-functions` and
-`test-audit`.
+parallel suites before the unmarked ones: the marked ones by the seconds in their marker, longest
+first, ties by name, a marker without a number last; the unmarked ones in name order. The marker
+changes nothing else: not the gate, the serial phase, the report or its order. It goes on the
+suites over 60 s in the measured runs after §1: `process-replay`, `xreview-replay`,
+`herdr-phase`, `run`, `xreview-guard`, `forge-protection`, `xreview-rpc`, and the heavy `xreview`,
+`wt-functions` and `test-audit`.
+
+Amended 2026-11-14, found during validation (ruled in by the driver): the marked group first went
+in name order too. In the final `./tests/run.sh --changed` run (759 s wall), `xreview`, the
+longest suite there at 633 s, sorts last of the ten marked suites, so with 7 slots it started at
+127 s and set the run's length.
 
 ### 4. `xreview-rpc`'s budget rows time in milliseconds
 
