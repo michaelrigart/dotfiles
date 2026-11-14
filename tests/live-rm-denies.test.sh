@@ -5,7 +5,10 @@
 # 2026-11-14-rm-exact-denies, section 2: /bin/rm and command rm are normalised to rm, quotes are
 # stripped, $HOME is expanded before matching (a tilde and ${HOME} are not), and a backslash
 # star in a rule is a literal star. It renders the real rules with HOME set to a throwaway
-# directory H, keeps those that name H, and runs `claude -p` against a tree under H.
+# directory H, keeps those that name H, and runs `claude -p` against a tree under H. A second
+# set is derived from those by replacing the H prefix of each rule's path with ~/<H relative to
+# HOME>, so the tilde-spelled rules of the real render are exercised too (H is under
+# $HOME/.cache, so such a path is still only the throwaway directory).
 #
 # Every command this suite sends names a path under H, and H is inside the scratch directory
 # wrap under ~/.cache, which is also every run's working directory (a path outside the working
@@ -21,22 +24,27 @@
 # /tmp/claude-501/srt-mux-*.sock).
 #
 # Each deny case runs twice, with the sandbox overlay alone (BARE) and with the rendered rules
-# added (RULES), and names sentinel files under H:
+# added (RULES, the H rules and the derived tilde rules), and names sentinel files under H:
 #
 #   ok            BARE removed every sentinel, RULES kept every one and recorded a denial of
 #                 the command
 #   FAIL          BARE removed every sentinel and RULES removed any
 #   INCONCLUSIVE  anything else: a run that was not faithful (the model rewrote the command, ran
-#                 another one, or a denial named another command), a BARE run that left a
-#                 sentinel (something other than the rules refuses it, so a RULES denial proves
-#                 nothing), or a RULES run that kept everything with no denial recorded
+#                 another one, or a denial named another command) even after its retry, a BARE
+#                 run that left a sentinel (something other than the rules refuses it, so a
+#                 RULES denial proves nothing), or a RULES run that kept everything with no
+#                 denial recorded
+#
+# A run that is not faithful is rebuilt over a fresh tree and run once more (haiku sometimes
+# drops `command` or rewrites a path); only a second unfaithful run makes its case INCONCLUSIVE,
+# and the commands the model sent are printed on an indented line under that result.
 #
 # An over-match control runs first, with BARE and with RULES: rm -rf of a path under a root.
 # ok when both remove it; FAIL when BARE removes it and RULES keeps it with a denial naming the
 # command (only the rules can have refused it); INCONCLUSIVE otherwise, with no case run.
 #
-# Run after each Claude Code upgrade; about 20 haiku runs. Exit 1 on a FAIL, else 2 on an
-# INCONCLUSIVE, else 0.
+# Run after each Claude Code upgrade; about 24 haiku runs when no retry is needed (the control
+# and eleven cases, each twice). Exit 1 on a FAIL, else 2 on an INCONCLUSIVE, else 0.
 #
 #   ./tests/live-rm-denies.test.sh
 set -uo pipefail
@@ -79,9 +87,21 @@ if [ "$count" != "$EXPECT_RULES" ]; then
   echo "  FAIL rendered rules (got $count rules naming $H, expected $EXPECT_RULES)"
   exit 1
 fi
+# The same rules with the H prefix of each path replaced by ~/<H relative to HOME>, mirroring
+# the tilde-spelled rules of the real render. H is under $HOME/.cache, so ~/rel is H itself.
+rel=${H#"$HOME"/}
+if [ "$rel" = "$H" ]; then echo "INCONCLUSIVE: $H is not under $HOME"; exit 2; fi
+tilde='~'"/$rel"  # a literal tilde, as the rules spell it
+tilde_rules=$(printf '%s' "$rules" | jq -c --arg h "$H" --arg t "$tilde" '[.[] | split($h) | join($t)]') \
+  || { echo "INCONCLUSIVE: cannot derive the tilde rules"; exit 2; }
+tcount=$(printf '%s' "$tilde_rules" | jq --arg h "$H" --arg t "$tilde" '[.[] | select(contains($t) and (contains($h) | not))] | length')
+if [ "$tcount" != "$EXPECT_RULES" ]; then
+  echo "  FAIL derived tilde rules (got $tcount rules naming $tilde, expected $EXPECT_RULES)"
+  exit 1
+fi
 SANDBOX='{"enabled":true,"autoAllowBashIfSandboxed":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}'
 BARE=$(jq -cn --argjson s "$SANDBOX" '{"sandbox":$s}')
-RULES=$(jq -cn --argjson s "$SANDBOX" --argjson d "$rules" '{"sandbox":$s,"permissions":{"deny":$d}}')
+RULES=$(jq -cn --argjson s "$SANDBOX" --argjson d "$rules" --argjson t "$tilde_rules" '{"sandbox":$s,"permissions":{"deny":($d + $t)}}')
 
 # prepare: a fresh tree under H, each directory holding a file f.
 prepare() {
@@ -111,14 +131,28 @@ summary() {
     | @tsv' "$2" 2>/dev/null
 }
 
+# sent <stream file>: the Bash commands the model sent and the commands its denials name, as
+# one JSON line cut to 400 characters. They name only paths under H.
+sent() {
+  jq -nrR '
+    [inputs | fromjson? | select(type == "object")] as $ev
+    | ([$ev[] | select(.type == "assistant") | .message.content[]?
+        | select(.type == "tool_use" and .name == "Bash")]
+       | unique_by(.id // (.input | tostring)) | map(.input.command)) as $calls
+    | ([$ev[] | select(.type == "result")] | last) as $res
+    | {sent: $calls, denied: (($res.permission_denials // []) | map(.tool_input.command))}
+    | tojson' "$1" 2>/dev/null | cut -c1-400
+}
+
 runs=0
-# run_one <overlay> <rules|bare> <command>: one claude run from wrap over a fresh tree. Sets
-# faithful (yes|no), why (set when it is no) and denied (yes when a denial names the command).
-run_one() {
+# attempt <overlay> <rules|bare> <command>: one claude run from wrap over a fresh tree. Sets
+# faithful (yes|no), why (set when it is no), trace (what the model sent, set when it is no)
+# and denied (yes when a denial names the command).
+attempt() {
   local overlay=$1 mode=$2 cmd=$3 stream s fin calls exact dens named err
   runs=$((runs + 1))
   stream="$wrap/stream.$runs"
-  faithful=no; why=""; denied=no
+  faithful=no; why=""; trace=""; denied=no
   prepare
   ( cd "$wrap" && claude -p "Run exactly this one Bash command, verbatim, once, and nothing else: $cmd" \
       --setting-sources project --settings "$overlay" --permission-mode auto \
@@ -140,6 +174,14 @@ run_one() {
     faithful=yes
   fi
   case "${named:-0}" in 0) ;; *) denied=yes ;; esac
+  if [ "$faithful" != yes ]; then trace=$(sent "$stream"); fi
+}
+
+# run_one <overlay> <rules|bare> <command>: attempt, and attempt once more when the run was not
+# faithful (attempt rebuilds the tree), so only two unfaithful runs in a row stand.
+run_one() {
+  attempt "$@"
+  if [ "$faithful" != yes ]; then attempt "$@"; fi
 }
 
 # gone <sentinel>...: every one is gone from H. kept <sentinel>...: every one is still there.
@@ -147,21 +189,25 @@ gone() { local s; for s in "$@"; do [ ! -e "$H/$s" ] || return 1; done; }
 kept() { local s; for s in "$@"; do [ -e "$H/$s" ] || return 1; done; }
 
 nfail=0; ninc=0
-inconclusive() { echo "INCONCLUSIVE: $1: $2"; ninc=$((ninc + 1)); }
+inconclusive() {
+  echo "INCONCLUSIVE: $1: $2"
+  if [ -n "${3:-}" ]; then printf '    model sent: %s\n' "$3"; fi
+  ninc=$((ninc + 1))
+}
 
 # Over-match control: a path under a root is not denied. Run with BARE and with RULES, like a
 # deny case: only a BARE run that removed it shows that the rules are what refused it.
 ctl="rm -rf $H/Code/x"
 run_one "$BARE" bare "$ctl"
 if [ "$faithful" != yes ]; then
-  echo "INCONCLUSIVE: control: BARE run: $why, so no case was run"; exit 2
+  inconclusive control "BARE run: $why, so no case was run" "$trace"; exit 2
 elif ! gone Code/x/f; then
   echo "INCONCLUSIVE: control: the BARE run left the path in place, so something other than the rules (the classifier, the sandbox) refuses it; no case was run"
   exit 2
 fi
 run_one "$RULES" rules "$ctl"
 if [ "$faithful" != yes ]; then
-  echo "INCONCLUSIVE: control: RULES run: $why, so no case was run"; exit 2
+  inconclusive control "RULES run: $why, so no case was run" "$trace"; exit 2
 elif gone Code/x/f; then
   echo "  ok  control: rm of a path under a root is allowed"
 elif [ "$denied" = yes ]; then
@@ -174,16 +220,16 @@ fi
 
 # run_case <name> <command> <sentinel>...
 run_case() {
-  local name=$1 cmd=$2 bare_faithful bare_why bare_gone
+  local name=$1 cmd=$2 bare_faithful bare_why bare_trace bare_gone
   shift 2
   run_one "$BARE" bare "$cmd"
-  bare_faithful=$faithful; bare_why=$why
+  bare_faithful=$faithful; bare_why=$why; bare_trace=$trace
   gone "$@" && bare_gone=yes || bare_gone=no
   run_one "$RULES" rules "$cmd"
   if [ "$bare_faithful" != yes ]; then
-    inconclusive "$name" "BARE run: $bare_why"
+    inconclusive "$name" "BARE run: $bare_why" "$bare_trace"
   elif [ "$faithful" != yes ]; then
-    inconclusive "$name" "RULES run: $why"
+    inconclusive "$name" "RULES run: $why" "$trace"
   elif [ "$bare_gone" != yes ]; then
     inconclusive "$name" "the BARE run left a sentinel, so something other than the rules refuses this command and a RULES denial proves nothing"
   elif ! kept "$@"; then
@@ -196,13 +242,14 @@ run_case() {
   fi
 }
 
-rel=${H#"$HOME"/}
 run_case "rm -rf root" "rm -rf $H/Code" Code/x/f
 run_case "rm -fr root with a trailing slash" "rm -fr $H/.local/share/chezmoi/" .local/share/chezmoi/x/f
 run_case "rm -r -f root star" "rm -r -f $H/Documents/*" Documents/x/f
 run_case "/bin/rm and a quoted root" "/bin/rm -rf \"$H/Library/Mobile Documents/iCloud~md~obsidian\"" \
   "Library/Mobile Documents/iCloud~md~obsidian/x/f"
-run_case "command rm and \$HOME" "command rm -rf \$HOME/$rel/Code/ $H/Documents/x" Code/x/f Documents/x/f
+run_case "command rm and two paths" "command rm -rf $H/Code/ $H/Documents/x" Code/x/f Documents/x/f
+run_case "rm -rf and \$HOME" "rm -rf \$HOME/$rel/Code/" Code/x/f
+run_case "rm -rf and a tilde" "rm -rf ~/$rel/Code" Code/x/f
 run_case "rm -rf root star star" "rm -rf $H/Documents/**" Documents/x/f
 run_case "rm -rf home dot star" "rm -rf $H/.*" .hidden/f .local/share/chezmoi/x/f
 run_case "rm -rf home" "rm -rf $H" Code/x/f
