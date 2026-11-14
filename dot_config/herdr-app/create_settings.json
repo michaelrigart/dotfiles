@@ -1,0 +1,13 @@
+{
+  "zoom": 1,
+  "sounds": {
+    "enabled": true
+  },
+  "font_ligatures": false,
+  "minimum_contrast": 1,
+  "theme": "tokyo-night",
+  "font": "JetBrains Mono",
+  "font_size": 13,
+  "option_as_alt": "left",
+  "telemetry": false
+}

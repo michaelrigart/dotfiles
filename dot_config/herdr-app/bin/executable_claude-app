@@ -1,0 +1,16 @@
+#!/bin/zsh
+# claude-app [claude args…] — Claude Code for a session in the Herdr app.
+#
+# Two things the TUI's setup gives a session already and the app's does not, both added from
+# here so no managed file changes. The system prompt says to run xreview-app wherever xreview
+# is named, and wt-app wherever wt --no-focus is; --settings merges claude-settings.json into
+# the user's settings, which puts those exact commands outside the sandbox (an excluded command
+# matches its text exactly, so the hint names the full paths, bare). Both flags are recorded with
+# the session, so a resume keeps them.
+emulate -L zsh
+setopt no_unset
+
+app=${0:A:h:h}
+hint="This Claude Code session runs in the Herdr desktop app, not the herdr TUI. Wherever your instructions or the cross-review skill say to run \`xreview <args>\`, run \`$app/bin/xreview-app <args>\` instead, with the same arguments and the same rules. Call it by that full path, bare, as its own Bash call: only that exact form is excluded from the sandbox. It reviews in this space's Codex pane; plain \`xreview\` drives the herdr TUI's Codex pane instead (or refuses when there is none). Likewise, wherever they say to run \`wt --no-focus <branch> [start-point]\`, run \`$app/bin/wt-app --no-focus <branch> [start-point]\` instead, called the same way: it makes the checkout through wt's own lifecycle and opens it as a space in this app."
+
+exec claude --append-system-prompt "$hint" --settings "$app/claude-settings.json" "$@"

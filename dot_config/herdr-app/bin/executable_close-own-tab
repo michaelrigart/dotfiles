@@ -1,0 +1,12 @@
+#!/bin/zsh
+# close-own-tab — close the app tab this script's terminal is in.
+#
+# For the helpers a key starts in a tab of their own (wt-app --prompt, open-space --pick):
+# the app leaves a shell behind when such a command ends, so a helper with nothing left to
+# say closes its tab itself. Outside the app's terminals it does nothing.
+emulate -L zsh
+[[ -n "${HC_TERMINAL_ID:-}" ]] || exit 0
+tab=$(command herdr-app ls | jq -r --arg t "$HC_TERMINAL_ID" \
+  'first(.spaces[].tabs[] | select(any(.terminals[]; .terminal == $t)) | .id) // empty')
+[[ -n $tab ]] || exit 0
+command herdr-app do tab.close "$(jq -nc --arg id "$tab" '{id: $id, confirmed: true}')" >/dev/null

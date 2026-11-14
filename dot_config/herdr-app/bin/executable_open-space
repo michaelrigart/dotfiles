@@ -1,0 +1,113 @@
+#!/bin/zsh
+# open-space [options] [repo] — build or focus a project space in the Herdr app.
+# open-space --pick           — choose among the checkouts of the repository this terminal is in
+#                               (fzf). The app's key runs this in a tab of its own.
+#
+#   --no-focus          leave the user's focus where it was: space.new always takes it, so the
+#                       active space is noted first and selected again at the end.
+#   --claude-cmd <cmd>  start Claude with this shell command instead of bin/claude-app.
+#   --codex-cmd <cmd>   start Codex with this shell command instead of the TUI's pane command.
+#                       Both are for retire's reopen, which brings agents back with their
+#                       recorded resume commands; without them nothing below changes.
+#
+# A new space gets two tabs: "agents" (Claude left, Codex right) and "runtime" (two shells
+# stacked). A folder that already has a space is focused instead.
+#
+# Claude starts through bin/claude-app, which tells it to use xreview-app. Codex runs the
+# TUI's pane command (~/.config/herdr/codex-pane-command) on the shared launchd daemon: this
+# pane is the reviewer xreview-app drives, and xreview resumes and restarts it with that same
+# command, so the two must agree. The app guide's warning about a shared daemon concerns one
+# started from a terminal, which takes that terminal's identity; this daemon is launchd's.
+emulate -L zsh
+setopt err_exit no_unset pipe_fail
+
+die() { print -ru2 -- "open-space: $*"; exit 1 }
+app() { command herdr-app "$@" }
+# pane_of <terminal> — the pane showing a terminal, from the window's own listing.
+pane_of() {
+  app ls | jq -er --arg t "$1" 'first(.spaces[].tabs[].terminals[] | select(.terminal == $t) | .pane)'
+}
+
+here=${0:A:h}
+pick= nofocus= claude_cmd= codex_cmd=
+while (( $# )); do
+  case $1 in
+    --pick) pick=1 ;;
+    --no-focus) nofocus=1 ;;
+    --claude-cmd) (( $# > 1 )) || die "--claude-cmd needs a command"; claude_cmd=$2; shift ;;
+    --codex-cmd) (( $# > 1 )) || die "--codex-cmd needs a command"; codex_cmd=$2; shift ;;
+    --) shift; break ;;
+    -*) die "unknown option: $1" ;;
+    *) break ;;
+  esac
+  shift
+done
+
+if [[ -n $pick ]]; then
+  # Every checkout of the repository this terminal is in, as "branch<TAB>path".
+  rows=$(git worktree list --porcelain 2>/dev/null | awk '
+    /^worktree / { path = substr($0, 10); branch = "(detached)" }
+    /^branch /   { branch = substr($0, 8); sub("^refs/heads/", "", branch) }
+    /^bare$/     { path = "" }
+    /^$/         { if (path != "") print branch "\t" path; path = "" }
+    END          { if (path != "") print branch "\t" path }') || rows=
+  [[ -n $rows ]] || die "not inside a git repository"
+  choice=$(print -r -- "$rows" | fzf --prompt='worktree> ' --delimiter='\t' --tabstop=40 --no-multi) || {
+    "$here/close-own-tab"; exit 0 }
+  set -- "${choice#*$'\t'}"
+fi
+
+repo=${1:-$PWD}
+repo=${repo:A}
+[[ -d $repo ]] || die "no such folder: $repo"
+
+# Noted before anything can move it. An existing space is not selected under --no-focus, so
+# only the paths that make a space have something to give back.
+prev=
+[[ -z $nofocus ]] || prev=$(app ls | jq -r 'first(.spaces[] | select(.active) | .id) // empty')
+
+# With --pick this ran in a tab of its own, which has nothing left to say once it has opened
+# or focused the space. Focus is given back on any exit, a failure halfway included.
+finish() {
+  [[ -z $prev ]] || app do space.select "$(jq -nc --arg id "$prev" '{id: $id}')" >/dev/null 2>&1 || true
+  [[ -z $pick ]] || "$here/close-own-tab"
+}
+trap finish EXIT
+
+existing=$(app ls | jq -r --arg f "$repo" 'first(.spaces[] | select(.folder == $f and .machine == null) | .id) // empty')
+if [[ -n $existing ]]; then
+  [[ -n $nofocus ]] || app do space.select "$(jq -nc --arg id "$existing" '{id: $id}')" >/dev/null
+  exit 0
+fi
+
+# The TUI's pane command, read the way xreview reads it (its pane_command): the first line that
+# is neither a comment nor empty, and a refusal when there is none. Focusing an existing space
+# does not need it; the first `space.new` does, so it is read before that and a missing file
+# leaves nothing half-built. A --pick tab stays open then, with the refusal on screen.
+if [[ -z $codex_cmd ]]; then
+  pane_cmd_file=${XDG_CONFIG_HOME:-$HOME/.config}/herdr/codex-pane-command
+  codex_cmd=$(grep -v '^[[:space:]]*#' "$pane_cmd_file" 2>/dev/null | grep . | head -1 || true)
+  [[ -n $codex_cmd ]] || { pick=; die "missing $pane_cmd_file - the Codex pane command is defined there" }
+fi
+
+made=$(app do space.new "$(jq -nc --arg n "${repo:t}" --arg f "$repo" --arg c "$claude_cmd" --arg b "$here/claude-app" \
+  '{name: $n, folder: $f, tab: "agents", argv: (if $c == "" then [$b] else ["eval", $c] end)}')")
+space=$(jq -er .space <<<"$made")
+agents=$(jq -er .tab <<<"$made")
+pane=$(pane_of "$(jq -er .terminal <<<"$made")")
+# The app runs a tab's argv inside an interactive shell that stays when the program ends,
+# but a split's argv bare, so quitting Codex would close its pane. Give it the same shell,
+# as the app spells it, plus one thing: a Ctrl+C that kills Codex (the quitting second
+# press can land after Codex has left raw mode) makes an interactive shell drop the rest of
+# its line, `exec` included. A caught INT keeps the line going; the trap is not inherited
+# as one, so Codex still gets Ctrl+C as usual.
+sh=${SHELL:-/bin/zsh}
+split=$(jq -nc --arg p "$pane" --arg sh "$sh" --arg c "$codex_cmd" \
+  '{direction: "right", pane: $p, argv: [$sh, "-lic", "trap : INT; eval \"$1\"; exec \"$0\" -li", $sh, $c]}')
+app do pane.split "$split" >/dev/null
+
+made=$(app do tab.new "$(jq -nc --arg s "$space" --arg f "$repo" '{name: "runtime", space: $s, folder: $f}')")
+pane=$(pane_of "$(jq -er .terminal <<<"$made")")
+app do pane.split "$(jq -nc --arg p "$pane" '{direction: "down", pane: $p}')" >/dev/null
+
+app do tab.select "$(jq -nc --arg id "$agents" '{id: $id}')" >/dev/null

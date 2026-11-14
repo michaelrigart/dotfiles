@@ -1,0 +1,175 @@
+#!/bin/zsh
+# retire <worktree-folder> — retire one `wt` worktree for the app. The menu's "Retire
+# worktree" runs this in a tab of its own, never inside a space it closes.
+#
+# In this order:
+#   1. Read-only checks from ~/.config/zsh/functions, the ones wt-rm would refuse on, so a
+#      refusal costs nothing: nothing is closed and nothing is removed.
+#   2. The close set: the worktree's own spaces, those whose folder is the checkout or lies
+#      under it, and only those. Refuse while an agent in it is working or blocked, while an
+#      editor is open in it (its unsaved buffers die with the terminal), or when a terminal
+#      of any other space is inside the checkout right now: that space is not ours to close,
+#      so the person is told to cd out or close it.
+#   3. Read the resume records of the set's terminals (the window forgets them on close) and
+#      print every resume command, so a session can always be brought back by hand.
+#   4. Close the spaces.
+#   5. wt-rm <branch> from the main checkout. Its last check refuses while any process is
+#      still inside the checkout, app terminals included, and it gets there only after the
+#      teardown hook has stopped the project's services: so the terminals go first.
+#   6. wt-rm succeeded and wrote nothing to stderr: close this tab. Warnings go to stderr, but
+#      so do a clean run's archive report and teardown hooks, so the tab usually waits for
+#      Enter. After a failure its output stays and Enter reopens the worktree's space with
+#      its agents resumed.
+#
+# RETIRE_WT_RM replaces the wt-rm command; for the tests only.
+emulate -L zsh
+# no_multios: with it, `1>&3 | tee` would also send stdout down the pipe.
+setopt pipe_fail no_multios
+
+here=${0:A:h}
+home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
+wt_rm=${RETIRE_WT_RM:-$HOME/.local/bin/wt-rm}
+# The process names mods/nav treats as Vim. Only that family is checked: another editor's
+# unsaved buffers are not seen.
+vim_re='^g?(view|l?n?vim?x?)(diff)?$'
+# hc get, given five seconds: a terminal that cannot be asked about cannot be vouched for.
+hc_get() { /usr/bin/perl -e 'alarm shift; exec @ARGV' 5 hc get "$1" --json 2>/dev/null }
+app() { command herdr-app "$@" }
+refuse() {
+  print -ru2 -- "retire: refusing — $*"
+  print -ru2 -- "retire: nothing was closed or removed."
+  exit 1
+}
+
+(( $# == 1 )) || { print -ru2 -- "usage: retire <worktree-folder>"; exit 1 }
+folder=${1:A}
+[[ -d $folder ]] || refuse "no such folder: $folder"
+
+source "$HOME/.config/zsh/functions" || exit 1
+for fn in _wt_git _wt_primary _wt_clean _wt_assert_worktree _wt_hook_check _wt_rm_lock_class; do
+  (( $+functions[$fn] )) || refuse "~/.config/zsh/functions no longer defines $fn."
+done
+[[ -x $wt_rm ]] || refuse "$wt_rm is not executable."
+
+# --- 1. Read-only checks ---------------------------------------------------------------
+main=$(builtin cd -q -- "$folder" && _wt_primary) || refuse "$folder is not in a git repository."
+[[ $folder != ${main:A} ]] || refuse "$folder is the main checkout, not a linked worktree."
+branch=$(_wt_git -C "$folder" symbolic-ref --quiet --short HEAD 2>/dev/null) \
+  || refuse "$folder is on a detached HEAD."
+# wt-rm acts on the sibling folder wt makes for the branch and on nothing else.
+[[ $folder == "${main:A:h}/${main:A:t}-${branch//\//-}" ]] \
+  || refuse "$folder is not where wt puts the worktree of '$branch'."
+_wt_assert_worktree "$main" "$folder" "$branch" || refuse "not a worktree wt-rm can remove."
+_wt_hook_check "$main"; (( $? != 1 )) || refuse ".worktreehook is not valid."
+_wt_rm_lock_class "$main" "$folder"; (( $? != 2 )) || refuse "the worktree's Git lock is not wt's."
+_wt_clean "$folder"
+case $? in
+  0) ;;
+  1) refuse "$folder has uncommitted changes: commit, stash or discard them first." ;;
+  *) refuse "cannot tell whether $folder is clean." ;;
+esac
+
+# --- 2. The close set ------------------------------------------------------------------
+listing=$(app ls) || refuse "cannot read the app's spaces (is the window open?)."
+# The spaces of the checkout: its folder or one under it. Folders compare resolved, as the
+# app may spell one through a symlink. The exact folder's spaces come first: they are the
+# ones the reopen and the resume records prefer.
+spaces=() subs=()
+for row in ${(f)"$(jq -r '.spaces[] | select(.machine == null) | [.id, .folder] | @tsv' <<<"$listing")"}; do
+  rf=${${row#*$'\t'}:A}
+  if [[ $rf == $folder ]]; then spaces+=( ${row%%$'\t'*} )
+  elif [[ $rf == $folder/* ]]; then subs+=( ${row%%$'\t'*} )
+  fi
+done
+spaces+=( $subs )
+ids=$(jq -nc '$ARGS.positional' --args $spaces)
+# Every terminal of the set, the sub-agents too (the listing names those by address only),
+# in the order of $spaces.
+terminals=$(jq -c --argjson ids "$ids" '[$ids[] as $i | .spaces[] | select(.id == $i)
+  | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)]' <<<"$listing")
+[[ -z ${HC_TERMINAL_ID:-} ]] || jq -e --arg t "$HC_TERMINAL_ID" 'index($t) | not' <<<"$terminals" >/dev/null \
+  || refuse "this terminal is inside a space being retired; run retire from another space."
+hcls=$(command hc ls 2>/dev/null)
+active=( ${(f)"$(jq -r --argjson ids "$ids" '
+  .spaces[] | select(.id as $i | $ids | index($i)) | .tabs[].terminals[] | ., (.sub_agents[]? | objects)
+  | select(.status == "working" or .status == "blocked") | "\(.app // "agent") (\(.terminal)) is \(.status)"' <<<"$listing")"} )
+# A sub-agent's status is only in the core's listing, which also repeats the others.
+active+=( ${(f)"$(jq -r --argjson t "$terminals" '.terminals[]? | select(.address as $a | $t | index($a))
+  | select(.status == "working" or .status == "blocked") | "\(.agent // "agent") (\(.address)) is \(.status)"' <<<"$hcls" 2>/dev/null)"} )
+(( $#active )) && refuse "an agent in the space is busy: ${(j:, :)${(u)active}}."
+
+# Where a terminal is: "space / tab".
+where_is() { jq -r --arg t "$1" 'first(.spaces[] as $s | $s.tabs[] as $b
+  | select(any($b.terminals[]; .terminal == $t or (.sub_agents // [] | index($t)))) | "\($s.name) / \($b.name)") // "?"' <<<"$listing" }
+# One `hc get` per terminal asks what runs in it and where it is NOW (`hc ls` gives only the
+# folder it was launched in). The set's own terminals must answer, or the editor check below
+# would pass them unseen; another space's terminal that cannot answer is left to wt-rm's scan.
+editors=() inside=()
+for t in ${(f)"$(jq -r '.[]' <<<"$terminals")"}; do
+  got=$(hc_get "$t") && [[ -n $got ]] || refuse "cannot check terminal $t ($(where_is $t)): hc get did not answer."
+  name=$(jq -r '.foreground.name // empty' <<<"$got" 2>/dev/null)
+  [[ ${name#-} =~ $vim_re ]] && editors+=( "$name in $(where_is $t) ($t)" )
+done
+(( $#editors )) && refuse "an editor is open: ${(j:, :)editors}. Quit it first (its unsaved buffers would be lost), then retire again."
+# Any other local terminal now inside the checkout holds it open, and its space is not ours.
+for t in ${(f)"$(jq -r --argjson ids "$ids" '.spaces[] | select(.machine == null and (.id as $i | $ids | index($i) | not))
+    | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)' <<<"$listing")"}; do
+  got=$(hc_get "$t") || continue
+  cwd=$(jq -r '.foreground.cwd // empty' <<<"$got" 2>/dev/null)
+  [[ -n $cwd ]] || continue
+  [[ $cwd == $folder || $cwd == $folder/* || ${cwd:A} == $folder || ${cwd:A} == $folder/* ]] \
+    && inside+=( "terminal $t ($(where_is $t)) is in $cwd" )
+done
+(( $#inside )) && refuse "${(j:; :)inside}. cd out of the checkout or close it, then retire again."
+
+# --- 3. Resume records -----------------------------------------------------------------
+records=$(jq -c --argjson t "$terminals" '[$t[] as $a | (.["resume.sessions"] // {})[$a] // empty]' \
+  "$home/shared.json" 2>/dev/null) || records='[]'
+[[ -n $records ]] || records='[]'
+# Every one, before anything closes: the reopen below brings back one Claude and one Codex.
+# Only the closed spaces' terminals count, the worktree's own space first.
+if [[ $records != '[]' ]]; then
+  print -r -- "retire: resume commands of the agents about to close:"
+  jq -r '.[] | "  \(.app): cd \(.cwd | @sh) && \(.cmd)"' <<<"$records"
+fi
+
+# --- 4. Close the spaces ---------------------------------------------------------------
+for id in $spaces; do
+  closed=$(app do space.close "$(jq -nc --arg id "$id" '{id: $id, confirmed: true}')") \
+    && ! jq -e 'objects | has("error")' <<<"$closed" >/dev/null 2>&1 \
+    || { print -ru2 -- "retire: could not close space $id: $closed"; print -ru2 -- "retire: nothing was removed."; exit 1 }
+done
+
+# --- 5. wt-rm --------------------------------------------------------------------------
+print -r -- "retire: closed ${#spaces} space(s); running wt-rm $branch from $main"
+# stderr goes through tee: it stays on screen and is kept to see whether wt-rm warned.
+errs=$(mktemp "${TMPDIR:-/tmp}/retire.XXXXXX") || exit 1
+trap 'rm -f "$errs"' EXIT
+{ (builtin cd -q -- "$main" && "$wt_rm" "$branch") 2>&1 1>&3 3>&- | tee "$errs" >&2; rc=${pipestatus[1]} } 3>&1
+
+# --- 6. Outcome ------------------------------------------------------------------------
+if (( rc == 0 )); then
+  if [[ ! -s $errs ]]; then "$here/close-own-tab"; exit 0; fi
+  print -ru2 -- ""
+  print -n -- "retire: wt-rm succeeded but warned (above). Press Enter to close this tab. "
+  read -r && "$here/close-own-tab"
+  exit 0
+fi
+
+print -ru2 -- ""
+print -ru2 -- "retire: wt-rm failed (status $rc); its output is above."
+(( $#spaces )) || exit $rc
+[[ -d $folder ]] || { print -ru2 -- "retire: $folder is gone; there is nothing to reopen."; exit $rc }
+print -n -- "retire: Enter reopens the space with its agents resumed, Ctrl-C leaves it closed. "
+read -r || exit $rc
+
+reopen=()
+for want in claude codex; do
+  # First record of each agent: a space's agents tab holds one of each.
+  rec=$(jq -c --arg a "$want" 'map(select(.app == $a)) | first // empty' <<<"$records")
+  [[ -n $rec ]] || continue
+  if "$here/session-written" "$want" "$(jq -r .id <<<"$rec")"; then pick=cmd; else pick=fresh; fi
+  reopen+=( --$want-cmd "$(jq -r --arg k $pick '.[$k]' <<<"$rec")" )
+done
+"$here/open-space" "${reopen[@]}" "$folder"
+exit $rc
