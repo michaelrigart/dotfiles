@@ -889,13 +889,26 @@ The tokens: delete the two items in 1Password (or archive them; `op item list` d
 ~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"
 ```
 
-Expected: `exit 0`, every row `ok` or `excepted`, the excepted rows only the section 2.4 repositories, your dormant GitHub repositories and the shared GitLab projects you chose to leave, their count the one you expect. Run by you, `bypass_actors` is visible, so this proves the whole target, including that the rulesets bind you too.
+Expected: `exit 0`, every row `ok` or `excepted`, the excepted rows only the section 2.4 repositories (the 14 GitHub repositories of the other owner's organisation among them), your dormant GitHub repositories and the shared GitLab projects you chose to leave, their count the one you expect. Run by you, `bypass_actors` is visible, so this proves the whole target, including that the rulesets bind you too. The check of merge 2 does not read `main-merge-owner`; the next command shows it.
 
 ```
 for r in <repo-a> <repo-b>; do gh api repos/<owner>/$r/rules/branches/<branch> --jq '[.[].type] | sort'; done
 ```
 
-Expected, for each in-scope GitHub repository: `["deletion","non_fast_forward","pull_request"]`.
+Expected, for each in-scope GitHub repository: `["deletion","non_fast_forward","pull_request","update"]`. The `update` rule is `main-merge-owner` (spec revision 3); a list without it means that repository lacks the ruleset.
+
+The Actions secrets of your own repositories, for the condition of spec section 2.1: no secret may hold a credential of yours with Contents write, since a workflow using it would merge as you. It lists names only, never values, and the names of repositories, so it stays on your screen:
+
+```
+gh repo list <owner> --no-archived --limit 200 --json nameWithOwner --jq '.[].nameWithOwner' | while read -r r; do
+  gh secret list --repo "$r" --json name --jq '.[].name' | sed "s|^|$r: |"
+  gh api "repos/$r/environments" --jq '.environments[].name' 2>/dev/null | while read -r e; do
+    gh secret list --repo "$r" --env "$e" --json name --jq '.[].name' | sed "s|^|$r ($e): |"
+  done
+done
+```
+
+Expected: every line it prints is a secret you know, and none is a token, key or app credential of yours that can write contents. If one is, delete it in the repository's Settings > Secrets and variables > Actions, or replace it with a credential without Contents write. Tell the line how many secrets it printed and how many you removed.
 
 If it fails: the first command's remaining rows say which step to repeat.
 
@@ -943,7 +956,7 @@ gh api repos/<owner>/<repo-a>/rules/branches/<branch> --jq '[.[].type] | sort'
 glab api --hostname gitlab.com 'projects/<project-id>/protected_branches?per_page=1' | jq length
 ```
 
-Expected: the three rule types, and a number, not an error. And:
+Expected: the four rule types, `["deletion","non_fast_forward","pull_request","update"]`, and a number, not an error. And:
 
 ```
 glab api --hostname gitlab.com personal_access_tokens/self | jq 'del(.token)'
@@ -968,7 +981,7 @@ Tell the line, in the session or by paste, with no repository names:
 ```
 Merge 2 is applied and the GitHub steps are done. Results: <check exit codes and the counts a ok / d excepted, own terminal and
 session>; GitHub rules as expected on <n> repositories; tests 1 <token merge and write refused yes/no>, 2 <direct push of main
-refused yes/no>, 3 <own merge worked yes/no>; live-agent-auth <keys and values>; gh auth status names GH_TOKEN <yes/no>.
+refused yes/no>, 3 <own merge worked yes/no>; Actions secrets <n printed, n removed>; live-agent-auth <keys and values>; gh auth status names GH_TOKEN <yes/no>.
 Decisions: b <which projects patched>; c <keep>; the four decisions of a <unchanged, or what you changed>.
 Confirmed or corrected: fine-grained GitHub token permission names <list>; the refusal wordings (generic shape only);
 allowed_merge_methods accepted <yes/no>; private repositories in scope <none / public / Pro>; session check GitHub rows
