@@ -321,12 +321,13 @@ Sonnet-only findings in reviews 4 to 9, hand-checked where a static read settles
 | 4 | the non-plain deny message names no az form | true (`PLAIN`, `xreview-guard.py:68-72`) |
 | 4 | no row uses az's short options (`-s`, `-t`, …) | true |
 | 4 | over-long comment lines in the front | true, cosmetic |
-| 4 | a create value starting with `-` and holding a space is denied as an unknown option | not checked (needs the guard fixture) |
-| 6 | "remotes besides origin (none)" when `git remote` fails | not checked |
+| 4 | a create value starting with `-` and holding a space is denied as an unknown option | true: `az_options` reads `--title "-fix the thing"` as an option `-fix the thing` outside `AZ_CREATE_ALLOWED`, while argparse takes it as the title (checked 2026-11-14); a false deny |
+| 6 | "remotes besides origin (none)" when `git remote` fails | true, wording only (`xreview-guard.py:1648`); needs `git remote` to fail right after origin's URL was read |
 | 7 | `communicate()` after the timeout kill has no timeout | true (`xreview-rpc:2160`) |
 | 7 | no row pins `CD001` at 32769 | true |
 
-None of the checked ones changes an allow or a deny.
+None of them changes an allow, and only review 4's dash-led title changes a deny (a false
+deny, so it fails closed).
 
 **Reviews 10 and 11: the round-2 re-reviews of Tasks 6 and 2.**
 
@@ -360,9 +361,7 @@ and 1,549 s.
   it, reproduced it and proposed the same fix.
 - Review 12, Minor: no row pins the write-failure path; `$: unexpected key` repeats per key.
   Sonnet missed both.
-- Review 12, Sonnet only, four Minor, not hand-checked: mode 0400 from the umask, a test
-  comment citing R9f for R2, U+2028/2029 not escaped (Opus lists it as a residual risk), a
-  RecursionError on deep nesting (pre-existing).
+- Review 12, Sonnet only, four Minor, hand-checked 2026-11-14 (see the table after review 17).
 
 Running total, 13 reviews: Sonnet raised 14 of Opus's 32 findings (Critical 2 of 5, Important
 3 of 6, Minor 9 of 21); same verdict on 9 of 13; Opus 230 tool calls and 2,241 s, Sonnet 246
@@ -384,8 +383,7 @@ and 1,687 s.
 - Review 14, Minor: Sonnet raised the incomplete "sandboxed is fine" header and the
   `installed:` line without the extension version. It missed the possible hidden hang, and it
   stated that the pins are here-documents where Opus found assignments.
-- Review 14, Sonnet only, two Minor, not hand-checked: a missing extension gets the generic
-  "listed no commands" message; the AGENTS.md paragraph does not name the extension.
+- Review 14, Sonnet only, two Minor, hand-checked (table after review 17).
 
 Running total, 15 reviews: Sonnet raised 17 of Opus's 38 findings (Critical 2 of 6, Important
 4 of 7, Minor 11 of 25); same verdict on 10 of 15; Opus 270 tool calls and 2,658 s, Sonnet 272
@@ -410,15 +408,35 @@ were not readable.
   Hand-checked on the guard files of `f43edaa`: that payload is allowed silently, the unsplit
   form is denied. Not verified: that glab expands `:a:b` as two placeholders. Sent to the host
   line to rule on; Opus did not list it.
-- Review 16, Sonnet only, Minor, not hand-checked: SKILL.md wording, comment damage, a
-  redundant ask pattern in `git-forge-guard.sh`.
+- Review 16, Sonnet only, five Minor, hand-checked (table after review 17).
 - Review 17, Important: no row for render's exit-4 arm through collect. Sonnet raised it.
 - Review 17, Minor: W3 passes on the old code (Sonnet raised it, ranked Important); F3 and
   SL8 never assert the exit-4 detail and the `turns/` comment misleads (Sonnet missed both).
   Sonnet approved with two Important findings open, so its verdict differs.
-- Review 17, Sonnet only, Minor, not hand-checked: merged sliced answers over the render
-  bounds can never finish, SL1's narrowed "waits on nothing" check, no gitleaks guard in the
-  suite, an unlocked `.merged` read.
+- Review 17, Sonnet only, four Minor, hand-checked (table below).
+
+Sonnet-only Minor findings in reviews 12 to 17, hand-checked on 2026-11-14 against the commit
+each shadow saw:
+
+| # | Sonnet-only finding | Hand check |
+|---|---|---|
+| 12 | mode 0400 under a 0277 umask | not a defect: the umask's own choice, and the descriptor is already open for writing |
+| 12 | a new test comment cites R9f for the newline rule | true, cosmetic: the newline row is R2 (`tests/xreview-rpc.test.sh:2241`); R9f is the scan row |
+| 12 | U+2028/2029 not escaped | true; the final review repeated it |
+| 12 | RecursionError on deep nesting | true: render on 100,000 nested arrays exits 1 with a traceback and prints no reviewer text, so it fails closed, with exit 1 where 4 is the contract |
+| 14 | a missing extension gets the generic "listed no commands" message | true; Opus's review 15 measured the same message |
+| 14 | the AGENTS.md paragraph does not name the extension | true; the final review raised the same gap (a missing az or extension gives a permanent `????`) |
+| 16 | SKILL.md "It denies the rest" | true; the final review repeated it |
+| 16 | over-long lines added to the `.sh` header | true, cosmetic: two added lines of 110 and 113 characters |
+| 16 | the `gated_verb` docstring reads awkwardly | true, cosmetic |
+| 16 | the 784 comment's "1.130" asserts a re-measure | not a defect at `2dcb342`: the table holds every value option `glab api --help` lists in 1.130.0 |
+| 16 | `az repos pr update` still in `git-forge-guard.sh:110` | true, harmless; the line is a candidate filter, not an ask pattern as Sonnet said |
+| 17 | a merged sliced answer over the render bounds never finishes | true; the final review repeated it |
+| 17 | SL1's "waits on nothing" now counts only `thread` and `turn` calls | true: a stray rpc call of another kind on re-collect would pass |
+| 17 | no gitleaks guard in `tests/xreview.test.sh` | true: no INCONCLUSIVE path, so without gitleaks the render rows fail |
+| 17 | `.merged` is read without the lock | not a defect: `.slices` is removed only after `.merged` is written, and a reader tests `.slices` first |
+
+None of these changes an allow or a deny, apart from review 4's false deny above.
 
 Running total, 17 reviews, at least one per task of the nine: Sonnet raised 21 of Opus's 46
 findings (Critical 2 of 6, Important 6 of 9, Minor 13 of 31); same verdict on 11 of 17; Opus
@@ -463,9 +481,9 @@ recorded it as an accepted limit (`08b0f66`). The branch is merged to main.
 - Four Critical findings on safety-boundary tasks were missed, three of them verified gate or
   redaction bypasses. This meets the protocol's drop condition.
 - Sonnet-only findings confirmed later: the split-placeholder fast-path bypass (fixed by the
-  host line) and three Minor findings repeated by the final review. Earlier hand-checks
-  found 10 true Minor findings and 2 that were not defects; the Sonnet-only Minor findings of
-  reviews 10 to 17 are not hand-checked.
+  host line) and three Minor findings repeated by the final review. Every Sonnet-only
+  finding is now hand-checked: 25 true (the split placeholder, Important; 24 Minor, most
+  cosmetic or test gaps, one false deny) and 5 not defects.
 - Cost: tool calls equal (309 against 308); wall time 3,034 s for Opus and 2,380 s for
   Sonnet. Token cost was not measured.
 - Neither reviewer raised the final review's three Important findings or Codex's P1.
