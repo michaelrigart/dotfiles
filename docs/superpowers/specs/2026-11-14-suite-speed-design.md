@@ -229,17 +229,21 @@ dispatched first (§3).
 - The test lock is shared: measurement runs leave gaps for waiting runners and never wrap the
   runner in `lockf`.
 
-## Open questions
+## Rulings at sign-off
 
-1. **The `jq` pinned scripts are tested against.** Pinned scripts (the guards, `xreview`) run
-   `/usr/bin/jq` 1.7.1 in production but Homebrew's 1.8.2 under test, before and after this
-   change. No test fails on 1.7.1 today. Closing it means each such suite passes the production
-   `PATH` as `PINNED_PATH` (18 suites). Recommendation: not in this line.
-2. **Item 33.** Recommendation: not now (Approaches, D).
-3. **`wt-functions` and `test-audit`.** Recommendation: no change (Approaches, E).
+Signed off 2026-11-14 by the driver session, on Michael's delegation, after Codex approved the
+spec (round 2).
+
+1. **A known test-fidelity gap: the `jq` pinned scripts are tested against.** The pinned scripts
+   (the guards and hooks, `xreview`) run `/usr/bin/jq` 1.7.1 in production but Homebrew's 1.8.2
+   under test, before and after this change. No suite fails on 1.7.1 today. Closing the gap means
+   each such suite passes the production `PATH` as its `PINNED_PATH`: 18 suites. Not in this
+   line.
+2. **Item 33: not now.** Measured gain on the default run's critical path: 0 s (Approaches, D).
+3. **`wt-functions` and `test-audit`: no change** (Approaches, E).
 4. **The inactive-shim cost outside the suites** (about 90 ms per `jq` in any agent shell in a
-   repository where mise's `jq` is inactive, from the global `rust` component's `rustup` calls).
-   Recommendation: report only; a mise configuration change is Michael's.
+   repository where mise's `jq` is inactive, from the global `rust` component's `rustup` calls):
+   reported only; the driver takes it to Michael.
 
 ## Left to the builder
 
