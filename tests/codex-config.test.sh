@@ -145,11 +145,14 @@ has 'trust_level = "trusted"'        "per-project trust carried through"
 has 'sha256:deadbeef'                "hook trusted_hash carried through"
 
 echo "E. enforced UI settings"
-emit 'tui.theme = "gruvbox"'
+emit $'tui.theme = "gruvbox"\ntui.resume_cwd = "session"\n'
 has 'theme = "tokyo-night"'          "theme forced to tokyo-night"
 has 'open_transcript = "ctrl-t"'     "transcript keybinding enforced"
 has 'interrupt_turn = "f12"'         "interrupt keybinding enforced"
 has 'notification_condition = "unfocused"' "notification condition enforced"
+tq 'd["tui"]["resume_cwd"]' "'current'" "resume_cwd forced to current over a live 'session'"
+emit ''
+tq 'd["tui"]["resume_cwd"]' "'current'" "resume_cwd set on an empty live file"
 
 echo "F. notify path is derived from \$HOME, never hardcoded"
 emit ''
