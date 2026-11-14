@@ -388,7 +388,7 @@ for odd in '{"result":{}}' '{"result":null}' '{"result":{"data":"x"}}'; do
      "$(grep -c "cannot read the thread's MCP server status: unexpected answer .*no review was started" "$T/err")" 1
 done
 
-p1="$(jq -nc --argjson o "$OK" '{result:{data:[$o], nextCursor:"c2"}}')"
+p1="$(jq -nc --argjson o "$OK" '{result:{data:[$o,{"name":"x","runtimeStatus":null}], nextCursor:"c2"}}')"
 p2s="$(mcp "[$ST]")"; p2ok="$(mcp "[$OK]")"
 mb_scn "[$p1,$p2s,$p1,$p2ok]"
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
@@ -399,24 +399,13 @@ is "MB5 the first page has no cursor, the second carries it" \
 is "MB5 the next round starts from the first page again" \
    "$(jq -r 'select(.method=="mcpServerStatus/list") | .params.cursor // "none"' "$FAKE_LOG" | sed -n 3p)" none
 
-p1n="$(jq -nc '{result:{data:[{"name":"x","runtimeStatus":null}], nextCursor:"c2"}}')"
-mb_scn "[$p1n,$p2s,$p1n,$p2ok]"
-rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
-is "MB5b a starting server on page 2 holds the start back although page 1 holds a null" \
-   "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,mcpServerStatus/list,mcpServerStatus/list,turn/start"
-
-mb_scn "[$(mcp '[{"name":"node_repl","runtimeStatus":"starting"},{"name":"x","runtimeStatus":null}]')]"
+mb_scn "[$(mcp '[{"name":"node_repl","runtimeStatus":"starting"},{"name":"a","runtimeStatus":"notStarted"},{"name":"x","runtimeStatus":null}]')]"
 XREVIEW_MCP_WAIT=0.4 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
 is "MB6 a server that never settles refuses at the bound (1)" "$rc" 1
 is "MB6 and never calls turn/start" "$(nsent turn/start)" 0
-is "MB6 stderr names only the server still starting" \
-   "$(grep -c 'within [0-9.]*s (node_repl=starting); no review was started' "$T/err")" 1
-is "MB6 and does not name the null one" "$(grep -c 'x=null' "$T/err")" 0
-
-mb_scn "[$(mcp '[{"name":"a","runtimeStatus":"notStarted"},{"name":"b","runtimeStatus":null}]')]"
-XREVIEW_MCP_WAIT=0.4 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
-is "MB6b notStarted beside a null refuses at the bound (1)" "$rc" 1
-is "MB6b and names only the notStarted one" "$(grep -c 'within [0-9.]*s (a=notStarted); no review was started' "$T/err")" 1
+is "MB6 stderr names only the servers still starting or notStarted" \
+   "$(grep -c 'within [0-9.]*s (node_repl=starting, a=notStarted); no review was started' "$T/err")" 1
+is "MB6 and does not name the null one" "$(grep -c 'x=' "$T/err")" 0
 
 mb_scn '[{"error":{"code":-32600,"message":"thread not found: th"}}]'
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?

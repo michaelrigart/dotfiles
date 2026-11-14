@@ -472,8 +472,8 @@ def cmd_thread_status(c, a):
 
 
 # The only statuses mcpServerStatus/list reports for a server still starting. A null status
-# (the schema's "unavailable or the configuration changed") never turns into one of these, so
-# waiting on it only runs out the bound.
+# (the schema's "unavailable or the configuration changed") has not been seen to turn into one of
+# these: in every refusal it held for the whole bound.
 MCP_STARTING = ("notStarted", "starting")
 
 
