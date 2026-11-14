@@ -18,7 +18,7 @@ PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PAT
 set -uo pipefail
 
 # Drain stdin: leaving the payload unread hands the writer an EPIPE.
-cat >/dev/null 2>&1
+cat >/dev/null 2>&1 || exit 0
 
 line="Shell: every Bash call starts fresh in the session's directory and a \`cd\` never carries over, so never begin a command with \`cd\` (the path guard denies it). Name every file by its absolute path."
 jq -cn --arg c "$line" '{hookSpecificOutput:{hookEventName:"SubagentStart",additionalContext:$c}}' 2>/dev/null

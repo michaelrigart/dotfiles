@@ -54,6 +54,11 @@ fire sp-standard "$T/empty"
 is "with no jq it still exits 0" "$RC" 0
 is "and prints nothing on stdout" "$OUT" ""
 is "or on stderr" "$ERR" ""
+# A payload that cannot be read is an error like any other, even with jq present.
+OUT=$(PINNED_PATH="$PATH" /bin/bash "$HOOK" < "$T" 2> "$T/err"); RC=$?
+is "an unreadable payload exits 0" "$RC" 0
+is "and prints nothing on stdout" "$OUT" ""
+is "or on stderr" "$(cat "$T/err")" ""
 OUT=$(PINNED_PATH="$PATH" /bin/bash "$HOOK" < /dev/null 2> "$T/err"); RC=$?
 is "an empty payload still exits 0" "$RC" 0
 is "and still adds the line: it never reads the payload" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')" "$LINE"
