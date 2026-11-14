@@ -4191,7 +4191,8 @@ hook_ran "X36 the setup hook runs"
 # and good bytes again afterwards; every comparison of bytes then passes. The file's identity
 # (inode and change time) cannot be put back, so the carry sees that it was written. Only
 # mise.toml is trusted in main: the untrusted mise.local.toml that xfix also copies through
-# .worktreeinclude is refused alongside the race, and the assertions below name mise.toml.
+# .worktreeinclude is refused alongside the race (it matches no trusted copy), and the other
+# assertions below name mise.toml.
 xfix x37
 mise_seed "$REPO/mise.toml"
 MOCK_MISE_FLIP_RACE='evil=1\n' run "$REPO" wt x37
@@ -4199,6 +4200,7 @@ rc_is 1 "X37 a file rewritten while it is being trusted is refused"
 has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: $XCHG." "X37 the reason"
 has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x37/mise.toml" "X37 the hint sits between the headline and the review line"
 hasnt "mise.local.toml is not trusted: $XCHG" "X37 the other file is refused for its own reason"
+has "wt: ~/Code/Org/repo-x37/mise.local.toml is not trusted: $XNONE." "X37 the carry goes on: the other file is refused for its own reason"
 mlog_line "trust $X/mise.toml" "X37 the file was trusted (the race really ran)"
 mlog_line "trust --untrust $X/mise.toml" "X37 the trust is withdrawn"
 hook_not_ran "X37 the setup hook does not run"

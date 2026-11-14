@@ -696,8 +696,10 @@ _wt_mise_ident() {
 # from _WT_MISE_SHOWN. A file that fails it is untrusted at once; no other candidate is tried.
 #
 # A failed candidate read skips that candidate (it only means fewer files carried); a failed
-# read of <dest>, a failed trust and a failed re-check stop at once, because nothing said after
-# them can be believed. The one call still made then is the untrust of a file just trusted.
+# read of <dest> or the worktree list, a failed trust or untrust, and a failed re-check read
+# stop at once, because nothing said after them can be believed. A file the re-check reads fine
+# but finds changed is untrusted and refused, and the carry goes on. The one call still made on
+# a stop is the untrust of a file just trusted.
 _wt_mise_trust() {
   emulate -L zsh
   typeset -g _WT_MISE_CARRIED=0
