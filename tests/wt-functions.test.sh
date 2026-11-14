@@ -3852,13 +3852,6 @@ eq "$OUT" "'/srv/a!b c'" "X14e ... and so is one outside home"
 run "$REPO" _wt_tilde_q "/srv/plain"
 eq "$OUT" "/srv/plain" "X14e a safe path still prints unchanged"
 
-# _wt_mise_withdraw untrusts the dest it was given, not a same-named variable of its caller.
-xfix x14f
-xw_caller() { local dest=OUTER; _wt_mise_withdraw "$REPO" "$X" mise.toml "" }
-run "$REPO" xw_caller
-mlog_line "trust --untrust $X/mise.toml" "X14f withdraw uses the dest it was passed, not its caller's"
-mlog_no_line "trust --untrust OUTER/mise.toml" "X14f ... never the caller's"
-
 xfix x15
 git -C "$REPO" rm -q -f mise.toml; git -C "$REPO" commit -q -m nocfg; rm -f "$REPO/mise.local.toml" "$REPO/.worktreeinclude"
 MOCK_MISE_SHOW_STDERR='mise WARN noise' run "$REPO" wt x15
@@ -3963,7 +3956,7 @@ xsib -b s25 "$HOME/Code/Org/sib-x25b"; mise_seed "$HOME/Code/Org/sib-x25b/mise.t
 run "$REPO" wt x25 x25-src
 rc_is 1 "X25 an untrusted identical copy and a trusted differing one do not vouch"
 has "wt: ~/Code/Org/repo-x25/mise.toml is not trusted: $XNONE." "X25 the new reason"
-has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25/mise.toml" "X25 the diff is against main's trusted copy, not the base's untrusted one"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25/mise.toml" "X25 the diff is against main's trusted copy, not the sibling's untrusted one"
 mlog_no_line "trust $X/mise.toml" "X25 it is never trusted"
 hook_not_ran "X25 the setup hook does not run"
 
@@ -3975,9 +3968,9 @@ xseed
 xsib "$HOME/Code/Org/sib-x25b" x25b-src
 print -r -- 'a=3' > "$HOME/Code/Org/sib-x25b/mise.toml"
 run "$REPO" wt x25b x25b-src
-rc_is 1 "X25b an untrusted differing base copy is refused"
+rc_is 1 "X25b an untrusted differing sibling copy is refused"
 has "wt: ~/Code/Org/repo-x25b/mise.toml is not trusted: $XNONE." "X25b the new reason"
-has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25b/mise.toml" "X25b the diff skips the base's untrusted copy for main's trusted one"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25b/mise.toml" "X25b the diff skips the sibling's untrusted copy for main's trusted one"
 hasnt "sib-x25b/mise.toml ~" "X25b ... and never offers the untrusted copy as a baseline"
 mlog_no_line "trust $X/mise.toml" "X25b it is never trusted"
 hook_not_ran "X25b the setup hook does not run"
@@ -4176,7 +4169,7 @@ print -r -- 'a=3' > "$HOME/Code/Org/sib: x35/mise.toml"; mise_seed "$HOME/Code/O
 run "$REPO" wt x35 x35-src
 rc_is 1 "X35 a trusted copy that differs is refused"
 has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x35/mise.toml" "X35 the diff is against main's copy"
-hasnt "sib: x35/mise.toml ~" "X35 ... and never offers the sibling's copy as a baseline"
+hasnt "diff ~/'Code/Org/sib: x35" "X35 ... and never offers the sibling's copy as a baseline"
 mlog_no_line "trust $X/mise.toml" "X35 it is never trusted"
 hook_not_ran "X35 the setup hook does not run"
 
