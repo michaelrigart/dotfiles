@@ -30,7 +30,10 @@
 # is unquoted - and any command that hands one to another shell: sh, bash, zsh, dash or ksh
 # -c '...', or env -S '...'. A comment, a redirection, single-quoted text ($'...' included)
 # and the rest of a here-document body are read past, wherever they stand, and a line
-# continuation is joined first, as the shell joins it. --help or -h right after the verb, and
+# continuation is joined first, as the shell joins it. A redirection's descriptor is read as
+# bash reads it (every digit) and as zsh does (one): a gated verb whose command the two split
+# differently is denied. A $'...' string that may decode to a NUL, which the shells cut a word
+# at, is unreadable, and denied when the command names git, glab, gh or az. --help or -h right after the verb, and
 # a merge's lone --abort, --quit or --continue, are never gated.
 #
 # The grammar is bash's and zsh's: the Bash tool runs its commands under zsh here, and scripts
@@ -72,6 +75,10 @@ PLAIN = ("Pre-merge gate: this command proposes or merges a change in a shape th
          "only mentions the verb, quote the mention.")
 UNPARSEABLE = ("Pre-merge gate: this command cannot be parsed (unbalanced quotes), and it may "
                "propose or merge a change. Fix the quoting, and run the verb as a plain command.")
+NUL_STRING = ("Pre-merge gate: this command holds a $'...' string that may decode to a NUL (\\0, "
+              "\\x00, \\c@, or a bare \\x, \\u or \\U), which the shells cut a word at, so the gate "
+              "cannot read the word it makes, and the command may propose or merge a change. Write "
+              "the word without the escape.")
 MALFORMED = ("Pre-merge gate: the hook's payload is not valid JSON, and its text may propose or "
              "merge a change, so the command is refused. Retry it.")
 REORDERED = ("Pre-merge gate: {0} takes a subcommand's options before its name and between its "
@@ -219,6 +226,11 @@ class Deny(Exception):
     """A gated command that must be refused, carrying the reason the agent reads."""
 
 
+class Unreadable(ValueError):
+    """A $'...' string that may decode to a NUL: every shell cuts a word at one, and zsh reads
+    a bare \\x, \\u or \\U as one, so the word the command runs is not the one the text spells."""
+
+
 def decision(reason):
     return json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
@@ -268,7 +280,8 @@ def heredoc_word(line, i):
 
 def ansi_c(cmd, i):
     """(value, end) of the $'...' string whose text starts at cmd[i]: its escapes decoded, and
-    the index past its closing quote. end is None when the string never closes."""
+    the index past its closing quote. end is None when the string never closes. Raises
+    Unreadable when an escape may decode to a NUL (\\0, \\x00, \\c@, a bare \\x)."""
     out, n = [], len(cmd)
     while i < n:
         c = cmd[i]
@@ -280,13 +293,19 @@ def ansi_c(cmd, i):
                 out.append(ANSI_C[e])
                 i += 2
             elif e == "c" and i + 2 < n:
+                if ord(cmd[i + 2]) & 0x1f == 0:
+                    raise Unreadable(cmd[i:i + 3])
                 out.append(chr(ord(cmd[i + 2]) & 0x1f))
                 i += 3
             elif m:
                 code = m.group(0)
                 value = int(code, 8) if code[0] in "01234567" else int(code[1:], 16)
+                if value == 0:
+                    raise Unreadable(cmd[i:m.end()])
                 out.append(chr(min(value, 0x10FFFF)))
                 i = m.end()
+            elif e in "xuU":
+                raise Unreadable(cmd[i:i + 2])
             else:
                 out.append(cmd[i:i + 2])
                 i += 2
@@ -589,9 +608,12 @@ def lex(cmd, body=False, everywhere=False, naive=False):
 
 # A redirection operator: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string or a here-document
 # marker, anywhere in an unquoted word; at the start of a word it may carry a descriptor
-# number (2>, 2>&1). Not a process substitution, <( ) or >( ), which runs a command.
+# number (2>, 2>&1). Not a process substitution, <( ) or >( ), which runs a command. bash takes
+# every digit before the operator as the descriptor (10>x is one redirection), zsh at most one
+# (81788>x is the word 81788, then >x): BASH_DIGITS and ZSH_DIGITS are the two readings.
 REDIRECT_OP = r"(?:&>>|&>|>>|>&|>\||<>|<&|<<<|<<-|<<|>|<)(?!\()"
-REDIRECT_RE = re.compile(r"\d*" + REDIRECT_OP)
+BASH_DIGITS, ZSH_DIGITS = r"\d*", r"\d?"
+REDIRECT_RES = {d: re.compile(d + REDIRECT_OP) for d in (BASH_DIGITS, ZSH_DIGITS)}
 REDIRECT_MID_RE = re.compile(REDIRECT_OP)
 WORD_END = " \t\n;&|()<>"
 
@@ -614,19 +636,19 @@ def skip_word(cmd, i):
     return i
 
 
-def strip_redirections(cmd):
+def strip_redirections(cmd, digits=BASH_DIGITS):
     """cmd without its redirections: an unquoted operator (>f, > f, 2>f, &>f, <f, N>&M, <>f,
     >|f, <<<, a here-document marker) and its operand, split off the word it touches
     (git>log merge is git, then merge). A redirection changes where input and output go,
     never what runs, so the gate reads past it wherever it stands, before the command word
     and between arguments alike. Quoted text is left alone. cmd has been through lex, so the
-    only quotes left are '...' and "..."."""
+    only quotes left are '...' and "...". digits is how many digits a descriptor may have."""
     out, i, n, quoting = [], 0, len(cmd), None
     while i < n:
         c = cmd[i]
         if quoting is None:
             starts_word = i == 0 or cmd[i - 1] in " \t\n;&|()"
-            m = (REDIRECT_RE if starts_word else REDIRECT_MID_RE).match(cmd, i)
+            m = (REDIRECT_RES[digits] if starts_word else REDIRECT_MID_RE).match(cmd, i)
             if m:
                 j = m.end()
                 while j < n and cmd[j] in " \t":
@@ -647,10 +669,10 @@ def strip_redirections(cmd):
     return "".join(out)
 
 
-def tokenize(text):
+def tokenize(text, digits=BASH_DIGITS):
     """The words and operator tokens of lexed text, its redirections dropped. Raises
     ValueError on unbalanced quotes."""
-    lx = shlex.shlex(strip_redirections(text), posix=True, punctuation_chars=PUNCT)
+    lx = shlex.shlex(strip_redirections(text, digits), posix=True, punctuation_chars=PUNCT)
     lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
     lx.commenters = ""
@@ -735,12 +757,24 @@ def scan(cmd, depth=0):
         naive_tokens = []
     if gated_anywhere(naive_tokens) and not gated_anywhere(tokens):
         return tokens, True
+    # zsh reads a descriptor of one digit at most, so a gated verb in a command the two shells
+    # split differently (git merge origin/main 81788>/dev/null) is hidden from the plain reading.
+    try:
+        zsh_tokens = tokenize(text, ZSH_DIGITS)
+    except ValueError:
+        zsh_tokens = []
+    if zsh_tokens != tokens and (gated_anywhere(tokens) or gated_anywhere(zsh_tokens)):
+        return tokens, True
     nested.extend(shell_strings(tokens))
     for inner in nested:
         if depth >= MAX_NESTING:
             return tokens, True
         try:
             inner_tokens, inner_hidden = scan(inner, depth + 1)
+        except Unreadable:
+            if names_tool(inner) or crude(inner):
+                return tokens, True
+            continue
         except ValueError:
             if crude(inner):
                 return tokens, True
@@ -773,11 +807,14 @@ CLI_VERBS = {
 }
 # The GraphQL mutations that create, update, revert, merge or enqueue an MR/PR, merge a branch
 # with no PR, or turn auto-merge on. An update can retarget, from arguments a variable may
-# carry, so it is denied by name. Every other mutation (review threads, comments) is allowed.
+# carry, so it is denied by name. A note is denied when it carries the head SHA (GitLab runs the
+# /merge quick action from such a note); every other mutation (review threads, comments) is
+# allowed.
 MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAccept|"
                        r"mergeRequestSetAutoMerge|createPullRequest|updatePullRequest|"
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
-                       r"enablePullRequestAutoMerge|mergeBranch)\b")
+                       r"enablePullRequestAutoMerge|mergeBranch|mergeRequestDiffHeadSha|"
+                       r"createDiffNote)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
 # The api options that take a value, per CLI (gh 2.102's and glab 1.130's --help), and -R/--repo,
 # which glab takes before api, after it and after the endpoint. Every other option is a boolean.
@@ -1095,7 +1132,8 @@ def parse_plain(tokens, cwd):
     i = 0
     if len(t) >= 3 and t[0] == "cd" and t[2] == "&&" and not is_operator(t[1]):
         target = os.path.expanduser(t[1])
-        if not literal(target) or target == "-":
+        # zsh reads -0, +0 and -q as directory-stack entries or options, not as paths.
+        if not literal(target) or target[:1] in ("-", "+"):
             return None
         cwd, i = os.path.normpath(os.path.join(cwd, target)), 3
     if i < len(t) and t[i] == "sudo":
@@ -1262,7 +1300,8 @@ def judge_git_merge(shape, ledger):
         if args[i] == "-C" and i + 1 < len(args):
             if not literal(args[i + 1]):
                 raise Deny(LITERAL.format("the -C path", args[i + 1]))
-            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(args[i + 1])))
+            # git changes directory physically, so a symlink's .. is its target's parent.
+            cwd = os.path.realpath(os.path.join(cwd, os.path.expanduser(args[i + 1])))
             i += 2
         elif args[i] in GIT_FLAGS:
             i += 1
@@ -2259,6 +2298,12 @@ def crude(text):
     return any(CRUDE.search(flat(t)) for t in (text.replace("\\\n", ""), text, lexed))
 
 
+def names_tool(text):
+    """Does text hold git, glab, gh or az as a word? az is matched case-insensitively, as AZ
+    runs az on a case-insensitive filesystem."""
+    return bool(re.search(r"\b(git|glab|gh)\b", text) or re.search(r"\baz\b", text, re.I))
+
+
 def on_alarm(signum, frame):
     raise Deny(TIMED_OUT)
 
@@ -2299,6 +2344,10 @@ def main():
     try:
         try:
             tokens, hidden = scan(cmd)
+        except Unreadable:
+            if names_tool(cmd) or crude(cmd):
+                raise Deny(NUL_STRING)
+            return
         except ValueError:
             if crude(cmd):
                 raise Deny(UNPARSEABLE)

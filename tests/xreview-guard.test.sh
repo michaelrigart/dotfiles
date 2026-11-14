@@ -982,6 +982,12 @@ is "O8 a PATCH of a pull request (a retarget) is denied" "$(denies "$W" 'gh api 
 is "O9 a REST create whose body comes from a file is denied" "$(denies "$W" 'glab api -X POST projects/:id/merge_requests --input mr.json' 'this glab api call writes to an MR/PR path whose source, head or destination')" 1
 is "O10 an absolute GraphQL endpoint carrying a merge mutation is denied" \
    "$(denies "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
+is "O11a a note carrying the head sha runs /merge, so it is denied" \
+   "$(denies "$W" "glab api graphql -f query='mutation { createNote(input: {noteableId: \"x\", body: \"/merge\", mergeRequestDiffHeadSha: \"abc\"}) { errors } }'" 'this GraphQL call')" 1
+is "O11b the same note without the head sha is allowed" \
+   "$(decision "$W" "glab api graphql -f query='mutation { createNote(input: {noteableId: \"x\", body: \"/merge\"}) { errors } }'")" allow
+is "O12 a diff note carries the head sha in its position, so it is denied" \
+   "$(denies "$W" "glab api graphql -f query='mutation { createDiffNote(input: {noteableId: \"x\", body: \"/merge\", position: {headSha: \"abc\"}}) { errors } }'" 'this GraphQL call')" 1
 
 echo "P. a forge merge reaches only origin's own project, and merges at once"
 export MR_SHA="$REBASED" PR_SHA="$REBASED"
@@ -1244,6 +1250,62 @@ treview t-hole "$GB3" approve '{"packet":"delta","missing":[],"delta_from":"t-li
   "{\"switches\":$TSW,\"clean\":true,\"compacted\":false,\"turn\":\"U4\"}"
 is "T4 a later approval whose history lacks a chain turn closes it again" \
    "$(decision "$W" 'glab mr create -s gatebr -b main')" deny
+
+echo "V. a command the shells read differently from one another, or from the gate"
+# DEVREPO: a project whose default branch is develop, with an origin/main it has not merged. On
+# develop, merging origin/main is no sync, while in W (on main) it is.
+DEVORIGIN="$ROOT/remotes/dev.git"; DEVREPO="$ROOT/work/dev"
+git init -q --bare "$DEVORIGIN"
+mkdir -p "$DEVREPO/sub" && git -C "$DEVREPO" init -q && git -C "$DEVREPO" symbolic-ref HEAD refs/heads/develop
+printf 'base\n' > "$DEVREPO/a.txt"; printf 'x\n' > "$DEVREPO/sub/s.txt"
+git -C "$DEVREPO" add a.txt sub && git -C "$DEVREPO" commit -q -m init
+git -C "$DEVREPO" remote add origin 'git@forge.example:acme/dev.git'
+git -C "$DEVREPO" config "url.$DEVORIGIN.insteadOf" 'git@forge.example:acme/dev.git'
+git -C "$DEVREPO" switch -q -c main; printf 'unmerged\n' > "$DEVREPO/m.txt"; git -C "$DEVREPO" add m.txt
+git -C "$DEVREPO" commit -q -m "main moves on"; git -C "$DEVREPO" switch -q develop
+git -C "$DEVORIGIN" fetch -q "$DEVREPO" '+refs/heads/*:refs/heads/*'
+git -C "$DEVREPO" branch -q -D main; git -C "$DEVREPO" fetch -q origin
+git -C "$DEVREPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+is "V1 the fixture: a sync in W is allowed, the same merge in the develop repository is denied" \
+   "$(decision "$W" 'git merge --ff-only origin/main') $(decision "$DEVREPO" 'git merge --ff-only origin/main')" "allow deny"
+# git changes directory physically, so -C link/.. is the link target's parent, not W.
+ln -s "$DEVREPO/sub" "$W/link"
+is "V2 -C through a symlink is resolved as git resolves it" \
+   "$(decision "$W" 'git -C link/.. merge --ff-only origin/main')" deny
+rm "$W/link"
+# zsh reads +0 and -0 as directory-stack entries, so the cd does not go where the path says.
+ln -s "$W" "$DEVREPO/+0"; ln -s "$W" "$DEVREPO/-0"
+is "V3 a cd target starting with + is not plain" \
+   "$(denies "$DEVREPO" 'cd +0 && git merge origin/main' 'Run the verb as a plain command')" 1
+is "V4 nor one starting with -" \
+   "$(denies "$DEVREPO" 'cd -0 && git merge origin/main' 'Run the verb as a plain command')" 1
+rm "$DEVREPO/+0" "$DEVREPO/-0"
+# zsh takes at most one digit before a redirection (81788>x is the word 81788, then >x); bash
+# takes them all. The two readings differ in what the command is, so a gated verb is denied.
+is "V5 a plain sync with a long descriptor is the word 81788 to zsh, a second ref" \
+   "$(decision "$W" 'git merge origin/main 81788>/dev/null')" deny
+is "V6 inside glab's words" "$(decision "$W" 'glab mr 10>x merge 7')" deny
+is "V7 inside a nested shell" "$(decision "$W" "bash -c 'git 10>/dev/null merge feature'")" deny
+is "V8 where a merge option would take it as its value" "$(decision "$W" 'git merge -m 10>x feature')" deny
+is "V9 a command with no gated verb is untouched" \
+   "$(decision "$W" 'echo hi 10>x') $(decision "$W" 'git log --oneline -1 10>x')" "allow allow"
+is "V10 and a sync with one-digit descriptors" \
+   "$(decision "$W" 'git merge --ff-only origin/main 2>&1') $(decision "$W" 'git merge --ff-only origin/main >/dev/null 2>&1')" "allow allow"
+# Every shell cuts a word at a NUL, and zsh reads a bare \x as one, so a $'...' string that may
+# hold one is a word the gate cannot read.
+SQ="'"
+is "V11 glab \$'mr\\x' is glab mr under zsh" "$(denies "$W" 'glab $'"$SQ"'mr\x'"$SQ"' merge 7' 'cannot read')" 1
+is "V12 a NUL inside an option cluster turns -i\\0XGET into a POST" \
+   "$(denies "$W" 'glab api $'"$SQ"'-i\0XGET'"$SQ"' projects/:id/merge_requests/7/merge -f sha=abc' 'cannot read')" 1
+is "V13 and one in git's verb" "$(denies "$W" 'git $'"$SQ"'merge\0x'"$SQ"' feature' 'cannot read')" 1
+is "V14 inside a nested shell's string" \
+   "$(decision "$W" 'sh -c "glab $'"$SQ"'mr\\x'"$SQ"' merge 7"')" deny
+is "V15 every spelling of a NUL" \
+   "$(for s in '\0' '\00' '\000' '\x00' '\u0000' '\U00000000' '\c@' '\c ' '\x' '\u' '\U'; do
+        denies "$W" 'git $'"$SQ"'merge'"$s"''"$SQ"' feature' 'cannot read'; done | tr -d '\n')" 11111111111
+is "V16 a NUL in a command without a forge or git word is none of the gate's business" \
+   "$(decision "$W" 'printf $'"$SQ"'a\0b'"$SQ")" allow
+is "V17 a newline is not a NUL" "$(decision "$W" 'git commit -m $'"$SQ"'line one\nline two'"$SQ")" allow
 
 echo "Z. Azure PRs: creation is gated"
 # AZ: a checkout whose origin is an Azure DevOps SSH URL, reached through insteadOf like W's.
