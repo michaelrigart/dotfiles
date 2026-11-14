@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 99 s on 2026-11-14
 # Tests for the pre-merge gate: dot_claude/executable_xreview-guard.sh (the shell front and its
 # fast path) and dot_claude/xreview-guard.py (the grammar and the checks), which decides through
 # dot_claude/xreview-ledger.py. Spec: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md.

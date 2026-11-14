@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 110 s on 2026-11-14
 # Tests for tests/run.sh: the requirement gate (a suite tagged `# test-requires:` runs only
 # when named exactly or with --all; a substring filter must still skip it), the parallel
 # run, the serial tag, the per-machine lock and its holder record, and --changed (which heavy
@@ -257,6 +258,159 @@ if [ -e "$MARK/serialy.afterpar" ] && [ -e "$MARK/serialz.afterpar" ]; then _pas
 # Bug caught: --all running a suite gated on a live condition beside other suites.
 out="$(RUN_JOBS=4 "$T/run.sh" --all 2>&1)"
 ran "--all runs a live-gated suite alone"        yes 'ok +gatedlive' "$out"
+
+# The runner links the first jq on PATH that is not a mise shim and puts it first for its
+# suites. Bug caught: every `jq` call in a suite going through an inactive mise shim (about 90 ms
+# each). The fixtures live in their own directory with their own runner, so the unfiltered runs
+# above keep their suite counts. `narrow` builds a PATH holding only the tools the runner and the
+# probe suite call, and no jq, so the host's jq never decides a row.
+J="$T/jq"
+mkdir -p "$J/shims" "$J/shims2" "$J/dirjq/jq" "$J/tools"
+printf '#!/bin/sh\necho shim\n' > "$J/mise"
+chmod 755 "$J/mise"
+# mkjq <dir> <version output>: a jq that answers --version with that text and otherwise prints real.
+mkjq() {
+  mkdir -p "$J/$1"
+  printf '#!/bin/sh\n[ "$1" = --version ] && { echo "%s"; exit 0; }\necho real\n' "$2" > "$J/$1/jq"
+  chmod 755 "$J/$1/jq"
+}
+# relative-dir/jq sits where the runner (which runs from $J) would find a relative PATH entry.
+mkdir -p "$J/relative-dir"
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo jq-1.8.2; exit 0; }\necho relative\n' > "$J/relative-dir/jq"
+chmod 755 "$J/relative-dir/jq"
+mkjq real jq-1.8.2; mkjq old jq-1.7.1-apple; mkjq odd garbage; mkjq floor jq-1.8.1; mkjq ten jq-1.10.0; mkjq patch jq-1.8.0
+ln -s ../mise "$J/shims/jq"
+ln -s ../mise "$J/shims2/jq"
+cp "$RUN" "$J/run.sh"
+cat > "$J/jqprobe.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+jq > "$MARK/jq.says" 2>&1
+printf '%s' "$PATH" > "$MARK/jq.path"
+# What the directory first on PATH holds and where its jq points: the runner removes it on exit.
+d=${PATH%%:*}
+for f in "$d"/* "$d"/.[!.]* "$d"/..?*; do { [ -e "$f" ] || [ -L "$f" ]; } && echo "${f##*/}"; done > "$MARK/jq.bin"
+readlink "$d/jq" > "$MARK/jq.link" 2>/dev/null
+echo "  ok  probed"
+SUITE
+chmod 755 "$J/run.sh" "$J/jqprobe.test.sh"
+for t in bash env lockf mktemp rm mkdir ln readlink dirname basename sed grep head awk xargs getconf cat date mv id sort tr wc; do
+  p="$(type -P "$t")" && ln -sf "$p" "$J/tools/$t"
+done
+NARROW="$J/tools"
+# jqrun <PATH> sets jq_out, jq_rc, jq_err, jq_says, jq_path, jq_bin and jq_link for a run of the probe suite alone.
+jqrun() {
+  rm -f "$MARK/jq.says" "$MARK/jq.path" "$MARK/jq.bin" "$MARK/jq.link"
+  jq_out="$(PATH="$1" "$J/run.sh" jqprobe 2>"$J/stderr")"; jq_rc=$?
+  jq_err="$(cat "$J/stderr")"
+  jq_says="$(cat "$MARK/jq.says" 2>/dev/null)"
+  jq_path="$(cat "$MARK/jq.path" 2>/dev/null)"
+  jq_bin="$(cat "$MARK/jq.bin" 2>/dev/null)"
+  jq_link="$(cat "$MARK/jq.link" 2>/dev/null)"
+}
+eq() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "want '$2', got '$3'"; fi; }
+jqrun "$J/shims:$J/real:$NARROW"; out1=$jq_out
+eq "a mise shim ahead of a real jq on PATH is skipped" real "$jq_says"
+eq "the directory first on the suite's PATH holds exactly jq" jq "$jq_bin"
+eq "and that jq links to the real one" "$J/real/jq" "$jq_link"
+jqrun "$J/shims:$J/shims2:$J/real:$NARROW"
+eq "a second shim is skipped too" real "$jq_says"
+jqrun "$J/shims:$NARROW"
+rc3=$jq_rc
+eq "with only a shim on PATH the runner exits 2" 2 "$rc3"
+eq "and runs no suite" "" "$jq_says"
+case "$jq_err" in *jq*) _pass "and names the missing jq on one stderr line" ;; *) _fail "and names the missing jq on one stderr line" "$jq_err" ;; esac
+eq "that line is the only one" 1 "$(printf '%s\n' "$jq_err" | wc -l | tr -d ' ')"
+# refused <label> <PATH> <version text>: the runner exits 2, runs no suite and names the version and the floor.
+refused() {
+  jqrun "$2"
+  eq "$1: the runner exits 2" 2 "$jq_rc"
+  eq "$1: no suite runs" "" "$jq_says"
+  case "$jq_err" in *"$3"*1.8.1*) _pass "$1: one stderr line names $3 and 1.8.1" ;; *) _fail "$1: one stderr line names $3 and 1.8.1" "$jq_err" ;; esac
+  eq "$1: that line is the only one" 1 "$(printf '%s\n' "$jq_err" | wc -l | tr -d ' ')"
+}
+refused "a jq older than 1.8.1" "$J/shims:$J/old:$NARROW" 1.7.1
+refused "a jq one patch level older than 1.8.1" "$J/shims:$J/patch:$NARROW" 1.8.0
+refused "a jq whose version does not parse" "$J/shims:$J/odd:$NARROW" garbage
+jqrun "$J/shims:$J/floor:$NARROW"
+eq "a jq at exactly 1.8.1 runs" real "$jq_says"
+jqrun "$J/shims:$J/ten:$NARROW"
+eq "versions compare as numbers: 1.10.0 runs" real "$jq_says"
+jqrun ":relative-dir:$J/dirjq:$J/shims:$J/real:$NARROW"
+eq "an empty entry, a relative one and a directory named jq are skipped" real "$jq_says"
+eq "and the runner says nothing on stderr" "" "$jq_err"
+jqrun "$J/real:$NARROW"; out_real=$jq_out
+eq "the link changes nothing in the report" "$out_real" "$out1"
+
+# A suite marked `# test-slow` is dispatched before the others in the parallel phase, so a long
+# suite does not start last and set the wall time. Bug caught: the marker ignored, so the slowest
+# suite still starts in name order; or a serial or gated suite jumping the queue because of it. The
+# fixtures live in their own directory with their own runner, so the unfiltered runs above keep
+# their suite counts. Each suite appends `start <name>` to $MARK/order when it starts and, but for
+# the serial one, `end <name>` a moment later.
+slowtag="# test-slow"
+S="$T/slow"
+mkdir -p "$S"
+cp "$RUN" "$S/run.sh"
+# mkorder <name> <tag line or empty> [serial]: a fixture suite that records its start (and end).
+mkorder() {
+  printf '#!/usr/bin/env bash\n' > "$S/$1.test.sh"
+  [ -z "$2" ] || printf '%s\n' "$2" >> "$S/$1.test.sh"
+  cat >> "$S/$1.test.sh" <<SUITE
+echo "start $1" >> "\$MARK/order"
+SUITE
+  if [ "${3:-}" != serial ]; then
+    cat >> "$S/$1.test.sh" <<SUITE
+sleep 0.3
+echo "end $1" >> "\$MARK/order"
+SUITE
+  fi
+  echo "echo \"  ok  $1\"" >> "$S/$1.test.sh"
+}
+mkorder aa-first ""
+mkorder zz-late "$slowtag"
+mkorder zz-commented "$slowtag  # 99 s on 2026-11-14"
+mkorder zz-slowish "${slowtag}ish"
+mkorder zz-serial-slow "$slowtag
+# test-serial" serial
+mkorder zz-gated-slow "$slowtag
+$tag: a live herdr" serial
+chmod 755 "$S"/*.sh
+# orderrun <jobs> <filter>...: runs the fixtures and sets order_out (the report) and order (the starts and ends).
+orderrun() {
+  local j=$1; shift
+  rm -f "$MARK/order"
+  order_out="$(RUN_JOBS=$j "$S/run.sh" "$@" 2>&1)"
+  order="$(cat "$MARK/order" 2>/dev/null)"
+}
+orderrun 1 aa-first zz-late
+eq "S1: a suite marked test-slow starts before an unmarked one that sorts earlier" "start zz-late" "$(printf '%s\n' "$order" | sed -n 1p)"
+eq "S1: and the unmarked one starts after it" "start aa-first" "$(printf '%s\n' "$order" | grep '^start' | sed -n 2p)"
+eq "S2: the report still lists the suites in name order" "aa-first zz-late" "$(printf '%s\n' "$order_out" | sed -n 's/^ *ok  *\([a-z-]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+orderrun 4 aa-first zz-late zz-serial-slow
+eq "S3: a suite marked test-slow and test-serial starts last" "start zz-serial-slow" "$(printf '%s\n' "$order" | tail -n 1)"
+eq "S3: after both parallel suites have ended" 5 "$(printf '%s\n' "$order" | wc -l | tr -d ' ')"
+orderrun 4 gated
+ran "S4: a marked suite behind a requirement tag is skipped" yes 'skip +zz-gated-slow +needs: a live herdr' "$order_out"
+eq "S4: and does not start" "" "$order"
+orderrun 4 aa-first zz-late zz-gated-slow
+eq "S4: selected by its exact name, it is serial and starts last despite the marker" "start zz-gated-slow" "$(printf '%s\n' "$order" | tail -n 1)"
+eq "S4: after both parallel suites have ended" 5 "$(printf '%s\n' "$order" | wc -l | tr -d ' ')"
+orderrun 1 aa-first zz-commented
+eq "S5: a marker followed by a comment counts" "start zz-commented" "$(printf '%s\n' "$order" | sed -n 1p)"
+orderrun 1 aa-first zz-slowish
+eq "S5: a longer tag that only begins with the marker does not" "start aa-first" "$(printf '%s\n' "$order" | sed -n 1p)"
+# The marked suites start longest first, by the seconds in the marker's comment, ties by name, a
+# marker without a number last. Bug caught: marked suites left in name order, so the longest one
+# can start last and set the run's wall time.
+mkorder aa-short "$slowtag  # 10 s on 2026-11-14"
+mkorder mm-mid "$slowtag  # 50 s on 2026-11-14"
+mkorder zz-long "$slowtag  # 100 s on 2026-11-14"
+mkorder bb-tie "$slowtag  # 50 s on 2026-11-14"
+mkorder cc-tie "$slowtag  # 50 s on 2026-11-14"
+mkorder dd-bare "$slowtag"
+chmod 755 "$S"/*.sh
+orderrun 1 aa-short mm-mid zz-long bb-tie cc-tie dd-bare
+eq "S6: marked suites start by seconds descending, ties by name, a bare marker last" "zz-long bb-tie cc-tie mm-mid aa-short dd-bare" "$(printf '%s\n' "$order" | sed -n 's/^start //p' | tr '\n' ' ' | sed 's/ $//')"
 
 # Locking. hold <tenths> [record] takes the lock in the background, waits until it is held
 # (and, when given, until its holder-record line is written to $L.holder), and releases it

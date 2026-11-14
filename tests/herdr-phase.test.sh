@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 133 s on 2026-11-14
 # Tests phase.sh — the reporter that badges Herdr spaces with where a worktree sits
 # between "I'm working on this" and "this is waiting to be merged".
 #

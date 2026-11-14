@@ -30,6 +30,11 @@
 # machine (timing assertions, fixed ports, shared state) carries a `# test-serial` line and
 # runs alone after the parallel ones; so does every suite gated on a condition other than
 # `heavy` (a live herdr, a pty, the real daemon), which --all or an exact name selects.
+# A suite marked `# test-slow` is dispatched ahead of the unmarked ones in the parallel phase (a
+# `heavy` one too, when a run selects it), so a long one does not start last; the marked ones go
+# longest first, by the first integer in the marker's comment (`# test-slow  # 508 s on ...`; none
+# counts as 0), ties by name. The marker orders dispatch only, and a serial suite, or one gated on
+# something other than `heavy`, is unaffected.
 #
 # One runner per machine: every invocation, filtered or not, takes a lockf lock on
 # RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock). The runner that holds it writes
@@ -42,6 +47,10 @@
 # The runner exports RUN_SH_LOCKED=1 to its suites, and an invocation that sees it does not
 # lock again, so a runner nested in a suite cannot wait for its parent's lock.
 # Never wrap this runner in lockf yourself.
+#
+# Suites get the first jq on PATH that is not a mise shim, linked first on their PATH, because
+# an inactive mise shim costs about 90 ms a call. With none, or one older than 1.8.1 or whose
+# --version does not parse, the runner prints one line on stderr and exits 2 before any suite.
 #
 # Suites with a `# test-requires:` line need conditions this runner cannot create
 # (an unsandboxed shell, a live herdr, a fresh Claude session) or are `heavy`, a policy
@@ -327,23 +336,70 @@ if [ "$lock_owner" = 1 ] && [ "$one" -eq 0 ]; then
   { printf '%s\t%s\t%s\n' "$(date +%s)" "$rec_dir" "$rec_args" >"$lock.holder.$$" && mv "$lock.holder.$$" "$lock.holder"; } 2>/dev/null || rm -f "$lock.holder.$$"
 fi
 
+# The suites call jq many times, and a mise shim ahead of it on PATH costs about 90 ms a call
+# even when mise is inactive. Link the first jq on PATH that is not a shim into a private
+# directory and put that first; with none, or one that is too old, stop before any suite runs.
+jq_floor=1.8.1
+link_jq() {
+  local rest=$PATH: dir cand tgt ver nums maj min pat
+  while [ -n "$rest" ]; do
+    dir=${rest%%:*}; rest=${rest#*:}
+    case $dir in /*) ;; *) continue ;; esac
+    cand=$dir/jq
+    [ -d "$cand" ] && continue
+    [ -x "$cand" ] || continue
+    if [ -L "$cand" ]; then
+      tgt=$(readlink "$cand") || continue
+      [ "${tgt##*/}" = mise ] && continue
+    fi
+    ver=$("$cand" --version 2>/dev/null | head -n 1)
+    if [[ $ver =~ ^jq-([0-9]+)\.([0-9]+)(\.([0-9]+))?(-.*)?$ ]]; then
+      maj=${BASH_REMATCH[1]} min=${BASH_REMATCH[2]} pat=${BASH_REMATCH[4]:-0}
+      if [ $((10#$maj)) -lt 1 ] || { [ $((10#$maj)) -eq 1 ] && { [ $((10#$min)) -lt 8 ] || { [ $((10#$min)) -eq 8 ] && [ $((10#$pat)) -lt 1 ]; }; }; }; then
+        echo "run.sh: $cand is ${ver#jq-}, older than jq $jq_floor; the suites need $jq_floor or newer" >&2
+        return 1
+      fi
+    else
+      echo "run.sh: cannot read the version of $cand ('$ver'); the suites need jq $jq_floor or newer" >&2
+      return 1
+    fi
+    mkdir -p "$RUN_SH_WORK/bin" && ln -s "$cand" "$RUN_SH_WORK/bin/jq" || { echo "run.sh: cannot link $cand into $RUN_SH_WORK/bin" >&2; return 1; }
+    PATH=$RUN_SH_WORK/bin:$PATH
+    return 0
+  done
+  echo "run.sh: no jq on PATH other than a mise shim; the suites need jq $jq_floor or newer" >&2
+  return 1
+}
+link_jq || exit 2
+export PATH
+
 sel_reason="git failed" # the safe state; compute_selection clears it only when it ran to the end
 [ "$changed" -eq 0 ] || compute_selection
 # A shell error in a loop (an expansion error, say) abandons the whole top-level command, not
 # just the loop, and the script goes on with what it had. Each suite loop is therefore a group
 # whose last command records that it ran to the end: a selection that stopped partway runs no
 # suite, and a report that stopped partway gives no verdict.
-parallel=() serial=() dispatch_done=0
+slow=() parallel=() serial=() slow_rows="" dispatch_done=0
 { for f in ./*.test.sh; do
   select_suite "$f" || continue
   if grep -qE '^# test-serial([[:space:]]|$)' "$f" || { [ -n "$req" ] && [ "$req" != heavy ]; }; then
     serial+=("$name")
+  elif marker=$(grep -m1 -E '^# test-slow([[:space:]]|$)' "$f"); then
+    # The marker's seconds are the first integer after it; none counts as 0.
+    secs=$(printf '%s\n' "$marker" | sed -e 's/^# test-slow//' -e 's/^[^0-9]*//' -e 's/[^0-9].*//')
+    slow_rows="$slow_rows${secs:-0} $name
+"
   else
     parallel+=("$name")
   fi
 done; dispatch_done=1; }
 [ "$dispatch_done" = 1 ] || { echo "run.sh: selecting the suites failed; running none" >&2; exit 2; }
-[ ${#parallel[@]} -gt 0 ] && printf '%s\0' "${parallel[@]}" | xargs -0 -n1 -P "$jobs" "$self" --run-one
+# The marked suites go longest first (seconds descending, ties by name).
+if [ -n "$slow_rows" ]; then
+  while read -r _ name; do slow+=("$name"); done < <(printf '%s' "$slow_rows" | LC_ALL=C sort -k1,1nr -k2,2)
+fi
+# An empty array expands as unbound under set -u in bash 3.2, so each is guarded.
+[ $((${#slow[@]} + ${#parallel[@]})) -gt 0 ] && { [ ${#slow[@]} -eq 0 ] || printf '%s\0' "${slow[@]}"; [ ${#parallel[@]} -eq 0 ] || printf '%s\0' "${parallel[@]}"; } | xargs -0 -n1 -P "$jobs" "$self" --run-one
 [ ${#serial[@]} -gt 0 ] && printf '%s\0' "${serial[@]}" | xargs -0 -n1 -P 1 "$self" --run-one
 
 suites=0 green=0 red=0 broken=0 skipped=0 report_done=0

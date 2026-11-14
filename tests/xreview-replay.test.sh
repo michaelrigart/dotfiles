@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 176 s on 2026-11-14
 # Tests for .scripts/xreview-replay.py: the harness that measures each review-packet switch
 # (framing, omit_plans, delta, fit) against today's packets on past reviews (spec
 # docs/superpowers/specs/2026-10-25-xreview-review-packets-design.md, section 5).

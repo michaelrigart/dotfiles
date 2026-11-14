@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 240 s on 2026-11-14
 # Tests for .scripts/process-replay.py and the package .scripts/process_replay/: the harness that
 # measures, from October's recorded reviews, whether parts of the review process can be removed
 # (spec docs/superpowers/specs/2026-11-02-replay-set-design.md).
@@ -29,16 +30,27 @@ trap 'rm -rf "$ROOT"' EXIT
 export GIT_CONFIG_GLOBAL="$ROOT/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="$ROOT"
 printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' \
   > "$GIT_CONFIG_GLOBAL"
-mkdir -p "$ROOT/home" "$ROOT/state" "$ROOT/codex"
+mkdir -p "$ROOT/out"
 # A backstop: no t_*.py can reach the real ~/.local/state, ~/.codex or home directory by default.
+# Each module gets its own three, so four running at once never share one.
 export T_ROOT="$ROOT" HOME="$ROOT/home" XDG_STATE_HOME="$ROOT/state" CODEX_HOME="$ROOT/codex"
+
+# Four modules at a time, the biggest first; each writes <name>.out and <name>.rc under $ROOT/out.
+ls -S "${suites[@]}" | tr '\n' '\0' | xargs -0 -n1 -P 4 bash -c '
+  t=$1; name=$(basename "$t"); m="$T_ROOT/m.$name"
+  mkdir -p "$m/home" "$m/state" "$m/codex"
+  HOME="$m/home" XDG_STATE_HOME="$m/state" CODEX_HOME="$m/codex" \
+    /usr/bin/python3 -I -B "$t" > "$T_ROOT/out/$name.out" 2>&1
+  echo $? > "$T_ROOT/out/$name.rc"
+' _
 
 pass=0 fail=0
 for t in "${suites[@]}"; do
   name="$(basename "$t")"
   echo "== $name"
-  out="$(/usr/bin/python3 -I -B "$t" 2>&1)"
-  rc=$?
+  out="$(cat "$ROOT/out/$name.out" 2>/dev/null)"
+  rc="$(cat "$ROOT/out/$name.rc" 2>/dev/null)"
+  rc="${rc:-70}"
   printf '%s\n' "$out"
   p=$(printf '%s\n' "$out" | grep -c '^  PASS:')
   f=$(printf '%s\n' "$out" | grep -c '^  FAIL:')

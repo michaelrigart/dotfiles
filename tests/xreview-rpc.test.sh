@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 81 s on 2026-11-14
 # Tests dot_local/bin/executable_xreview-rpc, the dotfiles' client for the Codex daemon
 # (spec section 7.1). The daemon speaks JSON-RPC over a WebSocket on a unix socket, but the
 # Claude sandbox denies binding one (F20), so the fake daemon here speaks newline-delimited
@@ -274,16 +275,18 @@ for shape in '"result":"x"' '"result":{"data":{"a":1}}' '"result":{"data":"x"}' 
 done
 XREVIEW_RPC_STDIO=false rpc hooks-status >"$T/out" 2>/dev/null; rc=$?
 is "an unreachable daemon exits 5 with nothing on stdout" "$rc/$(cat "$T/out")" "5/"
+in_budget() { awk -v t0="$1" -v bound="$2" -v now="${EPOCHREALTIME/,/.}" \
+  'BEGIN { d = now - t0; if (d <= bound) print "in-budget"; else printf "took %.2fs\n", d }'; }
 scenario '{"silent":["hooks/list"]}'
-t0=$SECONDS
+t0=${EPOCHREALTIME/,/.}
 rpc hooks-status >"$T/out" 2>/dev/null; rc=$?
 is "a daemon that never answers hooks/list gives up within the budget, silent and non-zero" \
-   "$([ "$rc" -ne 0 ] && echo nonzero)/$(cat "$T/out")/$([ $((SECONDS - t0)) -le 5 ] && echo in-budget)" "nonzero//in-budget"
+   "$([ "$rc" -ne 0 ] && echo nonzero)/$(cat "$T/out")/$(in_budget "$t0" 3.75)" "nonzero//in-budget"
 scenario '{"silent":["initialize"]}'
-t0=$SECONDS
+t0=${EPOCHREALTIME/,/.}
 rpc hooks-status >"$T/out" 2>/dev/null; rc=$?
 is "and one that never answers initialize is bounded the same way" \
-   "$rc/$(cat "$T/out")/$([ $((SECONDS - t0)) -le 5 ] && echo in-budget)" "5//in-budget"
+   "$rc/$(cat "$T/out")/$(in_budget "$t0" 5.75)" "5//in-budget"
 
 echo "C. thread-status"
 scenario '{"responses":{"thread/read":{"result":{"thread":{"status":{"type":"active","activeFlags":[]}}}}}}'

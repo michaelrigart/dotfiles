@@ -134,8 +134,11 @@ Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; a
 `RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the verdicts are
 the same either way; a load-sensitive suite's assertion count can differ (`xreview-packet`
 F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
-`# test-serial` line and runs alone after the parallel ones (today only `xreview`), and so does
+`# test-serial` line and runs alone after the parallel ones (no suite carries it today), and so does
 every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
+A `# test-slow` line (optionally followed by a comment) moves a parallel-phase suite (a `heavy` one too, when selected) ahead of the unmarked ones, the marked ones longest first by the first integer in that comment (none counts as 0), ties by name; it orders dispatch only, and serial suites and suites gated on anything but `heavy` are unaffected.
+The runner gives its suites the first `jq` on `PATH` that is not a mise shim (about 6 ms a call, against
+about 90 ms through the shim), and exits 2 before any suite when there is none or it is older than 1.8.1.
 
 **The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,
 `RUN_SH_LOCK` overrides the path). A runner that has to wait prints on stderr who holds the lock
@@ -159,7 +162,7 @@ the gate and also selects every `xreview-*` suite, which run beside it at no ext
 
 | Suite | Needs | Why |
 |---|---|---|
-| `xreview`, `git-forge-guard`, `wt-functions`, `test-audit` | `heavy`: 672 s, 242 s, 123 s, 89 s | skipped by default for their length. Before every pre-merge review run `./tests/run.sh --changed`: it runs each one whose subject (its rows in `.scripts/test-audit/subjects.tsv`, its own file, `tests/run.sh`) changed against main, committed or not, and runs it whenever it cannot tell. An exact name or `--all` runs one regardless. After a tool upgrade that could reach them (`brew upgrade`), run all four by name, since no diff shows that: `./tests/run.sh xreview git-forge-guard wt-functions test-audit` |
+| `xreview`, `git-forge-guard`, `wt-functions`, `test-audit` | `heavy`: 508 s, 242 s, 149 s, 103 s | skipped by default for their length. Before every pre-merge review run `./tests/run.sh --changed`: it runs each one whose subject (its rows in `.scripts/test-audit/subjects.tsv`, its own file, `tests/run.sh`) changed against main, committed or not, and runs it whenever it cannot tell. An exact name or `--all` runs one regardless. After a tool upgrade that could reach them (`brew upgrade`), run all four by name, since no diff shows that: `./tests/run.sh xreview git-forge-guard wt-functions test-audit` |
 | `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `zshrc` | unsandboxed | drives a real zsh on a pseudo-terminal (Alt-k and SIGURG), and the sandbox has no pty devices; it then exits 2 (INCONCLUSIVE) |
