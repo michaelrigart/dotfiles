@@ -407,6 +407,18 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
             ]
           }
         ],
+        # The subagent path line: one line of context in front of the first prompt of every
+        # subagent, saying a cd never carries over and the path guard denies one. Sonnet 5.5
+        # acts on that rule in its first user turn and not in its system prompt (measured
+        # 2026-11-14). No matcher, so every agent type gets it. It never decides and fails open;
+        # tests in tests/subagent-shell-context.test.sh.
+        "SubagentStart": [
+          {
+            "hooks": [
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/hooks/subagent-shell-context.sh", "timeout": 10 }
+            ]
+          }
+        ],
         # Prompt audit (spec 2026-09-30 section 5): appends one JSONL line per permission
         # prompt to ~/.local/state/agent-audit/prompts.jsonl and never decides. Approved
         # prompts leave no trace in transcripts, so this is the only prompt count there is.
