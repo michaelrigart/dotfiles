@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented (merge 2, branch feat/forge-push-protection)
+
+> **Completed on 2026-11-14. Do not run this plan again;** merge 3 has its own plan.
 
 **Goal:** Land revision 2 of the spec up to, and not including, the retirement: no machine-account
 plumbing, the pull-request target for GitHub in `forge-protection check`, and the pull-request flow
