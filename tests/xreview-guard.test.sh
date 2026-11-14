@@ -253,6 +253,164 @@ is "B49 env -S and --split-string hand their string to a command" \
 is "B50 so does a shell's -c" \
    "$(decision "$W" "bash -c 'git merge feature'") $(decision "$W" "zsh -c 'git merge feature'") $(decision "$W" "sh -lc 'git merge feature'")" \
    "deny deny deny"
+# A shell's -c string passes through the outer shell first: inside double quotes it drops the
+# backslash of \$ and \` (and of \" in a backtick body), and a ${...} there nests quotes (B99 to
+# B106). A $( or ${ split by a line continuation in double quotes or in a here-document body is
+# read by bash and not by zsh; the gate marks it and denies it when a gated verb stands in the
+# command (B107 to B114).
+is "B99 a backtick body in a double-quoted -c string runs when the inner shell reads it" \
+   "$(decision "$W" 'bash -c "echo \`git merge feature\`"') $(decision "$W" 'bash -c "echo \`glab mr merge 7\`"') $(decision "$W" 'sh -c "x=\`gh pr merge 9\`"')" \
+   "deny deny deny"
+is "B100 so does a \$( ) or a backtick body inside an escaped quote" \
+   "$(decision "$W" 'bash -c "echo \"\$(git merge feature)\""') $(decision "$W" 'zsh -c "print \"\$(glab mr merge 7)\""') $(decision "$W" 'bash -c "echo \"\`git merge feature\`\""')" \
+   "deny deny deny"
+X7='bash -c "echo \\\\\`git merge feature\`"'
+X8=$(cat <<'CMD'
+env -S "bash -c 'echo \`git merge feature\`'"
+CMD
+)
+is "B101 an escaped backslash does not escape the backtick, nor does env -S's string" \
+   "$(decision "$W" "$X7") $(decision "$W" "$X8")" "deny deny"
+X9='echo "`bash -c \"git merge feature\"`"'
+is "B102 a backtick body in double quotes reads \\\" as a quote" "$(decision "$W" "$X9")" deny
+X10=$(cat <<'CMD'
+bash -c 'echo '"\`git merge feature\`"
+CMD
+)
+X11=$(cat <<'CMD'
+bash -c "bash -c 'echo \`git merge feature\`'"
+CMD
+)
+X10b=$(cat <<'CMD'
+printf '%s\n' '"a' && bash -c "echo \`git merge feature\`"
+CMD
+)
+is "B103 a mixed-quoted string, a shell inside a shell, a \$\"...\" string and one after a single-quoted double quote are read as the shell hands them on" \
+   "$(decision "$W" "$X10") $(decision "$W" "$X11") $(decision "$W" 'bash -c $"echo \`git merge feature\`"') $(decision "$W" "$X10b")" \
+   "deny deny deny deny"
+X17='bash -c "${x:-"git merge y"}"'
+X18=$(cat <<'CMD'
+echo "${x:-"'"}"; git merge y; echo "'" #"
+CMD
+)
+is "B104 a quote inside a double-quoted \${...} is denied where the command mentions a gated verb" \
+   "$(decision "$W" "$X17") $(decision "$W" "$X18")" "deny deny"
+is "B104 and the denial names it" "$(reason "$W" "$X17" | grep -c 'double-quoted \${')" 1
+X22=$(cat <<'CMD'
+git -C "$(
+  pwd
+)" merge feature; printf '%s\n' "${MSG:-"done"}"
+CMD
+)
+is "B106 the nested-quote rule takes no reading away: a gated command beside one is still denied" \
+   "$(decision "$W" "$X22")" deny
+X12='bash -c "echo \"merge is a word\""'
+X13='bash -c "git log --format=\"%h\" -1"'
+X14=$(cat <<'CMD'
+bash -c "echo '\`git merge feature\`'"
+CMD
+)
+X15='echo "$(bash -c \"git merge feature\")"'
+X16=$(cat <<'CMD'
+cat <<EOF
+`bash -c \"git merge feature\"`
+EOF
+CMD
+)
+X19=$(cat <<'CMD'
+printf '%s\n' "${MSG:-"it's done"}"
+CMD
+)
+X23=$(cat <<'CMD'
+echo "${x:-\}"'"}"; git merge y; echo "'" #"
+CMD
+)
+is "B107 an escaped } does not close the \${...} the nested-quote rule counts" "$(decision "$W" "$X23")" deny
+X24=$(cat <<'CMD'
+bash -c 'bash -c "$\
+{x:-"git merge y"}"'
+CMD
+)
+is "B108 a line continuation between \$ and { still opens the \${...}" "$(decision "$W" "$X24")" deny
+X25=$(cat <<'CMD'
+echo "${x:-"'"}"; git -C "$(
+pwd
+)" merge y; echo "'" #"
+CMD
+)
+is "B109 the nested-quote rule finds a gated verb past a newline inside a \$( )" "$(decision "$W" "$X25")" deny
+X26=$(cat <<'CMD'
+bash -c 'echo "$\
+(git merge y)"'
+CMD
+)
+is "B110 a line continuation between \$ and ( inside double quotes still opens the substitution" "$(decision "$W" "$X26")" deny
+X27=$(cat <<'CMD'
+x="$\
+("; git merge y; echo ")"
+CMD
+)
+X28=$(cat <<'CMD'
+echo "$\
+("
+git merge y
+")"
+CMD
+)
+is "B111 a \$( split by a line continuation in double quotes is text to zsh, which then runs what follows" \
+   "$(decision "$W" "$X27") $(decision "$W" "$X28")" "deny deny"
+X29=$(cat <<'CMD'
+echo "$\
+(( 1<<EOF ))"
+git merge y
+EOF
+CMD
+)
+is "B112 a \$(( split by a line continuation is not read as a substitution that hides the next lines" "$(decision "$W" "$X29")" deny
+X30=$(cat <<'CMD'
+cat <<EOF
+$\
+( ' )
+$(git merge y)
+' )
+EOF
+CMD
+)
+X31=$(cat <<'CMD'
+cat <<EOF
+$\
+(git merge y)
+EOF
+CMD
+)
+is "B113 a split \$( in an expanding here-document body stays denied, as does a real one after it" \
+   "$(decision "$W" "$X30") $(decision "$W" "$X31")" "deny deny"
+X32=$(cat <<'CMD'
+/opt/homebrew/bin/bash -c 'echo "$\
+{ git merge y; }"'
+CMD
+)
+X33=$(cat <<'CMD'
+/opt/homebrew/bin/bash -c 'cat <<EOF
+$\
+{ git merge y; }
+EOF'
+CMD
+)
+is "B114 a bash 5.3 \${ cmd; } split by a line continuation marks the text too, in double quotes and in a here-document body" \
+   "$(decision "$W" "$X32") $(decision "$W" "$X33")" "deny deny"
+X34=$(cat <<'CMD'
+echo "${x:-"'"}"; git -C "$(
+pwd
+)" mer\
+ge y; echo "'" #"
+CMD
+)
+is "B115 the nested-quote rule finds a verb split by a continuation in a command with a multi-line substitution" \
+   "$(decision "$W" "$X34")" deny
+is "B105 the inner command's own quoting, single quotes, \$( ), a here-document and a nested quote with no gated verb stay allowed" \
+   "$(decision "$W" "$X12") $(decision "$W" "$X13") $(decision "$W" "$X14") $(decision "$W" "$X15") $(decision "$W" "$X16") $(decision "$W" "$X19")" \
+   "allow allow allow allow allow allow"
 is "B51 an unquoted mention is denied too" "$(decision "$W" 'echo git merge feature')" deny
 is "B52 asking to quote it" "$(reason "$W" 'echo git merge feature' | grep -c 'quote the mention')" 1
 # A backslash-newline is deleted before anything else is read, as the shell deletes it, unless
