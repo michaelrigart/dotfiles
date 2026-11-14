@@ -47,13 +47,14 @@ arguments one by one, and fed to main's gate (`045a931`).
 | 17 | `bash -c "${x:-"git merge y"}"` | runs the merge | allows |
 | 18 | `echo "${x:-"'"}"; git merge y; echo "'" #"` | runs the merge | allows |
 | 19 | `printf '%s\n' "${MSG:-"it's done"}"` | runs nothing gated | allows |
+| 20 | `bash -c 'echo "$\` and a newline, then `(git merge y)"'` | runs the merge | allows |
 
 So the bare `\$( … )` form the hole was first reported with is already denied; the open
 `$( … )` forms are those inside a double-quoted string of the inner command.
 
 ## 3. Cause
 
-Three places read double quotes differently from the shells. In double quotes, zsh and bash
+Four places read double quotes differently from the shells. In double quotes, zsh and bash
 drop the backslash of `\$`, `` \` ``, `\"`, `\\` and backslash-newline, and keep every other
 backslash (`\!` included, in a non-interactive shell: measured).
 
@@ -68,6 +69,10 @@ backslash (`\!` included, in a non-interactive shell: measured).
   quotes, the shells open a nested string there instead (row 17), and a `'` inside the nested
   string is text, which `lex` takes for the start of a single-quoted one (row 18). The shells'
   rule depends on the operator: after `:-` a `'` is literal, after `/` it quotes (measured).
+- **`lex`** finds a `$(` by looking two characters ahead in the raw text. Inside double quotes,
+  and in an unquoted here-document body, bash joins a line continuation first, so a `$`, a
+  backslash-newline and a `(` are a substitution there; `lex` reads text (row 20: the inner bash
+  joins it, under every outer shell).
 
 ## 4. Design
 
@@ -85,10 +90,16 @@ R3 adds a deny for text the gate cannot read exactly, when `crude` finds a gated
 - **R2, a backtick body inside double quotes** is also read with `\"` undone. Both bodies are
   rescanned.
 - **R3, a quote inside a double-quoted `${…}`.** `lex` reads the text as today and counts the
-  `${` it meets inside double quotes; a `"` or `'` while one is open marks the text. `scan`
-  denies a marked text that `crude` finds a gated verb in, with a reason naming the case, at the
-  top level and in a nested string alike; any other marked text is read as today. An exact
-  reading would model each operator's quoting rule (§3) in two shells; the fallback needs none.
+  `${` it meets inside double quotes; a `"` or `'` while one is open marks the text. An escaped
+  character never counts (`\}` does not close the `${`). `scan` denies a marked text that
+  `crude` finds a gated verb in, read as written or with its newlines flattened (`crude` reads
+  within a line, and a multi-line `$( )` can part the tool from its verb), with a reason naming
+  the case, at the top level and in a nested string alike; any other marked text is read as
+  today. An exact reading would model each operator's quoting rule (§3) in two shells; the
+  fallback needs none.
+- **R4, a line continuation inside `$(` or `${`.** In double quotes and in an unquoted
+  here-document body, `lex` looks for `$(`, and for R3's `${`, past backslash-newline pairs, as
+  bash joins them (ruling Q7). In plain shell text the lookaheads stay as they are (§5).
 
 The top-level words stay the first reading. The two readings differ only by a backslash before
 `$` or a backtick, and every word the gate compares is either fixed text holding neither (a
@@ -98,8 +109,8 @@ hold neither either, and a backslash before a `$` leaves their word boundaries w
 So a plain command is judged as today, unless R3 denies it.
 
 **R3's cost.** A command with a quote in a double-quoted `${…}` that also mentions a gated verb
-is denied where main allowed it: `git commit -m "${MSG:-"merge notes"}"`. In the transcripts
-(§7), 32 commands hold such a quote and none mentions a gated verb.
+is denied where main allowed it: `git commit -m "${MSG:-"merge notes"}"`. No command in the
+transcripts (§7) holds such a quote.
 
 **R1's cost.** Every word after a `-c` string is read as a shell string, as on main, so R1 reads
 `$0` and `$1` too: `bash -c 'echo' "\`git merge feature\`"` runs nothing, and is denied. So is
@@ -141,13 +152,18 @@ auto-mode classifier (rulings Q2, Q5, Q6).
 - **Top-level spellings outside quoting.** A glued empty substitution (`git merge$() x`, every
   shell), a zsh brace group glued to the command word (`{git merge x}`), and brace expansion
   (`bash -c {'git merge x',}`, every shell).
+- **Line continuations in plain shell text.** A backslash-newline inside `$((`, `$'`, `<(`, a
+  bash 5.3 `${ ` or a here-document operator is joined by the shells, while `lex` reads the
+  parts. Most such spellings are denied anyway, since a lone `(` is a token.
 - `eval` and a script fed to a shell stay out of scope, as the threat model says.
 
 ## 6. Tests
 
 Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each new deny shown red on main first:
-- **Denied:** rows 1 to 9, 17 and 18 of §2, and R3's rejected form's command (§4), which main
-  denies already: it pins that R3 takes no reading away.
+- **Denied:** rows 1 to 9, 17, 18 and 20 of §2; row 18 with an escaped `}` in the default
+  value; row 17 inside one more `bash -c '…'` with a line continuation between `$` and `{`; row
+  18 with a multi-line `git -C "$(…)"`; and R3's rejected form's command (§4), which main denies
+  already: it pins that R3 takes no reading away.
 - **Allowed:** rows 12 to 16 and 19 of §2: the inner command's own quoting, an escaped
   substitution in the inner command's single quotes, the two places where `\"` stays escaped,
   and a nested quote in a command that mentions no gated verb.
@@ -155,12 +171,13 @@ Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each new deny shown r
 ## 7. Replay
 
 Every distinct Bash command in the Claude Code transcripts on this Mac (253,468, from 6,910
-transcript files), read by main's `scan` and by a prototype of R1 and R2, each command sorted
-into clear, gated, hidden or unparseable: no command changed. In 29 of them the two readings
-hand a nested shell different strings; 28 are clear and one is gated (a verb at its top level)
-under both. For R3: 32 commands hold a quote inside a double-quoted `${…}`, and `crude` finds a
-gated verb in none, so none is denied. The replay is rerun on the built gate before the
-pre-merge review.
+transcript files), read by main's `scan` and by this line's, each command sorted into clear,
+gated, hidden or unparseable: no command changed, for a prototype of R1 and R2 and for the
+built R1 to R3. In 29 of them the two readings hand a nested shell different strings; 28 are
+clear and one is gated (a verb at its top level) under both. No command holds a quote inside a
+double-quoted `${…}` as `lex` reads it (a rough scan before the build counted 32, JavaScript
+template literals and the like). The replay is rerun on the final gate before the pre-merge
+review.
 
 ## 8. Rulings
 
@@ -172,6 +189,8 @@ By the driver session on Michael's delegation, 2026-11-14, each as recommended:
 - **Q4:** fix rows 17 and 18 here with R3's fallback, with the transcripts' count in §7.
 - **Q5:** zsh's `$'…'` and bash's `$"…"` are limits (§5).
 - **Q6:** the top-level spellings outside quoting are limits (§5).
+- **Q7:** fix row 20 here (R4), with the helper that joins R3's `${`; line continuations in plain
+  shell text stay limits.
 
 ## 9. Direction for a future line
 
