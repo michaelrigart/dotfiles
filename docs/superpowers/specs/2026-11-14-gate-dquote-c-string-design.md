@@ -95,8 +95,10 @@ R3 adds a deny for text the gate cannot read exactly, when `crude` finds a gated
 - **R3, a quote inside a double-quoted `${…}`.** `lex` reads the text as today and counts the
   `${` it meets inside double quotes; a `"` or `'` while one is open marks the text. An escaped
   character never counts (`\}` does not close the `${`). `scan` denies a marked text that
-  `crude` finds a gated verb in, read as written or with its newlines flattened (`crude` reads
-  within a line, and a multi-line `$( )` can part the tool from its verb), with a reason naming
+  `crude` finds a gated verb in, read as written, with its newlines flattened, or with its line
+  continuations joined and then its newlines flattened (`crude` reads within a line, a
+  multi-line `$( )` can part the tool from its verb, and a continuation can split the verb
+  itself), with a reason naming
   the case, at the top level and in a nested string alike; any other marked text is read as
   today. An exact reading would model each operator's quoting rule (§3) in two shells; the
   fallback needs none.
