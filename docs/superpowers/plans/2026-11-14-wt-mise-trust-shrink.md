@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Implemented (branch `refactor/wt-mise-trust`, its PR against `main`)
+
+> **Completed 2026-11-14; do not run this plan again.** Both tasks ran, plus one comment-trim fix
+> round and a final-review fix wave; the result is 246 lines.
+
 **Goal:** Cut the `_wt_mise_*` code in `dot_config/zsh/functions` from 333 to about 245 lines
 without changing any trust check.
 

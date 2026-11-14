@@ -1,6 +1,6 @@
 # Shrink wt's mise-trust carry
 
-**Status:** In progress
+**Status:** Implemented (branch `refactor/wt-mise-trust`, its PR against `main`; 333 → 246 lines)
 **Date:** 2026-11-14
 **Branch:** `refactor/wt-mise-trust`
 **Sign-off:** the driver session (chezmoi-c1), on Michael's delegation, 2026-11-14; Codex spec
@@ -108,3 +108,14 @@ Live check after `chezmoi apply`: one `wt <branch>` in a `~/Code` repository wit
 - Approach 2 over approach 1 (driver, on Michael's delegation, 2026-11-14; reason above).
 - The base branch goes, with the changed success and refusal lines above (driver, 2026-11-14,
   on Claude's recommendation: never exercised for real).
+
+Made during execution (Claude, as the run's controller):
+
+- X14f is deleted with `_wt_mise_withdraw`: it pinned that the helper's `local` line could read
+  its caller's `dest`, a hazard the fold removes; the X11 and X14d cases still check the
+  withdraw line's path after a report.
+- X35's `hasnt` matched a path that is always printed quoted, so it could never fail; it now
+  checks for the quoted baseline. X37 also asserts that the carry goes on after a refusal.
+- Four behaviour-identical simplifications beyond the fold (the dropped `dlines` array, one
+  worktree-list check, `for root in $roots`, a one-line candidate read) stay: they serve the
+  line target and every case passes unchanged.
