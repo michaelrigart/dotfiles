@@ -399,6 +399,18 @@ orderrun 1 aa-first zz-commented
 eq "S5: a marker followed by a comment counts" "start zz-commented" "$(printf '%s\n' "$order" | sed -n 1p)"
 orderrun 1 aa-first zz-slowish
 eq "S5: a longer tag that only begins with the marker does not" "start aa-first" "$(printf '%s\n' "$order" | sed -n 1p)"
+# The marked suites start longest first, by the seconds in the marker's comment, ties by name, a
+# marker without a number last. Bug caught: marked suites left in name order, so the longest one
+# can start last and set the run's wall time.
+mkorder aa-short "$slowtag  # 10 s on 2026-11-14"
+mkorder mm-mid "$slowtag  # 50 s on 2026-11-14"
+mkorder zz-long "$slowtag  # 99 s on 2026-11-14"
+mkorder bb-tie "$slowtag  # 50 s on 2026-11-14"
+mkorder cc-tie "$slowtag  # 50 s on 2026-11-14"
+mkorder dd-bare "$slowtag"
+chmod 755 "$S"/*.sh
+orderrun 1 aa-short mm-mid zz-long bb-tie cc-tie dd-bare
+eq "S6: marked suites start by seconds descending, ties by name, a bare marker last" "zz-long bb-tie cc-tie mm-mid aa-short dd-bare" "$(printf '%s\n' "$order" | sed -n 's/^start //p' | tr '\n' ' ' | sed 's/ $//')"
 
 # Locking. hold <tenths> [record] takes the lock in the background, waits until it is held
 # (and, when given, until its holder-record line is written to $L.holder), and releases it

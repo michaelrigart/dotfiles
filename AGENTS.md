@@ -136,7 +136,7 @@ the same either way; a load-sensitive suite's assertion count can differ (`xrevi
 F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
 `# test-serial` line and runs alone after the parallel ones (no suite carries it today), and so does
 every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
-A `# test-slow` line (optionally followed by a comment) moves a parallel-phase suite (a `heavy` one too, when selected) ahead of the unmarked ones; it orders dispatch only, and serial suites and suites gated on anything but `heavy` are unaffected.
+A `# test-slow` line (optionally followed by a comment) moves a parallel-phase suite (a `heavy` one too, when selected) ahead of the unmarked ones, the marked ones longest first by the first integer in that comment (none counts as 0), ties by name; it orders dispatch only, and serial suites and suites gated on anything but `heavy` are unaffected.
 The runner gives its suites the first `jq` on `PATH` that is not a mise shim (about 6 ms a call, against
 about 90 ms through the shim), and exits 2 before any suite when there is none or it is older than 1.8.1.
 

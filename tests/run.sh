@@ -31,8 +31,10 @@
 # runs alone after the parallel ones; so does every suite gated on a condition other than
 # `heavy` (a live herdr, a pty, the real daemon), which --all or an exact name selects.
 # A suite marked `# test-slow` is dispatched ahead of the unmarked ones in the parallel phase (a
-# `heavy` one too, when a run selects it), so a long one does not start last; the marker orders
-# dispatch only, and a serial suite, or one gated on something other than `heavy`, is unaffected.
+# `heavy` one too, when a run selects it), so a long one does not start last; the marked ones go
+# longest first, by the first integer in the marker's comment (`# test-slow  # 508 s on ...`; none
+# counts as 0), ties by name. The marker orders dispatch only, and a serial suite, or one gated on
+# something other than `heavy`, is unaffected.
 #
 # One runner per machine: every invocation, filtered or not, takes a lockf lock on
 # RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock). The runner that holds it writes
@@ -377,18 +379,25 @@ sel_reason="git failed" # the safe state; compute_selection clears it only when 
 # just the loop, and the script goes on with what it had. Each suite loop is therefore a group
 # whose last command records that it ran to the end: a selection that stopped partway runs no
 # suite, and a report that stopped partway gives no verdict.
-slow=() parallel=() serial=() dispatch_done=0
+slow=() parallel=() serial=() slow_rows="" dispatch_done=0
 { for f in ./*.test.sh; do
   select_suite "$f" || continue
   if grep -qE '^# test-serial([[:space:]]|$)' "$f" || { [ -n "$req" ] && [ "$req" != heavy ]; }; then
     serial+=("$name")
-  elif grep -qE '^# test-slow([[:space:]]|$)' "$f"; then
-    slow+=("$name")
+  elif marker=$(grep -m1 -E '^# test-slow([[:space:]]|$)' "$f"); then
+    # The marker's seconds are the first integer after it; none counts as 0.
+    secs=$(printf '%s\n' "$marker" | sed -e 's/^# test-slow//' -e 's/^[^0-9]*//' -e 's/[^0-9].*//')
+    slow_rows="$slow_rows${secs:-0} $name
+"
   else
     parallel+=("$name")
   fi
 done; dispatch_done=1; }
 [ "$dispatch_done" = 1 ] || { echo "run.sh: selecting the suites failed; running none" >&2; exit 2; }
+# The marked suites go longest first (seconds descending, ties by name).
+if [ -n "$slow_rows" ]; then
+  while read -r _ name; do slow+=("$name"); done < <(printf '%s' "$slow_rows" | LC_ALL=C sort -k1,1nr -k2,2)
+fi
 # An empty array expands as unbound under set -u in bash 3.2, so each is guarded.
 [ $((${#slow[@]} + ${#parallel[@]})) -gt 0 ] && { [ ${#slow[@]} -eq 0 ] || printf '%s\0' "${slow[@]}"; [ ${#parallel[@]} -eq 0 ] || printf '%s\0' "${parallel[@]}"; } | xargs -0 -n1 -P "$jobs" "$self" --run-one
 [ ${#serial[@]} -gt 0 ] && printf '%s\0' "${serial[@]}" | xargs -0 -n1 -P 1 "$self" --run-one
