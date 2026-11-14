@@ -71,10 +71,10 @@ backslash (`\!` included, in a non-interactive shell: measured).
 
 ## 4. Design
 
-Deny direction only: every reading the gate makes today stays. R1 and R2 add a reading whose
-substitutions and nested shells are scanned as well, and a command is decided differently only
-when the new reading holds a gated verb; it is then denied as hidden. R3 makes text the gate
-cannot read exactly unreadable, which `crude` then decides.
+Deny direction only: every reading the gate makes today stays, `crude`'s included. R1 and R2
+add a reading whose substitutions and nested shells are scanned as well, and a command is
+decided differently only when the new reading holds a gated verb; it is then denied as hidden.
+R3 adds a deny for text the gate cannot read exactly, when `crude` finds a gated verb in it.
 
 - **R1, the shell's words.** `tokenize` gains a reading in which each `\$` and `` \` `` inside
   double quotes loses its backslash, as in the shells. The text is rewritten before `shlex`
@@ -84,19 +84,18 @@ cannot read exactly unreadable, which `crude` then decides.
   `\\` pair, a single-quoted `\$` and an escape outside quotes keep their meaning.
 - **R2, a backtick body inside double quotes** is also read with `\"` undone. Both bodies are
   rescanned.
-- **R3, a quote inside a double-quoted `${…}`.** `lex` counts the `${` it meets inside double
-  quotes, and a `"` or `'` while one is open makes the text unreadable (`ValueError`, as
-  unbalanced quotes do). At the top level, a command `crude` finds a gated verb in is denied as
-  unparseable, and any other passes; in a nested string, `crude` decides whether it is hidden.
-  The unparseable message names this case beside unbalanced quotes. An exact reading would model
-  each operator's quoting rule (§3) in two shells; the fallback needs none.
+- **R3, a quote inside a double-quoted `${…}`.** `lex` reads the text as today and counts the
+  `${` it meets inside double quotes; a `"` or `'` while one is open marks the text. `scan`
+  denies a marked text that `crude` finds a gated verb in, with a reason naming the case, at the
+  top level and in a nested string alike; any other marked text is read as today. An exact
+  reading would model each operator's quoting rule (§3) in two shells; the fallback needs none.
 
 The top-level words stay the first reading. The two readings differ only by a backslash before
 `$` or a backtick, and every word the gate compares is either fixed text holding neither (a
 tool, a verb, an option) or must be `literal`, which refuses both characters (a ref, a `-C`
 path, a `cd` target, an endpoint, a field). The mutation names it searches a GraphQL query for
 hold neither either, and a backslash before a `$` leaves their word boundaries where they were.
-So a plain command is judged as today, unless R3 makes it unreadable.
+So a plain command is judged as today, unless R3 denies it.
 
 **R3's cost.** A command with a quote in a double-quoted `${…}` that also mentions a gated verb
 is denied where main allowed it: `git commit -m "${MSG:-"merge notes"}"`. In the transcripts
@@ -112,6 +111,11 @@ dropped the quotes, so which backslashes stood inside double quotes is lost, and
 would be undone twice. Measured on a prototype: `` bash -c "echo \\\\\`git merge feature\`" ``
 (row 7) is still allowed that way, while every shell runs the merge. R1 reads each escape in its
 quote context, so it is exact for this class.
+
+**Rejected: R3 as unreadable text** (a `ValueError`, as unbalanced quotes raise, which `crude`
+then decides). `crude` reads `lex`'s text too, so the error took that reading away:
+`git -C "$(`, a newline, `pwd`, a newline, `)" merge feature; printf '%s\n' "${MSG:-"done"}"`
+is denied by main, and was allowed (the plan review, round 1, found it).
 
 **Rejected: making R1 the only reading.** It is exact, but it drops denies main makes today
 (`` bash -c "printf %s \"\\\`git merge feature\\\`\"" `` is denied by main and runs nothing). The
@@ -142,7 +146,8 @@ auto-mode classifier (rulings Q2, Q5, Q6).
 ## 6. Tests
 
 Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each new deny shown red on main first:
-- **Denied:** rows 1 to 9, 17 and 18 of §2.
+- **Denied:** rows 1 to 9, 17 and 18 of §2, and R3's rejected form's command (§4), which main
+  denies already: it pins that R3 takes no reading away.
 - **Allowed:** rows 12 to 16 and 19 of §2: the inner command's own quoting, an escaped
   substitution in the inner command's single quotes, the two places where `\"` stays escaped,
   and a nested quote in a command that mentions no gated verb.
