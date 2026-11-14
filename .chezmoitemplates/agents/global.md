@@ -68,9 +68,9 @@ live, what is tracked and when each is committed never vary per repository.
 - **Secrets:** they come from 1Password (`op`). Never commit, print or log one. Check staged changes
   before every commit and push.
 - **Every agent confirms first** before force-pushing without a lease, rewriting history others
-  have, deleting branches, tags, data or infrastructure, discarding uncommitted work it did not
-  create, or pushing to the default branch. Exempt: a lease on your own branch, a merged branch's
-  pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.
+  have, deleting branches, tags, data or infrastructure, or discarding uncommitted work it did not
+  create. Exempt: a lease on your own branch, a merged branch's pinned delete, `git branch -d`.
+  Harness prompts are a backstop, not the check. No agent pushes a default branch.
 - **Merge requests.** Load the `merge-request` skill before opening an MR, PR or issue. Never add
   agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines,
   "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or
