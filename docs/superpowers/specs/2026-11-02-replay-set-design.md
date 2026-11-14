@@ -1,6 +1,6 @@
 # Replay set: deciding the quality-relevant removals from October's record
 
-**Status:** In progress (plans docs/superpowers/plans/2026-11-02-replay-set.md, Codex-approved xr-1793629001-9de89da9, and docs/superpowers/plans/2026-11-03-replay-set-amendment-1.md, for §14)
+**Status:** Abandoned — retired on 2026-11-14 with no removal measured conclusively (§15). Plans docs/superpowers/plans/2026-11-02-replay-set.md, Codex-approved xr-1793629001-9de89da9, and docs/superpowers/plans/2026-11-03-replay-set-amendment-1.md, for §14
 **Date:** 2026-11-02
 **Branch:** `replay-set` (the dotfiles have no MR; the pushed branch is the end)
 **Sign-off:** Michael, 2026-11-02 (Codex approved round 4, xr-1793626109-f7b04e58)
@@ -865,3 +865,33 @@ evidence, and the verdict stays inconclusive.
   (`false && HOME=/tmp; cat "$HOME/.codex/x"` still names `~/.codex`);
 - a recreation made against a round tree in which a sibling's revert changed its context: it
   applies, and merges with that sibling's group at locate.
+
+## 15. Retired (2026-11-14)
+
+Michael retired the harness on 2026-11-14 (item 37 of the 2026-11-11 setup review). The branch
+`chore/retire-process-replay` deletes `.scripts/process-replay.py`, `.scripts/process_replay/`,
+their suite, and `.scripts/xreview-replay.py` with its suite: the review-packets replay
+(2026-10-25-xreview-review-packets-design.md §5), which only this harness still used. With it go
+two `xreview-rpc` features that only these replays called, `thread-fork` and `turn-start --cwd`;
+`thread-unarchive` stays, as the archive-review-threads spec's recovery path. This spec and both
+plans stay as the record. The basis:
+
+- **§6 ran on 2026-11-14 and came back incomplete:** 4 of 10 cases assessable; recall A 0.6,
+  A′ 0.6, B 0.4; no P0/P1 missed. The other 18 runs, every arm of six cases, were void twice: the
+  leak scan found reads of `~/.local/state/cxh`, the replay homes' own root. Codex memories stay
+  on, by Michael's standing ruling.
+- **§4** was inconclusive twice (§11.1, §11.6) and deferred on 2026-11-04; the review loop has
+  changed since, so October's record no longer describes the process a rerun would judge.
+- **§5** never ran.
+- Michael stopped the `memories-watch` LaunchAgent and removed its plist himself.
+
+| Removal | Outcome |
+|---|---|
+| Per-task reviewer | Kept; not measured conclusively. |
+| Plan checkpoint | Kept; not measured. |
+| Codex memories | On, by Michael's ruling; §6 incomplete. |
+
+The harness's state outside the repository (`~/.local/state/process-replay`, including the replay
+login `codex-auth/`; `~/.local/state/xreview/replay`; `~/.local/state/cxh`; `~/Code/.replay`) is
+Michael's to delete. `.scripts/measure-interventions.py` still leaves `~/Code/.replay` out of its
+counts by default (§7.3); with no session there, that changes nothing.

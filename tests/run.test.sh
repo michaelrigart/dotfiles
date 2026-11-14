@@ -8,8 +8,8 @@
 # Runs a COPY of run.sh in a temp directory holding fake suites, and in throwaway git
 # repositories for --changed, so nothing here executes a real suite (and nothing recurses into
 # this one). The final sections read the real repository: the subject map must cover what the
-# heavy suites name (drift_check), every heavy tag must parse as `heavy`, and the runner must
-# read the real map as well-formed.
+# heavy suites name (drift_check), every row must name an existing file and existing suites,
+# every heavy tag must parse as `heavy`, and the runner must read the real map as well-formed.
 #
 #   ./tests/run.test.sh   (sandboxed is fine)
 set -uo pipefail
@@ -1118,6 +1118,19 @@ names plainc 'cat "$SRC/dot_x/c.sh"'
 drifts "a fixture whose heavy suites' files all have rows passes" ""
 got="$(drift_check "$SRC")"; rc=$?
 if [ "$rc" = 0 ] && [ -z "$got" ]; then _pass "the subject map covers every file the heavy suites name"; else _fail "the subject map covers every file the heavy suites name" "exit $rc: $(printf '%s' "$got" | tr '\n' '|')"; fi
+# Bug caught: a row left behind when a file or a non-heavy suite is deleted, which drift_check
+# (heavy suites only) never sees, so the map keeps naming a file or a suite that is gone.
+stale=$(awk -F'\t' '/^#/ || $0 == "" { next }
+  { print "f\t" $1 "\t"; if ($3 != "-") print "s\t" $1 "\t" $3
+    n = split($4, l, ","); for (i = 1; i <= n; i++) print "s\t" $1 "\t" l[i] }' "$SUBJECTS" | sort -u \
+  | while IFS=$'\t' read -r kind file suite; do
+      if [ "$kind" = f ]; then
+        [ -f "$SRC/$file" ] || printf 'subject-map row for %s names a missing file\n' "$file"
+      else
+        [ -f "$SRC/tests/$suite.test.sh" ] || printf 'subject-map row for %s names a missing suite %s\n' "$file" "$suite"
+      fi
+    done)
+if [ -z "$stale" ]; then _pass "every subject-map row names an existing file and existing suites"; else _fail "every subject-map row names an existing file and existing suites" "$(printf '%s' "$stale" | tr '\n' '|')"; fi
 # Bug caught: a heavy tag the runner's parse does not read as exactly `heavy` (one space before the
 # comment, say), which drops the suite from --changed and from the drift check. bad_heavy_tags
 # <repo root> prints each such line, parsed as the runner parses it.

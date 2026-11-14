@@ -1409,8 +1409,8 @@ sm = mu.code_mutants("bin/s.sh", text, "bash")
 p1, p2 = a.pick("bin/s.sh", sm, 6, 20261111), a.pick("bin/s.sh", sm, 6, 20261111)
 out["pick"] = [[m["id"] for m in p1] == [m["id"] for m in p2], len(p1), sorted({m["op"] for m in a.pick("bin/s.sh", sm, 5, 1)})]
 out["sizes"] = [a.sample_size("xreview", 700, 100), a.sample_size("x", 300, 100), a.sample_size("x", 1, 10),
-                a.sample_size("x", 100, 100), a.sample_size("x", 100, 5), a.sample_size("process-replay", 1, 100),
-                a.sample_size("process-replay", 1, 1)]
+                a.sample_size("x", 100, 100), a.sample_size("x", 100, 5), a.sample_size("wt-functions", 1, 100),
+                a.sample_size("wt-functions", 1, 1)]
 tx = "a b\nb a\n"
 _, n_all = mu.targeted_mutant("f", tx, "a", "x")
 one, n_one = mu.targeted_mutant("f", tx, "a", "x", 1)
@@ -1441,7 +1441,7 @@ eq "$(uget multiline)" '[4]' "J: a line inside a multi-line string gets no mutan
 eq "$(uget occurrence)" '[":\necho a\n", "echo a\n:\n"]' "J: identical lines are told apart by occurrence"
 eq "$(uget stale)" '[false, true]' "J: apply returns None once the context line changed"
 eq "$(uget pick)" '[true, 6, ["andor", "compare", "delete", "exit", "negate"]]' "J: a sample is reproducible and covers every operator first"
-eq "$(uget sizes)" '[3, 4, 10, 9, 5, 2, 1]' "J: sample sizes follow the clamp, the heavy table (process-replay 2, R13) and the valid cap"
+eq "$(uget sizes)" '[3, 4, 10, 9, 5, 8, 1]' "J: sample sizes follow the clamp, the heavy table and the valid cap"
 eq "$(uget targeted)" '[2, 1, "x b\nb a\n", 0]' "J: a find is unique in the file or on the given line"
 
 echo; echo "RESULT: $pass passed, $fail failed"

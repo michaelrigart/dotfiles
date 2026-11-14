@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (Part A done: Codex pre-merge approved xr-1793726019-522e06a8; Part B next).
+**Status:** Abandoned — the harness was retired on 2026-11-14 (spec §15); do not run this plan again. Part A done: Codex pre-merge approved xr-1793726019-522e06a8. Part B ran §4 (inconclusive, spec §11.1 and §11.6) and §6 (incomplete, 2026-11-14); §5 never ran.
 
 **Goal:** Build the harness that answers, from October's record, whether the per-task reviewer and
 the plan-review checkpoint can go, and that sets up the forward Codex-memories test; then run §4

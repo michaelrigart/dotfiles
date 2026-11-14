@@ -1000,29 +1000,7 @@ is "TT5 and newest first, so the pages follow in order" "$(jq -r 'select(.method
 is "TT5 a turn whose only item is a compaction counts as a thread-level one" "$(printf '%s' "$out" | jq -c .thread_compactions)" 1
 is "TT5 and is compacted too" "$(printf '%s' "$out" | jq -c '[.turns[].compacted]')" '[false,true,false]'
 
-echo "TF. thread-fork and thread-unarchive"
-scenario '{"responses":{"thread/fork":{"result":{"thread":{"id":"th-fork-1"}}}}}'
-out="$(rpc thread-fork --thread th --last-turn turn-X --cwd /tmp/scratch)"; rc=$?
-is "TF1 it prints the fork's id" "$rc/$out" "0/th-fork-1"
-p="$(params thread/fork)"
-is "TF1 the fork is of that thread" "$(printf '%s' "$p" | jq -r .threadId)" th
-is "TF1 through lastTurnId" "$(printf '%s' "$p" | jq -r .lastTurnId)" turn-X
-is "TF1 in that cwd" "$(printf '%s' "$p" | jq -r .cwd)" /tmp/scratch
-is "TF1 asking for an answer without the turns (the fork keeps them)" "$(printf '%s' "$p" | jq -c .excludeTurns)" true
-scenario '{"responses":{"thread/fork":{"result":{"thread":{"id":"th-fork-2"}}}}}'
-rpc thread-fork --thread th >/dev/null
-is "TF1 --last-turn and --cwd are optional, and absent when not given" \
-   "$(params thread/fork | jq -c 'keys')" '["excludeTurns","threadId"]'
-scenario '{"responses":{"thread/fork":{"error":{"code":-1,"message":"thread th is archived; unarchive it first"}}}}'
-out="$(rpc thread-fork --thread th --last-turn turn-X 2>"$T/err")"; rc=$?
-is "TF2 a refused fork exits 1 with nothing on stdout" "$rc/$out" "1/"
-is "TF2 and says why" "$(grep -c 'unarchive it first' "$T/err")" 1
-scenario '{"responses":{"thread/fork":{"result":{}}}}'
-rpc thread-fork --thread th >/dev/null 2>&1
-is "TF2 an answer with no thread id exits 1" "$?" 1
-XREVIEW_RPC_STDIO=false rpc thread-fork --thread th 2>/dev/null
-is "TF2 an unreachable daemon exits 5" "$?" 5
-
+echo "TU. thread-unarchive"
 scenario '{}'
 rpc thread-unarchive --thread th; rc=$?
 is "TF3 thread-unarchive exits 0" "$rc" 0
@@ -1030,14 +1008,6 @@ is "TF3 and sends thread/unarchive for that thread" "$(params thread/unarchive |
 scenario '{"responses":{"thread/unarchive":{"error":{"code":-1,"message":"no such thread"}}}}'
 rpc thread-unarchive --thread th 2>/dev/null
 is "TF3 a refused unarchive exits 1" "$?" 1
-
-echo "TC. turn-start --cwd"
-scenario '{"responses":{"turn/start":{"result":{"turn":{"id":"turn-c1","status":"inProgress"}}}}}'
-is "TC1 it still prints the turn id" "$(rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --cwd /x)" turn-c1
-is "TC1 --cwd goes into the turn/start params" "$(params turn/start | jq -r .cwd)" /x
-scenario '{"responses":{"turn/start":{"result":{"turn":{"id":"turn-c2","status":"inProgress"}}}}}'
-rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null
-is "TC2 without --cwd there is no cwd key" "$(params turn/start | jq -c 'has("cwd")')" false
 
 echo "TW. turn-wait --report"
 plain="$(turn completed "$ANSWER")"
