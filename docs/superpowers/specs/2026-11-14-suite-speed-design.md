@@ -350,3 +350,9 @@ gate (`b83f24b`, 226/227 with the marker classified before the gate).
   line's run. It now keeps the work directory whose suites equal the runner's report.
 - The final whole-branch review found three Minor findings, all fixed: S4 against the gate, the
   plan's Review Focus 2, and `EPOCHREALTIME` read with a dot decimal. The re-review approved.
+- The first `./tests/run.sh --changed` on the final tree (`1725f86`): 64 suites, 15515/15515,
+  759 s wall; `xreview` (633 s there) started at 127 s, last of the marked suites by name. §3 was
+  amended to order the marked group by its markers' seconds (`9db8175`). S6 pins it: red under
+  name order, and with a three-digit fixture value (`af94aff`) also red under a sort that compares
+  seconds as text, which a scoped review found S6 missed at first. The run on the new tip is the
+  third heavy run, reported in the PR.
