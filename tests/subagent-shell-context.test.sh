@@ -2,7 +2,7 @@
 # Tests for dot_claude/hooks/executable_subagent-shell-context.sh, the SubagentStart hook that
 # puts the path rule in front of every subagent's first prompt.
 #
-# Pins the three promises the hook makes: it adds exactly the measured line as context, it
+# Pins the three promises the hook makes: it adds exactly the line below as context, it
 # never decides anything, and it fails open and silent, so a broken hook cannot stop a dispatch.
 #
 #   ./tests/subagent-shell-context.test.sh   (sandboxed is fine)
@@ -19,7 +19,8 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/subagent-ctx.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 # The line measured on 2026-11-14 (8 of 8 Sonnet 5.5 dispatches denied without it, none of the
-# first calls with it). Word for word: a reworded line is an unmeasured one.
+# first calls with it), plus the `rm` clause from spec 2026-11-14-rm-exact-denies §3.3, which was
+# not part of the measurement. Word for word: a reworded line is an unmeasured one.
 LINE="Shell: every Bash call starts fresh in the session's directory and a \`cd\` never carries over, so never begin a command with \`cd\` (the path guard denies it). Name every file by its absolute path, and write each \`rm\` target as a literal absolute path, never a variable."
 
 # fire <agent_type> [PATH for the hook] -> sets OUT, ERR and RC
@@ -32,12 +33,12 @@ fire() {
   ERR=$(cat "$T/err")
 }
 
-echo "A. it adds the measured line as SubagentStart context"
+echo "A. it adds the shell-context line as SubagentStart context"
 fire sp-standard
 is "exit 0" "$RC" 0
 is "nothing on stderr" "$ERR" ""
 is "the event is SubagentStart" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName')" SubagentStart
-is "the context is the measured line, word for word" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')" "$LINE"
+is "the context is the line, word for word (the measured line plus the rm clause)" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')" "$LINE"
 fire Explore
 is "every agent type gets the same line" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')" "$LINE"
 
