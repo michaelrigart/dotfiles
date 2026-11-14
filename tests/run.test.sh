@@ -391,6 +391,9 @@ eq "S3: after both parallel suites have ended" 5 "$(printf '%s\n' "$order" | wc 
 orderrun 4 gated
 ran "S4: a marked suite behind a requirement tag is skipped" yes 'skip +zz-gated-slow +needs: a live herdr' "$order_out"
 eq "S4: and does not start" "" "$order"
+orderrun 4 aa-first zz-late zz-gated-slow
+eq "S4: selected by its exact name, it is serial and starts last despite the marker" "start zz-gated-slow" "$(printf '%s\n' "$order" | tail -n 1)"
+eq "S4: after both parallel suites have ended" 5 "$(printf '%s\n' "$order" | wc -l | tr -d ' ')"
 orderrun 1 aa-first zz-commented
 eq "S5: a marker followed by a comment counts" "start zz-commented" "$(printf '%s\n' "$order" | sed -n 1p)"
 orderrun 1 aa-first zz-slowish
