@@ -182,6 +182,10 @@ KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussel
 # 9. Development tools, then macOS settings
 mise install
 ~/.local/share/chezmoi/.scripts/configure.sh
+
+# 10. Herdr app: open it once, run `~/.config/herdr-app/bin/respaces` with its window open
+#     (it builds the michael-spaces and michael-menu mods from Herdr's), then pick the
+#     michael layout (cmd-shift-L).
 ```
 
 ---

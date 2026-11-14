@@ -209,9 +209,11 @@ render(){ printf '[data]\n  hostname = "%s"\n' "$1" > "$T/c.toml"
 render fenrir fenrir
 rc_is 0 "matching identity renders"
 has 'cask "elgato-control-center"' "fenrir gets the peripheral casks"
+has 'cask "herdr-app"' "fenrir gets the Herdr app"
 render hercules hercules
 rc_is 0 "the other machine renders"
 hasnt 'cask "elgato-control-center"' "hercules does not get the peripheral casks"
+has 'cask "herdr-app"' "hercules gets the Herdr app"
 render "MacBook Pro" "MacBook Pro"
 rc_is 1 "an unlisted machine fails the render"
 has "unknown machine" "unlisted machine is named"
