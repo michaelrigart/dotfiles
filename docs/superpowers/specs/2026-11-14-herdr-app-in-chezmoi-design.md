@@ -1,6 +1,7 @@
 # Herdr app config under chezmoi
 
-**Status:** Approved
+**Status:** In progress (branch `chore/herdr-app-in-chezmoi`; plan
+`docs/superpowers/plans/2026-11-15-herdr-app-in-chezmoi.md`)
 **Date:** 2026-11-14
 **Branch:** `chore/herdr-app-in-chezmoi`
 **Sign-off:** Michael, 2026-11-15; Codex spec review approved (round 2).
