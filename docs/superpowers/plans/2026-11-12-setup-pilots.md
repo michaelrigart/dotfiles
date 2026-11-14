@@ -23,8 +23,8 @@ task, with the plan's path and task range filled in:
 
 If it stops to ask something, answer and paste the same line again. Off: `/goal clear`.
 
-**Pilot B**, in the suite-speed line's Claude pane, right after `wt` creates it: exit the
-session, then
+**Pilot B** runs on `chore/suite-speed` from 2026-11-14 (see Results). In that line's Claude
+pane, right after `wt` creates it: exit the session, then
 
 ```
 claude --continue --settings '{"permissions":{"denyInsteadOfPrompting":true}}'
@@ -134,8 +134,9 @@ runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
 
 - **Question.** With prompts turned into denials, does a line keep moving, or does it end turns
   on refusal streaks and need Michael more often?
-- **Host run (proposed).** The next new `wt` line in the dotfiles that is not itself a change to
-  permissions, the sandbox or the guards.
+- **Host run.** The next new `wt` line in the dotfiles that is not itself a change to
+  permissions, the sandbox or the guards: `chore/suite-speed` (items 30, 29 and 33), checkout
+  `~/.local/share/chezmoi-chore-suite-speed`, opened 2026-11-14.
 - **Switch.** Michael, in that line's Claude pane, right after `wt` creates it: exit the session
   and start it again with
 
@@ -206,6 +207,15 @@ runs" (platform.claude.com, read 2026-11-12). Two corrections to item 21:
 Michael approved all three pairings on 2026-11-12: A on `feat/review-loop`, B on the suite-speed
 line (items 30, 29, 33) once `chore/test-audit` is on main, C as the shadow review of
 `fix/xreview-trust`.
+
+### Pilot B: running on `chore/suite-speed` (from 2026-11-14)
+
+The driver opened `chore/suite-speed` from main `4c76ec4` on 2026-11-14, and Michael relaunches
+its pane with the `--settings` line from "To paste". Its transcripts
+(`~/.claude/projects/-Users-michael--local-share-chezmoi-chore-suite-speed`) did not exist yet
+at 10:06 UTC, so the count covers the whole line. The first refusal under the key confirms the
+flag is on and fixes the interactive denial text to count; with no refusal at all, Michael
+confirms the relaunch. Counted once the line has finished, by the protocol above.
 
 ### Pilot A: not run (2026-11-13)
 
