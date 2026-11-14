@@ -127,8 +127,22 @@ EXP_ASK='["Read(~/.kube/config)",
  "Bash(terraform -chdir=* destroy*)","Bash(terraform apply -destroy*)",
  "Bash(terraform -chdir=* apply -destroy*)"]'
 
+# The rm root denies (spec 2026-11-14-rm-exact-denies): the suite owns its own copy of the five
+# roots, so a root dropped from the script fails here. Each root is written in its ~ form and
+# with $HOME expanded, and each path gets six operand forms, each with and without trailing
+# arguments. A backslash-star in a rule is a literal star.
+WRITE_ROOTS=('~/Code' '~/.local/share/chezmoi' '~/Documents' '~/Library/Mobile Documents/iCloud~md~obsidian')
+RM_ROOTS=('~' "${WRITE_ROOTS[@]}")
+RM_PATHS=(); for r in "${RM_ROOTS[@]}"; do RM_PATHS+=("$r" "$HOME${r#\~}"); done
+RM_RULES=$(for p in "${RM_PATHS[@]}"; do
+  for op in '' '/' '/\*' '/\*/' '/\*\*' '/.\*'; do
+    printf 'Bash(rm * %s)\nBash(rm * %s *)\n' "$p$op" "$p$op"
+  done
+done | jq -R . | jq -sc .)
+EXP_DENY=$(jq -cn --argjson a "$EXP_DENY" --argjson b "$RM_RULES" '$a + $b')
+
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
-jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
+jq_is "(.permissions.ask | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
 
 # Belt and braces: every rule is a COMPLETE, closed form naming a tool we actually use:
 # Read/Edit/Bash(spec), or one MCP tool named in full (mcp__<server>__<tool>, no wildcard).
@@ -181,10 +195,11 @@ jq_is '[.permissions.allow[] | select(startswith("Bash(git push") or startswith(
 # " *" that is the rule's only * also matches the bare command; the legacy trailing ":*" is a
 # prefix, read as " *".
 MATCHES='def esc: gsub("(?<c>[.+?()\\[\\]{}|^$\\\\])"; "\\" + .c);
-  def hit($cmd): (.[5:-1] | if endswith(":*") then .[:-2] + " *" else . end) as $s
-    | ($s | esc | gsub("\\*"; ".*")) as $re
+  def hit($cmd): (.[5:-1] | if endswith(":*") then .[:-2] + " *" else . end
+                          | gsub("\\\\\\*"; "\u0001")) as $s
+    | ($s | esc | gsub("\\*"; ".*") | gsub("\u0001"; "\\*")) as $re
     | ($cmd | test("^" + $re + "$"))
-      or (($s | endswith(" *")) and (($s | split("*") | length) == 2) and ($cmd == $s[:-2]));'
+      or (($s | endswith(" *")) and (($s | split("*") | length) == 2) and ($cmd == ($s[:-2] | gsub("\u0001"; "*"))));'
 n_match() { # n_match <command> -> how many allow rules match it
   printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.allow[] | select(startswith("Bash(")) | select(hit($c))] | length'
 }
@@ -219,6 +234,11 @@ m_is 'gitk' 0 "model: no rule matches gitk"
 m_is 'ls' 1 "model: legacy 'ls:*' matches bare 'ls'"
 m_is 'ls -la' 1 "model: legacy 'ls:*' matches 'ls -la'"
 m_is 'lsof' 0 "model: legacy 'ls:*' does not match 'lsof'"
+OUT='{"permissions":{"deny":["Bash(rm * /r/\\*)","Bash(rm * /r/\\* *)"]}}'
+d_is 'rm -rf /r/*'        yes "model: \\* is a literal star"
+d_is 'rm -rf /r/* /x'     yes "model: a trailing ' *' takes more arguments"
+d_is 'rm -rf /r/sub'      no  "model: \\* does not match a name"
+d_is 'rm -rf /r/*/*/b'    no  "model: the operand ends at a space or the end"
 OUT=$FIX_SAVE
 SHA=0123456789abcdef0123456789abcdef01234567
 for c in 'git push' 'git push origin main' "git push --force-with-lease=b:$SHA origin --delete b" \
@@ -251,6 +271,38 @@ jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command
 jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command
         | select(test("\\.(sh|py)\\b")) | select(startswith("/opt/homebrew/bin/bash ") | not)] | length' 0 \
       "every hook and statusline script runs under /opt/homebrew/bin/bash"
+
+echo "T. rm: every root is denied in every operand form"
+emit '{}'
+jq_is ".sandbox.filesystem.allowWrite == $(printf '%s\n' "${WRITE_ROOTS[@]}" | jq -R . | jq -sc .)" true \
+      "allowWrite is exactly the four write roots"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm "))] | length' 120 \
+      "120 rm deny rules: five roots, two spellings, six operands, two tails"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm "))] | map(startswith("Bash(rm * ")) | all' true \
+      "every rm deny rule opens with the rm wildcard"
+jq_is '[.permissions.deny[] | select(startswith("Bash(rm * ")) | .[10:-1]
+        | sub(" \\*$"; "") | gsub("\\\\\\*"; "") | select(contains("*"))] | length' 0 \
+      "no rm deny rule has a wildcard besides the leading rm * and a trailing ' *'"
+for p in "${RM_PATHS[@]}"; do
+  d_is "rm -rf $p"                    yes "rm deny: $p"
+  d_is "rm -fr $p/"                   yes "rm deny: $p/"
+  d_is "rm -r -f $p/*"                yes "rm deny: $p/*"
+  d_is "rm -rf $p/*/"                 yes "rm deny: $p/*/"
+  d_is "rm -rf $p/**"                 yes "rm deny: $p/**"
+  d_is "rm -rf $p/.*"                 yes "rm deny: $p/.*"
+  d_is "rm -rf $p /tmp/x"             yes "rm deny: $p then another operand"
+  d_is "rm -rf /tmp/a $p/* /tmp/b"    yes "rm deny: $p/* between other operands"
+  d_is "rm -rf $p/sub"                no  "no rm deny: $p/sub"
+done
+for c in 'rm -rf ~/Code/*/*/build' 'rm -rf ~/Code/*/build' 'rm -f ~/Documents/*.log' \
+         'rm -f ~/Documents/{a,b}.pdf' 'rm -rf ~/Code/x/build' 'rm -rf ~/Code2' 'rm -rf ~/Documents.bak' \
+         'rm -f ~/.zshrc'; do
+  d_is "$c" no "no rm deny: $c"
+  d_is "${c//\~/$HOME}" no "no rm deny: ${c//\~/$HOME}"
+done
+d_is 'rm -rf $HOME/.local/share/chezmoi-fix-x' no "no rm deny: a wt sibling spelled with HOME"
+d_is "rm -rf $HOME/.local/share/chezmoi-fix-x" no "no rm deny: a wt sibling, HOME expanded"
+d_is 'rm -rf /private/tmp/claude-501/x/scratchpad/m1' no "no rm deny: a scratchpad path"
 
 echo "B. layer 1 — read/edit pairing on every secret pattern"
 for p in '**/secrets.*.yml' '**/.env.production*' '**/*.key' '**/*.pem' \
