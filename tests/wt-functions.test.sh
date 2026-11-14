@@ -79,6 +79,11 @@ cat > "$STUBS/layout.sh" <<'STUB'
 printf '%s\n' "$*" >> "$DLOG"
 exit "${MOCK_LAYOUT_RC:-0}"
 STUB
+cat > "$STUBS/open-space" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$OLOG"
+STUB
+chmod +x "$STUBS/open-space"
 cat > "$STUBS/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HLOG"
@@ -352,7 +357,7 @@ mise_unseed() {
   P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"
   mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"
 }
-export DEV_LAYOUT="$STUBS/layout.sh"
+export DEV_LAYOUT="$STUBS/layout.sh" DEV_OPEN_SPACE="$STUBS/open-space"
 
 # --- SIGINT delay injector --------------------------------------------------
 # A `git` that delivers one real SIGINT to a named pid immediately before
@@ -432,7 +437,7 @@ chmod +x "$FAILSTUBS/git"
 # --- fixture ----------------------------------------------------------------
 ROOTTMP=""
 setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
-  unset HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION HERDR_ENV
+  unset HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION HERDR_ENV HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_PANE_ID
   [[ -n "$ROOTTMP" ]] && rm -rf "$ROOTTMP"
   ROOTTMP=$(mkd) || { print -ru2 -- "mktemp failed"; exit 1 }
   ROOTTMP="${ROOTTMP:A}"        # resolve /tmp -> /private/tmp up front, so the paths
@@ -443,11 +448,11 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git -C "$REPO" commit -q --allow-empty -m init
   # The mise stub's trust store lives beside the stub, not under $ROOTTMP: `drop` renames a
   # temp file over it, and that rename should touch nothing near the files under test.
-  export DLOG="$ROOTTMP/layout.log" \
+  export DLOG="$ROOTTMP/layout.log" OLOG="$ROOTTMP/open-space.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
          FLOG="$ROOTTMP/git-fail.log" XLOG="$ROOTTMP/xreview-rpc.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed" \
          MLOG="$ROOTTMP/mise.log" MISE_STUB_STORE="$MISESTUBS/mise-trusted"
-  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$XLOG"; : > "$MOCK_H_CLOSED_FILE"
+  : > "$DLOG"; : > "$OLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$XLOG"; : > "$MOCK_H_CLOSED_FILE"
   : > "$MLOG"; : > "$MISE_STUB_STORE"
   export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
@@ -2231,6 +2236,15 @@ run "$REPO" wt feature/plain
 grep -Fxq -- "--worktree $REPO $HOME/Code/Org/repo-feature-plain" "$DLOG" \
   && _pass "T --no-focus: a plain wt passes layout.sh no flag" \
   || _fail "T --no-focus: a plain wt passes layout.sh no flag ($(<$DLOG))"
+
+# From the Herdr app (HC_TERMINAL_ID, no HERDR_ENV/HERDR_PANE_ID) wt reaches open-space through dev.
+setup
+HC_TERMINAL_ID=t9 run "$REPO" wt --no-focus feature/app main
+rc_is 0 "T app: wt succeeds from the Herdr app"
+[[ -d "$HOME/Code/Org/repo-feature-app" ]] && _pass "T app: the checkout is created at the sibling path" \
+                                           || _fail "T app: the checkout is created at the sibling path"
+eq "$(<$OLOG)" "--no-focus $HOME/Code/Org/repo-feature-app" "T app: open-space gets the flag and the checkout"
+eq "$(<$DLOG)" "" "T app: layout.sh is never invoked"
 
 setup
 run "$REPO" wt --no-focus

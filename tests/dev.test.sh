@@ -35,6 +35,8 @@ done
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+# dev picks its front end from these; a case that wants the app or the TUI sets them itself.
+unset HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
 
 pass=0 fail=0 OUT="" RC=0
 _pass() { print -r -- "  PASS: $1"; pass=$((pass + 1)) }
@@ -313,11 +315,20 @@ exit 1
 S
 chmod +x "$STUBS/fzf"
 
+# Stub open-space: one argument per line, so a case can count them.
+OSTUB="$STUBS/open-space"
+cat > "$OSTUB" <<'S'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$OS_ARG"
+S
+chmod +x "$OSTUB"
+
 run_dev() {
   mock_reset
   export LAYOUT_ARG="$(mktemp "${TMPROOT%/}/larg.XXXXXX")"
+  export OS_ARG="$(mktemp "${TMPROOT%/}/osarg.XXXXXX")"
   export FZFLOG="$(mktemp "${TMPROOT%/}/fzflog.XXXXXX")"
-  OUT="$(HOME="$ROOTTMP" DEV_LAYOUT="$LSTUB" zsh -c "
+  OUT="$(HOME="$ROOTTMP" DEV_LAYOUT="$LSTUB" DEV_OPEN_SPACE="$OSTUB" zsh -c "
     source '$FUNCS'; dev $1" 2>&1)"; RC=$?
 }
 
@@ -1416,5 +1427,55 @@ eq "$(awk -F'\t' '$1 == "workspace list" && $2 ~ /caller-only/' "$MOCK_PATH_FILE
   "P5 every other herdr call runs with the pinned PATH"
 rm -f "$MOCK_PATH_FILE"; unset MOCK_PATH_FILE
 rm -rf "$HOSTILE" "$HMARK" "$PD"
+
+# --- K: dev picks its front end ----------------------------------------------
+# HERDR_ENV or HERDR_PANE_ID non-empty: the TUI. Else HC_TERMINAL_ID non-empty: the Herdr
+# app, through open-space. Else the TUI. There is no override variable.
+print -r -- "-- K: front end"
+# The C-N sections' run_layout evals leave HERDR_ENV=1 in this shell; the app is only chosen without it.
+unset HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
+# B1 already locked $WT; unlock it so K2 shows dev applying the lifecycle lock itself.
+git -C "$R1" worktree unlock "$WT"
+
+HC_TERMINAL_ID=t9 run_dev "--no-focus '$R1'"
+rc_is 0 "K1 the app opens a primary checkout"
+eq "$(<$OS_ARG)" "--no-focus
+$R1" "K1 open-space gets the flag and the repo, one per line"
+eq "$(<$LAYOUT_ARG)" "" "K1 layout.sh is never invoked"
+
+HC_TERMINAL_ID=t9 run_dev "--no-focus '$WT'"
+rc_is 0 "K2 the app opens a linked checkout"
+eq "$(<$OS_ARG)" "--no-focus
+${WT:A}" "K2 open-space gets the flag and the checkout"
+LOCK_REASON="$(zsh -c "source '$FUNCS'; _wt_herdr_lock_reason")"
+OUT="$(git -C "$R1" worktree list --porcelain)"
+[[ "$OUT" == *"worktree ${WT:A}"*"locked $LOCK_REASON"* ]] && _pass "K2 the checkout carries the lifecycle lock" \
+                                                          || _fail "K2 the checkout carries the lifecycle lock"
+eq "$(<$LAYOUT_ARG)" "" "K2 layout.sh is never invoked"
+
+HERDR_ENV=1 HC_TERMINAL_ID=t9 run_dev "'$R1'"
+eq "$(<$LAYOUT_ARG)" "$R1" "K3 HERDR_ENV wins over HC_TERMINAL_ID: layout.sh"
+eq "$(<$OS_ARG)" "" "K3 HERDR_ENV: open-space is never invoked"
+HERDR_PANE_ID=w1:p2 HC_TERMINAL_ID=t9 run_dev "'$R1'"
+eq "$(<$LAYOUT_ARG)" "$R1" "K3 HERDR_PANE_ID wins over HC_TERMINAL_ID: layout.sh"
+eq "$(<$OS_ARG)" "" "K3 HERDR_PANE_ID: open-space is never invoked"
+
+HC_TERMINAL_ID= run_dev "'$R1'"
+eq "$(<$LAYOUT_ARG)" "$R1" "K4 an empty HC_TERMINAL_ID is the TUI"
+eq "$(<$OS_ARG)" "" "K4 an empty HC_TERMINAL_ID: open-space is never invoked"
+
+WT2="$CODE/Netronix/curato-k5"
+git -C "$R1" worktree add -q -b k5 "$WT2" 2>/dev/null
+git -C "$WT2" checkout -q --detach
+HC_TERMINAL_ID=t9 run_dev "'$WT2'"
+rc_is 1 "K5 a detached linked checkout fails in the app"
+has "is detached" "K5 says why"
+eq "$(<$OS_ARG)" "" "K5 open-space is never invoked"
+
+R3=$(mkrepo "$CODE/Netronix/sp ace")
+HC_TERMINAL_ID=t9 run_dev "'$R3'"
+rc_is 0 "K6 the app opens a repository whose path has a space"
+eq "$(wc -l < "$OS_ARG" | tr -d ' ')" "1" "K6 open-space gets one argument line"
+eq "$(<$OS_ARG)" "$R3" "K6 that line is the repository, space intact"
 
 finish
