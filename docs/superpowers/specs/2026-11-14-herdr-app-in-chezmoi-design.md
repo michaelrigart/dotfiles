@@ -1,6 +1,6 @@
 # Herdr app config under chezmoi
 
-**Status:** In progress (branch `chore/herdr-app-in-chezmoi`; plan
+**Status:** Implemented (branch `chore/herdr-app-in-chezmoi`, its PR against `main`; plan
 `docs/superpowers/plans/2026-11-15-herdr-app-in-chezmoi.md`)
 **Date:** 2026-11-14
 **Branch:** `chore/herdr-app-in-chezmoi`

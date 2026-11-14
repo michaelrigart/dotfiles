@@ -3,7 +3,8 @@
 > **For agentic workers:** run this with the `plan-run` skill (it overrides
 > superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax.
 
-**Status:** In progress
+**Status:** Completed 2026-11-15 (branch `chore/herdr-app-in-chezmoi`, its PR against `main`).
+Do not run it again; its execution notes bind that run only.
 **Goal:** Michael's authored Herdr app config (`~/.config/herdr-app`) becomes a chezmoi-managed
 tree whose render is byte-identical to the live files. The app's two suites move into `tests/`,
 and the cask joins the Brewfile.
