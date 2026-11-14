@@ -11,8 +11,17 @@
 # wrap under ~/.cache, which is also every run's working directory (a path outside the working
 # directory draws a denial of its own). Nothing here names the real home or any real root.
 #
-# Each deny case runs twice, with an overlay that only allows Bash(rm:*) (BARE) and with that
-# plus the rendered rules (RULES), and names sentinel files under H:
+# The nested sessions run sandboxed, as the real configuration does: sandbox on, auto-allow on,
+# no unsandboxed escape, auto permission mode, and no allow rule. Sandboxed commands skip allow
+# rules and the auto mode classifier decides. The sandbox lets a nested session write only its
+# working directory (wrap) and its TMPDIR, so even a rewritten command that names the real home
+# fails with EPERM, and if the sandbox cannot start (failIfUnavailable) nothing is deleted: the
+# BARE runs then leave their sentinels and the result is INCONCLUSIVE. This suite itself must
+# run unsandboxed: a nested sandbox cannot start inside an outer one (measured: EPERM ... listen
+# /tmp/claude-501/srt-mux-*.sock).
+#
+# Each deny case runs twice, with the sandbox overlay alone (BARE) and with the rendered rules
+# added (RULES), and names sentinel files under H:
 #
 #   ok            BARE removed every sentinel, RULES kept every one and recorded a denial of
 #                 the command
@@ -23,6 +32,8 @@
 #                 nothing), or a RULES run that kept everything with no denial recorded
 #
 # An over-match control runs first: rm -rf of a path under a root, under RULES, must remove it.
+# If it is kept and a denial names it, the rules over-match: FAIL. Kept with no such denial:
+# INCONCLUSIVE.
 #
 # Run after each Claude Code upgrade; about 19 haiku runs. Exit 1 on a FAIL, else 2 on an
 # INCONCLUSIVE, else 0.
@@ -68,8 +79,9 @@ if [ "$count" != "$EXPECT_RULES" ]; then
   echo "  FAIL rendered rules (got $count rules naming $H, expected $EXPECT_RULES)"
   exit 1
 fi
-BARE='{"permissions":{"allow":["Bash(rm:*)"]}}'
-RULES=$(jq -cn --argjson d "$rules" '{"permissions":{"allow":["Bash(rm:*)"],"deny":$d}}')
+SANDBOX='{"enabled":true,"autoAllowBashIfSandboxed":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}'
+BARE=$(jq -cn --argjson s "$SANDBOX" '{"sandbox":$s}')
+RULES=$(jq -cn --argjson s "$SANDBOX" --argjson d "$rules" '{"sandbox":$s,"permissions":{"deny":$d}}')
 
 # prepare: a fresh tree under H, each directory holding a file f.
 prepare() {
@@ -143,7 +155,11 @@ run_one "$RULES" rules "$ctl"
 if [ "$faithful" != yes ]; then
   echo "INCONCLUSIVE: control: $why, so no case was run"; exit 2
 elif ! gone Code/x/f; then
-  echo "INCONCLUSIVE: control: rm of a path under a root left it in place (denial recorded: $denied), so the rules may over-match, or something else refuses rm; no case was run"
+  if [ "$denied" = yes ]; then
+    echo "  FAIL control (rm of a path under a root was denied: the rules over-match)"
+    exit 1
+  fi
+  echo "INCONCLUSIVE: control: rm of a path under a root left it in place with no denial recorded, so something other than the rules refuses it; no case was run"
   exit 2
 fi
 echo "  ok  control: rm of a path under a root is allowed"
