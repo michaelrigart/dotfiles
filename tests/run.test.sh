@@ -258,6 +258,83 @@ if [ -e "$MARK/serialy.afterpar" ] && [ -e "$MARK/serialz.afterpar" ]; then _pas
 out="$(RUN_JOBS=4 "$T/run.sh" --all 2>&1)"
 ran "--all runs a live-gated suite alone"        yes 'ok +gatedlive' "$out"
 
+# The runner links the first jq on PATH that is not a mise shim and puts it first for its
+# suites. Bug caught: every `jq` call in a suite going through an inactive mise shim (about 90 ms
+# each). The fixtures live in their own directory with their own runner, so the unfiltered runs
+# above keep their suite counts. `narrow` builds a PATH holding only the tools the runner and the
+# probe suite call, and no jq, so the host's jq never decides a row.
+J="$T/jq"
+mkdir -p "$J/shims" "$J/shims2" "$J/dirjq/jq" "$J/tools"
+printf '#!/bin/sh\necho shim\n' > "$J/mise"
+chmod 755 "$J/mise"
+# mkjq <dir> <version output>: a jq that answers --version with that text and otherwise prints real.
+mkjq() {
+  mkdir -p "$J/$1"
+  printf '#!/bin/sh\n[ "$1" = --version ] && { echo "%s"; exit 0; }\necho real\n' "$2" > "$J/$1/jq"
+  chmod 755 "$J/$1/jq"
+}
+mkjq real jq-1.8.2; mkjq old jq-1.7.1-apple; mkjq odd garbage; mkjq floor jq-1.8.1; mkjq ten jq-1.10.0
+ln -s ../mise "$J/shims/jq"
+ln -s ../mise "$J/shims2/jq"
+cp "$RUN" "$J/run.sh"
+cat > "$J/jqprobe.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+jq > "$MARK/jq.says" 2>&1
+printf '%s' "$PATH" > "$MARK/jq.path"
+# What the directory first on PATH holds and where its jq points: the runner removes it on exit.
+d=${PATH%%:*}
+for f in "$d"/* "$d"/.[!.]* "$d"/..?*; do { [ -e "$f" ] || [ -L "$f" ]; } && echo "${f##*/}"; done > "$MARK/jq.bin"
+readlink "$d/jq" > "$MARK/jq.link" 2>/dev/null
+echo "  ok  probed"
+SUITE
+chmod 755 "$J/run.sh" "$J/jqprobe.test.sh"
+for t in bash env lockf mktemp rm mkdir ln readlink dirname basename sed grep head awk xargs getconf cat date mv id sort tr wc; do
+  p="$(type -P "$t")" && ln -sf "$p" "$J/tools/$t"
+done
+NARROW="$J/tools"
+# jqrun <PATH> sets jq_out, jq_rc, jq_err, jq_says, jq_path, jq_bin and jq_link for a run of the probe suite alone.
+jqrun() {
+  rm -f "$MARK/jq.says" "$MARK/jq.path" "$MARK/jq.bin" "$MARK/jq.link"
+  jq_out="$(PATH="$1" "$J/run.sh" jqprobe 2>"$J/stderr")"; jq_rc=$?
+  jq_err="$(cat "$J/stderr")"
+  jq_says="$(cat "$MARK/jq.says" 2>/dev/null)"
+  jq_path="$(cat "$MARK/jq.path" 2>/dev/null)"
+  jq_bin="$(cat "$MARK/jq.bin" 2>/dev/null)"
+  jq_link="$(cat "$MARK/jq.link" 2>/dev/null)"
+}
+eq() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "want '$2', got '$3'"; fi; }
+jqrun "$J/shims:$J/real:$NARROW"; out1=$jq_out
+eq "a mise shim ahead of a real jq on PATH is skipped" real "$jq_says"
+eq "the directory first on the suite's PATH holds exactly jq" jq "$jq_bin"
+eq "and that jq links to the real one" "$J/real/jq" "$jq_link"
+jqrun "$J/shims:$J/shims2:$J/real:$NARROW"
+eq "a second shim is skipped too" real "$jq_says"
+jqrun "$J/shims:$NARROW"
+rc3=$jq_rc
+eq "with only a shim on PATH the runner exits 2" 2 "$rc3"
+eq "and runs no suite" "" "$jq_says"
+case "$jq_err" in *jq*) _pass "and names the missing jq on one stderr line" ;; *) _fail "and names the missing jq on one stderr line" "$jq_err" ;; esac
+eq "that line is the only one" 1 "$(printf '%s\n' "$jq_err" | wc -l | tr -d ' ')"
+# refused <label> <PATH> <version text>: the runner exits 2, runs no suite and names the version and the floor.
+refused() {
+  jqrun "$2"
+  eq "$1: the runner exits 2" 2 "$jq_rc"
+  eq "$1: no suite runs" "" "$jq_says"
+  case "$jq_err" in *"$3"*1.8.1*) _pass "$1: one stderr line names $3 and 1.8.1" ;; *) _fail "$1: one stderr line names $3 and 1.8.1" "$jq_err" ;; esac
+  eq "$1: that line is the only one" 1 "$(printf '%s\n' "$jq_err" | wc -l | tr -d ' ')"
+}
+refused "a jq older than 1.8.1" "$J/shims:$J/old:$NARROW" 1.7.1
+refused "a jq whose version does not parse" "$J/shims:$J/odd:$NARROW" garbage
+jqrun "$J/shims:$J/floor:$NARROW"
+eq "a jq at exactly 1.8.1 runs" real "$jq_says"
+jqrun "$J/shims:$J/ten:$NARROW"
+eq "versions compare as numbers: 1.10.0 runs" real "$jq_says"
+jqrun ":relative-dir:$J/dirjq:$J/shims:$J/real:$NARROW"
+eq "an empty entry, a relative one and a directory named jq are skipped" real "$jq_says"
+eq "and the runner says nothing on stderr" "" "$jq_err"
+jqrun "$J/real:$NARROW"; out_real=$jq_out
+eq "the link changes nothing in the report" "$out_real" "$out1"
+
 # Locking. hold <tenths> [record] takes the lock in the background, waits until it is held
 # (and, when given, until its holder-record line is written to $L.holder), and releases it
 # after that long or when $T/release appears.

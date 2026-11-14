@@ -43,6 +43,10 @@
 # lock again, so a runner nested in a suite cannot wait for its parent's lock.
 # Never wrap this runner in lockf yourself.
 #
+# Suites get the first jq on PATH that is not a mise shim, linked first on their PATH, because
+# an inactive mise shim costs about 90 ms a call. With none, or one older than 1.8.1 or whose
+# --version does not parse, the runner prints one line on stderr and exits 2 before any suite.
+#
 # Suites with a `# test-requires:` line need conditions this runner cannot create
 # (an unsandboxed shell, a live herdr, a fresh Claude session) or are `heavy`, a policy
 # choice for their length (minutes), not a missing condition. They are listed and
@@ -326,6 +330,43 @@ if [ "$lock_owner" = 1 ] && [ "$one" -eq 0 ]; then
   rec_dir=${RUN_SH_START_DIR//$'\t'/ }; rec_dir=${rec_dir//$'\n'/ }
   { printf '%s\t%s\t%s\n' "$(date +%s)" "$rec_dir" "$rec_args" >"$lock.holder.$$" && mv "$lock.holder.$$" "$lock.holder"; } 2>/dev/null || rm -f "$lock.holder.$$"
 fi
+
+# The suites call jq many times, and a mise shim ahead of it on PATH costs about 90 ms a call
+# even when mise is inactive. Link the first jq on PATH that is not a shim into a private
+# directory and put that first; with none, or one that is too old, stop before any suite runs.
+jq_floor=1.8.1
+link_jq() {
+  local rest=$PATH: dir cand tgt ver nums maj min pat
+  while [ -n "$rest" ]; do
+    dir=${rest%%:*}; rest=${rest#*:}
+    case $dir in /*) ;; *) continue ;; esac
+    cand=$dir/jq
+    [ -d "$cand" ] && continue
+    [ -x "$cand" ] || continue
+    if [ -L "$cand" ]; then
+      tgt=$(readlink "$cand") || continue
+      [ "${tgt##*/}" = mise ] && continue
+    fi
+    ver=$("$cand" --version 2>/dev/null | head -n 1)
+    if [[ $ver =~ ^jq-([0-9]+)\.([0-9]+)(\.([0-9]+))?(-.*)?$ ]]; then
+      maj=${BASH_REMATCH[1]} min=${BASH_REMATCH[2]} pat=${BASH_REMATCH[4]:-0}
+      if [ $((10#$maj)) -lt 1 ] || { [ $((10#$maj)) -eq 1 ] && { [ $((10#$min)) -lt 8 ] || { [ $((10#$min)) -eq 8 ] && [ $((10#$pat)) -lt 1 ]; }; }; }; then
+        echo "run.sh: $cand is ${ver#jq-}, older than jq $jq_floor; the suites need $jq_floor or newer" >&2
+        return 1
+      fi
+    else
+      echo "run.sh: cannot read the version of $cand ('$ver'); the suites need jq $jq_floor or newer" >&2
+      return 1
+    fi
+    mkdir -p "$RUN_SH_WORK/bin" && ln -s "$cand" "$RUN_SH_WORK/bin/jq" || { echo "run.sh: cannot link $cand into $RUN_SH_WORK/bin" >&2; return 1; }
+    PATH=$RUN_SH_WORK/bin:$PATH
+    return 0
+  done
+  echo "run.sh: no jq on PATH other than a mise shim; the suites need jq $jq_floor or newer" >&2
+  return 1
+}
+link_jq || exit 2
+export PATH
 
 sel_reason="git failed" # the safe state; compute_selection clears it only when it ran to the end
 [ "$changed" -eq 0 ] || compute_selection

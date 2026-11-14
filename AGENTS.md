@@ -136,6 +136,8 @@ the same either way; a load-sensitive suite's assertion count can differ (`xrevi
 F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
 `# test-serial` line and runs alone after the parallel ones (today only `xreview`), and so does
 every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
+The runner gives its suites the first `jq` on `PATH` that is not a mise shim (about 6 ms a call, against
+about 90 ms through the shim), and exits 2 before any suite when there is none or it is older than 1.8.1.
 
 **The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,
 `RUN_SH_LOCK` overrides the path). A runner that has to wait prints on stderr who holds the lock
