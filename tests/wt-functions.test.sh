@@ -3553,22 +3553,22 @@ eq "$(print -r -- "$settings" | grep -c '^idiomatic_version_file_enable_tools[[:
    "X22 ... and no other value for it"
 
 # XC: _wt_mise_candidates lists the checkouts that can vouch for a new worktree's mise config
-# (spec §2): main first, then the base branch's checkout, then Git's order; never the
-# destination, a missing directory, or a checkout of another repository.
-xc_list() { _wt_mise_candidates "$@" || return; print -rl -- $_WT_MISE_CANDS "base=$_WT_MISE_BASEDIR" }
+# (spec §2): main first, then Git's order; never the destination, a missing directory, or a
+# checkout of another repository.
+xc_list() { _wt_mise_candidates "$@" || return; print -rl -- $_WT_MISE_CANDS }
 # xsib <git worktree add args...> — a registered sibling checkout, arguments exactly as git takes them.
 xsib() { git -C "$REPO" worktree add -q "$@" >/dev/null 2>&1 || _fail "xsib $*" }
 
 setup
 xsib -b a "$HOME/Code/Org/sib-a"; xsib -b b "$HOME/Code/Org/sib-b"; xsib -b d "$HOME/Code/Org/repo-d"
-run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" b
-eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-b" "$HOME/Code/Org/sib-a" "base=$HOME/Code/Org/sib-b")" \
-   "XC1 main, then the base branch's checkout, then Git's order; the destination is absent"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-b")" \
+   "XC1 main, then Git's order; the destination is absent"
 
 rm -rf "$HOME/Code/Org/sib-a"
 # The injector only logs (NTH=0 never matches a count): it shows which checkouts were asked
 # about, so a missing directory must be skipped by the -d check, not by a failing rev-parse.
-PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='rev-parse' WT_FAIL_NTH=0 WT_FAIL_LOG="$FLOG" run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" b
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='rev-parse' WT_FAIL_NTH=0 WT_FAIL_LOG="$FLOG" run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
 rc_is 0 "XC2 a registered checkout whose directory is gone is not an error"
 hasnt "sib-a" "XC2 ... and is absent"
 has "$HOME/Code/Org/sib-b" "XC2 ... the others remain"
@@ -3607,21 +3607,8 @@ rm -rf "$BARESTUBS"
 setup
 xsib --detach "$HOME/Code/Org/sib-det"; xsib -b a "$HOME/Code/Org/sib-a"; xsib -b d "$HOME/Code/Org/repo-d"
 run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
-eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=")" \
-   "XC5 a detached sibling is listed; no base argument gives main first, then the rest"
-run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" origin/main
-eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=")" \
-   "XC5 a start point that is no local branch leaves the base empty"
-run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" main
-eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=$REPO")" \
-   "XC5 main as the base is not listed twice, and is the base checkout itself"
-
-# The base branch's own checkout can be the one that is gone: it is not listed, and it is no base.
-setup
-xsib -b a "$HOME/Code/Org/sib-a"; xsib -b d "$HOME/Code/Org/repo-d"
-rm -rf "$HOME/Code/Org/sib-a"
-run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" a
-eq "$OUT" "$(print -rl -- "$REPO" "base=")" "XC6 a base checkout whose directory is gone is absent and leaves the base empty"
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det")" \
+   "XC5 a detached sibling is listed; main first, then the rest"
 
 : > "$STDIN_LOG"
 # --- the carry itself --------------------------------------------------------
@@ -3867,7 +3854,7 @@ eq "$OUT" "/srv/plain" "X14e a safe path still prints unchanged"
 
 # _wt_mise_withdraw untrusts the dest it was given, not a same-named variable of its caller.
 xfix x14f
-xw_caller() { local dest=OUTER; _wt_mise_withdraw "$REPO" "$X" "" mise.toml "" }
+xw_caller() { local dest=OUTER; _wt_mise_withdraw "$REPO" "$X" mise.toml "" }
 run "$REPO" xw_caller
 mlog_line "trust --untrust $X/mise.toml" "X14f withdraw uses the dest it was passed, not its caller's"
 mlog_no_line "trust --untrust OUTER/mise.toml" "X14f ... never the caller's"
@@ -3980,7 +3967,7 @@ has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25/mise.toml" "
 mlog_no_line "trust $X/mise.toml" "X25 it is never trusted"
 hook_not_ran "X25 the setup hook does not run"
 
-# X25b: the review's baseline must be TRUSTED. The base sibling's copy differs and is
+# X25b: the review's baseline must be TRUSTED. The sibling's copy differs and is
 # untrusted; main's differs and is trusted: the diff is against main's.
 xfix x25b
 xbranch x25b-src "$XA2"
@@ -4073,7 +4060,7 @@ has "wt: ~/Code/Org/repo-x28/mise.toml is not trusted: $XNONE." "X28 the file is
 mlog_no_line "trust $X/mise.toml" "X28 it is never trusted"
 hook_not_ran "X28 the setup hook does not run"
 
-# X29: the base branch's checkout is asked before the others. Git lists sib-a before sib-z.
+# X29: the first sibling in Git's order vouches. Git lists sib-a before sib-z.
 xfix x29
 xbranch x29-src "$XA2"
 xseed
@@ -4081,13 +4068,13 @@ xsib -b other29 "$HOME/Code/Org/sib-a" x29-src; mise_seed "$HOME/Code/Org/sib-a/
 xsib "$HOME/Code/Org/sib-z" x29-src; mise_seed "$HOME/Code/Org/sib-z/mise.toml"
 eq "$(git -C "$REPO" worktree list --porcelain | sed -n 's|^worktree .*/||p' | tr '\n' ' ')" "repo sib-a sib-z " "X29 precondition: Git lists sib-a before sib-z"
 run "$REPO" wt x29 x29-src
-rc_is 0 "X29 the base's checkout vouches"
-has "wt: mise trust carried to ~/Code/Org/repo-x29/mise.toml (trusted in ~/Code/Org/sib-z)" "X29 the line names the base checkout, not the earlier sibling"
-mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X29 the other sibling is never read"
+rc_is 0 "X29 the first sibling in Git's order vouches"
+has "wt: mise trust carried to ~/Code/Org/repo-x29/mise.toml (trusted in ~/Code/Org/sib-a)" "X29 the line names the first sibling in Git's order"
+mlog_no_line "-C $HOME/Code/Org/sib-z trust --show" "X29 the later sibling is never read"
 mlog_line "trust $X/mise.toml" "X29 the tracked config is trusted in the worktree"
 hook_ran "X29 the setup hook runs"
 
-# X30: the review diffs against the base checkout's trusted, differing copy.
+# X30: the review diffs against main's trusted, differing copy, not a sibling's.
 xfix x30
 xbranch x30-src "$XA2"
 xseed
@@ -4095,12 +4082,12 @@ xsib "$HOME/Code/Org/sib-x30" x30-src
 print -r -- 'a=3' > "$HOME/Code/Org/sib-x30/mise.toml"; mise_seed "$HOME/Code/Org/sib-x30/mise.toml"
 run "$REPO" wt x30 x30-src
 rc_is 1 "X30 a trusted copy that differs does not vouch"
-has "    review: diff ~/Code/Org/sib-x30/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 the diff is against the base checkout's copy"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 the diff is against main's copy"
 mlog_no_line "trust $X/mise.toml" "X30 it is never trusted"
 hook_not_ran "X30 the setup hook does not run"
 run "$REPO" wt-prepare x30
 rc_is 1 "X30 wt-prepare refuses again"
-has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 with no base the diff is against main's copy"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 wt-prepare diffs against main's copy too"
 mlog_no_line "trust $X/mise.toml" "X30 ... and still never trusted"
 hook_not_ran "X30 ... and the setup hook still does not run"
 
@@ -4188,20 +4175,21 @@ xsib "$HOME/Code/Org/sib: x35" x35-src
 print -r -- 'a=3' > "$HOME/Code/Org/sib: x35/mise.toml"; mise_seed "$HOME/Code/Org/sib: x35/mise.toml"
 run "$REPO" wt x35 x35-src
 rc_is 1 "X35 a trusted copy that differs is refused"
-has "    review: diff ~/'Code/Org/sib: x35/mise.toml' ~/Code/Org/repo-x35/mise.toml" "X35 the diff quotes the baseline"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x35/mise.toml" "X35 the diff is against main's copy"
+hasnt "sib: x35/mise.toml ~" "X35 ... and never offers the sibling's copy as a baseline"
 mlog_no_line "trust $X/mise.toml" "X35 it is never trusted"
 hook_not_ran "X35 the setup hook does not run"
 
-# X36: wt run from inside a sibling with no start point: the caller's checkout is the base.
+# X36: wt run from inside a sibling with no start point: the caller's checkout gets no preference.
 xfix x36
 xbranch x36-src "$XA2"
 xseed
 xsib -b a36 "$HOME/Code/Org/sib-a" x36-src; mise_seed "$HOME/Code/Org/sib-a/mise.toml"
 xsib -b c36 "$HOME/Code/Org/sib-c" x36-src; mise_seed "$HOME/Code/Org/sib-c/mise.toml"
 run "$HOME/Code/Org/sib-c" wt x36
-rc_is 0 "X36 the caller's checkout vouches"
-has "wt: mise trust carried to ~/Code/Org/repo-x36/mise.toml (trusted in ~/Code/Org/sib-c)" "X36 the line names the caller's checkout"
-mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X36 an earlier sibling is never read"
+rc_is 0 "X36 the first sibling in Git's order vouches"
+has "wt: mise trust carried to ~/Code/Org/repo-x36/mise.toml (trusted in ~/Code/Org/sib-a)" "X36 the line names the first sibling, not the caller's checkout"
+mlog_no_line "-C $HOME/Code/Org/sib-c trust --show" "X36 the caller's checkout is never read"
 mlog_line "trust $X/mise.toml" "X36 the tracked config is trusted in the worktree"
 hook_ran "X36 the setup hook runs"
 
