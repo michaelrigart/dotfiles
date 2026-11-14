@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 98 s on 2026-11-14
 # Suite for .scripts/test-audit/audit.py, the mutation-audit harness. Every case runs the
 # harness against a throwaway git repository built from tests/fixtures/test-audit, with its
 # own state, copy root, run lock and a read-only probe directory standing in for $HOME.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 549 s on 2026-11-14
 # Tests for dot_local/bin/executable_xreview on the Codex daemon (spec section 7).
 #
 # Every collaborator is stubbed on PATH:

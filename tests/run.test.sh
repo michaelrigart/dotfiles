@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 110 s on 2026-11-14
 # Tests for tests/run.sh: the requirement gate (a suite tagged `# test-requires:` runs only
 # when named exactly or with --all; a substring filter must still skip it), the parallel
 # run, the serial tag, the per-machine lock and its holder record, and --changed (which heavy
@@ -338,6 +339,62 @@ eq "an empty entry, a relative one and a directory named jq are skipped" real "$
 eq "and the runner says nothing on stderr" "" "$jq_err"
 jqrun "$J/real:$NARROW"; out_real=$jq_out
 eq "the link changes nothing in the report" "$out_real" "$out1"
+
+# A suite marked `# test-slow` is dispatched before the others in the parallel phase, so a long
+# suite does not start last and set the wall time. Bug caught: the marker ignored, so the slowest
+# suite still starts in name order; or a serial or gated suite jumping the queue because of it. The
+# fixtures live in their own directory with their own runner, so the unfiltered runs above keep
+# their suite counts. Each suite appends `start <name>` to $MARK/order when it starts and, but for
+# the serial one, `end <name>` a moment later.
+slowtag="# test-slow"
+S="$T/slow"
+mkdir -p "$S"
+cp "$RUN" "$S/run.sh"
+# mkorder <name> <tag line or empty> [serial]: a fixture suite that records its start (and end).
+mkorder() {
+  printf '#!/usr/bin/env bash\n' > "$S/$1.test.sh"
+  [ -z "$2" ] || printf '%s\n' "$2" >> "$S/$1.test.sh"
+  cat >> "$S/$1.test.sh" <<SUITE
+echo "start $1" >> "\$MARK/order"
+SUITE
+  if [ "${3:-}" != serial ]; then
+    cat >> "$S/$1.test.sh" <<SUITE
+sleep 0.3
+echo "end $1" >> "\$MARK/order"
+SUITE
+  fi
+  echo "echo \"  ok  $1\"" >> "$S/$1.test.sh"
+}
+mkorder aa-first ""
+mkorder zz-late "$slowtag"
+mkorder zz-commented "$slowtag  # 99 s on 2026-11-14"
+mkorder zz-slowish "${slowtag}ish"
+mkorder zz-serial-slow "$slowtag
+# test-serial" serial
+mkorder zz-gated-slow "$slowtag
+$tag: a live herdr" serial
+chmod 755 "$S"/*.sh
+# orderrun <jobs> <filter>...: runs the fixtures and sets order_out (the report) and order (the starts and ends).
+orderrun() {
+  local j=$1; shift
+  rm -f "$MARK/order"
+  order_out="$(RUN_JOBS=$j "$S/run.sh" "$@" 2>&1)"
+  order="$(cat "$MARK/order" 2>/dev/null)"
+}
+orderrun 1 aa-first zz-late
+eq "S1: a suite marked test-slow starts before an unmarked one that sorts earlier" "start zz-late" "$(printf '%s\n' "$order" | sed -n 1p)"
+eq "S1: and the unmarked one starts after it" "start aa-first" "$(printf '%s\n' "$order" | grep '^start' | sed -n 2p)"
+eq "S2: the report still lists the suites in name order" "aa-first zz-late" "$(printf '%s\n' "$order_out" | sed -n 's/^ *ok  *\([a-z-]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+orderrun 4 aa-first zz-late zz-serial-slow
+eq "S3: a suite marked test-slow and test-serial starts last" "start zz-serial-slow" "$(printf '%s\n' "$order" | tail -n 1)"
+eq "S3: after both parallel suites have ended" 5 "$(printf '%s\n' "$order" | wc -l | tr -d ' ')"
+orderrun 4 gated
+ran "S4: a marked suite behind a requirement tag is skipped" yes 'skip +zz-gated-slow +needs: a live herdr' "$order_out"
+eq "S4: and does not start" "" "$order"
+orderrun 1 aa-first zz-commented
+eq "S5: a marker followed by a comment counts" "start zz-commented" "$(printf '%s\n' "$order" | sed -n 1p)"
+orderrun 1 aa-first zz-slowish
+eq "S5: a longer tag that only begins with the marker does not" "start aa-first" "$(printf '%s\n' "$order" | sed -n 1p)"
 
 # Locking. hold <tenths> [record] takes the lock in the background, waits until it is held
 # (and, when given, until its holder-record line is written to $L.holder), and releases it

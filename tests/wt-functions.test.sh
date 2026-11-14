@@ -1,4 +1,5 @@
 #!/usr/bin/env zsh
+# test-slow  # 166 s on 2026-11-14
 # Mocked test for the worktree/session helpers and the .worktreehook protocol in
 # dot_config/zsh/functions. Twenty-two sections, in dependency order — helpers
 # first, then the commands composed from them:

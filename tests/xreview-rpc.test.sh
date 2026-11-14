@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 81 s on 2026-11-14
 # Tests dot_local/bin/executable_xreview-rpc, the dotfiles' client for the Codex daemon
 # (spec section 7.1). The daemon speaks JSON-RPC over a WebSocket on a unix socket, but the
 # Claude sandbox denies binding one (F20), so the fake daemon here speaks newline-delimited

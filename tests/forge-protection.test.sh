@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 96 s on 2026-11-14
 # Mocked test for .scripts/forge-protection.sh: stubs gh, glab and az on PATH (every argv is
 # appended to $CALLS; answers come from $T/answers/<tool>/<key>{.out,.rc,.err,.sleep}, the key
 # being the argv with every character outside A-Za-z0-9 turned into _, a key over 200 characters cut and

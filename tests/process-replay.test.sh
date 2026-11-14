@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 240 s on 2026-11-14
 # Tests for .scripts/process-replay.py and the package .scripts/process_replay/: the harness that
 # measures, from October's recorded reviews, whether parts of the review process can be removed
 # (spec docs/superpowers/specs/2026-11-02-replay-set-design.md).

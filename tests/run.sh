@@ -30,6 +30,8 @@
 # machine (timing assertions, fixed ports, shared state) carries a `# test-serial` line and
 # runs alone after the parallel ones; so does every suite gated on a condition other than
 # `heavy` (a live herdr, a pty, the real daemon), which --all or an exact name selects.
+# A suite marked `# test-slow` is dispatched before the others, so a long one does not start last;
+# the marker orders dispatch only, and a serial or gated suite is unaffected by it.
 #
 # One runner per machine: every invocation, filtered or not, takes a lockf lock on
 # RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock). The runner that holds it writes
@@ -374,17 +376,20 @@ sel_reason="git failed" # the safe state; compute_selection clears it only when 
 # just the loop, and the script goes on with what it had. Each suite loop is therefore a group
 # whose last command records that it ran to the end: a selection that stopped partway runs no
 # suite, and a report that stopped partway gives no verdict.
-parallel=() serial=() dispatch_done=0
+slow=() parallel=() serial=() dispatch_done=0
 { for f in ./*.test.sh; do
   select_suite "$f" || continue
   if grep -qE '^# test-serial([[:space:]]|$)' "$f" || { [ -n "$req" ] && [ "$req" != heavy ]; }; then
     serial+=("$name")
+  elif grep -qE '^# test-slow([[:space:]]|$)' "$f"; then
+    slow+=("$name")
   else
     parallel+=("$name")
   fi
 done; dispatch_done=1; }
 [ "$dispatch_done" = 1 ] || { echo "run.sh: selecting the suites failed; running none" >&2; exit 2; }
-[ ${#parallel[@]} -gt 0 ] && printf '%s\0' "${parallel[@]}" | xargs -0 -n1 -P "$jobs" "$self" --run-one
+# An empty array expands as unbound under set -u in bash 3.2, so each is guarded.
+[ $((${#slow[@]} + ${#parallel[@]})) -gt 0 ] && { [ ${#slow[@]} -eq 0 ] || printf '%s\0' "${slow[@]}"; [ ${#parallel[@]} -eq 0 ] || printf '%s\0' "${parallel[@]}"; } | xargs -0 -n1 -P "$jobs" "$self" --run-one
 [ ${#serial[@]} -gt 0 ] && printf '%s\0' "${serial[@]}" | xargs -0 -n1 -P 1 "$self" --run-one
 
 suites=0 green=0 red=0 broken=0 skipped=0 report_done=0
