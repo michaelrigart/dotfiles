@@ -404,7 +404,7 @@ eq "S5: a longer tag that only begins with the marker does not" "start aa-first"
 # can start last and set the run's wall time.
 mkorder aa-short "$slowtag  # 10 s on 2026-11-14"
 mkorder mm-mid "$slowtag  # 50 s on 2026-11-14"
-mkorder zz-long "$slowtag  # 99 s on 2026-11-14"
+mkorder zz-long "$slowtag  # 100 s on 2026-11-14"
 mkorder bb-tie "$slowtag  # 50 s on 2026-11-14"
 mkorder cc-tie "$slowtag  # 50 s on 2026-11-14"
 mkorder dd-bare "$slowtag"
