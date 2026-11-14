@@ -8,8 +8,7 @@
 #
 # Gated: MR/PR creation and agent-run merges - glab mr create|new|merge|accept, gh pr
 # create|new|merge, az repos pr create, their REST forms through glab api / gh api, and a local
-# git merge into the default branch, except a merge of origin's own default branch, which lands only what
-# that branch already holds. Each opens only when the latest full-range pre-merge
+# git merge into the default branch. Each opens only when the latest full-range pre-merge
 # review of that exact change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
 # for and gh pr revert are denied outright. The change is named by a content fingerprint, so
 # any content change after the approval closes the gate again, while a clean rebase keeps it

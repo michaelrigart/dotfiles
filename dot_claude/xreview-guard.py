@@ -17,18 +17,6 @@
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
 #   [cd <literal path> &&] [sudo] az repos pr create [options]
 #
-# An API write that only comments, opens or resolves a thread, starts an MR's pipeline, or
-# updates a title or description (-f/-F fields, no --input) is never gated, and neither is a
-# merge of origin's default branch (origin/<name> or refs/remotes/origin/<name>), which lands
-# only what origin's default branch already holds, in a directory the gate can read. Each must
-# be a command of its own, and the whole command must be plain: every segment between ;, &, |
-# and newline in plain words (letters, digits and _ . / : @ % + , = -, or quoted, a
-# double-quoted one holding no $, backtick or backslash) with no redirection but >, >>, 2>,
-# 2>>, &> and 2>&1, and no substitution, group or glob anywhere. Then no shell can read any
-# segment as anything else, nor let one hide another. The merge takes no quotes, and only git's
-# -C and the flags --ff-only, --no-edit and the like. Otherwise it is gated like any other
-# write. Any gated verb left beside it decides.
-#
 # glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
 # proposes a branch the forge makes itself, which no review can have seen.
 #
@@ -603,7 +591,7 @@ def lex(cmd, body=False, everywhere=False, naive=False):
 # marker, anywhere in an unquoted word; at the start of a word it may carry a descriptor
 # number (2>, 2>&1). Not a process substitution, <( ) or >( ), which runs a command.
 REDIRECT_OP = r"(?:&>>|&>|>>|>&|>\||<>|<&|<<<|<<-|<<|>|<)(?!\()"
-REDIRECT_RE = re.compile(r"\d?" + REDIRECT_OP)
+REDIRECT_RE = re.compile(r"\d*" + REDIRECT_OP)
 REDIRECT_MID_RE = re.compile(REDIRECT_OP)
 WORD_END = " \t\n;&|()<>"
 
@@ -659,106 +647,6 @@ def strip_redirections(cmd):
     return "".join(out)
 
 
-def split_commands(text):
-    """(segment, separator) pairs of text, split where the shell ends a command: at an unquoted
-    ;, &, | or newline, a run of them (&&, ||, |&, ;;) being one separator. Quotes and
-    backslashes are honoured as strip_redirections honours them, so a quoted or escaped
-    operator never splits. The & or | of a redirection (2>&1, >|, &>) is part of it, not a
-    separator. Parentheses do not split: a segment holding one is not plain. The last pair's
-    separator is empty. text has been through lex, so the only quotes left are '...' and
-    "...", and its redirections are still in it."""
-    out, buf, i, n, quoting = [], [], 0, len(text), None
-    while i < n:
-        c = text[i]
-        if quoting is None and c == ">":
-            j = i + 1 + (text[i + 1:i + 2] == ">")
-            if text[j:j + 1] and text[j] in "&|":
-                j += 1
-            buf.append(text[i:j])
-            i = j
-            continue
-        if quoting is None and c in ";&|\n":
-            j = i
-            while j < n and text[j] in ";&|\n":
-                j += 1
-            if text[i:j] == "&" and text[j:j + 1] == ">":
-                buf.append(c)
-                i = j
-                continue
-            out.append(("".join(buf), text[i:j]))
-            buf, i = [], j
-            continue
-        buf.append(c)
-        if c == "\\" and quoting != "'" and i + 1 < n:
-            buf.append(text[i + 1])
-            i += 2
-            continue
-        if quoting is None and c in "'\"":
-            quoting = c
-        elif c == quoting:
-            quoting = None
-        i += 1
-    out.append(("".join(buf), ""))
-    return out
-
-
-# What a shell passes to a program unchanged. A character outside this set may expand, split,
-# glob or redirect, so a word holding one is not plain.
-PLAIN_RUN = re.compile(r"[A-Za-z0-9_./:@%+,=-]+")
-# The redirections a plain command may carry: stdout or stderr to a file, or to the other
-# stream (2>&1). A descriptor is one digit, as zsh reads it; no input redirection, no here
-# document, no process substitution.
-PLAIN_REDIRECT = re.compile(r"([12]?>>?|&>)[ \t]*")
-
-
-def plain_argv(segment, quotes):
-    """The words a segment of raw (lexed, not redirection-stripped) text passes to its
-    command, or None when any part of it is not plain. A word is plain runs, and with quotes
-    also '...' strings and "..." strings holding no $, backtick or backslash; its first
-    non-empty part may not be an unquoted run starting with = (zsh expands =name to a path,
-    after empty quotes too), and ~ is not plain at all. The
-    redirections of PLAIN_REDIRECT are dropped, each followed by a plain run or &1 or &2 as
-    a whole word. Whatever shell reads the segment, these are the words it passes on."""
-    words, i, n = [], 0, len(segment)
-    while i < n:
-        if segment[i] in " \t":
-            i += 1
-            continue
-        m = PLAIN_REDIRECT.match(segment, i)
-        if m:
-            i = m.end()
-            if m.group(1) != "&>" and segment[i:i + 2] in ("&1", "&2"):
-                j = i + 2
-            else:
-                run = PLAIN_RUN.match(segment, i)
-                if not run or segment[i] == "=":
-                    return None
-                j = run.end()
-            if j < n and segment[j] not in " \t":
-                return None
-            i = j
-            continue
-        parts = []
-        while i < n and segment[i] not in " \t":
-            c = segment[i]
-            run = PLAIN_RUN.match(segment, i)
-            if run:
-                if c == "=" and not "".join(parts):
-                    return None
-                parts.append(run.group())
-                i = run.end()
-            elif quotes and c in "'\"":
-                j = segment.find(c, i + 1)
-                if j < 0 or (c == '"' and any(q in segment[i + 1:j] for q in "$`\\")):
-                    return None
-                parts.append(segment[i + 1:j])
-                i = j + 1
-            else:
-                return None
-        words.append("".join(parts))
-    return words
-
-
 def tokenize(text):
     """The words and operator tokens of lexed text, its redirections dropped. Raises
     ValueError on unbalanced quotes."""
@@ -789,8 +677,8 @@ def candidates(tokens):
     """Each word naming git, glab, gh or az, with the words after it in its simple command. Any
     word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
     xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc, function f {) or
-    an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the
-    command is plain is parse_plain's question."""
+    an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the command
+    is plain is parse_plain's question."""
     out, end = [], len(tokens)
     for k in range(len(tokens) - 1, -1, -1):
         if is_operator(tokens[k]):
@@ -885,37 +773,12 @@ CLI_VERBS = {
 }
 # The GraphQL mutations that create, update, revert, merge or enqueue an MR/PR, merge a branch
 # with no PR, or turn auto-merge on. An update can retarget, from arguments a variable may
-# carry, so it is denied by name, as is a note carrying mergeRequestDiffHeadSha, which runs
-# GitLab's /merge quick action, and a diff note (createDiffNote), whose position carries a head
-# sha to the same end. Every other mutation (review threads, comments) is allowed.
+# carry, so it is denied by name. Every other mutation (review threads, comments) is allowed.
 MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAccept|"
                        r"mergeRequestSetAutoMerge|createPullRequest|updatePullRequest|"
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
-                       r"enablePullRequestAutoMerge|mergeBranch|mergeRequestDiffHeadSha|"
-                       r"createDiffNote)\b")
+                       r"enablePullRequestAutoMerge|mergeBranch)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
-# The API writes that are never gated: a comment, a thread, a pipeline start, and an update of
-# a title or description. Each is a whole-path match on literal words, so a path the forge could
-# read otherwise (a %, a :branch segment) misses it and is gated as before.
-NAME = r"[A-Za-z0-9._-]+"      # .github is a name; a .. anywhere is refused apart
-GITLAB_PROJECT = r"(?:\d+|:id|:fullpath|{0}(?:%2[Ff]{0})+)".format(NAME)
-GITHUB_PROJECT = r"(?:\{{owner\}}/\{{repo\}}|{0}/{0})".format(NAME)
-EXEMPT_PATH = {
-    "glab": re.compile(r"projects/{}/merge_requests/\d+/pipelines".format(GITLAB_PROJECT)),
-    "gh": re.compile(r"repos/{}/pulls/(?:\d+/comments(?:/\d+/replies)?|comments/\d+)"
-                     .format(GITHUB_PROJECT)),
-}
-# GitLab runs quick actions in a note's body, and a head sha (merge_request_diff_head_sha, or one
-# in a position or commit_id) makes /merge merge, so a note or thread is exempt only while every
-# field name is one that cannot carry it.
-GITLAB_NOTE_PATH = re.compile(r"projects/{}/merge_requests/\d+/(?:notes(?:/\d+)?|discussions"
-                              r"(?:/[0-9a-f]+(?:/notes(?:/\d+)?)?)?)".format(GITLAB_PROJECT))
-GITLAB_NOTE_FIELD = re.compile(r"body|resolved")
-UPDATE_PATH = {
-    "glab": (re.compile(r"projects/{}/merge_requests/\d+".format(GITLAB_PROJECT)), "PUT",
-             {"title", "description"}),
-    "gh": (re.compile(r"repos/{}/pulls/\d+".format(GITHUB_PROJECT)), "PATCH", {"title", "body"}),
-}
 # The api options that take a value, per CLI (gh 2.102's and glab 1.130's --help), and -R/--repo,
 # which glab takes before api, after it and after the endpoint. Every other option is a boolean.
 GH_API_VALUE = {"-F", "--field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-X",
@@ -978,11 +841,10 @@ def parse_api(args, tool):
     """The parts of a glab/gh api call the gate reads, its options read as the CLI reads them
     (api_options): endpoint, method (the CLIs' default: POST once a field or a body is given,
     GET otherwise), fields (name -> last value), body (True when the body or a typed field
-    comes from a file or stdin), input (True for --input alone: a body whose field names the
-    gate cannot read), hostname and repo (an -R/--repo, wherever it stands: glab takes it
-    before api, after it and after the endpoint)."""
-    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "input": False,
-            "hostname": None, "repo": None}
+    comes from a file or stdin), hostname and repo (an -R/--repo, wherever it stands: glab
+    takes it before api, after it and after the endpoint)."""
+    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None,
+            "repo": None}
     opts, pos = api_options(args, GLAB_API_VALUE if tool == "glab" else GH_API_VALUE)
     if pos:
         call["endpoint"] = pos[0]
@@ -995,7 +857,7 @@ def parse_api(args, tool):
                 call["body"] = True
             call["fields"][key] = val
         elif name == "--input":
-            call["body"] = call["input"] = True
+            call["body"] = True
         elif name == "--hostname":
             call["hostname"] = value
         elif name in ("-R", "--repo"):
@@ -1094,43 +956,6 @@ def api_placeholder(args, tool):
     if parse_api(args, tool)["method"] in READ_METHODS and not may_write(args, tool):
         return False
     return any(name == "--placeholder" for name, _ in api_options(args, GLAB_API_VALUE)[0])
-
-
-def api_exempt(args, tool):
-    """Is the call a write the gate lets through whatever else it holds: its one endpoint, a
-    literal word, is a comment, thread or pipeline path (EXEMPT_PATH), or the MR/PR itself
-    updated with a title or description alone (UPDATE_PATH)? No other word of the call may name
-    an MR/PR path, and the path holds no .. (the forge would resolve it to another endpoint).
-    A GitLab note or an update must show its field names, so --input hides them; any other
-    body may come from anywhere. The endpoint may hold no ; (a query could split into a field),
-    and --placeholder fills a segment the path does not show, so it is never exempt. The words
-    are those plain_argv reads, so nothing in them is left for a shell to expand."""
-    pos = api_options(args, GLAB_API_VALUE if tool == "glab" else GH_API_VALUE)[1]
-    if len(pos) != 1 or not names_gated_path(pos[0]) or sum(map(names_gated_path, args)) != 1:
-        return False
-    if api_placeholder(args, tool):
-        return False
-    call = parse_api(args, tool)
-    endpoint = call["endpoint"]
-    if not literal(endpoint) or call["method"] not in ("POST", "PUT", "PATCH"):
-        return False
-    path, query = endpoint_parts(endpoint)
-    if ".." in path or ";" in endpoint:
-        return False
-    if EXEMPT_PATH[tool].fullmatch(path):
-        return True
-    if tool == "glab" and GITLAB_NOTE_PATH.fullmatch(path):
-        return not call["input"] and all(GITLAB_NOTE_FIELD.fullmatch(name)
-                                         for name in (*call["fields"], *query))
-    pattern, method, names = UPDATE_PATH[tool]
-    if not pattern.fullmatch(path) or call["method"] != method or call["input"]:
-        return False
-    if tool == "gh" and "?" in endpoint:
-        return False
-    given = set(call["fields"])
-    if tool == "glab":
-        given |= set(query)
-    return bool(given) and given <= names
 
 
 def only_options(words):
@@ -1270,8 +1095,7 @@ def parse_plain(tokens, cwd):
     i = 0
     if len(t) >= 3 and t[0] == "cd" and t[2] == "&&" and not is_operator(t[1]):
         target = os.path.expanduser(t[1])
-        # zsh reads a target starting with - or + as an option or a directory-stack entry.
-        if not literal(target) or target[:1] in ("-", "+"):
+        if not literal(target) or target == "-":
             return None
         cwd, i = os.path.normpath(os.path.join(cwd, target)), 3
     if i < len(t) and t[i] == "sudo":
@@ -1430,36 +1254,20 @@ def fetch_heads(top):
             if line.strip() and line.split("\t")[1:2] != ["not-for-merge"]]
 
 
-def merge_dir(args, cwd):
-    """(directory, index of merge) of git's arguments up to merge: the plain form's -C paths,
-    each relative to the one before, and the flags in GIT_FLAGS. Any other option is Deny."""
-    i = 0
+def judge_git_merge(shape, ledger):
+    """git [-C <path>]... merge <ref>: gated only while the repository's current branch is its
+    default branch; the change is <ref>, landing on that branch's HEAD."""
+    args, cwd, i = shape["args"], shape["cwd"], 0
     while i < len(args) and args[i] != "merge":
         if args[i] == "-C" and i + 1 < len(args):
             if not literal(args[i + 1]):
                 raise Deny(LITERAL.format("the -C path", args[i + 1]))
-            # git changes directory physically, so a symlink's .. is its target's parent.
-            cwd = os.path.realpath(os.path.join(cwd, os.path.expanduser(args[i + 1])))
+            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(args[i + 1])))
             i += 2
         elif args[i] in GIT_FLAGS:
             i += 1
         else:
             raise Deny(PLAIN)
-    return cwd, i
-
-
-def names_origin_default(top, ref, dest):
-    """Does ref, as git resolves the name (origin/main, refs/remotes/origin/main, @{u}), name
-    origin's own default branch dest?"""
-    full = run(["git", "-C", top, "rev-parse", "--symbolic-full-name", ref])
-    return (full or "").strip() == "refs/remotes/origin/" + dest
-
-
-def judge_git_merge(shape, ledger):
-    """git [-C <path>]... merge <ref>: gated only while the repository's current branch is its
-    default branch; the change is <ref>, landing on that branch's HEAD."""
-    args = shape["args"]
-    cwd, i = merge_dir(args, shape["cwd"])
     top = toplevel(cwd)
     dest = ledger.default_branch(top)
     branch = ledger.current_branch(top)
@@ -1480,7 +1288,8 @@ def judge_git_merge(shape, ledger):
     # Syncing with origin's own default branch lands work that is already there. The ref must
     # name it, as git resolves the name (origin/main, refs/remotes/origin/main, @{u}): another
     # ref at the same commit is still a change of its own.
-    if names_origin_default(top, ref, dest):
+    full = run(["git", "-C", top, "rev-parse", "--symbolic-full-name", ref])
+    if (full or "").strip() == "refs/remotes/origin/" + dest:
         return
     tip = ref
     if ref == "FETCH_HEAD":
@@ -1491,85 +1300,6 @@ def judge_git_merge(shape, ledger):
         tip = heads[0]          # what git merges; FETCH_HEAD as a ref is the file's first line
     source = ref[len("origin/"):] if ref.startswith("origin/") else ref
     check(ledger, top, source, dest, "HEAD", tip, "{}...{}".format(dest, tip), None)
-
-
-ORIGIN_REF = re.compile(r"(?:refs/remotes/)?origin/.+")
-DIR_CHANGERS = {"cd", "chdir", "pushd", "popd"}
-# The options a sync may carry, whole: none takes a value, and git's abbreviations (--mess is
-# --message, taking the next word) and bundles (-qn) are not read, so no word is left for the
-# shell or for git to read another way.
-SYNC_FLAGS = {"--ff-only", "--ff", "--no-ff", "--no-edit", "--no-commit", "-q", "--quiet",
-              "--stat", "--no-stat", "-n", "--autostash", "--no-autostash", "-v", "--verbose"}
-def is_sync(words, cwd, moved, ledger):
-    """Is this command (plain words) a merge of origin's default branch, with nothing else on
-    it? Such a merge lands only what origin's default branch already holds, on any branch, so
-    it needs no receipt and no branch lookup. cwd is the directory the segment runs in; moved
-    says an earlier command may have changed it, which leaves only an absolute -C to name the
-    repository. A Deny from what the plain form would refuse is no sync."""
-    if words[0] != "git":
-        return False
-    args = words[1:]
-    try:
-        where, i = merge_dir(args, cwd)
-    except Deny:
-        return False
-    if i >= len(args):
-        return False
-    rest = args[i + 1:]
-    refs = [w for w in rest if not w.startswith("-")]
-    if any(w.startswith("-") and w not in SYNC_FLAGS for w in rest):
-        return False
-    if len(refs) != 1 or not ORIGIN_REF.fullmatch(refs[0]):
-        return False
-    if moved:
-        named = args[:i]
-        if "-C" not in named or not named[named.index("-C") + 1].startswith("/"):
-            return False
-    try:
-        top = toplevel(where)
-    except Deny as d:
-        if str(d) == TIMED_OUT:
-            raise
-        return False
-    return names_origin_default(top, refs[0], ledger.default_branch(top))
-
-
-def is_exempt_api(segment):
-    """Is the segment a glab or gh api call that is a command of its own and an exempt write?
-    The tool is named exactly and api follows it directly: an option between them is not read."""
-    words = plain_argv(segment, True)
-    if not words or words[0] not in ("glab", "gh") or words[1:2] != ["api"]:
-        return False
-    return api_exempt(words[2:], words[0])
-
-
-def without_exempt(cmd, cwd, ledger):
-    """cmd's lexed text with each sync or exempt API segment replaced by the word :, every
-    separator kept, or None when nothing is exempt. A command is exempt only when all of it is
-    plain: every segment reads as plain words (plain_argv), and the lexer found no substitution
-    or expanding here-document and reads the text the same under bash 3.2. One segment the
-    gate cannot read as the shell does may change what the others run, as a bash 3.2
-    substitution, a glob or a group can, so then nothing is exempt. A sync is read without
-    quotes, an API call with them. A cd, chdir, pushd or popd word in any segment before a
-    sync moves it where the gate cannot follow, and only an absolute -C names the repository
-    then. ledger is None when the command holds no merge, and then no segment is a sync."""
-    text, substitutions, expanding = lex(cmd)
-    if substitutions or expanding or text != lex(cmd, naive=True)[0]:
-        return None
-    parts = split_commands(text)
-    argv = [plain_argv(segment, True) for segment, _ in parts]
-    if any(words is None for words in argv):
-        return None
-    out, found, moved = [], False, False
-    for (segment, separator), words in zip(parts, argv):
-        bare = plain_argv(segment, False) if ledger is not None else None
-        if (bare and is_sync(bare, cwd, moved, ledger)) or is_exempt_api(segment):
-            out.append(" : " + separator)
-            found = True
-        else:
-            out.append(segment + separator)
-        moved = moved or any(w in DIR_CHANGERS for w in words)
-    return "".join(out) if found else None
 
 
 # ------------------------------------------------------------------ the forge project
@@ -2578,23 +2308,10 @@ def main():
         gated = hidden or gated_anywhere(tokens)
         if not gated:
             return
-        ledger = None
-        kinds = {v["kind"] for v in map(gated_verb, candidates(tokens)) if v}
-        if not hidden and kinds & {"merge-local", "api"}:
-            # A sync or an exempt API write is judged apart from the command around it: its
-            # segment is replaced by a no-op, and the command that is left is read as plain or
-            # compound, so whatever gated verb remains decides.
-            if "merge-local" in kinds:
-                ledger = load_ledger()
-            rewritten = without_exempt(cmd, cwd, ledger)
-            if rewritten is not None:
-                tokens = tokenize(rewritten)
-                if not gated_anywhere(tokens):
-                    return
         shape = None if hidden else parse_plain(tokens, cwd)
         if shape is None:
             raise Deny(PLAIN)
-        judge(shape, ledger or load_ledger())
+        judge(shape, load_ledger())
     except Deny as d:
         print(decision(str(d)))
     except Exception as e:                             # a bug here must not open the gate
