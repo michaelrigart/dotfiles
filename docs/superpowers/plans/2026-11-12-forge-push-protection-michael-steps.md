@@ -795,6 +795,14 @@ Expected: `MERGED`. If it is refused (an approval is asked for, or the merge met
 
 ### Step 12. The rulesets on the real repositories (needs step 11 passed) <a id="step-12"></a>
 
+First record every existing ruleset of each in-scope repository, so that an edit below can be undone (one file per repository; `<repo>` is the name after `<owner>/`):
+
+```
+for repo in <repo-a> <repo-b>; do (set -o pipefail; gh api "repos/<owner>/$repo/rulesets" --jq '.[].id' | while read -r id; do gh api "repos/<owner>/$repo/rulesets/$id"; done | jq -s . > ~/.local/state/forge-protection/github-before-$repo.json) || echo "read failed: $repo"; done
+```
+
+Expected: no output, and one file per repository holding a list (`[]` where it has no ruleset). Check with `jq -e 'type == "array"' ~/.local/state/forge-protection/github-before-<repo>.json`. Do not go on for a repository whose read failed.
+
 Run step 1's command again so the file holds the apply's view, then take the check's own lines for the in-scope repositories. Each carries the one POST of spec section 2.1: `protect-main` where a repository has no ruleset, and `main-pr-only` (the `pull_request` rule alone) on the dotfiles, beside the `protect-main` they already have, which is not edited. **If a line names `main-owner-only`, the check is still the old one: stop.** Do not paste from this file or by hand; filter the check's lines into a file, read it, then run it. The dotfiles first:
 
 ```
@@ -810,7 +818,7 @@ Expected: one `main-pr-only` POST for the dotfiles and no other command. Then:
 bash ~/.local/state/forge-protection/github-remedies.sh
 ```
 
-Then the rest of the in-scope repositories the same way, with `want='^github\.com/<owner>/(<repo-a>|<repo-b>)$'` and a new file name. A line that fails does not stop the others; step 1's command lists what is left. If the check printed a `# in the UI: https://github.com/<owner>/<repo>/rules/<ruleset-id>: …` note instead, a ruleset has the rules but is not Active or has a bypass actor: fix that page as the note says. Create rulesets Active, as printed.
+Then the rest of the in-scope repositories the same way, with `want='^github\.com/<owner>/(<repo-a>|<repo-b>)$'` and a new file name. A line that fails does not stop the others; step 1's command lists what is left. If the check printed a `# in the UI: https://github.com/<owner>/<repo>/rules/<ruleset-id>: …` note instead, a ruleset has the rules but is not Active or has a bypass actor: fix that page as the note says, after checking that the ruleset is in that repository's `github-before-<repo>.json` (recorded above). Create rulesets Active, as printed.
 
 Verify, for each in-scope repository:
 
@@ -859,6 +867,18 @@ gh api --method DELETE repos/<owner>/<repo>/rulesets/<ruleset-id>
 ```
 
 or Settings > Rules > Rulesets > the ruleset > Delete. Direct pushes of `main` work again. The scratch repository: step 13.
+
+A ruleset that existed before step 12 and that you edited from a UI note is never deleted: put its enforcement and bypass list back from the file step 12 recorded:
+
+```
+jq -c '.[] | select(.id == <ruleset-id>) | {enforcement, bypass_actors}' ~/.local/state/forge-protection/github-before-<repo>.json
+```
+
+```
+jq -c '.[] | select(.id == <ruleset-id>) | {enforcement, bypass_actors}' ~/.local/state/forge-protection/github-before-<repo>.json | gh api --method PUT repos/<owner>/<repo>/rulesets/<ruleset-id> --input -
+```
+
+The first command shows what the second sends; it must print one object. **UNVERIFIED:** that a PUT with only these two fields leaves the ruleset's other fields as they are; otherwise set the two in the ruleset's page as the first command shows them.
 
 The tokens: delete the two items in 1Password (or archive them; `op item list` does not list archived items), revoke the GitHub token at `https://github.com/settings/personal-access-tokens` and the GitLab token (Access tokens > Revoke), then `chezmoi apply`: an item that is not listed is the inert state, so the apply removes `GH_TOKEN` and `GITLAB_TOKEN`.
 
