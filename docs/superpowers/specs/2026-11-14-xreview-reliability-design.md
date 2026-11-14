@@ -1,6 +1,6 @@
 # xreview reliability: an MCP barrier that can settle
 
-**Status:** In progress (branch `fix/xreview-reliability`; no MR, a dotfiles line)
+**Status:** Implemented (branch `fix/xreview-reliability`; no MR, a dotfiles line)
 **Date:** 2026-11-14
 **Sign-off:** the driver session, on Michael's delegation, 2026-11-14: D1 yes, D2 B (no change to
 the pane step; the signal fallback is kept as the structural option), D3 not built (§9). Codex
