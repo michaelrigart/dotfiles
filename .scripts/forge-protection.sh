@@ -162,8 +162,8 @@ shq() {
 # The rulesets of spec 2026-11-12 section 2.1, as compact JSON: protect-main for a repository with
 # none, main-pr-only for one whose deletion and non_fast_forward rules are already carried.
 PR_RULE='{"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":false,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"allowed_merge_methods":["merge"]}}'
-body_protect_main() {  # <ref>
-  jq -nc --arg ref "$1" --argjson pr "$PR_RULE" '{name:"protect-main",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:[$ref],exclude:[]}},rules:[{type:"deletion"},{type:"non_fast_forward"},$pr]}'
+body_protect_main() {
+  jq -nc --argjson pr "$PR_RULE" '{name:"protect-main",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[{type:"deletion"},{type:"non_fast_forward"},$pr]}'
 }
 body_main_pr_only() {
   jq -nc --argjson pr "$PR_RULE" '{name:"main-pr-only",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[$pr]}'
@@ -204,11 +204,11 @@ check_github() {  # <remote> <owner/repo>
   done
   # The target: each of deletion, non_fast_forward and pull_request comes from at least one closed
   # ruleset (active, empty bypass list); rules of several rulesets add up. A ruleset that is not
-  # active enforces nothing, so it is never closed. A ruleset carrying both deletion and
-  # non_fast_forward, of any enforcement, is not replaced: protect-main is posted only when none
-  # does, and it brings pull_request too. main-pr-only is posted only when no ruleset carries
-  # pull_request at all. Otherwise each ruleset that carries a rule lacking a closed carrier gets a
-  # UI note.
+  # active enforces nothing, so it is never closed (GitHub lists only active rulesets' rules here; an
+  # inactive carrier is robustness). A ruleset carrying both deletion and non_fast_forward is not
+  # replaced: protect-main is posted only when none does, and it brings pull_request too.
+  # main-pr-only is posted only when no ruleset carries pull_request at all. Otherwise each ruleset
+  # that carries a rule lacking a closed carrier gets a UI note.
   v=$(jq -nc --argjson r "$rules" --argjson st "$st" '
     ([$r[] | select(.type | IN("deletion", "non_fast_forward", "pull_request")) | .ruleset_id | select(. != null)] | unique) as $ids
     | def carries($id; $t): any($r[]; .ruleset_id == $id and .type == $t);
@@ -225,7 +225,7 @@ check_github() {  # <remote> <owner/repo>
   fi
   row drift "$remote" "default branch $def"
   if [ "$(printf '%s' "$v" | jq -r '.protect_post')" = true ]; then
-    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_protect_main "refs/heads/$def")"))"
+    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_protect_main)"))"
   fi
   if [ "$(printf '%s' "$v" | jq -r '.pr_post')" = true ]; then
     remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_main_pr_only)"))"

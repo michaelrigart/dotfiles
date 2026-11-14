@@ -150,7 +150,7 @@ posts_are 1 "github no ruleset: one POST"
 out_has '"name":"protect-main"' "github no ruleset: the protect-main POST is printed"
 out_has '"type":"pull_request"' "github no ruleset: protect-main brings the pull_request rule"
 out_has '"allowed_merge_methods":["merge"]' "github no ruleset: merge commits only"
-out_has '"include":["refs/heads/main"]' "github no ruleset: protect-main includes the default branch"
+out_has '"include":["~DEFAULT_BRANCH"]' "github no ruleset: protect-main includes the default branch by its alias, not by name"
 out_hasnt 'main-owner-only' "github no ruleset: no owner-only ruleset"
 out_hasnt '"update"' "github no ruleset: no update rule"
 out_hasnt 'in the UI' "github no ruleset: no UI note"
@@ -282,9 +282,10 @@ run check
 row_is drift "github.com/$R" "hostile default branch: drift row"
 eval_remedy '"name":"protect-main"'
 if [ "$EXTRA" -eq 0 ]; then _pass "hostile default branch: pasting the protect-main line runs nothing extra"; else _fail "hostile default branch: pasting the protect-main line runs nothing extra"; fi
-if [ "$(printf '%s' "$BODY" | jq -r '.conditions.ref_name.include[0]' 2>/dev/null)" = "refs/heads/$HOSTILE" ]; then
-  _pass "hostile default branch: the pasted line hands gh the exact ref"
-else _fail "hostile default branch: the pasted line hands gh the exact ref (got $BODY)"; fi
+if [ "$(printf '%s' "$BODY" | jq -c '.conditions.ref_name.include' 2>/dev/null)" = '["~DEFAULT_BRANCH"]' ]; then
+  _pass "hostile default branch: the pasted line hands gh the include ~DEFAULT_BRANCH"
+else _fail "hostile default branch: the pasted line hands gh the include ~DEFAULT_BRANCH (got $BODY)"; fi
+case "$BODY" in *touch*|*pwned*) _fail "hostile default branch: the pasted body holds no part of the branch name" ;; *) _pass "hostile default branch: the pasted body holds no part of the branch name" ;; esac
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
 ans gh "api repos/$R" "$(jq -nc --arg b "$HOSTILE" '{default_branch:$b}')"
 ans gh "api --paginate repos/$R/rules/branches/$(jq -rn --arg b "$HOSTILE" '$b | @uri')?per_page=100" "$PM_RULES"
@@ -860,7 +861,7 @@ for ZO in "default options|" "magic_equal_subst|-o magic_equal_subst"; do
     run check
     row_is drift "github.com/$R" "$zl, github: drift row"
     zsh_remedy '"name":"protect-main"' $zopts
-    if [ "$(jq -r '.conditions.ref_name.include[0]' "$T/body" 2>/dev/null)" = "refs/heads/$ZB" ]; then _pass "$zl, github: the pasted line hands gh the literal ref"; else _fail "$zl, github: the pasted line hands gh the literal ref (got $(cat "$T/body" 2>/dev/null))"; fi
+    if [ "$(jq -c '.conditions.ref_name.include' "$T/body" 2>/dev/null)" = '["~DEFAULT_BRANCH"]' ] && ! grep -qF -- "$ZB" "$T/body"; then _pass "$zl, github: the pasted line hands gh the include ~DEFAULT_BRANCH, no part of the branch"; else _fail "$zl, github: the pasted line hands gh the include ~DEFAULT_BRANCH, no part of the branch (got $(cat "$T/body" 2>/dev/null))"; fi
 
     glab_case '[]' "$ZB"
     row_is drift "$GLR" "$zl, gitlab: drift row"
