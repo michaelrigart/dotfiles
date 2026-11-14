@@ -2,7 +2,9 @@
 
 **Status:** In progress (awaiting sign-off)
 **Date:** 2026-11-14
-**Sign-off:** pending
+**Sign-off:** D2 (b) by the driver session on Michael's delegation, 2026-11-14. D1 is Michael's,
+pending. Codex spec review: approve in round 3 (`xr-1794664170-b520bb27`; round 1,
+`xr-1794663800-0efa37b0`, two P1s, and round 2, `xr-1794664059-c104a548`, one P2, all fixed).
 **Branch:** `fix/rm-exact-denies`, in the `wt` checkout `~/.local/share/chezmoi-fix-rm-exact-denies`,
 from `main` at `f292740`
 **Source:** item 22 of the vault note `2026-11-11-agent-setup-full-review` ("`rm` takes literal
@@ -175,10 +177,11 @@ The root denies matched none of the 1,071 calls, so they add no denial to ordina
   item 22 not done. Recommendation: (a). None of the 1,071 calls targeted (i) or (ii); all 44
   prompts were approved, the reflex the prompt budget exists to avoid; the same deletes in any
   other flag spelling already reach the classifier today; committed work has forge copies; the
-  classifier refused even two scratchpad deletes.
+  classifier refused even two scratchpad deletes. **Open: Michael's call** (it loosens a deletion
+  boundary, so it is not ruled on delegation).
 - **D2. Live check.** (a) one run before the PR, its result in the PR (the recorded probes of §2
   plus the rendered list); (b) also a committed canary, `tests/live-rm-denies.test.sh`
   (unsandboxed + model, skipped by default, run after each Claude Code upgrade like
   `live-deny-modes`). The design rests on four undocumented matcher behaviours (`\*` literal,
   `$HOME` expanded, `/bin/rm` and `command` normalised, wildcards crossing spaces); an upgrade that
-  changes one silently drops a root deny. Recommendation: (b).
+  changes one silently drops a root deny. Recommendation: (b). **Ruled (b)**, 2026-11-14.
