@@ -393,7 +393,7 @@ through both exemptions.
 
 ### 11.1 What shipped
 
-No exemption. The line ships five tightenings of the deployed gate, each with its test row shown
+No exemption. The line ships four tightenings of the deployed gate, each with its test row shown
 red first:
 - **GraphQL notes that can merge are denied:** a call naming `mergeRequestDiffHeadSha` or
   `createDiffNote` (§4.4).
@@ -402,16 +402,13 @@ red first:
 - **Redirection descriptors are read both ways.** zsh takes one digit (`81788>/dev/null` is the
   word `81788`, a second ref); bash takes all of them (`10>x` is one redirection). A command
   holding a gated verb is denied when the two readings differ. The first fix read one digit
-  only, which hid `glab mr 10>x merge 7` from the gate under bash; the third review round found
-  that regression.
+  only, which hid `glab mr 10>x merge 7` from the gate under bash; the fourth review round found
+  that regression. Digits are ASCII only: no shell takes `٣>` as a descriptor, and the old
+  reading let `git merge origin/main ٣>/dev/null` pass as a sync while git got `٣` as a
+  second ref.
 - **A leading `cd` whose target starts with `-` or `+` is not a plain command.** zsh reads `-0`,
   `+0` and `-q` as directory-stack entries or options. With a symlink named `+0`, the gate
   checked one repository while zsh stayed in another.
-- **An ANSI-C string that may decode to a NUL makes a command unreadable,** and an unreadable
-  command holding `git`, `glab`, `gh` or `az` as a word is denied. Every shell cuts an argument
-  at a NUL, and zsh reads a bare `\x` as one, so `glab $'mr\x' merge 7` ran `glab mr merge 7`
-  under zsh while the gate read another word. This hole was older than this line, and it was
-  fixed on the driver's ruling.
 
 The measured false denials (§2) all remain.
 
@@ -431,6 +428,12 @@ bash 3.2, bash 5.3) on the same commands.
 gate is a reader of zsh, bash 3.2 and bash 5.3, with the tool's profile, functions and options,
 and each round's fix moved the proof one layer out without closing it. That is the class that
 ended the Azure update check (trust spec §5.1).
+
+The final whole-branch review also ran a fifth tightening and had it withdrawn: an ANSI-C string
+that may decode to a NUL made the command unreadable. Its fallback read only the raw text, so
+`$'\x67it' merge feature; : $'\0'`, which main denies, passed. It also missed `\400`, `\C-@`
+and a multibyte `\c`, and it denied ordinary `read -d $'\0'` loops. The driver's ruling allowed
+the fix only as one rule, so it is a limit (§11.5).
 
 ### 11.3 Coverage, measured
 
@@ -453,8 +456,21 @@ were not tried here:
 
 ### 11.5 Limits recorded, older than this line, not fixed
 
-All are deliberate spellings, which the gate's threat model leaves to the auto-mode classifier.
-Each holds on main today.
+**An open hole in an ordinary spelling, for its own line** (driver's ruling, 2026-11-14): a
+backtick or `$` escaped inside a double-quoted `-c` string. `bash -c "echo \`git merge
+feature\`"`, and the same with `glab mr merge 7`, is allowed by main and by this line, and every
+shell runs the merge (measured under zsh 5.9, macOS zsh, bash 3.2 and bash 5.3). Python's shlex
+keeps the backslash of `\`` and `\$` inside double quotes, while the shells drop it, so the `-c`
+string the gate rescans is not the one the inner shell gets. The proposed fix reads a `-c`
+string both ways: as written, and with the shell's double-quote escapes undone.
+
+The rest are deliberate spellings, which the gate's threat model leaves to the auto-mode
+classifier. Each holds on main today.
+- An ANSI-C string holding a NUL: every shell cuts an argument at a NUL, and zsh reads a bare
+  `\x`, `\C-@` and others as one, so `glab $'mr\x' merge 7` runs `glab mr merge 7` under zsh
+  while the gate reads another word.
+- A named descriptor `{x}>`: `git {x}>/dev/null merge feature` runs the merge under zsh and
+  bash 5.3, while the gate reads `{x}` as a word.
 - `cd ~-` or `cd ~+` with a planted directory of that name: the gate reads a path, while the
   shells read the previous or current directory.
 - The plain forms `git merge origin/main <->` (a zsh numeric glob naming a file) and
