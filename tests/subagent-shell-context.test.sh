@@ -47,10 +47,11 @@ is "the output holds only hookSpecificOutput" "$(printf '%s' "$OUT" | jq -c 'key
 is "and that only the event and the context" "$(printf '%s' "$OUT" | jq -c '.hookSpecificOutput | keys')" '["additionalContext","hookEventName"]'
 
 echo "C. it fails open and silent"
-# A PATH holding no executable at all: jq and cat are missing, as a hook running on a machine
-# without them would find them.
-mkdir "$T/empty"
-fire sp-standard "$T/empty"
+# A PATH holding cat and no jq, as a hook would find it on a machine without jq: the payload
+# drains, so the run reaches jq and fails there.
+mkdir "$T/nojq"
+ln -s /bin/cat "$T/nojq/cat"
+fire sp-standard "$T/nojq"
 is "with no jq it still exits 0" "$RC" 0
 is "and prints nothing on stdout" "$OUT" ""
 is "or on stderr" "$ERR" ""
