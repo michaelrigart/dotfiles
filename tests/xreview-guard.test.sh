@@ -314,6 +314,30 @@ X19=$(cat <<'CMD'
 printf '%s\n' "${MSG:-"it's done"}"
 CMD
 )
+X23=$(cat <<'CMD'
+echo "${x:-\}"'"}"; git merge y; echo "'" #"
+CMD
+)
+is "B107 an escaped } does not close the \${...} the nested-quote rule counts" "$(decision "$W" "$X23")" deny
+X24=$(cat <<'CMD'
+bash -c 'bash -c "$\
+{x:-"git merge y"}"'
+CMD
+)
+is "B108 a line continuation between \$ and { still opens the \${...}" "$(decision "$W" "$X24")" deny
+X25=$(cat <<'CMD'
+echo "${x:-"'"}"; git -C "$(
+pwd
+)" merge y; echo "'" #"
+CMD
+)
+is "B109 the nested-quote rule finds a gated verb past a newline inside a \$( )" "$(decision "$W" "$X25")" deny
+X26=$(cat <<'CMD'
+bash -c 'echo "$\
+(git merge y)"'
+CMD
+)
+is "B110 a line continuation between \$ and ( inside double quotes still opens the substitution" "$(decision "$W" "$X26")" deny
 is "B105 the inner command's own quoting, single quotes, \$( ), a here-document and a nested quote with no gated verb stay allowed" \
    "$(decision "$W" "$X12") $(decision "$W" "$X13") $(decision "$W" "$X14") $(decision "$W" "$X15") $(decision "$W" "$X16") $(decision "$W" "$X19")" \
    "allow allow allow allow allow allow"

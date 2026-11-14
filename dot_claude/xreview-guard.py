@@ -31,7 +31,8 @@
 # -c '...', or env -S '...'. Such a string is read as written and as the outer shell hands it
 # on, its double-quoted \$ and \` unescaped; a backtick body inside double quotes is read with
 # \" unescaped too. A command holding a quote inside a double-quoted ${...}, where the shells
-# nest quotes by rules the gate does not model, is denied when it also mentions a gated verb.
+# nest quotes by rules the gate does not model, is denied when it also mentions a gated verb,
+# on one line or several.
 # A comment, a redirection, single-quoted text ($'...' included) and the rest of a
 # here-document body are read past, wherever they stand, and a line continuation is joined
 # first, as the shell joins it. A redirection's descriptor is read as bash reads it (every
@@ -311,6 +312,19 @@ def funsub(cmd, i):
     return cmd.startswith("${", i) and cmd[i + 2:i + 3] in (" ", "\t", "\n", "|")
 
 
+def joined(cmd, i, n):
+    """(text, end): the next n characters of cmd from i with every backslash-newline pair
+    skipped, as bash joins them inside double quotes, and the index just past them."""
+    chars, j = [], i
+    while len(chars) < n and j < len(cmd):
+        if cmd.startswith("\\\n", j):
+            j += 2
+        else:
+            chars.append(cmd[j])
+            j += 1
+    return "".join(chars), j
+
+
 def word_at(cmd, i):
     j = i
     while j < len(cmd) and cmd[j] not in METACHARS:
@@ -406,7 +420,9 @@ def lex(cmd, body=False, everywhere=False, naive=False):
     backtick body with its \\`, \\\\ and \\$ undone, and, inside double quotes, also read with
     \\" undone, as the shells read it. expanding are the bodies of the here-documents whose
     delimiter is unquoted. nested_quote says a " or ' stands inside a ${...} that is itself
-    inside double quotes, where the shells nest quotes by rules lex does not model.
+    inside double quotes, where the shells nest quotes by rules lex does not model. In double
+    quotes and in an expanding here-document body a $( and that ${ are found past a
+    backslash-newline, as bash joins them; an escaped character never counts.
     Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
     here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
     arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
@@ -453,9 +469,6 @@ def lex(cmd, body=False, everywhere=False, naive=False):
             nxt = cmd[i + 1]
             if nxt == "\n":
                 i += 2
-            elif (kind == '"' and nxt not in '$`"\\') or (kind == "body" and nxt not in "$`\\"):
-                out.append(c)
-                i += 1
             else:
                 out.append(cmd[i:i + 2])
                 i += 2
@@ -493,16 +506,16 @@ def lex(cmd, body=False, everywhere=False, naive=False):
                 stack.pop()
                 out.append(c)
                 i += 1
-            elif cmd.startswith("$(", i):
+            elif c == "$" and joined(cmd, i, 2)[0] == "$(":
                 out.append("$(")
                 stack.append(["$(", len(out), 1, 0, 0])
-                i += 2
+                i = joined(cmd, i, 2)[1]
             elif funsub(cmd, i):
                 out.append("${")
                 stack.append(["${", len(out), 1, 0, 0])
                 i += 2
             else:
-                if kind == '"' and cmd.startswith("${", i):
+                if kind == '"' and c == "$" and joined(cmd, i, 2)[0] == "${":
                     frame[2] += 1
                 elif kind == '"' and c == "}" and frame[2]:
                     frame[2] -= 1
@@ -778,9 +791,10 @@ def scan(cmd, depth=0):
     descriptors as zsh does, one digit at most: a command holding a gated verb whose words differ
     between that reading and the first is hidden. Nesting deeper than MAX_NESTING counts as
     hidden. Raises ValueError when cmd has unbalanced quotes, and Deny when it holds a quote
-    inside a double-quoted ${...} and mentions a gated verb."""
+    inside a double-quoted ${...} and mentions a gated verb, read as written or with its
+    newlines flattened."""
     text, nested, expanding, nested_quote = lex(cmd)
-    if nested_quote and crude(cmd):
+    if nested_quote and (crude(cmd) or crude(cmd.replace("\n", " "))):
         raise Deny(NESTED_QUOTE)
     nested.extend(b for b in lex(cmd, everywhere=True)[1] if b not in nested)
     for body in expanding:
