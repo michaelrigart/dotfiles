@@ -41,8 +41,8 @@ suites, `.scripts/test-audit/audit.py` for mutants.
 
 1. A `PATH` entry that is empty, relative, or holds a directory named `jq`: the runner must skip it
    and never link a directory (Task 1, row J4).
-2. A machine where the only `jq` on `PATH` is the mise shim: suites must see the `PATH` they see
-   today, unchanged (Task 1, row J3).
+2. A machine where the only `jq` on `PATH` is the mise shim: the runner exits 2 with one line and
+   runs no suite (Task 1, row J3).
 3. A suite that is both `# test-slow` and `# test-serial`, or `# test-slow` and gated: serial and
    the gate win; the marker only orders the parallel phase (Task 2, rows S3-S4).
 4. A `process-replay` module that exits non-zero without a FAIL line, or never writes its result
