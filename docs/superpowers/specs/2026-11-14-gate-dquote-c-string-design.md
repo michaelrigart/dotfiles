@@ -2,7 +2,9 @@
 
 **Status:** In progress
 **Date:** 2026-11-14
-**Sign-off:** pending
+**Sign-off:** the driver session, on Michael's delegation, 2026-11-14: Q1 to Q6 as recommended
+(§8). Codex spec review: approve in round 1 (`xr-1794658687-c52304dd`), before the cold review
+added R3, §5's further limits and §9; the plan review covers those.
 **Branch:** `fix/gate-dquote-c-string`, in the `wt` checkout
 `~/.local/share/chezmoi-fix-gate-dquote-c-string`, from `main` at `045a931`
 **Related:** `2026-11-13-merge-gate-allowlist-design.md` §11.5, first bullet (the hole this
@@ -14,13 +16,15 @@ from the shells). `2026-11-12-xreview-trust-design.md` (the gate's threat model;
 The gate denies a command that hands a gated verb to another shell (`bash -c '…'`,
 `env -S '…'`). It rescans the string it hands on, but reads a different string than the inner
 shell gets when that string carries an escaped `$` or backtick inside double quotes. Every
-shell then runs a merge the gate allowed.
+shell then runs a merge the gate allowed. A cold review of the design found a third reading of
+double quotes that differs from the shells': a quote inside a `${…}` that stands inside double
+quotes (§3). This line closes those three; other quote forms are recorded limits (§5).
 
 ## 2. Measured
 
 Each command was run under `/bin/zsh` (macOS zsh 5.9), Homebrew zsh 5.9.2, `/bin/bash` 3.2.57
-and Homebrew bash 5.3.20, with stub `git`, `glab` and `gh` first on `PATH`, and fed to main's
-gate (`045a931`).
+and Homebrew bash 5.3.20, with stub `git`, `glab` and `gh` first on `PATH` that record their
+arguments one by one, and fed to main's gate (`045a931`).
 
 | # | Command | Every shell | Main's gate |
 |---|---|---|---|
@@ -40,15 +44,18 @@ gate (`045a931`).
 | 14 | `` bash -c "echo '\`git merge feature\`'" `` | runs nothing gated | allows |
 | 15 | `echo "$(bash -c \"git merge feature\")"` | runs nothing gated | allows |
 | 16 | a here-document body `` `bash -c \"git merge feature\"` `` under `<<EOF` | runs nothing gated | allows |
+| 17 | `bash -c "${x:-"git merge y"}"` | runs the merge | allows |
+| 18 | `echo "${x:-"'"}"; git merge y; echo "'" #"` | runs the merge | allows |
+| 19 | `printf '%s\n' "${MSG:-"it's done"}"` | runs nothing gated | allows |
 
 So the bare `\$( … )` form the hole was first reported with is already denied; the open
 `$( … )` forms are those inside a double-quoted string of the inner command.
 
 ## 3. Cause
 
-Two places read a double-quoted escape differently from the shells. In double quotes, zsh and
-bash drop the backslash of `\$`, `` \` ``, `\"`, `\\` and backslash-newline, and keep every
-other backslash (`\!` included, in a non-interactive shell: measured).
+Three places read double quotes differently from the shells. In double quotes, zsh and bash
+drop the backslash of `\$`, `` \` ``, `\"`, `\\` and backslash-newline, and keep every other
+backslash (`\!` included, in a non-interactive shell: measured).
 
 - **`tokenize`** reads words with Python's `shlex` (posix), which inside double quotes drops the
   backslash only before `"` and `\`. It keeps `\$` and `` \` ``. `lex` has already joined every
@@ -57,12 +64,17 @@ other backslash (`\!` included, in a non-interactive shell: measured).
 - **`lex`** takes a backtick body out with its `` \` ``, `\\` and `\$` undone. Inside double
   quotes the shells undo `\"` in that body too; outside them, and in a here-document body, they
   do not (measured, rows 9, 15 and 16).
+- **`lex`** ends a double-quoted string at the next `"`. Inside a `${…}` that stands in double
+  quotes, the shells open a nested string there instead (row 17), and a `'` inside the nested
+  string is text, which `lex` takes for the start of a single-quoted one (row 18). The shells'
+  rule depends on the operator: after `:-` a `'` is literal, after `/` it quotes (measured).
 
 ## 4. Design
 
-Deny direction only: every reading the gate makes today stays, and each change adds a reading
-whose substitutions and nested shells are scanned as well. A command is decided differently
-only when the new reading holds a gated verb, and then it is denied as hidden.
+Deny direction only: every reading the gate makes today stays. R1 and R2 add a reading whose
+substitutions and nested shells are scanned as well, and a command is decided differently only
+when the new reading holds a gated verb; it is then denied as hidden. R3 makes text the gate
+cannot read exactly unreadable, which `crude` then decides.
 
 - **R1, the shell's words.** `tokenize` gains a reading in which each `\$` and `` \` `` inside
   double quotes loses its backslash, as in the shells. The text is rewritten before `shlex`
@@ -72,13 +84,28 @@ only when the new reading holds a gated verb, and then it is denied as hidden.
   `\\` pair, a single-quoted `\$` and an escape outside quotes keep their meaning.
 - **R2, a backtick body inside double quotes** is also read with `\"` undone. Both bodies are
   rescanned.
+- **R3, a quote inside a double-quoted `${…}`.** `lex` counts the `${` it meets inside double
+  quotes, and a `"` or `'` while one is open makes the text unreadable (`ValueError`, as
+  unbalanced quotes do). At the top level, a command `crude` finds a gated verb in is denied as
+  unparseable, and any other passes; in a nested string, `crude` decides whether it is hidden.
+  The unparseable message names this case beside unbalanced quotes. An exact reading would model
+  each operator's quoting rule (§3) in two shells; the fallback needs none.
 
 The top-level words stay the first reading. The two readings differ only by a backslash before
 `$` or a backtick, and every word the gate compares is either fixed text holding neither (a
 tool, a verb, an option) or must be `literal`, which refuses both characters (a ref, a `-C`
 path, a `cd` target, an endpoint, a field). The mutation names it searches a GraphQL query for
 hold neither either, and a backslash before a `$` leaves their word boundaries where they were.
-So a plain command is judged as today.
+So a plain command is judged as today, unless R3 makes it unreadable.
+
+**R3's cost.** A command with a quote in a double-quoted `${…}` that also mentions a gated verb
+is denied where main allowed it: `git commit -m "${MSG:-"merge notes"}"`. In the transcripts
+(§7), 32 commands hold such a quote and none mentions a gated verb.
+
+**R1's cost.** Every word after a `-c` string is read as a shell string, as on main, so R1 reads
+`$0` and `$1` too: `bash -c 'echo' "\`git merge feature\`"` runs nothing, and is denied. So is
+`env -S "echo \`git merge feature\`"`, whose `env` runs no shell. Neither is a command an agent
+writes, and the transcripts hold none.
 
 **Rejected: undoing the escapes in the string `shell_strings` returns.** `shlex` has already
 dropped the quotes, so which backslashes stood inside double quotes is lost, and `\\` and `\"`
@@ -92,19 +119,33 @@ line closes a hole; it does not trade denies.
 
 ## 5. Accepted limits
 
-- **`env -S`'s own grammar.** BSD `env -S` splits its string itself and has escapes no shell
-  has: `\_` and `\t` separate words, `\'` does not end a single-quoted string, `${X}` expands.
-  `env -S 'git\_merge\_feature'` runs the merge under every shell, and main's gate and this
-  line allow it. That is a deliberate spelling, which the threat model leaves to the auto-mode
-  classifier (decision Q2). R1 still reads `env -S`'s string as the outer shell hands it on.
+Each holds on main today; the cold review of this design found the second to fourth, and each was
+verified by running it. They are deliberate spellings, which the threat model leaves to the
+auto-mode classifier (rulings Q2, Q5, Q6).
+- **`env -S`'s own grammar.** BSD `env -S` splits its string itself, with escapes no shell has:
+  `\_` separates words outside quotes and is a blank inside double quotes, `\t` is a tab that
+  separates nothing, `\'` does not end a single-quoted string, and `${X}` expands. `env -S 'git\_merge\_feature'` runs
+  the merge, and so does `env -S 'bash -c "git\tmerge\tfeature"'`, where the tabs reach bash.
+  Main's gate and this line allow both. R1 still reads `env -S`'s string as the outer shell
+  hands it on.
+- **zsh's `$'…'`.** zsh drops the backslash of an escape it does not know (`` \` ``, `\ `,
+  `\g`), and reads `\c`, `\C-` and `\M-` its own way; the gate decodes as bash does. Under zsh,
+  `bash -c $'echo \`git merge x\`'` and `$'\git' merge x` run the merge. The allowlist spec's
+  §11.5 records the NUL case of this divergence.
+- **bash's `$"…"`.** bash reads a locale string as a double-quoted one; the gate reads a `$`
+  before it. `bash -c '$"git" merge x'` runs the merge in every shell.
+- **Top-level spellings outside quoting.** A glued empty substitution (`git merge$() x`, every
+  shell), a zsh brace group glued to the command word (`{git merge x}`), and brace expansion
+  (`bash -c {'git merge x',}`, every shell).
 - `eval` and a script fed to a shell stay out of scope, as the threat model says.
 
 ## 6. Tests
 
-Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each shown red on main first:
-- **Denied:** rows 1 to 9 of §2.
-- **Allowed:** rows 12 to 16 of §2: the inner command's own quoting, an escaped substitution
-  in the inner command's single quotes, and the two places where `\"` stays escaped.
+Rows in `tests/xreview-guard.test.sh` next to B49 and B50, each new deny shown red on main first:
+- **Denied:** rows 1 to 9, 17 and 18 of §2.
+- **Allowed:** rows 12 to 16 and 19 of §2: the inner command's own quoting, an escaped
+  substitution in the inner command's single quotes, the two places where `\"` stays escaped,
+  and a nested quote in a command that mentions no gated verb.
 
 ## 7. Replay
 
@@ -112,13 +153,29 @@ Every distinct Bash command in the Claude Code transcripts on this Mac (253,468,
 transcript files), read by main's `scan` and by a prototype of R1 and R2, each command sorted
 into clear, gated, hidden or unparseable: no command changed. In 29 of them the two readings
 hand a nested shell different strings; 28 are clear and one is gated (a verb at its top level)
-under both. The replay is rerun on the built gate before the pre-merge review.
+under both. For R3: 32 commands hold a quote inside a double-quoted `${…}`, and `crude` finds a
+gated verb in none, so none is denied. The replay is rerun on the built gate before the
+pre-merge review.
 
-## 8. Decisions
+## 8. Rulings
 
-- **Q1, include R2** (the backtick body inside double quotes, row 9). Recommended: yes. Same
-  cause, a different site; the cold review would find it.
-- **Q2, `env -S`'s own escapes.** Recommended: record as a limit (§5). Reading them needs a
-  third grammar (BSD's `env -S`), and only a deliberate spelling reaches it.
-- **Q3, the exact reading (R1) over undoing escapes on the returned string.** Recommended: R1,
-  for row 7.
+By the driver session on Michael's delegation, 2026-11-14, each as recommended:
+- **Q1:** include R2 (row 9): same cause, a different site.
+- **Q2:** `env -S`'s own escapes are a limit (§5): reading them needs a third grammar, and only
+  a deliberate spelling reaches it.
+- **Q3:** the exact reading R1, not undoing escapes on the returned string (row 7).
+- **Q4:** fix rows 17 and 18 here with R3's fallback, with the transcripts' count in §7.
+- **Q5:** zsh's `$'…'` and bash's `$"…"` are limits (§5).
+- **Q6:** the top-level spellings outside quoting are limits (§5).
+
+## 9. Direction for a future line
+
+Not built here. This line and the allowlist line hit the same failure, five rounds in a row: a
+review of the gate's grammar found a command that one of the shells reads differently from it.
+That was rounds 1 to 4 of the allowlist line (its §11.2) and this line's cold review, which found
+three more readings (§3, §5) beyond the one it set out to close. The gate reimplements three
+shells' lexers in Python, and each fix moves the divergence instead of closing it. The
+direction: let zsh, the Bash tool's shell, lex the command itself. zsh's `${(z)…}` splits text
+into words and operators as its parser does, and `(Q)` removes one level of quoting, so the gate
+would read zsh's words instead of its own. That leaves bash (scripts, `bash -c`) as a second
+reader to account for, and it costs a zsh process per gated command.
