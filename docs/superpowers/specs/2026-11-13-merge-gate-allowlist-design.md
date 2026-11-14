@@ -1,6 +1,10 @@
 # Merge-gate allowlist: stop denying syncs and MR/PR housekeeping
 
-**Status:** Approved
+**Status:** Implemented (outcome Y': the exemptions were withdrawn during execution; the line
+ships only the gate's tightenings, §11)
+**Outcome:** §4.1 to §4.3 and §8 record the design as it was built and amended. None of the
+exemptions shipped: three review rounds each found commands the gate read differently from the
+shell. What shipped, why, and where a next attempt starts are in §11.
 **Date:** 2026-11-13
 **Sign-off:** Michael, 2026-11-13, with every recommendation in §10, relayed by the driver
 session. Codex spec review: approve in round 3 (`xr-1794600398-68907e28`; rounds 1 and 2,
@@ -379,3 +383,88 @@ reported to him):**
 - **D3, the sub-resource list (§4.2).** Recommended: as written, comments, threads and pipeline
   starts. The alternative adds `rebase` (1 denial); it rewrites a branch on origin, so it is
   left out.
+
+## 11. Outcome (2026-11-14)
+
+**Ruled by the driver session on Michael's delegation** (his words before leaving on 2026-11-13:
+"I go along with your recommendations on everything until all is ready to merge"), and reported
+to him: W after the third review round, then, as ruled in advance, Y' when W's review found ways
+through both exemptions.
+
+### 11.1 What shipped
+
+No exemption. The line ships five tightenings of the deployed gate, each with its test row shown
+red first:
+- **GraphQL notes that can merge are denied:** a call naming `mergeRequestDiffHeadSha` or
+  `createDiffNote` (§4.4).
+- **A `-C` path is resolved physically,** as git changes directory. A symlink
+  (`git -C link/.. merge …`) let the gate check one repository while git merged in another.
+- **Redirection descriptors are read both ways.** zsh takes one digit (`81788>/dev/null` is the
+  word `81788`, a second ref); bash takes all of them (`10>x` is one redirection). A command
+  holding a gated verb is denied when the two readings differ. The first fix read one digit
+  only, which hid `glab mr 10>x merge 7` from the gate under bash; the third review round found
+  that regression.
+- **A leading `cd` whose target starts with `-` or `+` is not a plain command.** zsh reads `-0`,
+  `+0` and `-q` as directory-stack entries or options. With a symlink named `+0`, the gate
+  checked one repository while zsh stayed in another.
+- **An ANSI-C string that may decode to a NUL makes a command unreadable,** and an unreadable
+  command holding `git`, `glab`, `gh` or `az` as a word is denied. Every shell cuts an argument
+  at a NUL, and zsh reads a bare `\x` as one, so `glab $'mr\x' merge 7` ran `glab mr merge 7`
+  under zsh while the gate read another word. This hole was older than this line, and it was
+  fixed on the driver's ruling.
+
+The measured false denials (§2) all remain.
+
+### 11.2 What was tried, and what broke it
+
+Each round was a cold Claude-side review that ran the gate and the shells (zsh 5.9, macOS zsh,
+bash 3.2, bash 5.3) on the same commands.
+
+| Round | The design | What broke it (verified by running) |
+|---|---|---|
+| 1 | Tasks 1 and 2 as planned: exemptions decided from the gate's words | A GitLab note with `merge_request_diff_head_sha` merges an MR (§4.2). Shell words that had lost their quoting: `git merge origin/main -m ';' feature` read as a sync while git merged `feature`, and so did the zsh glob qualifier `origin/main(N) feature` and git's option prefix `--mess origin/main`. |
+| 2 | Plain characters for the sync; option words free of `$` and braces for the API | A value word that zsh expands into options: `-f body=$(cat n.txt)`, `--hostname {forge.example,--input=n.json}`. A multi-digit descriptor `81788>/dev/null`. |
+| 3 | One grammar for the exempt command's own text (§4.1 rule 1) | The rest of the compound: a `"$(…)"` that only bash 3.2 reads as running `git merge feature`; `cd +0`; bash 5.3's `${ cd ../dev; }`. |
+| 4 (W) | The whole command plain, no leading-`cd` case | A loop or a zsh short function made only of plain words, which runs the sync again after a later `cd` (`for x in 1 2` / `do` / the sync / `cd ../dev` / `done`, on separate lines). An ANSI-C option word holding a NUL (`$'-i\0H'`), which the gate read as a bundle ending in `-H` while every shell passed `-i` and turned the next word into the SHA field. Oh My Zsh functions that change directory (`take`). Inferred, not run: a form-encoded `Content-Type` header smuggling fields past the field allowlist. |
+
+**The pattern.** An exemption has to prove that the shell runs exactly what the gate read. The
+gate is a reader of zsh, bash 3.2 and bash 5.3, with the tool's profile, functions and options,
+and each round's fix moved the proof one layer out without closing it. That is the class that
+ended the Azure update check (trust spec §5.1).
+
+### 11.3 Coverage, measured
+
+From the transcripts on this Mac (§2), reading each command by the rules alone:
+- The design as signed: about 58 of 159 denials.
+- W (round 4's rules): 46. That is 26 syncs and 20 API writes of the 108 denials that had the
+  plain-form or the API-write message. The rest had a non-plain segment (19), a substitution
+  (9), or another gated verb, a relative sync after a `cd` or another ref (34).
+- Shipped: 0.
+
+### 11.4 For a next attempt
+
+Start from §2's counts and §11.2's attack list, which any design has to survive. Two directions
+were not tried here:
+- **A dedicated command that the gate trusts by its exact name and argument shape, so it has
+  no shell to read.** For example, a script on `PATH` that performs the sync or the pipeline
+  start itself, from fixed arguments it validates.
+- **Taking the false positives away at their source** in the agents' instructions: a plain
+  command per gated verb, and the API housekeeping through the ungated CLI verbs.
+
+### 11.5 Limits recorded, older than this line, not fixed
+
+All are deliberate spellings, which the gate's threat model leaves to the auto-mode classifier.
+Each holds on main today.
+- `cd ~-` or `cd ~+` with a planted directory of that name: the gate reads a path, while the
+  shells read the previous or current directory.
+- The plain forms `git merge origin/main <->` (a zsh numeric glob naming a file) and
+  `git merge --mess origin/main` (git's option prefix takes the ref as its value and merges
+  the upstream).
+- The plain form `git merge origin/main 2&>/dev/null`: bash passes `2` as a second ref, zsh does
+  not.
+- A GitLab issue note with `/create_merge_request`, which proposes an empty change from a branch
+  the forge creates.
+- A false deny, fail-closed, found by another line against main's gate:
+  `az repos pr create --title "-fix the thing" …` is denied as an unknown option. `az_options`
+  reads a dash-led word that holds a space as an option, while az's argparse takes it as the
+  title's value.

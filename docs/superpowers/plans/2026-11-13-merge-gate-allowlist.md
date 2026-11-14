@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `feat/merge-gate-allowlist`; no MR, a dotfiles line)
+**Status:** Implemented (branch `feat/merge-gate-allowlist`; no MR, a dotfiles line)
+
+> **Completed; do not run again.** Tasks 1 and 2 were built, then withdrawn after four review
+> rounds found commands the gate read differently from the shell. The branch ships only the
+> tightenings the rounds produced. What shipped and why: the spec's §11.
 
 **Goal:** The pre-merge gate stops denying merges of origin's default branch in a compound, and
 writes to MR/PR comments, threads, pipelines, titles and descriptions through `glab api`/`gh api`.
