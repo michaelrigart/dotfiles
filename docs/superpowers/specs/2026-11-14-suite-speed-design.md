@@ -1,6 +1,6 @@
 # Suite speed: jq without the mise shim, process-replay in parallel, slow suites first
 
-**Status:** In progress (branch `chore/suite-speed`; signed off 2026-11-14)
+**Status:** Implemented (branch `chore/suite-speed`; PR to main after the pre-merge review)
 
 ## Intent
 
@@ -267,3 +267,80 @@ spec (round 2).
 
 - Where in `run.sh` the `jq` directory is made, and the wording of the help line.
 - The concurrency mechanism in the `process-replay` wrapper, within §2.
+
+## Implementation notes
+
+Measured on fenrir, sandboxed, under the real runner and its lock, through the line poller. Wall
+is the first suite start to the last suite end, lock waits excluded. The base is `85d5bb1` (main)
+and the tip is `a7e6698` (the branch on that same main).
+
+### Timings
+
+| Run | Base `85d5bb1` | Tip `a7e6698` |
+|---|---|---|
+| Default, `./tests/run.sh` | 502.9 s, 60 suites, 10774/10774 | 225.4 s, 60 suites, 10804/10804 |
+| Heavy, `./tests/run.sh xreview wt-functions test-audit` | 963.0 s, 11 suites, 5021/5021 | 504.7 s, 11 suites, 5021/5021 |
+
+Heavy run 2, on the final code (`31c3204`, after the final review's fixes, on main `c61cb4a`):
+508.2 s, 11 suites, 5039/5039; main's PR #10 added `xreview-guard` rows. Heavy run 3 is the
+pre-merge `./tests/run.sh --changed` run, reported in the PR. Both goals hold: the default run is
+under 250 s and the heavy run under 600 s.
+
+Per suite, in seconds, base to tip:
+
+- Default: `process-replay` 452 to 225, `xreview-rpc` 182 to 78, `xreview-guard` 165 to 93,
+  `xreview-ledger` 108 to 47, `dev` 91 to 19, `review` 75 to 29, `xreview-replay` 175 to 168,
+  `herdr-phase` 138 to 124, `run` 112 to 112, `forge-protection` 97 to 93.
+- Heavy: `xreview` 784 (serial) to 505 (parallel phase), `wt-functions` 161 to 153, `test-audit`
+  91 to 93.
+- Heavy run 2: `xreview` 508, `wt-functions` 149, `test-audit` 103. These are the figures in the
+  heavy tags' timing comments and in `AGENTS.md`; `git-forge-guard` was not measured by this line
+  and keeps 242 s.
+
+### Labels
+
+No label was lost, from the default and heavy runs at the base and at the tip. The differences are
+volatile text inside labels (temporary directory names, timings, inode numbers, random ids in
+`chezmoi-wrapper`, `herdr-phase`, `hook-path`, `process-replay`, `prompt-audit`, `xreview-rpc`,
+`xreview` and `test-audit`), the `AGENTS.md` line count in `agent-instructions` (232 to 235), and
+the 30 new rows of `run` (J1-J7, S1-S5). Since the tip run, S4 gained 2 rows (`b83f24b`) and the
+1.8.0 floor row gained 3 (`f147f53`); `run` is 231/231 at `f147f53`.
+
+### Mutants
+
+Targeted, `audit.py --ref HEAD targeted` at `87716b9`, each candidate run against its own suite
+only: 24 mutants, 23 killed, 1 survived.
+
+- `process-replay`: the 16 rows of `.scripts/test-audit/targeted.jsonl` (`t_loop` 9, `t_e2e` 5,
+  `t_bar` 2): 16/16 killed, the concurrency of §2.
+- `xreview-rpc`: the 3 rows (135-137, 812-814, 858-860) were stale, because
+  `fix/xreview-reliability` had rewritten the code. Their two mutants (an unreachable daemon exits
+  1, or 4, instead of 5) were retargeted onto the current main handler: 2/2 killed.
+- `run`: its row (156-157) was killed. Five new mutants of §1 and §3 (no link, the shim taken,
+  slow dispatched last, the marker regex as a bare prefix, the floor accepting 1.8.0): 4 killed.
+  The floor accepting 1.8.0 survived, because no row pinned the patch boundary. Fixed by
+  `f147f53`, a row for `jq` 1.8.0; with that mutant applied, `run` fails the new row's 3
+  assertions (228/231), and restored it is 231/231.
+
+`audit.py --ref HEAD try`:
+
+- `xreview-rpc` `HOOKS_STATUS_BUDGET` 5.0 to 6.0: killed by the silent-`initialize` row.
+- `xreview-rpc` `HOOKS_STATUS_CALL` 3.0 to 6.0: killed by the silent-`hooks/list` row.
+- `xreview` T4b, the gone-pane path made to wait out the bound: killed by "T4b it returns quickly,
+  not waiting out XREVIEW_PANE_WAIT".
+
+Revert checks by hand: J4's relative entry (`59a4094`, fails without the guard) and S4 against the
+gate (`b83f24b`, 226/227 with the marker classified before the gate).
+
+### Changes during the run
+
+- §1 was amended twice on Michael's word, through the driver: exit 2 with one line when no
+  non-shim `jq` is found (replacing "`PATH` unchanged"), and a version floor of 1.8.1, the oldest
+  measured to parse what `modify_private_settings.json` needs. The plan's Task 1 gained J6, J7 and
+  Step 4b. The plan checkpoint did not re-review these; the pre-merge review covers them.
+- The branch was rebased onto main three times: `85d5bb1` (PR #9), `c61cb4a` (PR #10) and
+  `44ca126` (PR #11). The label comparison stayed on `85d5bb1` for both sides.
+- The poller first matched its run by the holder record's checkout alone and once captured another
+  line's run. It now keeps the work directory whose suites equal the runner's report.
+- The final whole-branch review found three Minor findings, all fixed: S4 against the gate, the
+  plan's Review Focus 2, and `EPOCHREALTIME` read with a dot decimal. The re-review approved.

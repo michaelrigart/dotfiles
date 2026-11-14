@@ -162,7 +162,7 @@ the gate and also selects every `xreview-*` suite, which run beside it at no ext
 
 | Suite | Needs | Why |
 |---|---|---|
-| `xreview`, `git-forge-guard`, `wt-functions`, `test-audit` | `heavy`: 672 s, 242 s, 123 s, 89 s | skipped by default for their length. Before every pre-merge review run `./tests/run.sh --changed`: it runs each one whose subject (its rows in `.scripts/test-audit/subjects.tsv`, its own file, `tests/run.sh`) changed against main, committed or not, and runs it whenever it cannot tell. An exact name or `--all` runs one regardless. After a tool upgrade that could reach them (`brew upgrade`), run all four by name, since no diff shows that: `./tests/run.sh xreview git-forge-guard wt-functions test-audit` |
+| `xreview`, `git-forge-guard`, `wt-functions`, `test-audit` | `heavy`: 508 s, 242 s, 149 s, 103 s | skipped by default for their length. Before every pre-merge review run `./tests/run.sh --changed`: it runs each one whose subject (its rows in `.scripts/test-audit/subjects.tsv`, its own file, `tests/run.sh`) changed against main, committed or not, and runs it whenever it cannot tell. An exact name or `--all` runs one regardless. After a tool upgrade that could reach them (`brew upgrade`), run all four by name, since no diff shows that: `./tests/run.sh xreview git-forge-guard wt-functions test-audit` |
 | `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `zshrc` | unsandboxed | drives a real zsh on a pseudo-terminal (Alt-k and SIGURG), and the sandbox has no pty devices; it then exits 2 (INCONCLUSIVE) |

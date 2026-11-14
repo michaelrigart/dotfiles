@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `chore/suite-speed`)
+**Status:** Implemented (branch `chore/suite-speed`; PR to main after the pre-merge review)
+
+Completed 2026-11-14; do not run again.
 
 **Goal:** Cut the default run from 482 s to at most 250 s and a run with every heavy suite from
 987 s to at most 600 s, with every suite asserting what it asserted before.
