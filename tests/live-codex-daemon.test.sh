@@ -300,7 +300,8 @@ PY
 # "Always use current directory" saves "current" (resume in the shell's directory); the other
 # value is "session" (resume in the session's own directory). Either way no chooser appears, so
 # the chooser is checked only while the setting is unset, and otherwise the directory the
-# setting names. xreview is unaffected: it always resumes with -C (V1).
+# setting names. The managed config sets "current", so the unset branch runs only where it has
+# not been applied. xreview is unaffected: it always resumes with -C (V1).
 echo "V2: a resume from another directory without -C, per tui.resume_cwd; the ladder frees the pane"
 resume_cwd="$(python3 - "$CODEX_HOME_DIR/config.toml" <<'PY'
 import sys, tomllib
