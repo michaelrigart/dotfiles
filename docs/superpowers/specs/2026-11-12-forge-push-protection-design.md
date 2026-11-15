@@ -1,6 +1,7 @@
 # Push protection moves to the forge
 
-**Status:** In progress
+**Status:** Implemented
+**Pull request:** from `feat/forge-push-protection`; opened after the verification of section 6, so no number yet.
 **Date:** 2026-11-12
 **Branch:** `feat/forge-push-protection`
 
@@ -20,6 +21,15 @@ that GitHub's default branches take changes only through a pull request, his own
 "Revision 2" at the end lists every change, what is documented, inferred and his to test, and the
 decisions he took at signature. The text as signed on 2026-11-12 is this file at
 commit `1ca66ad`.
+
+**Revision 3 (2026-11-14), decided by the driver session on Michael's delegation** ("he follows my
+recommendations"), after his test 4 on the scratch repository showed that a workflow's
+`GITHUB_TOKEN` could merge a pull request and that a ruleset `main-merge-owner` refuses it. The
+GitHub target of section 2.1 gains that ruleset, his merge command gains `--admin` (section 4.3),
+the Actions residual is closed, the scope is his 43 GitHub repositories, and merge 3 may be
+written before the GitLab and Azure results (section 6). The section "Revision 3" at the end lists
+every change; "Implementation notes" records his results so far. Revision 2 as signed is this
+file at commit `50f0421`. Codex approved revision 3 in spec round 2 (`xr-1794692786-1c2c3c79`).
 
 This repository is public. Client organisations, groups, projects and hosts are never named here,
 in the plan, in code or in tests; the tooling reads them from the local checkouts at run time.
@@ -168,8 +178,10 @@ written down anywhere.
 
 The target, on the default branch of every repository agents work in: the rules `deletion`,
 `non_fast_forward` and `pull_request`, each carried by an active ruleset with an **empty bypass
-list**. Nobody deletes the branch, force-pushes it or pushes it directly, Michael included; a
-change lands when a pull request is merged.
+list**, and the rule `update`, carried only by active rulesets whose bypass list is exactly the
+Repository admin role in `pull_request` mode (revision 3). Nobody deletes the branch,
+force-pushes it or pushes it directly, Michael included; a change lands when Michael merges a pull
+request, and a workflow cannot merge one.
 
 - A repository with no ruleset gets one:
 
@@ -191,10 +203,33 @@ change lands when a pull request is merged.
 - `allowed_merge_methods` is `["merge"]`: a merge commit keeps his signed commits as they are and
   adds a merge commit GitHub signs; "rebase" would rewrite them unsigned and "squash" replaces
   them. Decided by Michael on 2026-11-14.
-- An `update` rule ("Restrict updates") is not part of the target: with an empty bypass list it
-  would refuse the merge of a pull request too. `main-owner-only` is never created.
-- Scope: the repositories agents work in (seven by the baseline of 2026-11-13). The dormant ones
-  are archived or go into his exceptions file, his choice per repository.
+- Every repository also gets `main-merge-owner`, a ruleset of its own, so that the three rules
+  above keep their empty bypass lists:
+
+  ```json
+  {"name": "main-merge-owner", "target": "branch", "enforcement": "active",
+   "bypass_actors": [{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "pull_request"}],
+   "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+   "rules": [{"type": "update", "parameters": {"update_allows_fetch_and_merge": false}}]}
+  ```
+
+  `update` ("Restrict updates") refuses every update of the branch by an actor that does not
+  bypass it. Actor 5 is the Repository admin role, and `pull_request` mode lets it bypass only by
+  merging a pull request: Michael's merge passes, with `--admin` (section 4.3). A push is not a
+  pull-request merge, so a direct push stays refused, by this rule and by `pull_request` alike.
+  A merge by a workflow's `GITHUB_TOKEN` is refused: the GitHub Actions integration is not in the
+  list, and a workflow cannot ask for Administration. An agent holds the admin role only through
+  his SSH key, which pushes, and the agent token, which cannot merge (section 1.1). The
+  `update_allows_fetch_and_merge` parameter concerns forks syncing from upstream and is not judged.
+  Test 4 of "Revision 3" proved each of these on a scratch repository. `main-owner-only` is never
+  created.
+- A condition the rules cannot hold: no Actions secret of a repository in scope holds a credential
+  of Michael's with Contents write, since a workflow using it would merge as him, the admin. The
+  agent token cannot read secrets, so the check cannot judge it; his steps list them for him.
+- Scope: the repositories agents work in. By Michael's step 8 (2026-11-14) that is every GitHub
+  repository of his own in the check: 41, and two more found when the rulesets went on, 43, all
+  public, none archived. A dormant one is archived or goes into his exceptions file, his choice per
+  repository.
 - Rulesets on a private repository of a personal account need GitHub Pro; on Free they exist for
   public repositories only. A GitHub repository agents work in must reach the target: one that is
   private on Free is made public, covered by Pro, or taken out of agent work, before merge 3. It
@@ -273,6 +308,7 @@ stay in his exceptions file (section 3).
 | Remote | Why | What protects it |
 |---|---|---|
 | 3 GitLab projects with no API access | not Michael's to administer; inactive | plain rule 4, the classifier, whatever their owners set |
+| 14 GitHub repositories of another owner (HTTP 403 for his login; revision 3) | not Michael's to administer | the same |
 | Azure repositories until 2.3 is done, or where Michael cannot edit policies | unread | the same |
 | Any new repository before Michael protects it | no group-level rules on these plans | the same, and the check names it |
 | Branches other than the default, on every forge | protecting them would stop agents pushing feature branches | plain rule 4 (force without a lease and unmerged deletes ask) |
@@ -340,10 +376,14 @@ refuses the push, his own included, and after merge 3 rule 4 denies the plain fo
   already requires the approved pre-merge review of that exact head; assigned to Michael; no
   agent attribution). Its final report ends with the pull request and the two commands for him,
   **run in a terminal of his own, not with `!` in the session**:
-  `gh pr merge <number> --merge --match-head-commit <sha>` (or the merge button), then
+  `gh pr merge <number> --merge --admin --match-head-commit <sha>`, then
   `git -C ~/.local/share/chezmoi pull --ff-only`, which the `chezmoi` wrapper needs before
   `chezmoi apply`: it deploys only from a clean `main` equal to origin's. A `!` command runs with
-  the session's `GH_TOKEN`, which cannot merge.
+  the session's `GH_TOKEN`, which cannot merge. `--admin` is how `gh` asks for the bypass of
+  `main-merge-owner` (section 2.1): without it the merge is refused ("the base branch policy
+  prohibits the merge", test 4c). It bypasses nothing else, because the other rulesets' bypass
+  lists are empty. The merge button needs the same bypass, offered beside it (unverified). The
+  merge gate denies `--admin` to agents, who never merge.
 - The pull request is opened ready for review, not as a draft: the reviews are done when it is
   opened, and nobody else reads the repository's pull requests. Decided by Michael on 2026-11-14.
 - **No agent merges on GitHub, on his word or otherwise.** The agent token cannot (section 1.1),
@@ -363,7 +403,9 @@ refuses the push, his own included, and after merge 3 rule 4 denies the plain fo
 - **Transition.** Until merge 2 is applied the current flow stays: local merge, the ask, the push
   of `main`. From the apply of merge 2 the flow is the pull request, which works with or without
   the ruleset. Once Michael has set the ruleset on the dotfiles, a direct push of `main` is
-  refused for everyone. The full local guard stays live until merge 3 is applied.
+  refused for everyone. `main-merge-owner` is on every repository in scope since 2026-11-14, so
+  his merges need `--admin` from then; `AGENTS.md` prints the command without it until merge 3.
+  The full local guard stays live until merge 3 is applied.
 
 ### 4.4 Goes
 
@@ -432,8 +474,9 @@ lands in three merges, each with its own pre-merge review; the retirement is the
 `forge-protection check`; the `pre-push` hook with the scan moved out of the helper; the agent
 identity plumbing, inert until the 1Password items exist.
 
-**Merge 2, the GitHub respec; changes no verdict of rule 4 either.** Landed by the current flow
-(local merge, Michael's push of `main`). In this order:
+**Merge 2, the GitHub respec; changes no verdict of rule 4 either. Done: on `main` at `50f0421`,
+applied on 2026-11-14.** Landed by the current flow (local merge, Michael's push of `main`). In
+this order:
 
 1. The machine-account plumbing of merge 1 is removed, first: the agent SSH configuration
    (`dot_config/agent-identity/ssh_config`), the key template
@@ -461,7 +504,12 @@ follow the apply of merge 2, from the commands the new check prints.
   repositories and the shared GitLab projects of correction 11, and no others (he confirms the
   count);
 - `gh api repos/<owner>/<repo>/rules/branches/<default> --jq '[.[].type] | sort'` prints
-  `["deletion","non_fast_forward","pull_request"]` for each GitHub repository in scope;
+  `["deletion","non_fast_forward","pull_request","update"]` for each GitHub repository in scope
+  (revision 3);
+- every ruleset carrying `update` on his repositories shows a bypass list of exactly the admin role
+  in `pull_request` mode, and no Actions secret holds a credential of his with Contents write: the
+  check of merge 2 reads neither, so his steps list both with a loop that fails loudly on any
+  request it cannot complete (revision 3);
 - in a new agent session `gh auth status` names `GH_TOKEN` as the source of the active GitHub
   login (so `gh` is not on his keyring login), a GET of one repository's rules succeeds, and the
   three tests of "Revision 2" below have been run once;
@@ -472,10 +520,25 @@ follow the apply of merge 2, from the commands the new check prints.
 Apart from Michael's three tests these verify configuration, not a refused push: no agent
 attempts a live push against a default branch.
 
-**Merge 3, the retirement** (section 4), the first dotfiles line to land through a pull request.
-Its commits are written only after the verification results are in the spec, with their own plan
-and a fresh pre-merge review. Until merge 3 is applied the full local guard is live, so there is
-no moment at which neither the forge nor the guard refuses.
+**Merge 3, the retirement** (section 4), the first dotfiles line to land through a pull request,
+with its own plan and a fresh pre-merge review. It holds:
+
+1. the retirement of section 4.4 and the default-branch deny of section 4.2;
+2. the `global.md` wording of section 4.3 (pushing to the default branch becomes a thing an agent
+   never does);
+3. the `update` half of the section 2.1 target in `check_github`, which prints the
+   `main-merge-owner` POST where it is missing (revision 3);
+4. `--admin` in the merge command `AGENTS.md` prints (section 4.3);
+5. Michael's steps file, for what is left after his GitHub steps.
+
+Revision 3 moves its start: merge 3 is written, reviewed and executed while the GitLab and Azure
+results are still outstanding, and its pull request is opened only once the verification results
+of every forge are in the spec and the check **of merge 3**, run by Michael from the line's
+checkout, exits 0. That is the check that judges the `update` rulesets' bypass lists; the
+check of merge 2 does not read them. GitLab or Azure results
+that change the design revise its plan before the pull request. Until merge 3 is applied the full
+local guard is live, and it is merged only after the verification, so there is still no moment at
+which neither the forge nor the guard refuses.
 
 If Michael's actions have not happened when merge 2 is done, the line stops there and is reported
 as waiting on him.
@@ -496,6 +559,10 @@ as waiting on him.
       repository is touched;
    5. create the ruleset the check prints on each repository agents work in;
    6. delete the scratch repository.
+
+   Revision 3 adds, between 4 and 6: test 4 on the scratch repository, then `main-merge-owner`
+   on each repository in scope (done 2026-11-14), and the list of Actions secrets he reads for the
+   condition of section 2.1.
 4. Write `~/.config/forge-protection/exceptions` with the remotes he accepts as unprotected.
 
 ## 7. Rollback
@@ -507,7 +574,10 @@ as waiting on him.
 - The identity: delete the two 1Password references from the settings template; sessions fall back
   to Michael's logins. Forge side, revoke the tokens.
 - The pull-request flow on GitHub: delete the `pull_request` rule (or the `main-pr-only` ruleset)
-  and the direct push of `main` works again; the Finishing rule is one reverted commit.
+  and the `main-merge-owner` ruleset, and the direct push of `main` works again; the Finishing rule
+  is one reverted commit.
+- `main-merge-owner` alone: one DELETE per repository. Merges then need no `--admin`, and a
+  workflow can merge a pull request again.
 - A forge rule: each is one DELETE or one UI switch, Michael's.
 
 ## Residual
@@ -519,30 +589,23 @@ as waiting on him.
   `glab api` writes) and the merge gate stay in front of that.
 - A hidden spelling of a force push or delete on a branch other than the default is no longer
   refused locally. The classifier sees it; the damage is one branch, usually the agent's own.
+- After merge 3 the guard relies on the forge for every spelling it no longer reads (section 4.4,
+  corrections M2 and M3 below), on the default branch too. Where the forge does not refuse, a hidden spelling
+  meets only the classifier: the remotes of section 2.4 (the excepted ones in Michael's file, the
+  other owners' repositories, a new repository before he protects it, Azure until section 2.3 is
+  done) and any branch other than the default.
 - The remotes of section 2.4.
 - gitleaks can be skipped (section 5).
-- **GitHub Actions can merge for an agent** (recorded 2026-11-14 on Michael's delegation to the
-  driver; inferred from GitHub's documented `GITHUB_TOKEN` behaviour, untested; it predates this
-  line). With his SSH key an agent pushes a branch holding a workflow (`on: push`,
-  `permissions: contents: write`); an SSH push is not limited by the token's missing
-  Workflows permission. It opens a pull request with its own token, and the workflow's
-  `GITHUB_TOKEN` merges it: the `pull_request` rule with no approvals and an empty bypass list
-  is satisfied by any merge, and a workflow's `permissions` key can raise its token above the
-  repository's default. A deliberate act in three steps, visible in the Actions log; before
-  revision 2 a workflow could push `main` directly. Decision for Michael before merge 3's plan:
-  - an `update` rule whose only bypass actor is the Repository admin role with bypass mode
-    `pull_request`: direct pushes stay refused for everyone, his pull-request merge passes,
-    a merge by `GITHUB_TOKEN` (not a bypass actor) is refused. It changes the check's target
-    and needs a fourth scratch test (a workflow's merge refused, his merge allowed); untested
-    whether GitHub applies `update` to a pull-request merge that way;
-  - evaluated, not built: a local refusal of an agent change under `.github/workflows/`. A
-    deny rule on the edit tools is a speed bump, not a boundary: a shell command writes the
-    same file, the class of hidden spelling merge 3 stops chasing. A refusal in the global
-    `pre-push` hook would hold for any spelling of the change but can be skipped like the
-    scan (section 5), and it binds his own pushes too unless it tells an agent session from
-    his (an environment variable, which an agent can unset). Its cost to him is small on
-    these seven repositories (one workflow, in the dotfiles), but it would also refuse agents'
-    ordinary CI work in GitHub repositories outside the seven.
+- **A workflow holding a credential of Michael's.** The route recorded on 2026-11-14 (with his
+  SSH key an agent pushes a branch holding a workflow, opens a pull request with its own token,
+  and the workflow's `GITHUB_TOKEN` merges it) was real: test 4a merged that way in ten seconds.
+  `main-merge-owner` closes it (test 4b, section 2.1). What remains is a workflow that uses an
+  Actions secret holding a credential of his with Contents write, which would merge as the admin;
+  the condition of section 2.1 and his steps keep that list empty. A repository outside the
+  rulesets (section 2.4) has neither rule. Not built: a local refusal of agent changes under
+  `.github/workflows/`, evaluated for revision 3. It could be skipped like the scan, would need
+  to tell an agent session from his by a variable an agent can unset, and would refuse agents'
+  ordinary CI work.
 
 ## Tests
 
@@ -572,6 +635,12 @@ as waiting on him.
   rules from closed rulesets is `ok`; `pull_request` missing is `drift` with the one POST, and
   carried only by a ruleset with a bypass actor, `drift` with a note to empty that list; the
   owner-only rows go.
+- `tests/forge-protection.test.sh`, revision 3: the four rules with `update` carried only by
+  rulesets whose list is exactly the admin role in `pull_request` mode is `ok`; `update` missing
+  is `drift` with the `main-merge-owner` POST, beside the `protect-main` POST when that one is
+  printed too; an `update` carrier with an empty list, another actor, another mode or a second
+  actor is `drift` with a note naming that ruleset; an `update` carrier that hides its list is
+  `unreadable`.
 
 ## After Michael's apply
 
@@ -579,8 +648,9 @@ as waiting on him.
    `forge-protection check` still exits 0, with the same excepted rows.
 2. `./tests/run.sh git-forge-guard` and the new suites pass; the heavy tag is gone if the time
    allows.
-3. A dotfiles line ends in a pull request under Michael's name; after his merge and the pull of
-   the main checkout, `chezmoi apply` deploys it and `wt-rm` finds the branch merged.
+3. A dotfiles line ends in a pull request under Michael's name; after his merge (with `--admin`)
+   and the pull of the main checkout, `chezmoi apply` deploys it and `wt-rm` finds the branch
+   merged.
 4. `git push origin main` from an agent session is a silent deny; no prompt appears.
 
 ## Corrections from planning (2026-11-12, after sign-off)
@@ -748,3 +818,153 @@ none excepted.
 **What changes for the driver:** it no longer merges a dotfiles line into `main`, and no agent
 pushes `main` or merges on GitHub. A line's final report carries the pull request and Michael's
 two commands.
+
+## Revision 3 (2026-11-14): no merge by a workflow
+
+Decided by the driver session on Michael's delegation, on 2026-11-14, after test 4. The local
+refusal of workflow changes (Residual) was evaluated and not taken.
+
+**Test 4**, on the scratch repository, from his own terminal, before it was deleted. Two pull
+requests, `probe-a` and `probe-b`; a branch pushed with his SSH key, holding a workflow on `push`
+to that branch, with `contents: write` and `pull-requests: write`, that runs `gh pr merge` on one
+of them with `GITHUB_TOKEN`:
+
+| | Expected | Answer |
+|---|---|---|
+| 4a, before `main-merge-owner` existed | the workflow merges `probe-a` | merged in ten seconds: the route was real |
+| 4b, after the POST of `main-merge-owner` as section 2.1 gives it | the same workflow on `probe-b` is refused | "Cannot update this protected ref. (mergePullRequest)"; the pull request stayed open |
+| 4c, his `gh pr merge <n> --merge --match-head-commit <sha>` | merges | refused, "the base branch policy prohibits the merge"; with `--admin` added, merged |
+
+**Changed:** the header; section 2.1 (the target gains `update`, `main-merge-owner`, the secret
+condition, the scope); the table of section 2.4 (the other owner's repositories); section 4.3
+(`--admin`); section 6 (merge 2 done, merge 3's content and its start, the rule list of the
+verification, the forge actions); section 7; Residual; Tests; "After Michael's apply"; and the
+new "Implementation notes". The rest of revision 2 stands.
+
+**Merge 3's start.** Revision 2 wrote merge 3's commits only after the verification results.
+Revision 3 lets them be written and executed before the GitLab and Azure results, and holds the
+pull request until those are in the spec and merge 3's own check, run by Michael, exits 0
+(section 6). Merge 3's content
+does not depend on those results, and the invariant that the forge or the guard always refuses
+depends on when it is merged and applied, which stays after the verification.
+
+## Corrections from planning merge 3 (2026-11-14)
+
+Planning merge 3 against the code found wording in sections 4.1 and 4.4 that does not hold. Each
+is decided by the driver session on Michael's delegation, on 2026-11-14.
+
+- **M1. Section 4.4's suite range starts too early.** "Ways a push to the default branch could
+  hide", "commands that name git without running it" and "expansion in option values" predate the
+  2026-10-29 work and test grammar that stays (destinations git resolves as ref paths, expanded
+  words, `send-pack` and `subtree`, commands that run a command string). The governing sentence is
+  "everything spec 2026-10-29 added": only that is deleted, and those three sections are edited.
+- **M2. `dynamic_git_word` and the glob reading predate 2026-10-29,** although section 4.4 names
+  them. They go as listed: main's versions could crash on a backwards range or run past the hook's
+  timeout, both of which let the command through. The guard becomes silent on a push word built at
+  run time (`X=push; git $X origin main`) and on a glob command word (`/usr/bin/gi? push …`), which
+  main denied.
+- **M3. Section 4.1's last bullet is main's segment rule.** Text holds "the literal words git and
+  push" when both stand in one segment between `;`, `&`, `|` and newlines, as before 2026-10-29;
+  `send-pack` counts as `push`, so `true; git send-pack …` stays denied (decided at the task review
+  of the retirement, 2026-11-14). A
+  quoted separator between them (`true; git -c 'x.y=a;b' push origin main`) makes the command
+  silent. M2 and M3 are spellings the guard leaves to the forge; Residual names where the forge
+  does not cover them.
+- **M4. `outside_grammar` and `probe_refuses` stay,** though written on 2026-10-29: without them
+  an ANSI-C quote makes `git log --grep $'a\'b' ; git push -f origin main # '` read as one `git log`
+  and pass. They read the grammar faithfully; they hunt no spelling.
+- **M5. Deletes of the default branch, `--all` and `--mirror`.** Section 4.1's "deletes,
+  `--mirror`, `--all`, `--prune` on other branches: ask" is read with "on other branches" governing
+  the whole list. A delete of the default branch (`--delete main`, `:main`), and `--all` or
+  `--mirror` (the guard always knows a default branch: it falls back to `main` when the remote
+  names none), are a silent deny with section 4.2's reason: each pushes the default branch. `--prune` and deletes of other branches keep their ask.
+  Two more asks go; none is added.
+- **M6. A dry run of a default-branch push** outside canonical text gets section 4.2's deny, not the
+  dry-run deny, which would tell the agent to confirm the push with Michael. The canonical
+  `git push -n origin main` stays allowed: it updates nothing.
+- **M7. The heavy threshold** section 4.4 refers to is not defined anywhere: it is 60 s. Above it
+  the suite keeps `test-requires: heavy` and its timing is updated, in the suite and in
+  `AGENTS.md`.
+
+## Implementation notes
+
+Counts only; no repository is named.
+
+- **Merge 1** is on `main` at `1ca66ad`, applied on 2026-11-13. **Merge 2** is on `main` at
+  `50f0421`, applied on 2026-11-14.
+- **Merge 3** (measured on 2026-11-15, written and held for the verification of section 6): the
+  helper `dot_claude/git-push-guard.py` went from 3,182 to 1,360 lines (section 4.4 expected about
+  1,300), the shell fast path `dot_claude/executable_git-forge-guard.sh` from 626 to 578, and the
+  suite `tests/git-forge-guard.test.sh` from 3,869 to 2,256 (expected about 1,700). The merge
+  removes 3,772 lines and adds 412 across `dot_claude`, `tests` and `.scripts`; section 4.4
+  expected about 4,400 removed, a figure counted before merge 1 moved the scan out of the helper,
+  and correction M1 keeps three older sections of the suite. The guard suite takes 142 s (was 242 s), still over the
+  heavy threshold, so it keeps its `heavy` tag (M7). The check judges `main-merge-owner`: an active
+  ruleset carrying `update` alone, with a bypass list of exactly the Repository admin role in
+  `pull_request` mode; a missing one prints the `main-merge-owner` POST, a wrong one a UI note
+  naming the ruleset. The guard now denies every push of a default branch, a delete of it, `--all`
+  and `--mirror`.
+- **Baseline check** (his step 1, 2026-11-13): 100 repositories; 1 ok, 81 drift, 18 unreadable,
+  0 excepted; 4 checkouts without an `origin` skipped.
+- **Scope** (step 8, 2026-11-14): all 41 of his own GitHub repositories in the check are in scope,
+  all public, none archived, and none excepted. He owns 56; the other 15 have no checkout, so the
+  check does not see them.
+- **Scratch ruleset** (step 9): the POST of section 2.1 was accepted as printed,
+  `allowed_merge_methods` included; the rules read `deletion`, `non_fast_forward`,
+  `pull_request`, enforcement active.
+- **Agent token** (step 10): fine-grained, only selected repositories (the 41 and the scratch
+  one); Contents read-only, Pull requests read and write, Issues read and write, Metadata read as
+  the form adds it. An agent session started after the apply carries `GH_TOKEN`, and an
+  Administration read there is refused ("not accessible by personal access token").
+- **Tests 1 to 3** (step 11): all held.
+  - Test 1: the pull request was created with the agent token. Its merge with that token was
+    refused, "GraphQL: Resource not accessible by personal access token (mergePullRequest)", and
+    so was the Contents PUT to a branch other than the default, HTTP 403 with the same text.
+  - Test 2: his fast-forward push of `main` was refused, GH013, quoting the merge-method
+    restriction of the `pull_request` rule. Test 2b, a push of a local merge commit, was refused
+    with GH013 "Changes must be made through a pull request": the `pull_request` rule refuses a
+    direct push on its own.
+  - Test 3: his own merge with `--merge` worked.
+  - Test 4 is in "Revision 3".
+- **Rulesets** (step 12 and revision 3): the dotfiles got `main-pr-only` beside `protect-main`; 40
+  others got `protect-main`; two more of his old public repositories surfaced as drift and got
+  `protect-main`; `main-merge-owner` is on all 43, verified with GET calls. The check, run by him
+  afterwards: 43 of his own GitHub rows ok. The 14 rows of another owner's organisation are
+  unreadable (HTTP 403, not resolvable for his login) and are in his exceptions file.
+- **Scratch repository** (step 13): deleted, with its clone.
+- **GitLab token** (step 2, 2026-11-15): fine-grained, on all his memberships. Its permissions as
+  `personal_access_tokens/self` reports them (`granular_scopes`): `read_project`,
+  `read_repository`, `read_branch`, `read_commit`, `read_protected_branch`, `read_merge_request`,
+  `create_merge_request`, `update_merge_request`, `read_work_item`, `create_work_item`,
+  `update_work_item`, `read_pipeline`, `read_job`; at the user boundary `read_user` and
+  `read_personal_access_token`; at the instance boundary `read_user`, which the assignee lookup of
+  `glab mr create` needs. No merge, approve, protect, code (Git over HTTPS) or project write.
+  Merge request notes are Work Item permissions. Listing every project (`GET /projects`) needs
+  Project read at the user boundary, which it lacks and nothing needs: the check addresses a
+  project by its path. GET calls with it read a project, its protected branches, merge requests,
+  pipelines, branches and commits.
+- **GitLab rules** (steps 3, 4 and 6, 2026-11-15): 36 projects in drift and 3 unreadable (HTTP 403
+  or 404). The PATCH of section 2.2 was accepted as printed and changed each rule in place (rule
+  ids unchanged), on his personal projects and on group projects. 34 projects are protected and
+  verified, 18 by PATCH and 16 by POST. A rule made by the POST gets GitLab's default merge level,
+  Maintainers, so a Developer there no longer merges into the default branch. Correction 11,
+  decided per project by him: on 32 of the 34 another member could push, an agent account
+  (Developer) on 19 and a colleague (Developer, through the group) on 13, and he protected them;
+  the 2 where another Owner or Maintainer works are in his exceptions file, with the 3 he cannot
+  administer. Each project's rules were recorded before the change, outside the repository.
+- **Azure DevOps** (step 5, 2026-11-15): `az` answers from his terminal; the hang is an agent
+  session's. Of the 3 repositories, one lacked the reviewers policy: the printed create was
+  accepted and the row reads ok, which confirms the type id `fa4e907d-c16b-4a4c-9dfa-4906e5d171dd`.
+  One was ok already. One reads drift on the permissions (a bypass or force-push right effective
+  for his user); he left it as it is, and it is in his exceptions file. The Branch security dialog
+  was not compared with the check's reading, so the permission bits stay unverified against it.
+- **Self-hosted GitLab** (one checkout, a host the check does not read): in his exceptions file
+  (section 2.4).
+- **Check of merge 3** (step 17, run by him from this line's checkout, 2026-11-15): exit 0; 100
+  repositories: 79 ok, 0 drift, 0 unreadable, 21 excepted; 4 checkouts without an `origin`
+  skipped. The 21: 14 GitHub repositories of another owner, 5 GitLab projects (3 not his to
+  administer, 2 shared), 1 Azure repository and the self-hosted one. The 43 GitHub rows read ok
+  with `main-merge-owner` judged.
+- **Outstanding** on 2026-11-15: step 14's loop (the `update` rulesets and the secret list of
+  section 2.1) and step 15 (a new agent session after an apply, which also brings it
+  `GITLAB_TOKEN`).

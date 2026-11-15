@@ -160,7 +160,8 @@ shq() {
 }
 
 # The rulesets of spec 2026-11-12 section 2.1, as compact JSON: protect-main for a repository with
-# none, main-pr-only for one whose deletion and non_fast_forward rules are already carried.
+# none, main-pr-only for one whose deletion and non_fast_forward rules are already carried, and
+# main-merge-owner for one with no ruleset of its own for the update rule.
 PR_RULE='{"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":false,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"allowed_merge_methods":["merge"]}}'
 body_protect_main() {
   jq -nc --argjson pr "$PR_RULE" '{name:"protect-main",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[{type:"deletion"},{type:"non_fast_forward"},$pr]}'
@@ -169,8 +170,12 @@ body_main_pr_only() {
   jq -nc --argjson pr "$PR_RULE" '{name:"main-pr-only",target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[$pr]}'
 }
 
+body_main_merge_owner() {
+  jq -nc '{name:"main-merge-owner",target:"branch",enforcement:"active",bypass_actors:[{actor_type:"RepositoryRole",actor_id:5,bypass_mode:"pull_request"}],conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}},rules:[{type:"update",parameters:{update_allows_fetch_and_merge:false}}]}'
+}
+
 check_github() {  # <remote> <owner/repo>
-  local remote=$1 repo=$2 def enc rules ids id st v n
+  local remote=$1 repo=$2 def enc rules ids id st v n i
   case "$repo" in
     */*/*|*/|/*) row unreadable "$remote" "not an owner/repo path"; return ;;
     */*) ;;
@@ -188,17 +193,21 @@ check_github() {  # <remote> <owner/repo>
   if ! printf '%s' "$rules" | jq -e 'type == "array"' >/dev/null 2>&1; then
     row unreadable "$remote" "the rules answer is not a list"; return
   fi
-  # Only a ruleset that carries deletion, non_fast_forward or pull_request is read; update and
-  # creation are not part of the target. An active one must show its bypass list: that this login
-  # cannot bypass does not say the list is empty, so a ruleset without the list is unreadable.
-  ids=$(printf '%s' "$rules" | jq -r '[.[] | select(.type | IN("deletion", "non_fast_forward", "pull_request")) | .ruleset_id | select(. != null)] | unique | .[]')
+  # Only a ruleset that carries deletion, non_fast_forward, pull_request or update is read. An
+  # active one must show its bypass list: that this login cannot bypass does not say the list is
+  # empty, so a ruleset without the list is unreadable. admin_only is the list main-merge-owner
+  # needs: exactly the admin role, bypassing in pull_request mode.
+  ids=$(printf '%s' "$rules" | jq -r '[.[] | select(.type | IN("deletion", "non_fast_forward", "pull_request", "update")) | .ruleset_id | select(. != null)] | unique | .[]')
   st='{}'
   for id in $ids; do
     if ! gh_get "repos/$repo/rulesets/$id"; then row unreadable "$remote" "$(fc_reason)"; return; fi
     if ! st=$(printf '%s' "$FC_OUT" | jq -c --argjson st "$st" --arg id "$id" '
         .bypass_actors as $b
         | if .enforcement == "active" and $b == null then error("no bypass list")
-          else $st + {($id): {closed: (.enforcement == "active" and ($b | length) == 0)}} end' 2>/dev/null); then
+          else $st + {($id): {active: (.enforcement == "active"),
+                              closed: (.enforcement == "active" and ($b | length) == 0),
+                              admin_only: (.enforcement == "active" and ($b | length) == 1 and ($b[0] | type) == "object"
+                                           and $b[0].actor_type == "RepositoryRole" and $b[0].actor_id == 5 and $b[0].bypass_mode == "pull_request")}} end' 2>/dev/null); then
       row unreadable "$remote" "ruleset $id does not show its bypass list to this login; run the check with the owner's login"; return
     fi
   done
@@ -209,17 +218,27 @@ check_github() {  # <remote> <owner/repo>
   # replaced: protect-main is posted only when none does, and it brings pull_request too.
   # main-pr-only is posted only when no ruleset carries pull_request at all. Otherwise each ruleset
   # that carries a rule lacking a closed carrier gets a UI note.
+  # The fourth rule holds when at least one active ruleset is merge-owner (carries it and none of
+  # the other three, bypass list admin_only) and every active ruleset carrying it is. A ruleset that
+  # is not active is ignored. main-merge-owner is posted only when no active ruleset carries the
+  # rule alone: one that does is fixed in place by its note, not joined by a second.
   v=$(jq -nc --argjson r "$rules" --argjson st "$st" '
-    ([$r[] | select(.type | IN("deletion", "non_fast_forward", "pull_request")) | .ruleset_id | select(. != null)] | unique) as $ids
+    ([$r[] | select(.type | IN("deletion", "non_fast_forward", "pull_request", "update")) | .ruleset_id | select(. != null)] | unique) as $ids
     | def carries($id; $t): any($r[]; .ruleset_id == $id and .type == $t);
       def closed($id): $st[($id | tostring)].closed;
       def closed_carrier($t): any($r[]; .type == $t and closed(.ruleset_id));
       def pm_carried: any($ids[]; carries(.; "deletion") and carries(.; "non_fast_forward"));
+      def others($id): any("deletion", "non_fast_forward", "pull_request"; . as $t | carries($id; $t));
+      def owner($id): $st[($id | tostring)].admin_only and (others($id) | not);
       [("deletion", "non_fast_forward", "pull_request") | select(closed_carrier(.) | not)] as $missing
-    | {ok: ($missing | length == 0),
+    | [$ids[] | select(carries(.; "update") and $st[(. | tostring)].active)] as $act
+    | ($act | length > 0 and all(.[]; owner(.))) as $upd_ok
+    | {ok: (($missing | length == 0) and $upd_ok),
        protect_post: (pm_carried | not),
        pr_post: (pm_carried and (any($r[]; .type == "pull_request") | not)),
-       ui: (if pm_carried then [$ids[] | . as $id | select((closed($id) | not) and any($missing[]; carries($id; .)))] else [] end)}')
+       owner_post: (any($act[]; others(.) | not) | not),
+       ui: (if pm_carried then [$ids[] | . as $id | select((closed($id) | not) and any($missing[]; carries($id; .)))] else [] end),
+       upd_ui: [$act[] | select(owner(.) | not) | {id: ., mixed: others(.)}]}')
   if [ "$(printf '%s' "$v" | jq -r '.ok')" = true ]; then
     row ok "$remote" "default branch $def"; return
   fi
@@ -230,11 +249,25 @@ check_github() {  # <remote> <owner/repo>
   if [ "$(printf '%s' "$v" | jq -r '.pr_post')" = true ]; then
     remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_main_pr_only)"))"
   fi
+  if [ "$(printf '%s' "$v" | jq -r '.owner_post')" = true ]; then
+    remedy "gh api --method POST repos/$(shq "$repo")/rulesets --input <(printf '%s\\n' $(shq "$(body_main_merge_owner)"))"
+  fi
   n=$(printf '%s' "$v" | jq -r '.ui | length')
   while [ "$n" -gt 0 ]; do
     n=$((n - 1))
     id=$(printf '%s' "$v" | jq -r ".ui[$n]")
     note "in the UI: https://github.com/$repo/rules/$id: Enforcement Active, bypass list none"
+  done
+  n=$(printf '%s' "$v" | jq -r '.upd_ui | length')
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    id=$(printf '%s' "$v" | jq -r ".upd_ui[$i].id")
+    if [ "$(printf '%s' "$v" | jq -r ".upd_ui[$i].mixed")" = true ]; then
+      note "in the UI: https://github.com/$repo/rules/$id: remove Restrict updates; main-merge-owner carries it"
+    else
+      note "in the UI: https://github.com/$repo/rules/$id: bypass list only Repository admin, For pull requests only"
+    fi
+    i=$((i + 1))
   done
 }
 

@@ -66,22 +66,28 @@ BYADMIN='{"actor_type":"RepositoryRole","actor_id":5,"bypass_mode":"always"}'
 PM_RULES='[{"type":"deletion","ruleset_id":1},{"type":"non_fast_forward","ruleset_id":1}]'
 PR_RULES='[{"type":"pull_request","ruleset_id":2}]'
 ALL_RULES='[{"type":"deletion","ruleset_id":3},{"type":"non_fast_forward","ruleset_id":3},{"type":"pull_request","ruleset_id":3}]'
+UPD_RULES='[{"type":"update","ruleset_id":4}]'
+OWNER='{"actor_type":"RepositoryRole","actor_id":5,"bypass_mode":"pull_request"}'
+OWNER_POST='{"name":"main-merge-owner","target":"branch","enforcement":"active","bypass_actors":[{"actor_type":"RepositoryRole","actor_id":5,"bypass_mode":"pull_request"}],"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"update","parameters":{"update_allows_fetch_and_merge":false}}]}'
 join() { jq -nc --argjson a "$1" --argjson b "$2" '$a + $b'; }
 
 gh_repo()  { ans gh "api repos/$1" '{"default_branch":"main"}'; }
 gh_rules() { ans gh "api --paginate repos/$1/rules/branches/main?per_page=100" "$2"; }
 gh_rs()    { ans gh "api repos/$1/rulesets/$2" "$3"; }
+gh_owner() { gh_rs "$1" 4 "{\"id\":4,\"enforcement\":\"active\",\"bypass_actors\":[$OWNER],\"current_user_can_bypass\":\"never\"}"; }
 # the target as seen by Michael (bypass_actors shown) or by the agent (not shown): deletion and
-# non_fast_forward from ruleset 1, pull_request from ruleset 2
+# non_fast_forward from ruleset 1, pull_request from ruleset 2, update from ruleset 4
 gh_michael() {
-  gh_repo "$1"; gh_rules "$1" "$(join "$PM_RULES" "$PR_RULES")"
+  gh_repo "$1"; gh_rules "$1" "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")"
   gh_rs "$1" 1 '{"id":1,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
   gh_rs "$1" 2 '{"id":2,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+  gh_owner "$1"
 }
 gh_agent() {
-  gh_repo "$1"; gh_rules "$1" "$(join "$PM_RULES" "$PR_RULES")"
+  gh_repo "$1"; gh_rules "$1" "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")"
   gh_rs "$1" 1 '{"id":1,"enforcement":"active","current_user_can_bypass":"never"}'
   gh_rs "$1" 2 '{"id":2,"enforcement":"active","current_user_can_bypass":"never"}'
+  gh_rs "$1" 4 '{"id":4,"enforcement":"active","current_user_can_bypass":"never"}'
 }
 
 reset() {
@@ -121,8 +127,9 @@ out_has "1 repositories: 1 ok, 0 drift, 0 unreadable, 0 excepted; 0 checkouts wi
 case "$OUT" in "# This output names repositories: never commit it or paste it into a tracked file."*) _pass "first line warns the output names repositories" ;; *) _fail "first line warns the output names repositories" ;; esac
 
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
-gh_repo "$R"; gh_rules "$R" "$ALL_RULES"
+gh_repo "$R"; gh_rules "$R" "$(join "$ALL_RULES" "$UPD_RULES")"
 gh_rs "$R" 3 '{"id":3,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+gh_owner "$R"
 run check
 row_is ok "github.com/$R" "github all three rules from one closed ruleset: ok row"
 rc_is 0 "github one closed ruleset: exit 0"
@@ -130,8 +137,9 @@ rc_is 0 "github one closed ruleset: exit 0"
 posts_are() { local n; n=$(printf '%s\n' "$OUT" | grep -c 'gh api --method POST'); if [ "$n" -eq "$1" ]; then _pass "$2"; else _fail "$2 (got $n)"; fi; }
 
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
-gh_repo "$R"; gh_rules "$R" "$PM_RULES"
+gh_repo "$R"; gh_rules "$R" "$(join "$PM_RULES" "$UPD_RULES")"
 gh_rs "$R" 1 '{"id":1,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+gh_owner "$R"
 run check
 row_is drift "github.com/$R" "github protect-main closed without pull_request: drift row"
 out_has '"name":"main-pr-only"' "github protect-main without pull_request: the main-pr-only POST is printed"
@@ -147,15 +155,31 @@ reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
 gh_repo "$R"; gh_rules "$R" '[]'
 run check
 row_is drift "github.com/$R" "github no ruleset: drift row"
-posts_are 1 "github no ruleset: one POST"
+posts_are 2 "github no ruleset: two POSTs"
 out_has '"name":"protect-main"' "github no ruleset: the protect-main POST is printed"
+if [ "$(printf '%s\n' "$OUT" | grep 'gh api --method POST' | sed 's/.*"name":"\([a-z-]*\)".*/\1/' | tr '\n' ' ')" = "protect-main main-merge-owner " ]; then _pass "github no ruleset: protect-main first, then main-merge-owner"; else _fail "github no ruleset: protect-main first, then main-merge-owner"; fi
 out_has '"type":"pull_request"' "github no ruleset: protect-main brings the pull_request rule"
 out_has '"allowed_merge_methods":["merge"]' "github no ruleset: merge commits only"
 out_has '"include":["~DEFAULT_BRANCH"]' "github no ruleset: protect-main includes the default branch by its alias, not by name"
 out_hasnt 'main-owner-only' "github no ruleset: no owner-only ruleset"
-out_hasnt '"update"' "github no ruleset: no update rule"
 out_hasnt 'in the UI' "github no ruleset: no UI note"
 rc_is 1 "github no ruleset: exit 1"
+
+# the three rules without update: one POST, the main-merge-owner ruleset exactly
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$(join "$PM_RULES" "$PR_RULES")"
+run check
+row_is drift "github.com/$R" "github the three rules without update: drift row"
+rc_is 1 "github the three rules without update: exit 1"
+posts_are 1 "github the three rules without update: exactly one POST"
+out_has '"name":"main-merge-owner"' "github the three rules without update: the POST names main-merge-owner"
+out_has '"bypass_mode":"pull_request"' "github the three rules without update: the admin bypasses in pull_request mode only"
+out_has '"actor_id":5' "github the three rules without update: the actor is the admin role"
+out_has '"type":"update"' "github the three rules without update: the POST carries update"
+out_has '"include":["~DEFAULT_BRANCH"]' "github the three rules without update: the POST targets the default branch by its alias"
+out_hasnt '"name":"protect-main"' "github the three rules without update: protect-main is not printed"
+out_hasnt 'in the UI' "github the three rules without update: no UI note"
+if printf '%s\n' "$OUT" | grep -qF "$OWNER_POST"; then _pass "github the three rules without update: the printed body is the spec's, byte for byte"; else _fail "github the three rules without update: the printed body is the spec's, byte for byte"; fi
 
 # pull_request from a ruleset with any bypass actor is not closed, whoever the actor is: the admin role is the agent
 for spec in "the admin role|[$BYADMIN]" "the admin role with pull_requests_only|[{\"actor_type\":\"RepositoryRole\",\"actor_id\":5,\"bypass_mode\":\"pull_requests_only\"}]" "the admin role and a user|[$BYADMIN,{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}]"; do
@@ -169,8 +193,9 @@ for spec in "the admin role|[$BYADMIN]" "the admin role with pull_requests_only|
 done
 
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
-gh_repo "$R"; gh_rules "$R" "$ALL_RULES"
+gh_repo "$R"; gh_rules "$R" "$(join "$ALL_RULES" "$UPD_RULES")"
 gh_rs "$R" 3 "{\"id\":3,\"enforcement\":\"active\",\"bypass_actors\":[$BYADMIN],\"current_user_can_bypass\":\"always\"}"
+gh_owner "$R"
 run check
 row_is drift "github.com/$R" "github one ruleset with all three rules and the admin bypass: drift row"
 out_has "# in the UI: https://github.com/$R/rules/3: Enforcement Active, bypass list none" "github one ruleset with the admin bypass: the UI note"
@@ -199,19 +224,75 @@ done
 # rules add up: a further ruleset carrying one of the three rules does not matter when a closed one carries it too
 for spec in "active with the admin bypass|{\"id\":5,\"enforcement\":\"active\",\"bypass_actors\":[$BYADMIN]}" "in evaluate mode without bypass_actors|{\"id\":5,\"enforcement\":\"evaluate\"}"; do
   reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
-  gh_rules "$R" "$(join "$(join "$PM_RULES" "$PR_RULES")" '[{"type":"deletion","ruleset_id":5}]')"
+  gh_rules "$R" "$(join "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")" '[{"type":"deletion","ruleset_id":5}]')"
   gh_rs "$R" 5 "${spec#*|}"
   run check
   row_is ok "github.com/$R" "github a further deletion ruleset ${spec%%|*}, all three closed elsewhere: ok"
 done
 
-# update and creation are not part of the target: such a ruleset is not even read
-reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
-gh_rules "$R" "$(join "$(join "$PM_RULES" "$PR_RULES")" '[{"type":"update","ruleset_id":9},{"type":"creation","ruleset_id":9}]')"
+# the update half: the ruleset carrying update must bypass for the admin role in pull_request mode, alone
+NOTE4="# in the UI: https://github.com/$R/rules/4: bypass list only Repository admin, For pull requests only"
+for spec in "empty|[]" "a user in always|[{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}]" "the admin role in always|[$BYADMIN]" "the admin role in exempt|[{\"actor_type\":\"RepositoryRole\",\"actor_id\":5,\"bypass_mode\":\"exempt\"}]" "the GitHub Actions app in pull_request mode|[{\"actor_type\":\"Integration\",\"actor_id\":15368,\"bypass_mode\":\"pull_request\"}]" "another repository role in pull_request mode|[{\"actor_type\":\"RepositoryRole\",\"actor_id\":2,\"bypass_mode\":\"pull_request\"}]" "the admin role in pull_request and a user|[$OWNER,{\"actor_type\":\"User\",\"actor_id\":42,\"bypass_mode\":\"always\"}]"; do
+  reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+  gh_rs "$R" 4 "{\"id\":4,\"enforcement\":\"active\",\"bypass_actors\":${spec#*|},\"current_user_can_bypass\":\"never\"}"
+  run check
+  row_is drift "github.com/$R" "github update ruleset with bypass list ${spec%%|*}: drift, never ok"
+  out_has "$NOTE4" "github update ruleset with bypass list ${spec%%|*}: the bypass-list note naming rules/4"
+  posts_are 0 "github update ruleset with bypass list ${spec%%|*}: no POST, the ruleset is fixed in place"
+  rc_is 1 "github update ruleset with bypass list ${spec%%|*}: exit 1"
+done
+
+# update carried by a closed ruleset that also carries other rules, no merge-owner: remove it there, post main-merge-owner
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"
+gh_repo "$R"; gh_rules "$R" "$(join "$(join "$PM_RULES" "$PR_RULES")" '[{"type":"update","ruleset_id":1}]')"
+gh_rs "$R" 1 '{"id":1,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
+gh_rs "$R" 2 '{"id":2,"enforcement":"active","bypass_actors":[],"current_user_can_bypass":"never"}'
 run check
-row_is ok "github.com/$R" "github an active update ruleset beside the three closed rules: ok"
-rc_is 0 "github an update ruleset: exit 0"
-not_called "rulesets/9" "github an update ruleset: its ruleset is never read"
+row_is drift "github.com/$R" "github update carried by a closed ruleset with other rules, no merge-owner: drift row"
+out_has "# in the UI: https://github.com/$R/rules/1: remove Restrict updates; main-merge-owner carries it" "github update beside other rules: the remove-Restrict-updates note naming rules/1"
+posts_are 1 "github update beside other rules: one POST"
+out_has '"name":"main-merge-owner"' "github update beside other rules: the POST is main-merge-owner"
+rc_is 1 "github update beside other rules: exit 1"
+
+# a second merge-owner ruleset is fine; an update ruleset that enforces nothing is ignored
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$(join "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")" '[{"type":"update","ruleset_id":5}]')"
+gh_rs "$R" 5 "{\"id\":5,\"enforcement\":\"active\",\"bypass_actors\":[$OWNER],\"current_user_can_bypass\":\"never\"}"
+run check
+row_is ok "github.com/$R" "github two merge-owner rulesets: ok"
+rc_is 0 "github two merge-owner rulesets: exit 0"
+gh_rs "$R" 5 '{"id":5,"enforcement":"evaluate","bypass_actors":[],"current_user_can_bypass":"never"}'
+run check
+row_is ok "github.com/$R" "github an update ruleset in evaluate mode beside a merge-owner: ok"
+
+# a creation ruleset is not part of the target: never read
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$(join "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")" '[{"type":"creation","ruleset_id":9}]')"
+run check
+row_is ok "github.com/$R" "github a creation ruleset beside the four closed rules: ok"
+not_called "rulesets/9" "github a creation ruleset: its ruleset is never read"
+
+# a further ruleset carrying pull_request and update with the owner list is not merge-owner: remove update there, no second POST
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rules "$R" "$(join "$(join "$(join "$PM_RULES" "$PR_RULES")" "$UPD_RULES")" '[{"type":"pull_request","ruleset_id":6},{"type":"update","ruleset_id":6}]')"
+gh_rs "$R" 6 "{\"id\":6,\"enforcement\":\"active\",\"bypass_actors\":[$OWNER],\"current_user_can_bypass\":\"never\"}"
+run check
+row_is drift "github.com/$R" "github pull_request and update in one ruleset with the owner list: drift"
+out_has "# in the UI: https://github.com/$R/rules/6: remove Restrict updates; main-merge-owner carries it" "github pull_request and update in one ruleset: the remove-Restrict-updates note naming rules/6"
+posts_are 0 "github pull_request and update in one ruleset: no POST, ruleset 4 carries update alone"
+rc_is 1 "github pull_request and update in one ruleset: exit 1"
+
+# the update ruleset hides its list, or cannot be fetched: unreadable
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+gh_rs "$R" 4 '{"id":4,"enforcement":"active","current_user_can_bypass":"never"}'
+run check
+row_is unreadable "github.com/$R.*ruleset 4 does not show its bypass list" "github update ruleset without bypass_actors: unreadable naming ruleset 4"
+rc_is 1 "github update ruleset without bypass_actors: exit 1"
+reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
+ans gh "api repos/$R/rulesets/4" '{"message":"Not Found"}' 1 "gh: Not Found (HTTP 404)"
+run check
+row_is unreadable "github.com/$R.*HTTP 404" "github the update ruleset cannot be fetched: unreadable naming HTTP 404"
+rc_is 1 "github the update ruleset cannot be fetched: exit 1"
 
 # a ruleset that carries one of the three rules and does not show its bypass list is unreadable, whatever this login can do
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_agent "$R"
@@ -238,7 +319,8 @@ rc_is 1 "github the pull_request ruleset cannot be fetched: exit 1"
 reset; mkrepo "$H/Code/ExampleOrg/example-repo" "$GHURL"; gh_michael "$R"
 gh_rules "$R" "$PM_RULES"
 ans gh "api --paginate repos/$R/rules/branches/main?per_page=100" "$PM_RULES
-$PR_RULES"
+$PR_RULES
+$UPD_RULES"
 run check
 row_is ok "github.com/$R" "github pull_request rule on the second page: ok (every page is merged)"
 
@@ -296,6 +378,10 @@ eval_remedy '"name":"main-pr-only"'
 if [ "$EXTRA" -eq 0 ] && [ "$(printf '%s' "$BODY" | jq -r '.name' 2>/dev/null)" = main-pr-only ]; then
   _pass "the main-pr-only line pastes back to its own body"
 else _fail "the main-pr-only line pastes back to its own body (got $BODY)"; fi
+eval_remedy '"name":"main-merge-owner"'
+if [ "$EXTRA" -eq 0 ] && [ "$BODY" = "$OWNER_POST" ]; then
+  _pass "the main-merge-owner line pastes back to its own body"
+else _fail "the main-merge-owner line pastes back to its own body (got $BODY)"; fi
 
 # the repo path comes from the origin URL: the printed remedy must quote it
 HR='o/r$(touch pwned)'
@@ -863,6 +949,9 @@ for ZO in "default options|" "magic_equal_subst|-o magic_equal_subst"; do
     row_is drift "github.com/$R" "$zl, github: drift row"
     zsh_remedy '"name":"protect-main"' $zopts
     if [ "$(jq -c '.conditions.ref_name.include' "$T/body" 2>/dev/null)" = '["~DEFAULT_BRANCH"]' ] && ! grep -qF -- "$ZB" "$T/body"; then _pass "$zl, github: the pasted line hands gh the include ~DEFAULT_BRANCH, no part of the branch"; else _fail "$zl, github: the pasted line hands gh the include ~DEFAULT_BRANCH, no part of the branch (got $(cat "$T/body" 2>/dev/null))"; fi
+
+    zsh_remedy '"name":"main-merge-owner"' $zopts
+    if [ "$(cat "$T/body" 2>/dev/null)" = "$OWNER_POST" ]; then _pass "$zl, github: the pasted main-merge-owner line hands gh its body unchanged"; else _fail "$zl, github: the pasted main-merge-owner line hands gh its body unchanged (got $(cat "$T/body" 2>/dev/null))"; fi
 
     glab_case '[]' "$ZB"
     row_is drift "$GLR" "$zl, gitlab: drift row"
