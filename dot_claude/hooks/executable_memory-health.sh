@@ -16,7 +16,9 @@
 #   - an index line longer than 200 characters (UTF-16 units), counted as it stands in the file
 #     (untrimmed);
 #   - an index link ](name.md) whose file does not exist;
-#   - a memory file that no index link names.
+#   - a memory file that no index link names;
+#   - a Syncthing conflict copy (name.sync-conflict-*.md): the same note changed on two
+#     machines. Reported on its own line, never as unindexed.
 # [[name]] links are not checked: a link to a memory not yet written is allowed.
 #
 # Read-only. Fails open and silent on every error. Bash 3.2 compatible.
@@ -101,11 +103,14 @@ done <<EOF
 $linked
 EOF
 
-unindexed=""
+unindexed="" conflicts=""
 for f in "$dir"/*.md; do
   [ -f "$f" ] || continue
   name=${f##*/}
   [ "$name" = MEMORY.md ] && continue
+  case "$name" in
+    *.sync-conflict-*) conflicts="${conflicts:+$conflicts, }$name"; continue ;;
+  esac
   # A case match, not a grep pipe: no pipe can lose a match to SIGPIPE under pipefail.
   case "
 $linked
@@ -119,6 +124,7 @@ done
 
 [ -z "$dangling" ] || add "MEMORY.md links to files that do not exist: $dangling. Remove each entry, or restore the file if it was deleted by mistake."
 [ -z "$unindexed" ] || add "Memory files that MEMORY.md does not list: $unindexed. Add an index line for each, or delete the file if it is obsolete."
+[ -z "$conflicts" ] || add "Syncthing conflict copies (the same note changed on two machines): $conflicts. Merge each into the note it copies (its name before .sync-conflict), then delete the copy."
 [ -n "$problems" ] || exit 0
 
 jq -cn --arg m "Memory health check for $dir:
