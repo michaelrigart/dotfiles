@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. In this repository the controller loads the `plan-run` skill first; it overrides superpowers.
 
-**Status:** In progress (branch `fix/checkout-spaces-caller`, its PR against `main`).
+**Status:** Completed 2026-11-15 (branch `fix/checkout-spaces-caller`, its PR against `main`).
+Do not run it again; its execution notes bind that run only. The task review added one guard
+beyond Task 1's text: `group_folders` also fails when the checkout's path holds a byte `lsof`
+escapes under `LC_ALL=C` (spec, Amendment step 3); the final review moved the five-second bound
+into one `bounded` helper.
 
 **Goal:** `checkout-spaces` check 5 stops refusing a terminal that answers `hc get` without a folder when the folders of its foreground group can be read and none is in the checkout, so `wt-rm` and Retire run from an app terminal no longer refuse on their own terminal.
 
@@ -53,11 +57,11 @@
   - The `ps` stub: `-o tpgid= -p <pid>` answers `$STUB_DIR/tpgid-<pid>` and fails without it, logged as its other answers are.
   - The `lsof` stub: any call with `-g <group>` answers, for each line of `$STUB_DIR/lsof-<group>`, the three lines `p<n>`, `fcwd`, `n<that line>` (as `-Fn` prints them), logs `lsof <args>` to `$STUB_LOG`, and fails without the file; any other call runs `/usr/sbin/lsof`.
 
-- [ ] **Step 1: Link the stubs the helper will reach, and extend the `ps` stub; add the `lsof` stub and its `subjects.tsv` row**
+- [x] **Step 1: Link the stubs the helper will reach, and extend the `ps` stub; add the `lsof` stub and its `subjects.tsv` row**
 
 `newworld`'s line `for s in herdr-app hc fzf claude wt-rm` gains `ps lsof`: the helper's pinned PATH reaches stubs only through the scratch `$HOME/.local/bin`. The stubs' header comments say which suite uses which answer.
 
-- [ ] **Step 2: Write the failing case, after the `nofolder` case**
+- [x] **Step 2: Write the failing case, after the `nofolder` case**
 
 ```zsh
 # A terminal that answers without a folder is judged by its foreground group: ps gives the group
@@ -76,28 +80,28 @@ cs check $wt >$world/out 2>&1; rc=$?
 check "...and refuses when the group cannot be read" test $rc -eq 1
 ```
 
-- [ ] **Step 3: Run it and see the first assertion fail**
+- [x] **Step 3: Run it and see the first assertion fail**
 
 Run: `./tests/herdr-app.test.sh 2>&1 | grep -E 'FAIL|foreground group'`
 Expected: two FAIL lines: `a terminal without a folder passes when its foreground group is outside the checkout` (today's helper refuses every no-folder answer) and `...and names the terminal and the folder` (today's refusal names no folder). The two `rc -eq 1` assertions pass for today's reason.
 
-- [ ] **Step 4: Implement `in_checkout` and `group_folders`, and use them in check 5**
+- [x] **Step 4: Implement `in_checkout` and `group_folders`, and use them in check 5**
 
 In the check-5 loop: a non-empty `.foreground.cwd` is the one folder tested, as today. Otherwise, a non-empty answer whose `group_folders` succeeds gives the folders tested. Otherwise the existing "cannot tell where terminal $t ($(where_is $t)) is: hc get gave no folder" refusal, which may add that its foreground group could not be read. The first folder in the checkout adds the existing "terminal $t ($(where_is $t)) is in <folder>; cd out of the checkout or close it" refusal and stops testing that terminal.
 
-- [ ] **Step 5: Run the suites and see them pass**
+- [x] **Step 5: Run the suites and see them pass**
 
 Run: `./tests/run.sh herdr-app`
 Expected: `herdr-app`, `herdr-app-resume`, `herdr-app-xreview` all `ok`, `herdr-app` at 199/199 (195 on main plus these four).
 
-- [ ] **Step 6: Revert check**
+- [x] **Step 6: Revert check**
 
 Step 3 already showed assertions 1 and 3 failing without the change. Mutate the source temporarily, one mutation at a time, run `./tests/herdr-app.test.sh`, and confirm:
 - the folders `group_folders` gives are not tested (any readable group passes): assertions 2 and 3 fail;
 - `group_folders` failing is read as "no folders" (passes): assertion 4 fails.
 Restore the source (`git diff` shows only the intended change) and rerun Step 5. Report each mutation and its result.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add dot_config/herdr-app/bin/executable_checkout-spaces tests/fixtures/herdr-app/stubs/ps tests/fixtures/herdr-app/stubs/lsof tests/herdr-app.test.sh .scripts/test-audit/subjects.tsv

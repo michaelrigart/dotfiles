@@ -1,9 +1,9 @@
 # wt-rm closes the checkout's app spaces; outside both front ends means the app
 
-**Status:** In progress (amendment of 2026-11-15, branch `fix/checkout-spaces-caller`, its PR
-against `main`; plan `docs/superpowers/plans/2026-11-15-checkout-spaces-caller.md`). The design
-before it: Implemented (branch `feat/wt-rm-app-spaces`, PR #22; plan
-`docs/superpowers/plans/2026-11-15-wt-rm-app-spaces.md`).
+**Status:** Implemented (branch `feat/wt-rm-app-spaces`, PR #22; plan
+`docs/superpowers/plans/2026-11-15-wt-rm-app-spaces.md`; the amendment of 2026-11-15: branch
+`fix/checkout-spaces-caller`, its PR against `main`; plan
+`docs/superpowers/plans/2026-11-15-checkout-spaces-caller.md`).
 **Date:** 2026-11-15
 **Branch:** `feat/wt-rm-app-spaces`
 **Sign-off:** Michael, 2026-11-15, with the five rulings below as written; Codex spec review
@@ -348,7 +348,10 @@ no longer refused at once; its foreground job is read directly:
    seconds as `hc get` is;
 3. `check` refuses when any of those folders, raw or resolved, is the checkout or lies under it,
    naming the terminal and the folder. It also refuses ("cannot tell where terminal … is") when
-   the answer names no root pid, `ps` or `lsof` fails, or `lsof` names no folder.
+   the answer names no root pid, `ps` or `lsof` fails, or `lsof` names no folder. (Added in the
+   task review:) it refuses the same way when the checkout's own path holds a byte `lsof`
+   escapes: `lsof` runs under `LC_ALL=C`, where it escapes every byte outside printable ASCII
+   and renders a backslash as `\\`, so no folder it names could be matched against such a path.
 
 A terminal that answers with a folder is tested as before: hc's one foreground process stands for
 its job, as in the design above. A terminal that does not answer still refuses. Background jobs,
@@ -386,7 +389,8 @@ the main checkout's space, answering `{"state":"live","pid":<root>}`:
 
 - its foreground group's folders all outside the checkout: `check` passes;
 - one of them inside the checkout: `check` refuses, naming t9 and the folder;
-- `lsof` failing for the group: `check` refuses.
+- `lsof` failing for the group: `check` refuses;
+- (added in the task review) a checkout path with a non-ASCII byte: `check` refuses.
 
 The `nofolder` case (another terminal answering `{"state":"live"}`, no root pid) still refuses.
 Each assertion passes the revert check.
