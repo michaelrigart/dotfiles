@@ -16,7 +16,7 @@
 - No test or step runs anything against the live Herdr app, herdr-core, the TUI, or a real checkout: no unstubbed `herdr-app`, `hc`, `herdr`, `wt-rm` or `git worktree remove`. `tests/dev-topology.test.sh` is never run by an agent.
 - Never edit a deployed file (`~/.config/...`, `~/.local/bin/...`); edit the chezmoi source.
 - Out of bounds (parallel lines): `dot_config/herdr-app/mods/resume/`, `dot_config/herdr-app/keys.json.tmpl`, `wt-app --prompt`, any new popup mod.
-- The helper's pinned PATH, verbatim: `PATH=${PINNED_PATH:-$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}`. `PINNED_PATH` is for the suites only, as in xreview: `/opt/homebrew/bin/herdr-app` is the live app on Michael's machine, so a suite simulating "no app" must replace the whole PATH, not remove a stub.
+- The helper's pinned PATH, verbatim and unconditional (no override variable): `PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`. `/opt/homebrew/bin/herdr-app` is the live app on Michael's machine, so the one suite case that simulates "no app" runs a scratch copy of the helper with `:/opt/homebrew/bin` cut from that line (Task 2), never the helper itself with a stub removed.
 - The helper runs every `hc` call with `HC_TERMINAL_ID` and `HC_SCOPE` removed (`env -u HC_TERMINAL_ID -u HC_SCOPE`); it reads the caller's `HC_TERMINAL_ID` only for the caller check.
 - Execute suites (`./tests/x.test.sh` or `./tests/run.sh <name>`), never `bash tests/x.test.sh`. Report totals as passed/total. Read `tests/AGENTS.md` before changing a suite.
 - Tests: one case per new behaviour or plausible regression, extending existing cases first; no variant matrices.
@@ -125,7 +125,7 @@ git commit -m "Pick the Herdr app for callers outside a TUI pane"
 
 - [ ] **Step 1: Move and add the cases (failing first)**
 
-In `tests/herdr-app.test.sh` add `cs() { "$bin/checkout-spaces" "$@" </dev/null }` beside `retire()`, and add the helper to the guard list at line 19. `newworld`'s `unset` line also unsets `STUB_LS_DOWN`, `STUB_WTRM_CLOSE` and `PINNED_PATH`, so no knob leaks into the next world (file knobs live in the per-world `$STUB_DIR`). Retarget, keeping each case's world setup and descriptions:
+In `tests/herdr-app.test.sh` add `cs() { "$bin/checkout-spaces" "$@" </dev/null }` beside `retire()` (the guard-list entry comes in Step 3, with the file). `newworld`'s `unset` line also unsets `STUB_LS_DOWN` and `STUB_WTRM_CLOSE`, so no knob leaks into the next world (file knobs live in the per-world `$STUB_DIR`). Retarget, keeping each case's world setup and descriptions:
 - `busy-working`/`busy-blocked`, `inside`, `subagent`, `subspace`, `wandered-in`, `unaskable`, `editor-*`: `cs check $wt`; expect rc non-zero and `not_did 'space.close'` (drop the `wt-rm` half of those patterns).
 - `subspace-idle`, `wandered-out`: `cs close $wt`; keep their `did`/`not_did`/`before` assertions, with `before 'sp-sub' 'herdr-app ls'`-style ordering replaced by "sp-wt closes before sp-sub".
 - `unaskable-foreign`: now `cs check $wt` expects rc 1 and the output names `tNEW1` (description: "another space's terminal that cannot be asked about refuses").
@@ -134,11 +134,14 @@ In `tests/herdr-app.test.sh` add `cs() { "$bin/checkout-spaces" "$@" </dev/null 
 New cases, each in its own `newworld`:
 
 ```zsh
-newworld noapp; mkdir $world/nobin; export PINNED_PATH=$world/nobin:/usr/bin:/bin
-check "no app: check passes" cs check $wt
-check "no app: list is the empty set" test "$(cs list $wt)" = '{"spaces":[],"terminals":[],"records":[]}'
+# No app: the stub link gone, and a copy of the helper whose pinned PATH lacks /opt/homebrew/bin,
+# where Michael's machine has the live herdr-app. The copy must differ, or the pin line moved.
+newworld noapp; rm $HOME/.local/bin/herdr-app
+sed 's#:/opt/homebrew/bin$##' $bin/checkout-spaces > $world/cs-noapp; chmod +x $world/cs-noapp
+check "no app: the test copy drops /opt/homebrew/bin from the pin" differs $bin/checkout-spaces $world/cs-noapp
+check "no app: check passes" $world/cs-noapp check $wt
+check "no app: list is the empty set" test "$($world/cs-noapp list $wt)" = '{"spaces":[],"terminals":[],"records":[]}'
 check "no app: nothing is called" not_did 'herdr-app'
-unset PINNED_PATH
 
 newworld down; export STUB_LS_DOWN=1
 cs check $wt >$world/out 2>&1; rc=$?
@@ -193,11 +196,13 @@ Adjust world details (stub knobs, `add_space`, `launched_in`/`now_in`) to what t
 
 - [ ] **Step 2: Run, expect the helper cases to fail (no helper yet)**
 
-Run: `./tests/herdr-app.test.sh 2>&1 | tail -3` — Expected: FAIL lines for every `cs` case; retire's remaining cases pass.
+Run: `./tests/herdr-app.test.sh 2>&1 | tail -3` — Expected: the suite runs (no guard exit), the helper cases fail (a few negative assertions may pass vacuously), retire's remaining cases pass.
 
 - [ ] **Step 3: Write `executable_checkout-spaces`**
 
-zsh, `emulate -L zsh`, `setopt pipe_fail no_unset`; header comment: what it is, the three verbs, that it is the one rule for `wt-rm` and Retire (spec 2026-11-15 §2). First lines: save `caller=${HC_TERMINAL_ID:-}`, pin PATH (Global Constraints), `home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Port the rule from `executable_retire` (lines 32-34, 36, 72-123, 126-133), then change exactly what spec §2 changes:
+Add the helper to the suite's guard list (line 19) now that the file exists.
+
+zsh, `emulate -L zsh`, `setopt pipe_fail no_unset`; header comment: what it is, the three verbs, that it is the one rule for `wt-rm` and Retire (spec 2026-11-15 §2). First lines: save `caller=${HC_TERMINAL_ID:-}`, then the PATH line exactly as in Global Constraints, alone on its line (the no-app test edits that line's end), then `home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Port the rule from `executable_retire` (lines 32-34, 36, 72-123, 126-133), then change exactly what spec §2 changes:
 - `herdr-app` absent (`(( $+commands[herdr-app] ))` after the PATH pin): the "no app" exits above.
 - `herdr-app ls` must exit 0 and satisfy `jq -e 'type == "object" and (.spaces | type == "array")'`, else `refusing — cannot read the Herdr app's spaces — open its window, then retry`.
 - Sub-agents: when the set has any, `hc ls --all --json` must exit 0, parse, and list every sub-agent address (`.terminals[].address`); else refuse naming them. Busy = `working` or `blocked` in either listing (`--all` keeps finished terminals, which plain `hc ls` hides).
