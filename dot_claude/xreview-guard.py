@@ -191,8 +191,7 @@ BRANCH_MERGE = ("Pre-merge gate: this {} api call writes to a merges endpoint, w
                 "branch into another with no MR/PR, so no review can bind it. {}")
 PROPOSE_THEN_MERGE = ("Propose the branch as an MR/PR, and merge that pinned once its pre-merge "
                       "review approves it.")
-PROPOSE_ON_GITHUB = ("Propose the branch as a PR: on GitHub an agent's step ends there, and "
-                     "Michael merges it once its pre-merge review approves it.")
+PROPOSE_ON_GITHUB = "Propose the branch as a PR. " + GH_MERGE.format("<n>", "<head>") + "."
 QUERY_STRING = ("Pre-merge gate: this gh api write carries a query string ({}). gh sends -f/-F "
                 "fields in the request body, and GitHub may not read a write's query string, so "
                 "the gate reads only the body. Pass each field with -f instead.")
