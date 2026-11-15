@@ -124,17 +124,43 @@ $3
 EOF
 }
 
+# apply_memory <peer> <stage> <memory> <paths>: make memory/ exactly the verified generation, file
+# by file, and never moving or removing memory/ itself. Codex reads that folder through a diff, so
+# a listed file must never look deleted: every changed file is copied to the state folder and
+# renamed into place (summaries first, raw_memories.md last), and only when all of that worked
+# are the entries the generation does not list removed. Returns 1 on any failure, before any
+# removal when it was a copy.
+apply_memory() {
+  local peer=$1 stg=$2 mem=$3 paths=$4 rel f d tmp="$STATE/memory.tmp.$1" rc=0
+  for d in "$mem" "$mem/rollout_summaries"; do
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then rm -f "$d"; fi
+  done
+  mkdir -p "$mem/rollout_summaries" || { log "$peer: cannot create the memory folder"; return 1; }
+  for rel in $(printf '%s\n' "$paths" | grep -v '^raw_memories\.md$') $(printf '%s\n' "$paths" | grep '^raw_memories\.md$'); do
+    if [ -f "$mem/$rel" ] && [ ! -L "$mem/$rel" ] && cmp -s "$stg/$rel" "$mem/$rel"; then continue; fi
+    if cp "$stg/$rel" "$tmp" \
+      && { [ ! -d "$mem/$rel" ] || [ -L "$mem/$rel" ] || rm -rf "${mem:?}/$rel"; } \
+      && mv -f "$tmp" "$mem/$rel"; then
+      :
+    else
+      rm -f "$tmp"
+      log "$peer: cannot write $rel into the memory, kept the previous import"
+      return 1
+    fi
+  done
+  while IFS= read -r -d '' f; do
+    rel=${f#"$mem"/}
+    in_list "$rel" "$paths" || rm -f "$f" || { log "$peer: cannot remove $rel from the memory"; rc=1; }
+  done < <(find "$mem" -mindepth 1 ! -type d -print0)
+  return "$rc"
+}
+
 # import_peer <peer>: returns 0 when the generation is skipped or refused (the previous import
 # stays and a later run retries), 1 only on an unexpected error.
 import_peer() {
   local peer=$1 inb="$STATE/inbox/$1" stg="$STATE/stage/$1" ext="$MEM/extensions/$1"
   local line rel paths="" rc=0 new="$STATE/instructions.new"
-  local mem="$MEM/extensions/$1/memory" newmem="$STATE/memory.new.$1" oldmem="$STATE/memory.old.$1"
-  # A run killed between the two moves of the swap left no memory/ and the old one in the state
-  # folder (named after this peer): put it back first, before any early return.
-  if [ ! -e "$mem" ] && [ ! -L "$mem" ] && [ -d "$oldmem" ] && [ -d "$ext" ]; then
-    mv "$oldmem" "$mem" && log "$peer: restored the previous memory after an interrupted swap"
-  fi
+  local mem="$MEM/extensions/$1/memory"
   [ -f "$inb/MANIFEST" ] && [ ! -L "$inb/MANIFEST" ] || return 0
 
   rm -rf "${stg:?}"
@@ -165,32 +191,12 @@ EOF
     ( cd "$stg" && shasum -a 256 -c --status MANIFEST ) || return 0
   fi
 
-  # memory/ becomes exactly the verified generation, built outside ~/.codex and swapped in
-  # whole, so a failure leaves the previous memory/ and Codex never reads a mixed one.
+  # memory/ becomes exactly the verified generation, file by file (see apply_memory).
   if ! memory_matches "$stg" "$mem" "$paths"; then
-    rm -rf "${newmem:?}" "${oldmem:?}"
-    mkdir -p "$newmem/rollout_summaries" "$ext" || { log "$peer: cannot build the new memory"; return 1; }
-    if [ -n "$paths" ]; then
-      while IFS= read -r rel; do
-        cp "$stg/$rel" "$newmem/$rel" \
-          || { log "$peer: cannot build the new memory ($rel), kept the previous import"; rm -rf "${newmem:?}"; return 1; }
-      done <<EOF
-$paths
-EOF
-    fi
-    if [ -e "$mem" ] || [ -L "$mem" ]; then
-      mv "$mem" "$oldmem" || { log "$peer: cannot move the old memory out, kept the previous import"; rm -rf "${newmem:?}"; return 1; }
-    fi
-    if ! mv "$newmem" "$mem"; then
-      log "$peer: cannot move the new memory in, restoring the previous import"
-      [ -e "$oldmem" ] && mv "$oldmem" "$mem"
-      rm -rf "${newmem:?}"
-      return 1
-    fi
-    rm -rf "${oldmem:?}"
+    apply_memory "$peer" "$stg" "$mem" "$paths" || return 0
   fi
   render_instructions "$peer" > "$new" || return 1
-  cmp -s "$new" "$ext/instructions.md" 2>/dev/null || cp "$new" "$ext/instructions.md" \
+  cmp -s "$new" "$ext/instructions.md" 2>/dev/null || mv -f "$new" "$ext/instructions.md" \
     || { log "$peer: cannot write instructions.md"; rc=1; }
   rm -f "$new"
   return "$rc"

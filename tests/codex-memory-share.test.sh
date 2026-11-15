@@ -76,10 +76,19 @@ ok "while the generation itself stays" test -f "$EXT/memory/rollout_summaries/x.
 ino="$(stat -f %i "$EXT/memory/raw_memories.md")"; run
 is "a run that finds memory/ already exact rewrites nothing" "$(stat -f %i "$EXT/memory/raw_memories.md")" "$ino"
 
-mv "$EXT/memory" "$STATE/memory.old.testpeer"; mv "$INB/MANIFEST" "$INB/MANIFEST.held"
+# A write that fails midway must never show a still-listed file as deleted: memory/ is unwritable
+# (a real failure, no seam), the new generation changes raw_memories.md, adds y.md and drops x.md.
+cp -R "$INB" "$ROOT/inbox.good"
+chmod 555 "$EXT/memory"
+printf 'peer v1b' > "$INB/raw_memories.md"; rm "$INB/rollout_summaries/x.md"; printf 'y' > "$INB/rollout_summaries/y.md"; mkman "$INB"
+run; is "a generation that cannot be written exits 0" "$?" 0
+chmod 755 "$EXT/memory"
+ok "the file the generation dropped is still there, nothing was deleted" test -f "$EXT/memory/rollout_summaries/x.md"
+is "raw_memories.md keeps its previous content" "$(cat "$EXT/memory/raw_memories.md")" "peer v1"
+ok "the failure is logged" grep -q "testpeer: cannot write raw_memories.md" "$STATE/error.log"
+rm -rf "$INB"; cp -R "$ROOT/inbox.good" "$INB"
 run
-ok "an interrupted swap is undone first: memory/ is back even with no usable generation" test -f "$EXT/memory/raw_memories.md"
-mv "$INB/MANIFEST.held" "$INB/MANIFEST"
+no "the next run, on the old generation, removes the y.md the failed run had copied" test -e "$EXT/memory/rollout_summaries/y.md"
 
 rm "$S/rollout_summaries/b.md"
 rm "$INB/rollout_summaries/x.md"; printf 'y' > "$INB/rollout_summaries/y.md"; mkman "$INB"
