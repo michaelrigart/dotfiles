@@ -1,8 +1,9 @@
 #!/bin/zsh
-# wt-app <branch> [start-point] — hands over to `wt`; it stays for sessions recorded with its
-# path (their system prompt and --settings name it), until the TUI is retired.
-# wt-app --prompt               — the same, asking for the branch. The app's key runs this
-#                                 in a tab of its own.
+# wt-app --prompt               — `wt`, asking for the branch. The app's new-worktree key runs
+#                                 this in a tab of its own: it is the key's helper and stays.
+# wt-app <branch> [start-point] — hands over to `wt`. This plain form and --no-focus remain for
+#                                 sessions recorded with the path (their system prompt and
+#                                 --settings name it), until the TUI is retired.
 # wt-app --no-focus <branch> .. — the same, leaving the user's focus where it was.
 #
 # `wt` (~/.config/zsh/functions) makes the checkout under its own lifecycle and, from an app

@@ -22,6 +22,9 @@ for f in dot_config/herdr-app/bin/executable_{claude-app,close-own-tab,folder-go
 done
 source $here/fixtures/herdr-app/render.zsh
 PATH_BASE=$PATH
+# wt-app reaches dev and wt, which pick the front end from these: a run from a Herdr pane or an
+# app terminal must not decide it, so each case that needs one sets it.
+unset HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
 root=$(mktemp -d "${TMPDIR:-/tmp}/herdr-app-tests.XXXXXX") || exit 1
 root=${root:A}  # the app reports resolved paths
 trap 'rm -rf "$root"' EXIT
@@ -288,6 +291,14 @@ check "wt-app --prompt makes the space for the entered branch" did 'space.new.*p
 check "wt-app --prompt closes its own tab" did 'tab.close {"id":"tb-r","confirmed":true}'
 check "the tab closes after the space is made" before 'space.new' 'tab.close'
 
+# When wt fails the tab stays, with the message on screen: a folder where the checkout would go
+# that is not a worktree makes wt refuse.
+newworld prompt-fails; mkdir $world/repos/proj-junk
+( cd $main && print junk | "$bin/wt-app" --prompt ) >$world/out 2>&1; rc=$?
+check "wt-app --prompt exits non-zero when wt fails" test $rc -ne 0
+check "...makes no space" not_did 'space.new'
+check "...and keeps its tab open" not_did 'tab.close'
+
 newworld nofocus-off
 ( cd $main && "$bin/wt-app" other ) >$world/out 2>&1; rc=$?
 check "wt-app without the flag succeeds" test $rc -eq 0
@@ -418,7 +429,7 @@ check "programs.json has no claude override" \
 # herdr-app nor jq: the trusted stubs are in $HOME/.local/bin, the shadows only touch a marker.
 shadowed_world() {
   newworld $1; mkdir -p $world/evil
-  local c; for c in herdr-app jq; do
+  local c; for c in herdr-app jq git fzf; do
     printf '#!/bin/sh\ntouch %s/marker\nexit 1\n' $world >| $world/evil/$c; chmod +x $world/evil/$c
   done
   export PATH=$world/evil:$PATH_BASE
@@ -429,9 +440,9 @@ check "open-space succeeds with herdr-app and jq shadowed on the caller's PATH" 
 check "...and made the space through the trusted herdr-app" did 'space.new'
 check "...and split the Codex pane" did 'pane.split'
 check "...and never ran a shadow" test ! -e $world/marker
-shadowed_world pinned-pick; git init -q $world/repos/fresh
+shadowed_world pinned-pick; PATH=$PATH_BASE git init -q $world/repos/fresh
 ( cd $world/repos/fresh && "$bin/open-space" --pick ) >/dev/null 2>&1; rc=$?
-check "open-space --pick succeeds with the PATH shadowed (git, awk and fzf from the pinned one)" test $rc -eq 0
+check "open-space --pick succeeds with herdr-app, jq, git and fzf shadowed on the caller's PATH" test $rc -eq 0
 check "...made the space and closed its own tab" test "$(grep -c 'space.new' $LOG)" -eq 1 -a "$(grep -c 'tab.close' $LOG)" -eq 1
 check "...and never ran a shadow" test ! -e $world/marker
 shadowed_world pinned-close
