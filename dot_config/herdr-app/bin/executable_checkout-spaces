@@ -37,8 +37,9 @@ fi
 app() { command herdr-app "$@" }
 # hc runs without the caller's identity, so it answers about every terminal (native-tools §5.3).
 hc_run() { command env -u HC_TERMINAL_ID -u HC_SCOPE hc "$@" }
-# hc get, given five seconds: a terminal that cannot be asked about cannot be vouched for.
-hc_get() { /usr/bin/perl -e 'alarm shift; exec @ARGV' 5 env -u HC_TERMINAL_ID -u HC_SCOPE hc get "$1" --json 2>/dev/null }
+# Run a command given five seconds: a terminal that cannot be asked about cannot be vouched for.
+bounded() { /usr/bin/perl -e 'alarm shift; exec @ARGV' 5 "$@" }
+hc_get() { bounded env -u HC_TERMINAL_ID -u HC_SCOPE hc get "$1" --json 2>/dev/null }
 
 # listing, spaces, terminals, subagents: the app's answer and the close set read from it. The
 # answer is taken only in the shape every traversal below and in do_check relies on (a jq error
@@ -93,7 +94,7 @@ group_folders() {
   group=$(ps -o tpgid= -p $pid 2>/dev/null) || return 1
   group=${group//[[:space:]]/}
   [[ $group == <-> ]] && (( group > 0 )) || return 1
-  out=$(/usr/bin/perl -e 'alarm shift; exec @ARGV' 5 env LC_ALL=C lsof -b -w -a -g $group -d cwd -Fn 2>/dev/null) || return 1
+  out=$(bounded env LC_ALL=C lsof -b -w -a -g $group -d cwd -Fn 2>/dev/null) || return 1
   out=$(print -r -- "$out" | sed -n 's/^n//p')
   [[ -n $out ]] || return 1
   print -r -- $out

@@ -3,7 +3,7 @@
 # `chezmoi add` leaves alone in the app's folder, on dot_config/herdr-app as chezmoi renders it. Run:
 # ./tests/herdr-app.test.sh
 #
-# herdr-app, hc, fzf, claude and wt-rm are stubs (tests/fixtures/herdr-app/stubs) first on PATH and
+# herdr-app, hc, fzf, claude, wt-rm, ps and lsof are stubs (tests/fixtures/herdr-app/stubs) first on PATH and
 # linked into the scratch HOME's .local/bin, the first folder of the PATH open-space and
 # close-own-tab pin; every call lands in one log, so the order of calls is what is asserted. The repositories are real, in a
 # scratch folder, and so is dot_config/zsh/functions (linked into a scratch HOME): retire's own
