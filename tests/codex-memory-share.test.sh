@@ -68,6 +68,11 @@ ok "while the generation itself stays" test -f "$EXT/memory/rollout_summaries/x.
 ino="$(stat -f %i "$EXT/memory/raw_memories.md")"; run
 is "a run that finds memory/ already exact rewrites nothing" "$(stat -f %i "$EXT/memory/raw_memories.md")" "$ino"
 
+mv "$EXT/memory" "$STATE/memory.old.testpeer"; mv "$INB/MANIFEST" "$INB/MANIFEST.held"
+run
+ok "an interrupted swap is undone first: memory/ is back even with no usable generation" test -f "$EXT/memory/raw_memories.md"
+mv "$INB/MANIFEST.held" "$INB/MANIFEST"
+
 rm "$S/rollout_summaries/b.md"
 rm "$INB/rollout_summaries/x.md"; printf 'y' > "$INB/rollout_summaries/y.md"; mkman "$INB"
 run; is "a second run exits 0" "$?" 0

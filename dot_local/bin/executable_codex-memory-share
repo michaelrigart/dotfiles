@@ -128,7 +128,12 @@ EOF
 import_peer() {
   local peer=$1 inb="$STATE/inbox/$1" stg="$STATE/stage/$1" ext="$MEM/extensions/$1"
   local line rel paths="" rc=0 new="$STATE/instructions.new"
-  local mem="$MEM/extensions/$1/memory" newmem="$STATE/memory.new" oldmem="$STATE/memory.old"
+  local mem="$MEM/extensions/$1/memory" newmem="$STATE/memory.new.$1" oldmem="$STATE/memory.old.$1"
+  # A run killed between the two moves of the swap left no memory/ and the old one in the state
+  # folder (named after this peer): put it back first, before any early return.
+  if [ ! -e "$mem" ] && [ ! -L "$mem" ] && [ -d "$oldmem" ] && [ -d "$ext" ]; then
+    mv "$oldmem" "$mem" && log "$peer: restored the previous memory after an interrupted swap"
+  fi
   [ -f "$inb/MANIFEST" ] && [ ! -L "$inb/MANIFEST" ] || return 0
 
   rm -rf "${stg:?}"
