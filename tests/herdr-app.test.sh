@@ -389,26 +389,37 @@ check "wt-app --no-focus gives focus back to the active space" did 'space.select
 check "the focus comes back after the space is made" before 'space.new' 'space.select {"id":"sp-main"}'
 check "the focus is the last thing that moves" test "$(grep '^herdr-app do' $LOG | tail -1)" = 'herdr-app do space.select {"id":"sp-main"}'
 
-# --prompt asks for the branch on stdin. It runs in a popup that closes when the command ends,
-# so with nothing left to say it ends at once and closes no tab.
+# run_held <stdin line, or "" for none> <command...> — the command with that line on stdin and
+# its output in $world/out, stdin then held open until the command says "Press Enter to close" and a moment
+# has passed. Its status comes back, and $world/held exists if it was still running when stdin
+# was released: a hold is a blocking read, so a command that does not hold is gone by then.
+run_held() {
+  local line=$1; shift
+  rm -f $world/released $world/held; : > $world/out
+  ( [[ -z $line ]] || print -r -- "$line"; for i in {1..100}; do grep -q 'Press Enter to close' $world/out && break; sleep 0.1; done
+    sleep 0.5; : > $world/released; print ) |
+    ( "$@" >$world/out 2>&1; rc=$?; [[ -e $world/released ]] && : > $world/held; exit $rc )
+}
+
+# --prompt asks for the branch on stdin. It ends when wt does: a popup closes with it, and a tab
+# (the key outside the michael layout) is closed by wt-app itself.
 newworld prompt
 ( cd $main && print newbranch | "$bin/wt-app" --prompt ) >$world/out 2>&1; rc=$?
 check "wt-app --prompt succeeds" test $rc -eq 0
 check "wt-app --prompt makes the space for the entered branch" did 'space.new.*proj-newbranch'
-check "wt-app --prompt closes no tab" not_did 'tab.close'
+check "wt-app --prompt closes its own tab" did 'tab.close {"id":"tb-r","confirmed":true}'
+check "the tab closes after the space is made" before 'space.new' 'tab.close'
 check "wt-app --prompt does not hold the popup open" test -z "$(grep 'Press Enter to close.' $world/out)"
 
 # When wt fails the popup is held open, with the message on screen: a folder where the checkout
-# would go that is not a worktree makes wt refuse. The hold is a blocking read, so stdin stays open
-# until the message is on screen and a moment has passed; wt-app must still be running then.
-newworld prompt-fails; mkdir $world/repos/proj-junk; : > $world/out
-( print junk; for i in {1..100}; do grep -q 'Press Enter to close' $world/out && break; sleep 0.1; done
-  sleep 0.5; : > $world/released; print ) |
-  ( cd $main && "$bin/wt-app" --prompt >$world/out 2>&1; rc=$?; [[ -e $world/released ]] && : > $world/held; exit $rc ); rc=$?
+# would go that is not a worktree makes wt refuse. The tab stays too, if there is one.
+newworld prompt-fails; mkdir $world/repos/proj-junk
+( cd $main && run_held junk "$bin/wt-app" --prompt ); rc=$?
 check "wt-app --prompt exits non-zero when wt fails" test $rc -ne 0
 check "...makes no space" not_did 'space.new'
 check "...says to press Enter" grep -q 'Press Enter to close.' $world/out
 check "...and was still waiting for it when released" test -e $world/held
+check "...and keeps its tab" not_did 'tab.close'
 
 # --prompt is wt-prompt, which has no --no-focus.
 newworld prompt-nofocus
@@ -438,8 +449,9 @@ check "nvim opens at the last line of a file" test "$(sed -n 1p $STUB_DIR/nvim-a
 check "nvim gets the terminal's text, without the trailing blank lines" test "$(<$STUB_DIR/nvim-saw)" = $'one\ntwo'
 check "the temp file is gone afterwards" test ! -e "$(<$STUB_DIR/nvim-file)"
 # A failing Neovim holds the popup open, as a failing read does, instead of closing it unread.
-print | STUB_NVIM_RC=3 PATH=$world/nvim-bin:$PATH TMPDIR=$world/tmp "$bin/edit-scrollback" t5 >$world/out 2>&1; rc=$?
-check "edit-scrollback reports a failing nvim and holds" test $rc -eq 1 -a "$(grep -c -e 'nvim exited 3' -e 'Press Enter to close.' $world/out)" -eq 2
+run_held "" env STUB_NVIM_RC=3 PATH=$world/nvim-bin:$PATH TMPDIR=$world/tmp "$bin/edit-scrollback" t5; rc=$?
+check "edit-scrollback reports a failing nvim" test $rc -eq 1 -a "$(grep -c 'nvim exited 3' $world/out)" -eq 1
+check "...and holds the popup open until it is read" test -e $world/held
 
 newworld nofocus-off
 ( cd $main && "$bin/wt-app" other ) >$world/out 2>&1; rc=$?
