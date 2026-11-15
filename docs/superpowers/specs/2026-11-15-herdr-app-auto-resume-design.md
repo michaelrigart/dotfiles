@@ -6,7 +6,7 @@
 **Sign-off:** Michael, 2026-11-15 (option A for a quit nobody saw); Codex spec review round 1's
 two findings: one fixed (Codex ownership), one decided by Michael (option A); round 2's one finding
 fixed (launch reservation); round 3's one finding fixed (the reservation persisted in the records,
-with no expiry)
+with no expiry); Codex spec review approved (round 4)
 
 Agents in the Herdr desktop app should come back on their own after their terminals are lost, as
 they do in the herdr TUI (`resume_agents_on_restore = true` in `~/.config/herdr/config.toml`), and
