@@ -56,7 +56,7 @@ newworld() {
   print -r -- 'codex --sandbox read-only --ask-for-approval never' > $world/home/.config/herdr/codex-pane-command
   export HOME=$world/home HERDR_APP_HOME=$world/app STUB_DIR=$world/state LOG=$world/state/log
   export STUB_LOG=$LOG STUB_LS=$world/state/ls.json
-  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm HC_TERMINAL_ID=t9 DEV_OPEN_SPACE=$bin/open-space
+  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm HC_TERMINAL_ID=t9 DEV_OPEN_SPACE=$bin/open-space HC_SCOPE=space
   # open-space and close-own-tab pin their PATH, whose first folder is $HOME/.local/bin: the
   # trusted stubs are there, whatever the caller's PATH holds.
   mkdir -p $world/home/.local/bin
@@ -237,6 +237,7 @@ done
 rm $STUB_DIR/hc-ls-fail; jq -n '{terminals: [{address: "t1s", agent: "claude-code", status: "idle", cwd: "/x"}]}' > $STUB_DIR/hc-ls.json
 cs check $wt >/dev/null 2>&1; rc=$?
 check "a sub-agent that hc ls lists as idle passes" test $rc -eq 0
+check "hc ls runs without the caller's identity too" test "$(grep -c '^hc ls ' $LOG)" -gt 0 -a "$(grep '^hc ' $LOG | grep -cv ' id=unset scope=unset$')" -eq 0
 
 newworld badrecords; print 'not json' > $HERDR_APP_HOME/shared.json
 cs close $wt >$world/out 2>$world/err; rc=$?
