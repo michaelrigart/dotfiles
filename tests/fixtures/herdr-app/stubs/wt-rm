@@ -1,7 +1,9 @@
 #!/bin/sh
 # Stub wt-rm: logs where it ran and with what, prints a marker, exits $STUB_WTRM_RC. A warning
-# goes to stderr when $STUB_WTRM_WARN is set, as wt-rm's own do.
+# goes to stderr when $STUB_WTRM_WARN is set, as wt-rm's own do. $STUB_WTRM_CLOSE=<checkout> runs the
+# real wt-rm's close step for it, `$STUB_CHECKOUT_SPACES close <checkout>`, and exits 1 if that fails.
 echo "wt-rm cwd=$(pwd -P) args=$*" >> "$STUB_LOG"
 echo "STUB-WT-RM-OUTPUT"
+[ -z "${STUB_WTRM_CLOSE:-}" ] || "$STUB_CHECKOUT_SPACES" close "$STUB_WTRM_CLOSE" || exit 1
 [ -z "$STUB_WTRM_WARN" ] || echo "wt-rm: branch 'x' kept (not fully merged)" >&2
 exit "${STUB_WTRM_RC:-0}"

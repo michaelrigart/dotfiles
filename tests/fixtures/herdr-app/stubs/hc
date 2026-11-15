@@ -5,12 +5,14 @@
 #             .foreground.cwd from $STUB_DIR/cwd-<t>, default "/"); fails if $STUB_DIR/fail-<t>.
 #             tests/xreview-app-pane.test.sh: $STUB_DIR/get-<t>.json is answered whole when it exists, and
 #             $STUB_DIR/gone-<t> makes it answer as the real one does for a terminal it lacks
+#   ls        fails (exit 1) when $STUB_DIR/hc-ls-fail exists
 #   read <t>  $STUB_DIR/read-<t>
 #   keys, send   only logged; "hc-args" gives their arguments one by one, as they were split
 #   every call's log line ends with the caller's identity as the stub got it: "id=<HC_TERMINAL_ID> scope=<HC_SCOPE>", "unset" for none
 echo "hc $* id=${HC_TERMINAL_ID-unset} scope=${HC_SCOPE-unset}" >> "$STUB_LOG"
 case "$1" in
-  ls) if [ -f "$STUB_DIR/hc-ls.json" ]; then cat "$STUB_DIR/hc-ls.json"; else echo '{"terminals":[]}'; fi ;;
+  ls) [ ! -f "$STUB_DIR/hc-ls-fail" ] || exit 1
+      if [ -f "$STUB_DIR/hc-ls.json" ]; then cat "$STUB_DIR/hc-ls.json"; else echo '{"terminals":[]}'; fi ;;
   get)
     [ ! -f "$STUB_DIR/fail-$2" ] || exit 1
     if [ -f "$STUB_DIR/gone-$2" ]; then

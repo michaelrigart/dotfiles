@@ -78,6 +78,7 @@ missing dev                   dot_config/herdr/config.toml
 missing dev                   dot_config/nvim/lua/plugins/smart-splits.lua
 missing git-forge-guard       dot_claude/executable_git-forge-guard.sh
 missing herdr-app             dot_config/herdr-app/bin/executable_retire
+missing herdr-app             dot_config/herdr-app/bin/executable_checkout-spaces
 missing herdr-app             dot_config/zsh/functions
 missing herdr-app-resume      dot_config/herdr-app/bin/executable_session-running
 missing herdr-app-resume      dot_config/herdr-app/mods/resume/decide.js

@@ -1,0 +1,218 @@
+#!/bin/zsh
+# checkout-spaces <list|check|close> <checkout> — which Herdr app spaces belong to a git
+# checkout, and when they may be closed. The one rule for wt-rm and for the menu's Retire
+# worktree (docs/superpowers/specs/2026-11-15-wt-rm-app-spaces-design.md §2).
+#
+#   list   read-only: JSON {spaces, terminals, records} of the checkout's own spaces.
+#   check  read-only: exit 0 when closing them is safe, 1 with each reason on stderr.
+#   close  check, print the resume commands of the set's agents, close the spaces, verify.
+#
+# <checkout> is an absolute path that need not exist. The checkout's own spaces are the local
+# ones whose folder, resolved, is the checkout or lies under it; where their terminals have
+# wandered since never adds or removes a space. The exact folder's spaces come first.
+# No herdr-app on the pinned PATH means no app was ever installed: every verb exits 0 and
+# reads nothing.
+emulate -L zsh
+setopt pipe_fail no_unset
+
+caller=${HC_TERMINAL_ID:-}
+# wt-rm runs this unsandboxed with whatever PATH the caller had, so the PATH is pinned.
+PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
+home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
+
+# The process names mods/nav treats as Vim. Only that family is checked: another editor's
+# unsaved buffers are not seen.
+vim_re='^g?(view|l?n?vim?x?)(diff)?$'
+
+usage() { print -ru2 -- "usage: checkout-spaces <list|check|close> <absolute checkout path>"; exit 2 }
+case ${1:-} in list|check|close) ;; *) usage ;; esac
+(( $# == 2 )) && [[ $2 == /* ]] || usage
+verb=$1 folder=${2:A}
+
+if (( ! $+commands[herdr-app] )); then
+  [[ $verb != list ]] || print -r -- '{"spaces":[],"terminals":[],"records":[]}'
+  exit 0
+fi
+
+app() { command herdr-app "$@" }
+# hc runs without the caller's identity, so it answers about every terminal (native-tools §5.3).
+hc_run() { command env -u HC_TERMINAL_ID -u HC_SCOPE hc "$@" }
+# hc get, given five seconds: a terminal that cannot be asked about cannot be vouched for.
+hc_get() { /usr/bin/perl -e 'alarm shift; exec @ARGV' 5 env -u HC_TERMINAL_ID -u HC_SCOPE hc get "$1" --json 2>/dev/null }
+
+# listing, spaces, terminals, subagents: the app's answer and the close set read from it. The
+# answer is taken only in the shape every traversal below and in do_check relies on (a jq error
+# inside $(...) is an empty result, which a check would read as "nothing found"); the foreign
+# spaces' terminals are held to it too, since check 5 walks them.
+load_set() {
+  badshape=
+  listing=$(app ls 2>/dev/null) || return 1
+  jq -e 'type == "object" and (.spaces | type == "array") and all(.spaces[]; type == "object") and
+    all(.spaces[] | select(.machine == null);
+      (.id | type == "string") and (.tabs | type == "array") and
+      all(.tabs[]; type == "object" and (.terminals | type == "array") and
+        all(.terminals[]; type == "object" and (.terminal | type == "string") and
+          ((.sub_agents // []) | type == "array" and all(.[]; type == "string" or (type == "object" and (.terminal | type == "string")))))))' \
+    <<<"$listing" >/dev/null 2>&1 || { badshape=1; return 1 }
+  local row rf
+  local -a subs
+  spaces=()
+  for row in ${(f)"$(jq -r '.spaces[] | select(.machine == null and (.folder | type == "string") and .folder != "")
+      | [.id, .folder] | @tsv' <<<"$listing")"}; do
+    rf=${${row#*$'\t'}:A}
+    if [[ $rf == "$folder" ]]; then spaces+=( ${row%%$'\t'*} )
+    elif [[ $rf == "$folder"/* ]]; then subs+=( ${row%%$'\t'*} )
+    fi
+  done
+  spaces+=( $subs )
+  ids=$(jq -nc '$ARGS.positional' --args $spaces) || return 1
+  # Every terminal of the set, the sub-agents too (the listing names those by address only),
+  # in the order of $spaces.
+  terminals=$(jq -c --argjson ids "$ids" '[$ids[] as $i | .spaces[] | select(.id == $i)
+    | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)]' <<<"$listing") || return 1
+  subagents=$(jq -c --argjson ids "$ids" '[$ids[] as $i | .spaces[] | select(.id == $i)
+    | .tabs[].terminals[] | (.sub_agents[]? | if type == "string" then . else .terminal end)]' <<<"$listing") || return 1
+}
+
+# Where a terminal is: "space / tab".
+where_is() { jq -r --arg t "$1" 'first(.spaces[] as $s | $s.tabs[] as $b
+  | select(any($b.terminals[]; .terminal == $t or (.sub_agents // [] | index($t)))) | "\($s.name) / \($b.name)") // "?"' <<<"$listing" }
+
+reason() { print -ru2 -- "checkout-spaces: refusing — $*" }
+
+unreachable() {
+  if [[ -n $badshape ]]; then
+    if [[ $verb == list ]]; then print -ru2 -- "checkout-spaces: the Herdr app's answer was not in the expected shape"
+    else reason "the Herdr app's answer was not in the expected shape, so its spaces cannot be read"
+    fi
+  elif [[ $verb == list ]]; then print -ru2 -- "checkout-spaces: cannot read the Herdr app's spaces"
+  else reason "cannot read the Herdr app's spaces — open its window, then retry"
+  fi
+  exit 1
+}
+
+# 0 safe (or nothing to close), 1 refused, every reason printed. Another space's terminal now
+# in the checkout refuses even when the checkout has no space of its own.
+do_check() {
+  local -a reasons active editors inside missing
+  local t got name cwd hcls busy miss hcbusy foreign
+  [[ -z $caller ]] || ! jq -e --arg t "$caller" 'index($t) != null' <<<"$terminals" >/dev/null \
+    || reasons+=( "this terminal ($caller) is inside a space being closed; run this from another space" )
+
+  # Busy: an agent or sub-agent that is working or blocked. A pane terminal's status is the
+  # app's; a sub-agent's is only in the core's listing, which `--all` keeps finished ones in.
+  busy=$(jq -r --argjson ids "$ids" '
+    .spaces[] | select(.id as $i | $ids | index($i)) | .tabs[].terminals[] | ., (.sub_agents[]? | objects)
+    | select(.status == "working" or .status == "blocked") | "\(.app // "agent") (\(.terminal)) is \(.status)"' <<<"$listing") \
+    || reasons+=( "cannot read the status of the agents in the Herdr app's listing" )
+  active=( ${(f)busy} )
+  if jq -e 'length > 0' <<<"$subagents" >/dev/null; then
+    if hcls=$(hc_run ls --all --json 2>/dev/null) \
+        && jq -e '(.terminals | type == "array") and all(.terminals[]; type == "object" and (.address | type == "string"))' <<<"$hcls" >/dev/null 2>&1 \
+        && miss=$(jq -r --argjson s "$subagents" '[.terminals[].address] as $a | $s[] | select(. as $x | $a | index($x) | not)' <<<"$hcls") \
+        && hcbusy=$(jq -r --argjson t "$terminals" '.terminals[] | select(.address as $a | $t | index($a))
+          | select(.status == "working" or .status == "blocked") | "\(.agent // "agent") (\(.address)) is \(.status)"' <<<"$hcls"); then
+      missing=( ${(f)miss} )
+      (( $#missing )) && reasons+=( "the Herdr core's listing (hc ls --all) does not include sub-agent(s) ${(j:, :)missing}, so their status is unknown" )
+      active+=( ${(f)hcbusy} )
+    else
+      reasons+=( "cannot read the Herdr core's listing (hc ls --all --json), so the status of sub-agent(s) ${(j:, :)${(f)"$(jq -r '.[]' <<<"$subagents")"}} is unknown" )
+    fi
+  fi
+  (( $#active )) && reasons+=( "an agent in the space is busy: ${(j:, :)${(u)active}}" )
+
+  # One `hc get` per terminal asks what runs in it and where it is NOW (`hc ls` gives only the
+  # folder it was launched in). The set's own terminals must answer, or the editor check would
+  # pass them unseen.
+  for t in ${(f)"$(jq -r '.[]' <<<"$terminals")"}; do
+    got=$(hc_get "$t") && [[ -n $got ]] || { reasons+=( "cannot check terminal $t ($(where_is $t)): hc get did not answer" ); continue }
+    # A finished terminal answers without a foreground: nothing runs in it, so nothing is lost.
+    jq -e 'type == "object" and (.state == "finished" or (.foreground.name | type == "string"))' <<<"$got" >/dev/null 2>&1 \
+      || { reasons+=( "cannot check terminal $t ($(where_is $t)): hc get gave no foreground" ); continue }
+    name=$(jq -r '.foreground.name // empty' <<<"$got" 2>/dev/null)
+    [[ ${name#-} =~ $vim_re ]] && editors+=( "$name in $(where_is $t) ($t)" )
+  done
+  (( $#editors )) && reasons+=( "an editor is open: ${(j:, :)editors}; quit it first (its unsaved buffers would be lost)" )
+
+  # Any other local terminal now inside the checkout holds it open, and its space is not ours.
+  # One that cannot say where it is cannot be vouched for either.
+  foreign=$(jq -r --argjson ids "$ids" '.spaces[] | select(.machine == null and (.id as $i | $ids | index($i) | not))
+      | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)' <<<"$listing") \
+    || inside+=( "cannot list the terminals of the other spaces, so where they are cannot be told" )
+  for t in ${(f)foreign}; do
+    got=$(hc_get "$t")
+    cwd=$(jq -r '.foreground.cwd | select(type == "string")' <<<"$got" 2>/dev/null)
+    if [[ -z $got || -z $cwd ]]; then
+      inside+=( "cannot tell where terminal $t ($(where_is $t)) is: hc get gave no folder" )
+    elif [[ $cwd == "$folder" || $cwd == "$folder"/* || ${cwd:A} == "$folder" || ${cwd:A} == "$folder"/* ]]; then
+      inside+=( "terminal $t ($(where_is $t)) is in $cwd; cd out of the checkout or close it" )
+    fi
+  done
+  (( $#inside )) && reasons+=( $inside )
+
+  (( $#reasons )) || return 0
+  for t in $reasons; do reason $t; done
+  return 1
+}
+
+# records: the resume records of the set's terminals, in the order of $terminals. $have is the
+# addresses that have one, $unreadable is set when shared.json exists but cannot be read.
+load_records() {
+  have='[]' unreadable=
+  records=$(jq -c --argjson t "$terminals" '[$t[] as $a | (.["resume.sessions"] // {})[$a] // empty]' \
+    "$home/shared.json" 2>/dev/null) || records='[]'
+  [[ -n $records ]] || records='[]'
+  if [[ -e $home/shared.json ]]; then
+    have=$(jq -c '(.["resume.sessions"] // {}) | keys' "$home/shared.json" 2>/dev/null) || { have='[]'; unreadable=1 }
+    [[ -n $have ]] || { have='[]'; unreadable=1 }
+  fi
+}
+
+load_set || unreachable
+
+case $verb in
+  list)
+    load_records
+    jq -nc --argjson s "$ids" --argjson t "$terminals" --argjson r "$records" '{spaces: $s, terminals: $t, records: $r}'
+    ;;
+  check)
+    do_check
+    ;;
+  close)
+    do_check || exit 1
+    (( $#spaces )) || exit 0
+    load_records
+    if [[ $records != '[]' ]]; then
+      print -r -- "checkout-spaces: resume commands of the agents about to close:"
+      jq -r '.[] | "  \(.app): cd \(.cwd | @sh) && \(.cmd)"' <<<"$records"
+    fi
+    # Say which agents have no command to print: claude --resume and codex resume still list
+    # their sessions. A missing record never refuses.
+    nores=( ${(f)"$(jq -r --argjson ids "$ids" --argjson have "$have" '
+      .spaces[] | select(.id as $i | $ids | index($i)) | .tabs[].terminals[] | ., (.sub_agents[]? | objects)
+      | select(.app != null and (.terminal as $t | $have | index($t) | not)) | "\(.app) (\(.terminal))"' <<<"$listing")"} )
+    agents=${(j:, :)nores}
+    if [[ -n $unreadable ]]; then
+      print -ru2 -- "checkout-spaces: warning — $home/shared.json cannot be read, so no resume command is printed for ${agents:-any agent}; claude --resume and codex resume still list the sessions"
+    elif (( $#nores )); then
+      print -ru2 -- "checkout-spaces: warning — no resume record for ${(j:, :)nores}; claude --resume and codex resume still list the sessions"
+    fi
+
+    want=$ids closed=()
+    for id in $spaces; do
+      out=$(app do space.close "$(jq -nc --arg id "$id" '{id: $id, confirmed: true}')" 2>&1) \
+        && ! jq -e 'objects | has("error")' <<<"$out" >/dev/null 2>&1 \
+        || { print -ru2 -- "checkout-spaces: could not close space $id: $out"
+             done_ids=${(j:, :)closed}
+             print -ru2 -- "checkout-spaces: closed before it: ${done_ids:-none}; the rest were left open."
+             exit 1 }
+      closed+=( $id )
+    done
+    load_set || { print -ru2 -- "checkout-spaces: closed ${(j:, :)closed}, but cannot read the Herdr app's spaces to verify"; exit 1 }
+    leftout=$(jq -r --argjson c "$want" '.spaces[] | select(.id as $i | $c | index($i)) | .id' <<<"$listing") \
+      || { print -ru2 -- "checkout-spaces: closed ${(j:, :)closed}, but cannot tell from the Herdr app's spaces whether they are gone"; exit 1 }
+    left=( ${(f)leftout} )
+    (( $#left )) && { print -ru2 -- "checkout-spaces: space(s) ${(j:, :)left} are still open after the close"; exit 1 }
+    exit 0
+    ;;
+esac

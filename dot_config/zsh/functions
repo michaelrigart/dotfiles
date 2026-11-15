@@ -180,10 +180,10 @@ dev() {
   repo="${repo:A}"
   [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1 }
 
-  # The front end: a TUI pane (HERDR_ENV, HERDR_PANE_ID) wins, else the app's terminal
-  # (HC_TERMINAL_ID), else the TUI.
+  # The front end (spec 2026-11-15, section 1): a TUI pane (HERDR_ENV, HERDR_PANE_ID) gets the
+  # TUI; anywhere else, plain terminals included, the app.
   local app=0
-  [[ -z "${HERDR_ENV-}" && -z "${HERDR_PANE_ID-}" && -n "${HC_TERMINAL_ID-}" ]] && app=1
+  [[ -z "${HERDR_ENV-}" && -z "${HERDR_PANE_ID-}" ]] && app=1
 
   # A linked checkout must enter through layout.sh's worktree mode, which keeps
   # Herdr's worktree provenance; an ordinary workspace could not be identified safely
@@ -1125,6 +1125,26 @@ _wt_stopped_herdr_has_checkout() {
   return 1
 }
 
+# The Herdr desktop app's spaces for a checkout: check refuses or passes, close closes them.
+# Skipped when the app's helper is not deployed. Spec: docs/superpowers/specs/2026-11-15-wt-rm-app-spaces-design.md §3.
+_wt_app_spaces() {
+  local helper="$HOME/.config/herdr-app/bin/checkout-spaces"
+  [[ -x "$helper" ]] || return 0
+  "$helper" "$1" "$2"
+}
+
+# Both front ends' close, in the one order wt-rm and its registration path share: check the app's
+# spaces, close the TUI workspaces (which refuse first if anything else is in them), then close
+# the app's spaces. Non-zero on any refusal; <qb> is the quoted branch for the retry hint.
+_wt_close_front_ends() {
+  local dest="$1" qb="$2"
+  _wt_app_spaces check "$dest" || { print -ru2 -- "wt-rm: nothing was closed or removed."; return 1 }
+  _wt_stop_herdr_workspaces "$dest" || return 1
+  _wt_app_spaces close "$dest" || {
+    print -ru2 -- "wt-rm: the Herdr app's spaces for $dest are not all closed (its Herdr workspaces are) — nothing was removed. Retry: wt-rm $qb"
+    return 1 }
+}
+
 # Close the checkout's own Herdr workspaces, after refusing if anything else is in it.
 # Spec: docs/superpowers/specs/2026-10-01-herdr-wt-simplification-design.md §1.
 _wt_stop_herdr_workspaces() {
@@ -1537,7 +1557,7 @@ _wt_rm_registration() {
     1) ;;
     *) return 1 ;;
   esac
-  _wt_stop_herdr_workspaces "$dest" || return 1
+  _wt_close_front_ends "$dest" "$qb" || return 1
 
   print -ru2 -- "wt-rm: $dest is already gone — finishing its removal without re-running teardown."
   print -ru2 -- "    If it was deleted by hand rather than by an interrupted wt-rm, reclaim its resources yourself."
@@ -1563,8 +1583,9 @@ _wt_rm_registration() {
 #   1. check 1 (_wt_clean), hook validation and the lock classification, then the mise trust
 #      carry (_wt_mise_trust, unless the repository has no hook): all before anything is
 #      disrupted, the carry last because it is the one that writes
-#   2. stop the checkout's Herdr workspaces: a live process holding the directory
-#      open is how a husk is left behind, so this must come first
+#   2. check the Herdr app's spaces for the checkout, close the TUI's workspaces, then close the
+#      app's (spec 2026-11-15 §3): a live process holding the directory open is how a husk
+#      is left behind, so this must come first
 #   3. check 2, because shutdown can flush files (a live app writing on exit)
 #   4. the mise trust re-check (_wt_mise_show, read-only, unless the repository has no hook),
 #      because shutdown can also rewrite a git-ignored mise config check 2 cannot see;
@@ -1646,15 +1667,15 @@ wt-rm() {
       return 1
     fi
 
-    # Close the checkout's own Herdr workspaces; refuse first if anything else is in it (spec §1).
-    _wt_stop_herdr_workspaces "$dest" || return 1
+    # Check the app's spaces, then close both front ends (spec 2026-11-15 §3).
+    _wt_close_front_ends "$dest" "$qb" || return 1
 
     # Check 2 — closing the workspaces can flush files into the checkout.
     _wt_clean "$dest"
     case $? in
       0) ;;
-      1) print -ru2 -- "wt-rm: closing Herdr workspaces left changes in $dest — inspect it, then retry."; return 1 ;;
-      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after closing Herdr workspaces — refusing."; return 1 ;;
+      1) print -ru2 -- "wt-rm: closing Herdr workspaces and app spaces left changes in $dest — inspect it, then retry."; return 1 ;;
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after closing Herdr workspaces and app spaces — refusing."; return 1 ;;
     esac
 
     # Mise trust again, read-only: closing the workspaces can rewrite a git-ignored mise config
@@ -1663,7 +1684,7 @@ wt-rm() {
       local mise_line mise_shown
       local -a mise_untrusted
       if ! mise_shown="$(_wt_mise_show "$dest")"; then
-        print -ru2 -- "wt-rm: cannot read mise's trust status for $(_wt_tilde "$dest") — teardown not run, Herdr workspaces closed."
+        print -ru2 -- "wt-rm: cannot read mise's trust status for $(_wt_tilde "$dest") — teardown not run, Herdr workspaces and app spaces closed."
         print -ru2 -- "    Review the mise config, then retry: wt-rm $qb"
         return 1
       fi
@@ -1671,14 +1692,14 @@ wt-rm() {
         [[ "$mise_line" == untrusted$'\t'* ]] && mise_untrusted+=( "${mise_line#untrusted$'\t'}" )
       done
       if (( $#mise_untrusted )); then
-        print -ru2 -- "wt-rm: $(_wt_tilde "$dest") has untrusted mise config (${(j:, :)mise_untrusted}) — teardown not run, Herdr workspaces closed."
+        print -ru2 -- "wt-rm: $(_wt_tilde "$dest") has untrusted mise config (${(j:, :)mise_untrusted}) — teardown not run, Herdr workspaces and app spaces closed."
         print -ru2 -- "    Review the mise config, then retry: wt-rm $qb"
         return 1
       fi
     fi
 
     if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
-      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, Herdr workspaces closed."
+      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, Herdr workspaces and app spaces closed."
       print -ru2 -- "    Fix it and retry: wt-rm $qb    (teardown is idempotent)"
       print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       return 1
@@ -1747,7 +1768,7 @@ wt-rm() {
     if [[ -n "$busy" ]]; then
       print -ru2 -- "wt-rm: $dest is still in use by a running process after waiting 5 s — removal aborted. Resources may already be reclaimed."
       for line in ${(f)busy}; do print -ru2 -- "    $line"; done
-      print -ru2 -- "    Herdr's workspaces for this checkout are closed already; these are still in it."
+      print -ru2 -- "    Herdr's workspaces and app spaces for this checkout are closed already; these are still in it."
       print -ru2 -- "    Stop them — from .worktreehook teardown if the project starts them — then retry: wt-rm $qb"
       return 1
     fi
@@ -1788,23 +1809,23 @@ wt-rm() {
         fi
       fi
       if (( reg == 2 )); then
-        print -ru2 -- "wt-rm: removing $dest failed, and Git's state cannot be read to tell what remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "wt-rm: removing $dest failed, and Git's state cannot be read to tell what remains. Herdr workspaces and app spaces closed, teardown done; branch $qb kept."
         print -ru2 -- "    Check $dest and \`git worktree list\` yourself before retrying."
       elif (( reg == 0 && working )); then
-        print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
+        print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces and app spaces closed. Resources may already be reclaimed."
         print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
         print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       elif (( reg == 0 && left )); then
-        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is partly deleted and no longer a working checkout, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is partly deleted and no longer a working checkout, but Git's registration of it remains. Herdr workspaces and app spaces closed, teardown done; branch $qb kept."
         print -ru2 -- "    Fix the obstruction Git reported above, delete what is left in $dest yourself, then finish with: wt-rm $qb"
       elif (( reg == 0 )); then
-        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is deleted, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is deleted, but Git's registration of it remains. Herdr workspaces and app spaces closed, teardown done; branch $qb kept."
         print -ru2 -- "    Fix the obstruction Git reported above, then finish with: wt-rm $qb"
       elif (( left )); then
-        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, but the directory remains and is no longer a worktree. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, but the directory remains and is no longer a worktree. Herdr workspaces and app spaces closed, teardown done; branch $qb kept."
         print -ru2 -- "    Inspect what is left in $dest and delete it yourself, then delete the branch if its work is merged: git branch -d $qb"
       else
-        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, and nothing is left at $dest. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, and nothing is left at $dest. Herdr workspaces and app spaces closed, teardown done; branch $qb kept."
         print -ru2 -- "    Delete the branch if its work is merged: git branch -d $qb"
       fi
       return 1

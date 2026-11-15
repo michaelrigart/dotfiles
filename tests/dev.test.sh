@@ -37,6 +37,8 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 # dev picks its front end from these; a case that wants the app or the TUI sets them itself.
 unset HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
+# The TUI unless a case clears it: outside both front ends is the app (spec 2026-11-15 section 1).
+export HERDR_PANE_ID=w0:p0
 
 pass=0 fail=0 OUT="" RC=0
 _pass() { print -r -- "  PASS: $1"; pass=$((pass + 1)) }
@@ -1430,8 +1432,8 @@ rm -f "$MOCK_PATH_FILE"; unset MOCK_PATH_FILE
 rm -rf "$HOSTILE" "$HMARK" "$PD"
 
 # --- K: dev picks its front end ----------------------------------------------
-# HERDR_ENV or HERDR_PANE_ID non-empty: the TUI. Else HC_TERMINAL_ID non-empty: the Herdr
-# app, through open-space. Else the TUI. There is no override variable.
+# HERDR_ENV or HERDR_PANE_ID non-empty: the TUI. Otherwise the Herdr app, through open-space
+# (HC_TERMINAL_ID decides nothing). There is no override variable.
 print -r -- "-- K: front end"
 # The C-N sections' run_layout evals leave HERDR_ENV=1 in this shell; the app is only chosen without it.
 unset HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
@@ -1461,9 +1463,9 @@ HERDR_PANE_ID=w1:p2 HC_TERMINAL_ID=t9 run_dev "'$R1'"
 eq "$(<$LAYOUT_ARG)" "$R1" "K3 HERDR_PANE_ID wins over HC_TERMINAL_ID: layout.sh"
 eq "$(<$OS_ARG)" "" "K3 HERDR_PANE_ID: open-space is never invoked"
 
-HC_TERMINAL_ID= run_dev "'$R1'"
-eq "$(<$LAYOUT_ARG)" "$R1" "K4 an empty HC_TERMINAL_ID is the TUI"
-eq "$(<$OS_ARG)" "" "K4 an empty HC_TERMINAL_ID: open-space is never invoked"
+run_dev "'$R1'"
+eq "$(<$OS_ARG)" "$R1" "K4 neither front end's variable: open-space"
+eq "$(<$LAYOUT_ARG)" "" "K4 neither front end's variable: layout.sh is never invoked"
 
 WT2="$CODE/Netronix/curato-k5"
 git -C "$R1" worktree add -q -b k5 "$WT2" 2>/dev/null

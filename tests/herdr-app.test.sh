@@ -1,13 +1,14 @@
 #!/bin/zsh
-# Tests for bin/retire and for wt-app / open-space --no-focus, and for what `chezmoi add` leaves
-# alone in the app's folder, on dot_config/herdr-app as chezmoi renders it. Run:
+# Tests for bin/checkout-spaces, bin/retire, wt-app and open-space (--no-focus), and for what
+# `chezmoi add` leaves alone in the app's folder, on dot_config/herdr-app as chezmoi renders it. Run:
 # ./tests/herdr-app.test.sh
 #
 # herdr-app, hc, fzf, claude and wt-rm are stubs (tests/fixtures/herdr-app/stubs) first on PATH and
 # linked into the scratch HOME's .local/bin, the first folder of the PATH open-space and
 # close-own-tab pin; every call lands in one log, so the order of calls is what is asserted. The repositories are real, in a
-# scratch folder, and so is dot_config/zsh/functions (linked into a scratch HOME): retire's checks
-# run for real. The real wt-rm is never run, and no stub touches the app.
+# scratch folder, and so is dot_config/zsh/functions (linked into a scratch HOME): retire's own
+# checks run for real, and checkout-spaces runs for real against the stubs. The real wt-rm is never
+# run, and no stub touches the app.
 emulate -L zsh
 setopt no_unset pipe_fail
 
@@ -16,7 +17,7 @@ SRC=${0:A:h:h}
 # The installed Herdr app's own mods, which the patch-mod checks read; taken before any
 # newworld points HERDR_APP_HOME at a scratch folder.
 shipped=${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods
-for f in dot_config/herdr-app/bin/executable_{claude-app,close-own-tab,folder-gone,open-space,patch-mod,respaces,retire,session-written,wt-app} \
+for f in dot_config/herdr-app/bin/executable_{checkout-spaces,claude-app,close-own-tab,folder-gone,open-space,patch-mod,respaces,retire,session-written,wt-app} \
          dot_config/herdr-app/{claude-settings,programs}.json.tmpl dot_config/zsh/functions; do
   [[ -f $SRC/$f ]] || { print -u2 -- "missing $f"; exit 2 }
 done
@@ -56,12 +57,12 @@ newworld() {
   print -r -- 'codex --sandbox read-only --ask-for-approval never' > $world/home/.config/herdr/codex-pane-command
   export HOME=$world/home HERDR_APP_HOME=$world/app STUB_DIR=$world/state LOG=$world/state/log
   export STUB_LOG=$LOG STUB_LS=$world/state/ls.json
-  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm HC_TERMINAL_ID=t9 DEV_OPEN_SPACE=$bin/open-space
+  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm STUB_CHECKOUT_SPACES=$bin/checkout-spaces HC_TERMINAL_ID=t9 DEV_OPEN_SPACE=$bin/open-space HC_SCOPE=space
   # open-space and close-own-tab pin their PATH, whose first folder is $HOME/.local/bin: the
   # trusted stubs are there, whatever the caller's PATH holds.
   mkdir -p $world/home/.local/bin
   local s; for s in herdr-app hc fzf claude wt-rm; do ln -s $here/fixtures/herdr-app/stubs/$s $world/home/.local/bin/$s; done
-  unset STUB_WTRM_RC STUB_WTRM_WARN STUB_DOWN CODEX_HOME XDG_CONFIG_HOME
+  unset STUB_WTRM_RC STUB_WTRM_WARN STUB_DOWN STUB_LS_DOWN STUB_WTRM_CLOSE CODEX_HOME XDG_CONFIG_HOME
   : > $LOG; : > $STUB_DIR/closed
   main=$world/repos/proj; wt=$world/repos/proj-feat
   local g=(git -c user.name=t -c user.email=t@t -c commit.gpgsign=false)
@@ -106,6 +107,7 @@ launched_in() { jq -n --arg t $1 --arg c $2 '{terminals: [{address: $t, cwd: $c}
 # now_in <terminal> <folder> — `hc get`'s foreground folder: where it is NOW
 now_in() { print -r -- $2 > $STUB_DIR/cwd-$1 }
 retire() { "$bin/retire" "$@" </dev/null }
+cs() { "$bin/checkout-spaces" "$@" </dev/null }
 
 
 # --- retire: refusals change nothing -------------------------------------------------------
@@ -119,97 +121,191 @@ retire $world/plain >/dev/null 2>&1; rc=$?
 check "refuses a folder that is not a repository" test $rc -ne 0
 check "not a repository: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
 
-newworld dirty; print x > $wt/untracked
-retire $wt >/dev/null 2>&1; rc=$?
-check "refuses a dirty worktree" test $rc -ne 0
-check "dirty: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
-
 newworld elsewhere; mv $wt $world/repos/moved; git -C $main worktree repair $world/repos/moved 2>/dev/null
 retire $world/repos/moved >/dev/null 2>&1; rc=$?
 check "refuses a worktree wt would not have made there" test $rc -ne 0
 check "misplaced: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
-
-for busy in working blocked; do
-  newworld busy-$busy; ls_json $busy
-  retire $wt >$world/out 2>&1; rc=$?
-  check "refuses while an agent is $busy" test $rc -ne 0
-  check "$busy agent: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
-done
-
-newworld inside; jq '.spaces[0].tabs[0].terminals += [{terminal: "t9", pane: "p9", status: null, app: null, sub_agents: []}]' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
-retire $wt >/dev/null 2>&1; rc=$?
-check "refuses when run from inside the space being retired" test $rc -ne 0
-check "inside: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
 
 newworld detached; git -C $wt checkout -q --detach
 retire $wt >/dev/null 2>&1; rc=$?
 check "refuses a detached HEAD" test $rc -ne 0
 check "detached: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
 
+
+# --- checkout-spaces: refusals change nothing ----------------------------------------------
+for busy in working blocked; do
+  newworld busy-$busy; ls_json $busy
+  cs close $wt >$world/out 2>&1; rc=$?
+  check "refuses while an agent is $busy" test $rc -ne 0
+  check "$busy agent: nothing closed" not_did 'space.close'
+done
+
+newworld inside; jq '.spaces[0].tabs[0].terminals += [{terminal: "t9", pane: "p9", status: null, app: null, sub_agents: []}]' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
+cs close $wt >/dev/null 2>&1; rc=$?
+check "refuses when run from inside the space being closed" test $rc -ne 0
+check "inside: nothing closed" not_did 'space.close'
+
 newworld subagent; ls_json
 # The app's listing names a sub-agent by address only; its status is the core's to give.
 jq '.spaces[0].tabs[0].terminals[0].sub_agents = ["t1s"]' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
 jq -n '{terminals: [{address: "t1s", agent: "claude-code", status: "working", cwd: "/x"}]}' > $STUB_DIR/hc-ls.json
-retire $wt >/dev/null 2>&1; rc=$?
+cs check $wt >/dev/null 2>&1; rc=$?
 check "refuses while a sub-agent is working" test $rc -ne 0
-check "sub-agent: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
+check "sub-agent: nothing closed" not_did 'space.close'
 
 # A second space in a folder under the checkout is part of it.
 newworld subspace; add_space sp-sub $wt/sub tS working
-retire $wt >/dev/null 2>&1; rc=$?
+cs check $wt >/dev/null 2>&1; rc=$?
 check "refuses while an agent in a subfolder space is working" test $rc -ne 0
-check "subfolder space: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
+check "subfolder space: nothing closed" not_did 'space.close'
 newworld subspace-idle; add_space sp-sub $wt/sub tS idle; add_space sp-sibling $wt-other tO working
-retire $wt >/dev/null 2>&1; rc=$?
-check "an idle subfolder space is retired with the checkout" did 'space.close {"id":"sp-sub","confirmed":true}'
+cs close $wt >/dev/null 2>&1; rc=$?
+check "an idle subfolder space is closed with the checkout" did 'space.close {"id":"sp-sub","confirmed":true}'
 check "a folder that only shares the prefix is left alone" not_did 'sp-sibling'
-check "the subfolder space closes before wt-rm" before 'sp-sub' 'wt-rm '
+check "the checkout's own space closes before the subfolder's" before 'space.close {"id":"sp-wt"' 'space.close {"id":"sp-sub"'
+# the caller (HC_TERMINAL_ID=t9) is read once for its own check; every hc call runs without it
+check "hc runs without the caller's identity" test "$(grep -c '^hc ' $LOG)" -gt 0 -a "$(grep '^hc ' $LOG | grep -cv ' id=unset scope=unset$')" -eq 0
 
-# Only the worktree's own spaces close. Another space's terminal counts by where it is now.
+# Only the checkout's own spaces close. Another space's terminal counts by where it is now.
 newworld wandered-out; add_space sp-away $main tA idle; launched_in tA $wt; now_in tA $main
-retire $wt >/dev/null 2>&1; rc=$?
+cs close $wt >/dev/null 2>&1; rc=$?
 check "a shell launched in the worktree that has cd'd out passes" test $rc -eq 0
 check "...and its space is left open" not_did 'sp-away'
 check "...while the worktree's own space closes" did 'space.close {"id":"sp-wt","confirmed":true}'
 
 newworld wandered-in; add_space sp-away $main tA idle; launched_in tA $main; now_in tA $wt/src
-retire $wt >$world/out 2>&1; rc=$?
+cs check $wt >$world/out 2>&1; rc=$?
 check "refuses a shell launched elsewhere that has cd'd in" test $rc -ne 0
 check "the refusal names the terminal" grep -q 'tA' $world/out
 check "a foreign space with a terminal inside is not closed" not_did 'sp-away'
-check "foreign terminal inside: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
+check "foreign terminal inside: nothing closed" not_did 'space.close'
+jq '.spaces |= map(select(.id != "sp-wt"))' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
+cs check $wt >/dev/null 2>&1; rc=$?
+check "...and refuses when the checkout has no space of its own" test $rc -eq 1
 
 newworld unaskable; print x > $STUB_DIR/fail-t2
-retire $wt >$world/out 2>&1; rc=$?
+cs check $wt >$world/out 2>&1; rc=$?
 check "refuses when a terminal of the set cannot be asked about" test $rc -ne 0
-check "unaskable: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
+check "unaskable: nothing closed" not_did 'space.close'
 check "unaskable: the terminal is named" grep -q 't2' $world/out
 newworld unaskable-foreign; print x > $STUB_DIR/fail-tNEW1
-retire $wt >/dev/null 2>&1; rc=$?
-check "another space's terminal that cannot be asked about does not block" test $rc -eq 0
+cs check $wt >$world/out 2>&1; rc=$?
+check "another space's terminal that cannot be asked about refuses" test $rc -eq 1
+check "...and is named" grep -q 'tNEW1' $world/out
+newworld nofolder; print '{"state":"live"}' > $STUB_DIR/get-tNEW1.json
+cs check $wt >$world/out 2>&1; rc=$?
+check "another space's terminal that answers without a folder refuses" test $rc -eq 1
+check "...and is named" grep -q 'tNEW1.*gave no folder' $world/out
+# A terminal of the set whose answer shows nothing about its foreground is not vouched for.
+newworld empty-answer; print '{}' > $STUB_DIR/get-t2.json
+cs check $wt >$world/out 2>&1; rc=$?
+check "a terminal of the set that answers {} refuses" test $rc -eq 1
+check "...and is named" grep -q 't2.*gave no foreground' $world/out
+newworld finished; print '{"state":"finished"}' > $STUB_DIR/get-t2.json
+cs check $wt >/dev/null 2>&1; rc=$?
+check "a finished terminal, which answers without a foreground, passes" test $rc -eq 0
+# Another local space that is not in the shape the traversals rely on is not read around.
+newworld malformed-listing; jq '.spaces[2].tabs = null' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
+cs check $wt >$world/out 2>&1; rc=$?
+check "a listing with another local space whose tabs is null refuses" test $rc -eq 1
+check "...and says the answer was not in the expected shape" grep -q 'expected shape' $world/out
 
 # Unsaved buffers die with the terminal.
 for editor in nvim vim; do
   newworld editor-$editor; print $editor > $STUB_DIR/fg-t2
-  retire $wt >$world/out 2>&1; rc=$?
+  cs check $wt >$world/out 2>&1; rc=$?
   check "refuses while $editor is open" test $rc -ne 0
-  check "$editor: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
+  check "$editor: nothing closed" not_did 'space.close'
   check "$editor: says where it is" grep -q 't2' $world/out
 done
 
+# No app: the stub link gone, and a copy of the helper whose pinned PATH lacks /opt/homebrew/bin,
+# where Michael's machine has the live herdr-app. The copy is run only once it names no
+# /opt/homebrew at all: if the pin line has changed shape, the case fails without running it.
+newworld noapp; rm $HOME/.local/bin/herdr-app
+sed 's#:/opt/homebrew/bin$##' $bin/checkout-spaces > $world/cs-noapp; chmod +x $world/cs-noapp
+if grep -q /opt/homebrew $world/cs-noapp || ! differs $bin/checkout-spaces $world/cs-noapp; then
+  check "no app: the test copy drops /opt/homebrew/bin from the pin (not run)" false
+else
+  check "no app: check passes" $world/cs-noapp check $wt
+  check "no app: list is the empty set" test "$($world/cs-noapp list $wt)" = '{"spaces":[],"terminals":[],"records":[]}'
+fi
+
+newworld down; export STUB_LS_DOWN=1
+cs check $wt >$world/out 2>&1; rc=$?
+check "an unreachable app refuses" test $rc -eq 1
+check "...and says to open the window" grep -q 'open its window' $world/out
+newworld noobject; print '{"error":"no window"}' > $STUB_DIR/ls-raw
+cs check $wt >/dev/null 2>&1; rc=$?
+check "a listing without spaces refuses" test $rc -eq 1
+
+newworld subagent-unknown
+jq '.spaces[0].tabs[0].terminals[0].sub_agents = ["t1s"]' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
+for how in missing malformed failing; do
+  case $how in
+    failing) : > $STUB_DIR/hc-ls-fail ;;
+    malformed) print '{"terminals":["t1s"]}' > $STUB_DIR/hc-ls.json ;;
+    *) print '{"terminals":[]}' > $STUB_DIR/hc-ls.json ;;
+  esac
+  cs check $wt >/dev/null 2>&1; rc=$?
+  check "a sub-agent whose status hc ls does not give refuses ($how)" test $rc -eq 1
+done
+rm $STUB_DIR/hc-ls-fail; jq -n '{terminals: [{address: "t1s", agent: "claude-code", status: "idle", cwd: "/x"}]}' > $STUB_DIR/hc-ls.json
+cs check $wt >/dev/null 2>&1; rc=$?
+check "a sub-agent that hc ls lists as idle passes" test $rc -eq 0
+check "hc ls runs without the caller's identity too" test "$(grep -c '^hc ls ' $LOG)" -gt 0 -a "$(grep '^hc ' $LOG | grep -cv ' id=unset scope=unset$')" -eq 0
+
+newworld badrecords; print 'not json' > $HERDR_APP_HOME/shared.json
+cs close $wt >$world/out 2>$world/err; rc=$?
+check "unreadable records still close" test $rc -eq 0
+check "...and name the agents without a record" grep -q 't1' $world/err
+
+newworld onerecord; records cid-claude cid-codex; jq 'del(.["resume.sessions"].t2)' $HERDR_APP_HOME/shared.json > $world/sh.new; mv $world/sh.new $HERDR_APP_HOME/shared.json
+cs close $wt >$world/out 2>$world/err; rc=$?
+check "a readable file lacking an agent's record still closes" test $rc -eq 0
+check "...and the warning names only the agent without one" grep -q 'no resume record for codex (t2);' $world/err
+
+newworld stuck; : > $STUB_DIR/stuck-sp-wt
+cs close $wt >/dev/null 2>&1; rc=$?
+check "a space that survives the close refuses" test $rc -eq 1
+
+newworld closefail; add_space sp-sub $wt/sub tS idle; add_space sp-sub2 $wt/sub2 tS2 idle
+: > $STUB_DIR/closefail-sp-sub
+cs close $wt >$world/out 2>&1; rc=$?
+check "a failed close stops and names" test $rc -eq 1
+check "...the space it closed" grep -q 'sp-wt' $world/out
+check "...and the one that failed" grep -q 'sp-sub' $world/out
+check "...and closes nothing after it" not_did 'space.close {"id":"sp-sub2"'
+
+newworld gone; rm -rf $wt
+check "a gone checkout's space closes" cs close $wt
+check "...the space made there" did 'space.close {"id":"sp-wt","confirmed":true}'
+
+newworld symlink; ln -s $wt $world/link
+jq --arg l $world/link '.spaces[0].folder = $l' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
+cs close $wt >/dev/null 2>&1
+check "symlinked space folder is own" did 'space.close {"id":"sp-wt","confirmed":true}'
+
+newworld shadow; mkdir $world/shadow
+for p in herdr-app hc jq; do print -r -- "#!/bin/sh
+: > $world/shadow-ran" > $world/shadow/$p; chmod +x $world/shadow/$p; done
+PATH=$world/shadow:$PATH cs close $wt >/dev/null 2>&1
+check "the helper ignores a caller PATH" test ! -e $world/shadow-ran
+
 # --- retire: success -----------------------------------------------------------------------
-newworld ok
+newworld ok; export STUB_WTRM_CLOSE=$wt
+records cid-claude cid-codex
 retire $wt >/dev/null 2>&1; rc=$?
 check "success exits 0" test $rc -eq 0
 check "closes the space with confirmation" did 'space.close {"id":"sp-wt","confirmed":true}'
 check "wt-rm runs in the main checkout with the branch" did "wt-rm cwd=${main:A} args=feat\$"
-check "the space closes before wt-rm runs" before 'space.close' 'wt-rm '
+check "retire closes no space itself before wt-rm" before 'wt-rm ' 'space.close'
 check "success closes its own tab" did 'tab.close {"id":"tb-r","confirmed":true}'
 check "the own tab closes after wt-rm" before 'wt-rm ' 'tab.close'
 check "success does not reopen" not_did 'space.new'
 
 # wt-rm can succeed and still warn (branch kept, files recreated): the tab stays for Enter.
-newworld warned; export STUB_WTRM_WARN=1
+newworld warned; export STUB_WTRM_CLOSE=$wt STUB_WTRM_WARN=1
 retire $wt >$world/out 2>&1; rc=$?
 check "a warned success exits 0" test $rc -eq 0
 check "a warned success keeps its warning on screen" grep -q "not fully merged" $world/out
@@ -218,16 +314,16 @@ print | "$bin/retire" $wt >/dev/null 2>&1
 check "Enter closes the tab after a warned success" did 'tab.close {"id":"tb-r","confirmed":true}'
 
 # --- retire: failure -----------------------------------------------------------------------
-newworld fail; export STUB_WTRM_RC=3
+newworld fail; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 retire $wt >$world/out 2>&1; rc=$?
 check "failure exits non-zero" test $rc -ne 0
 check "failure keeps wt-rm's output" grep -q STUB-WT-RM-OUTPUT $world/out
 check "failure keeps the tab" not_did 'tab.close'
 check "failure without Enter does not reopen" not_did 'space.new'
-check "the space was closed before wt-rm" before 'space.close' 'wt-rm '
+check "retire closes no space itself before wt-rm" before 'wt-rm ' 'space.close'
 
 # Enter reopens, agents resumed from the records read before the close.
-newworld reopen; export STUB_WTRM_RC=3
+newworld reopen; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 records cid-claude cid-codex
 mkdir -p $HOME/.claude/projects/p; : > $HOME/.claude/projects/p/cid-claude.jsonl
 export CODEX_HOME=$world/codex; mkdir -p $CODEX_HOME/sessions/2026
@@ -243,11 +339,11 @@ newworld allcmds; export STUB_WTRM_RC=3
 jq '.spaces[0].tabs[0].terminals += [{terminal: "t3", pane: "p3", status: "idle", app: "claude-code", sub_agents: []}]' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
 records cid-claude cid-codex
 jq '."resume.sessions".t3 = {app: "claude", id: "cid-third", cwd: "/x", fresh: "x", cmd: "claude --resume cid-third"}' $HERDR_APP_HOME/shared.json > $HERDR_APP_HOME/s.new; mv $HERDR_APP_HOME/s.new $HERDR_APP_HOME/shared.json
-retire $wt >$world/out 2>&1
+cs close $wt >$world/out 2>&1
 check "every agent's resume command is printed" test "$(grep -c -e cid-claude -e cid-codex -e cid-third $world/out)" -eq 3
 
 # A session never written has nothing to resume: that agent starts fresh.
-newworld fresh; export STUB_WTRM_RC=3
+newworld fresh; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 records cid-claude cid-codex
 export CODEX_HOME=$world/codex; mkdir -p $CODEX_HOME/sessions
 print | "$bin/retire" $wt >$world/out 2>&1
@@ -256,7 +352,7 @@ check "reopen: an unwritten Claude session is not resumed" not_did "space.new.*-
 check "reopen: an unwritten Codex session starts fresh" did "pane.split.*codex.*--fresh"
 
 # The records of a second space, or a subfolder space listed first, never displace the worktree's own.
-newworld ownrecords; export STUB_WTRM_RC=3
+newworld ownrecords; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 add_space sp-sub $wt/sub tS idle; add_space sp-away $main tA idle
 jq '.spaces |= sort_by(.id != "sp-sub")' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
 records cid-claude cid-codex
@@ -267,9 +363,19 @@ check "reopen takes the worktree's own record, not a subfolder space's" did "spa
 check "reopen never takes another space's record" not_did "space.new.*\(sub\|away\)"
 
 # No records at all: open-space's defaults.
-newworld norecords; export STUB_WTRM_RC=3
+newworld norecords; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 print | "$bin/retire" $wt >$world/out 2>&1
 check "reopen without records starts plain claude" did 'space.new.*"argv":\["claude"\]'
+
+newworld listdown; export STUB_LS_DOWN=1
+retire $wt >/dev/null 2>&1; rc=$?
+check "an unreachable app refuses retire" test $rc -ne 0
+check "...before wt-rm runs" not_did 'wt-rm '
+
+newworld refusedearly; export STUB_WTRM_RC=1
+print | "$bin/retire" $wt >$world/out 2>&1
+check "a wt-rm that closed nothing offers no reopen" not_did 'space.new'
+grep -q 'Enter reopens' $world/out; check "...and does not ask" test $? -ne 0
 
 # --- wt-app and open-space --no-focus ------------------------------------------------------
 # sp-main is active, so it is what focus must come back to.

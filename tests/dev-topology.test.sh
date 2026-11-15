@@ -64,8 +64,9 @@ export PATH="$SCRATCH/bin:$PATH" DEV_LAYOUT="$SCRATCH/bin/layout.sh" XDG_STATE_H
 # The scripts under test pin their PATH (spec 2026-10-16, sandbox write boundary); the scratch
 # wrappers reach them through PINNED_PATH, which only the suites set.
 export PINNED_PATH="$PATH"
-# dev picks its front end from these; the topology is the TUI's.
+# dev picks its front end from these; the topology is the TUI's; a wrong pick must never reach the real app.
 unset HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
+export HERDR_PANE_ID=dev-topology DEV_OPEN_SPACE=/usr/bin/false
 
 # Start clean as well as finish clean: a run killed mid-way leaves state behind.
 # STOP before DELETE — `session delete` only acts on a stopped session, so deleting
@@ -221,7 +222,8 @@ h worktree remove --workspace "$WWS" --force >/dev/null 2>&1 || native_rm_rc=$?
 # The approved teardown path closes Herdr state, crosses only its own Git lock after
 # all checks, removes the checkout and deletes the merged branch.
 custom_rm_rc=0
-( cd "$PRIMARY" && source "$SRC_FUNCS" && HERDR_SESSION="$SESSION" wt-rm live-wt ) >/dev/null 2>&1 || custom_rm_rc=$?
+# The app is the herdr-app and wt-functions suites' subject: this suite must never reach the live app.
+( cd "$PRIMARY" && source "$SRC_FUNCS" && _wt_app_spaces() { return 0 } && HERDR_SESSION="$SESSION" wt-rm live-wt ) >/dev/null 2>&1 || custom_rm_rc=$?
 remaining_wt=$(h workspace list | jq -r --arg d "$WT" \
   '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
 [[ "$custom_rm_rc" == 0 && ! -d "$WT" && "$remaining_wt" == 0 ]] \
