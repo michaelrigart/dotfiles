@@ -1,6 +1,7 @@
 #!/bin/zsh
-# wt-app --prompt               — `wt`, asking for the branch. The app's new-worktree key runs
-#                                 this in a tab of its own: it is the key's helper and stays.
+# wt-app --prompt               — `wt`, asking for the branch. The app's new-worktree key and the
+#                                 space menu's New worktree run this in a popup (mods/popup),
+#                                 which closes when it ends.
 # wt-app <branch> [start-point] — hands over to `wt`. This plain form and --no-focus remain for
 #                                 sessions recorded with the path (their system prompt and
 #                                 --settings name it), until the TUI is retired.
@@ -16,6 +17,15 @@ while [[ "${1:-}" == --prompt || "${1:-}" == --no-focus ]]; do
   shift
 done
 
+# The popup closes with this command, so what Michael must be able to read is held open as
+# wt-prompt does in the TUI: a failure, and the lines a reopen leaves in _WT_NOTICE (the
+# untrusted-config report, the never-prepared line after a carry). Only --prompt has a popup.
+hold() {
+  [[ -n $prompt ]] || return 0
+  print -r -- "Press Enter to close."
+  IFS= read -r || true
+}
+
 if [[ -n $prompt ]]; then
   print -n -- "Branch: "
   IFS= read -r branch || branch=""
@@ -24,14 +34,11 @@ if [[ -n $prompt ]]; then
 fi
 [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt-app [--no-focus] <branch> [start-point] | wt-app [--no-focus] --prompt"; exit 1 }
 
-source "$HOME/.config/zsh/functions" || exit 1
+source "$HOME/.config/zsh/functions" || { hold; exit 1 }
 (( $+functions[wt] )) || {
-  print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines wt."; exit 1 }
+  print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines wt."; hold; exit 1 }
 
-wt ${nofocus:+--no-focus} "$@" || exit 1
-
-# The app leaves a shell behind in the prompt's tab. After a failure that shell keeps the
-# message readable, and so it does for the lines a reopen leaves in _WT_NOTICE (the
-# untrusted-config report, the never-prepared line after a carry). Otherwise the tab has
-# nothing left to say and closes itself.
-if [[ -n $prompt && -z "${_WT_NOTICE:-}" ]]; then "${0:A:h}/close-own-tab"; fi
+wt ${nofocus:+--no-focus} "$@"
+rc=$?
+if (( rc != 0 )) || [[ -n "${_WT_NOTICE:-}" ]]; then hold; fi
+exit $rc

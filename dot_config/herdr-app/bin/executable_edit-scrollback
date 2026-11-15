@@ -1,0 +1,22 @@
+#!/bin/zsh
+# edit-scrollback <terminal> — the terminal's screen and history in Neovim, the cursor on the
+# last line. The app's alt-s runs it in a popup (mods/popup), which closes when this ends.
+#
+# `hc read` gives the screen plus the history above it. The command substitution drops the
+# screen's blank lines at the bottom, so Neovim lands on the last line of text.
+emulate -L zsh
+setopt no_unset
+
+(( $# == 1 )) || { print -ru2 -- "usage: edit-scrollback <terminal>"; exit 2 }
+
+if ! text=$(hc read "$1" --lines 100000); then
+  print -ru2 -- "edit-scrollback: could not read $1."
+  print -r -- "Press Enter to close."
+  IFS= read -r || true
+  exit 1
+fi
+
+file=$(mktemp "${TMPDIR:-/tmp}/scrollback.XXXXXX") || exit 1
+trap 'rm -f "$file"' EXIT
+print -r -- "$text" > "$file"
+nvim + -- "$file"
