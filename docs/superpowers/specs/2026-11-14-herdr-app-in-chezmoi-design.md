@@ -117,8 +117,9 @@ prefix is used anywhere.
 level at a time, then ignore the app-written `mods/*/gpui-kit.d.ts` and `mods/*/jsconfig.json`.
 Directories that hold only Michael's files (`bin`, `patches`, `xreview-shim`) are re-included
 whole. `layouts`, `themes` and `mods` are re-included only for the named entries, so that
-`chezmoi add ~/.config/herdr-app` (or of any runtime file) adds nothing it shouldn't. The
-`tests` directory is not re-included, because the suites move to the repo.
+`chezmoi add ~/.config/herdr-app` (or of any runtime file) adds no runtime or shipped file and
+no generated clone. A plain add still turns the `settings.json` seed into a managed file (see
+After merge). The `tests` directory is not re-included, because the suites move to the repo.
 
 The cost is the same as for the existing allowlists: a new authored file outside the whole
 directories (a new mod, layout or theme) needs its own `!` entry, or it silently never deploys.
@@ -194,8 +195,9 @@ patched line. The allowlist sentence names the tree. The Layout block's
    byte with the live `settings.json` (`cmp`).
 3. In a scratch copy of the source, `chezmoi add` of `~/.config/herdr-app` as a whole, of
    `view.json`, `shared.json`, `data/`, `layouts/.state/` and `mods/michael-spaces`, and of a
-   shipped mod, adds nothing. This is checked in a suite that already tests allowlists (extend
-   it rather than add a new one).
+   shipped mod, adds no runtime or shipped file and no generated clone. A plain add of the tree
+   still turns the `settings.json` seed into a managed file (see After merge). This is checked
+   in a suite that already tests allowlists (extend it rather than add a new one).
 4. `command chezmoi --source <checkout> cat ~/.config/homebrew/Brewfile` differs from main's
    render by the one cask line.
 5. Both moved suites pass from the repo with the app installed: `herdr-app` 139/139 with 2

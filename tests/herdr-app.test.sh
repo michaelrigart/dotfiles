@@ -507,7 +507,7 @@ for p in view.json shared.json data layouts/.state mods/michael-spaces mods/spac
 done
 allow_world tree || { print -u2 -- "INCONCLUSIVE: no scratch source for the allowlist cases"; exit 2 }
 before=$(source_files); chezmoi_add $app
-check "chezmoi add of the whole tree adds only the new script" \
+check "chezmoi add of the whole tree adds no runtime or shipped file, only the new script" \
   test "$(source_files | grep -vxF -f <(print -r -- $before))" = $a/src/dot_config/herdr-app/bin/executable_new-script
 
 print -- "$passed/$total passed"
