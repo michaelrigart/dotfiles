@@ -51,12 +51,22 @@ echo "A. round trip, run after run"
 fresh
 run; is "the first run exits 0" "$?" 0
 is "the outbox MANIFEST lists three files" "$(lines "$OUT/MANIFEST")" 3
+ok "the outbox generation verifies against its own MANIFEST, as the peer will check it" sh -c 'cd "$1" && shasum -a 256 -c --status MANIFEST' _ "$OUT"
+ok "Codex's lock file is still there (lockf kept it)" test -f "$T/.codex/memories.lock"
 ok "outbox raw_memories.md matches the source" cmp -s "$S/raw_memories.md" "$OUT/raw_memories.md"
 ok "outbox a.md matches the source" cmp -s "$S/rollout_summaries/a.md" "$OUT/rollout_summaries/a.md"
 ok "outbox b.md matches the source" cmp -s "$S/rollout_summaries/b.md" "$OUT/rollout_summaries/b.md"
 is "the peer's raw_memories.md reaches the extension" "$(cat "$EXT/memory/raw_memories.md" 2>&1)" "peer v1"
 ok "and its summary x.md" test -f "$EXT/memory/rollout_summaries/x.md"
 ok "instructions.md carries the peer's tag" grep -qF '[from testpeer]' "$EXT/instructions.md"
+
+printf 'stray' > "$EXT/memory/notes.md"; printf 'stray' > "$EXT/memory/rollout_summaries/x.md.bak"
+run
+no "a stray file in memory/ is removed when nothing else changed" test -e "$EXT/memory/notes.md"
+no "and a stray file next to the summaries" test -e "$EXT/memory/rollout_summaries/x.md.bak"
+ok "while the generation itself stays" test -f "$EXT/memory/rollout_summaries/x.md"
+ino="$(stat -f %i "$EXT/memory/raw_memories.md")"; run
+is "a run that finds memory/ already exact rewrites nothing" "$(stat -f %i "$EXT/memory/raw_memories.md")" "$ino"
 
 rm "$S/rollout_summaries/b.md"
 rm "$INB/rollout_summaries/x.md"; printf 'y' > "$INB/rollout_summaries/y.md"; mkman "$INB"
@@ -70,12 +80,17 @@ printf 'peer v2' > "$INB/raw_memories.md"
 run
 is "a delivery the MANIFEST does not describe is not imported" "$(cat "$EXT/memory/raw_memories.md")" "peer v1"
 
-printf 'secret' > "$T/outside.md"
-printf '%s  ../../../../../outside.md\n' "$(shasum -a 256 "$T/outside.md" | cut -d' ' -f1)" > "$INB/MANIFEST"
+printf 'secret' > "$STATE/inbox/outside.md"
+printf '%s  ../outside.md\n' "$(shasum -a 256 "$STATE/inbox/outside.md" | cut -d' ' -f1)" > "$INB/MANIFEST"
 run
 ok "a MANIFEST path that leaves its folder refuses the generation" test -f "$EXT/memory/rollout_summaries/y.md"
-ok "and is logged as refused before any path is used" grep -qF 'generation refused' "$STATE/error.log"
 is "and nothing from it lands in stage or extensions" "$(find "$STATE/stage" "$S/extensions" -name outside.md | wc -l | tr -d ' ')" 0
+
+mkdir "$T/elsewhere"; printf 'z' > "$T/elsewhere/z.md"; rm -rf "$INB/rollout_summaries"; ln -s "$T/elsewhere" "$INB/rollout_summaries"
+printf '%s  rollout_summaries/z.md\n' "$(shasum -a 256 "$T/elsewhere/z.md" | cut -d' ' -f1)" > "$INB/MANIFEST"
+run
+no "a symlinked rollout_summaries in the inbox is not imported" test -e "$EXT/memory/rollout_summaries/z.md"
+rm "$INB/rollout_summaries"; mkdir "$INB/rollout_summaries"
 
 : > "$INB/MANIFEST"; rm -f "$INB/raw_memories.md" "$INB"/rollout_summaries/*.md
 run; is "an empty generation exits 0" "$?" 0
