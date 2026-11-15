@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `feat/herdr-app-auto-resume`)
+**Status:** Completed 2026-11-15 (branch `feat/herdr-app-auto-resume`, its PR against `main`).
+Do not run it again; its execution notes bind that run only.
 
 **Goal:** `mods/resume` resumes an agent without a click only after its terminal was really lost,
 never a session that runs elsewhere or that another terminal is already launching.

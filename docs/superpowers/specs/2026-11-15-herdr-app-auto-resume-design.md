@@ -1,6 +1,7 @@
 # Herdr app: resume agents only after a real terminal loss
 
-**Status:** In progress (branch `feat/herdr-app-auto-resume`)
+**Status:** Implemented (branch `feat/herdr-app-auto-resume`, its PR against `main`; plan
+`docs/superpowers/plans/2026-11-15-herdr-app-auto-resume.md`)
 **Date:** 2026-11-15
 **Branch:** `feat/herdr-app-auto-resume`
 **Sign-off:** Michael, 2026-11-15 (option A for a quit nobody saw); Codex spec review round 1's
