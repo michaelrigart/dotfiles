@@ -68,9 +68,11 @@ review can cover several repositories, each with its own `--diff <repo-path>:<ra
 (`glab mr create --target-branch <dest>`, `gh pr create --head <branch> --base <dest>`), from a
 branch already published to origin. A forge merge by an agent pins the head and is
 never deferred: wait for the pipeline, then merge immediately with
-`glab mr merge <n> --sha <head> --auto-merge=false` or
-`gh pr merge <n> --merge --match-head-commit <head>`. Run each as a plain command of its own: a
-chain, a pipe or any other environment assignment on the verb is denied.
+`glab mr merge <n> --sha <head> --auto-merge=false`. On GitHub an agent's step ends at the PR,
+since its token cannot merge: once the pre-merge review approves the head, Michael merges with
+`gh pr merge <n> --merge --admin --match-head-commit <head>`. Run each of your commands as a
+plain command of its own: a chain, a pipe or any other environment assignment on the verb is
+denied.
 
 **Never gate a dispatch on which model or effort the pane is running.** Whatever the Codex pane
 is set to is Michael's choice, and it is not yours to verify, question, or report as a problem.

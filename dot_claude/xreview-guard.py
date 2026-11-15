@@ -131,7 +131,8 @@ LS_REMOTE_CONFIG = ("Pre-merge gate: cannot read origin's head of {}: {}, and gi
                     "sandbox. The command is refused.")
 DEFERRED = ("Pre-merge gate: {} is a deferred merge (auto-merge, or merge when the pipeline "
             "succeeds), which the gate never allows: the MR/PR could be retargeted while it "
-            "waits. Wait for the pipeline, then merge immediately and pinned: {}.")
+            "waits. {}.")
+WAIT_THEN_MERGE = "Wait for the pipeline, then merge immediately and pinned: {}"
 LOOKUP = ("Pre-merge gate: the forge lookup of {} failed, so its destination is unknown and the "
           "merge is refused. Check that it exists and that the CLI is signed in, then retry.")
 CREATE_FLAG = ("Pre-merge gate: {0} is not among the flags the gate allows for {1}: it could "
@@ -165,8 +166,12 @@ PLACEHOLDER = ("Pre-merge gate: this glab api call writes and carries --placehol
 API_SPELLING = ("Pre-merge gate: this {0} api call names an MR/PR path and may write to it, but the "
                 "gate cannot read its options as {0} reads them. Write each option and its value "
                 "as separate words: {0} api -X <METHOD> <endpoint> -f <key>=<value>.")
-UNPINNED = ("Pre-merge gate: a forge merge must pin the head it merges. Its head is now {}. Once "
-            "a pre-merge review of that head approves it, merge with: {}.")
+UNPINNED = "Pre-merge gate: a forge merge must pin the head it merges. Its head is now {}. {}."
+ONCE_APPROVED = "Once a pre-merge review of that head approves it, merge with: {}"
+THEN_MERGE = "Then merge it pinned and immediate: {}"
+GH_MERGE = ("On GitHub an agent's step ends at the PR, since its token cannot merge: once a "
+            "pre-merge review of the head approves it, Michael merges it with: gh pr merge {} "
+            "--merge --admin --match-head-commit {}")
 FULL_SHA = "Pre-merge gate: pin the head with a full commit id, not {}."
 NOT_ONE = "Pre-merge gate: {} open merge requests come from {}; name the one to merge by number."
 ONE_TARGET = "Pre-merge gate: name one {} to merge."
@@ -183,8 +188,11 @@ MERGE_FLAG = ("Pre-merge gate: {0} is not among the flags the gate allows for {1
               "merge past the forge's own checks, or defer or change the merge, in a way the "
               "gate does not read. Run the command without it.")
 BRANCH_MERGE = ("Pre-merge gate: this {} api call writes to a merges endpoint, which merges one "
-                "branch into another with no MR/PR, so no review can bind it. Propose the branch "
-                "as an MR/PR, and merge that pinned once its pre-merge review approves it.")
+                "branch into another with no MR/PR, so no review can bind it. {}")
+PROPOSE_THEN_MERGE = ("Propose the branch as an MR/PR, and merge that pinned once its pre-merge "
+                      "review approves it.")
+PROPOSE_ON_GITHUB = ("Propose the branch as a PR: on GitHub an agent's step ends there, and "
+                     "Michael merges it once its pre-merge review approves it.")
 QUERY_STRING = ("Pre-merge gate: this gh api write carries a query string ({}). gh sends -f/-F "
                 "fields in the request body, and GitHub may not read a write's query string, so "
                 "the gate reads only the body. Pass each field with -f instead.")
@@ -1307,9 +1315,10 @@ def listing(items):
     return "; ".join(items) if items else "nothing"
 
 
-def check(ledger, top, source, dest, dest_rev, tip, dispatch_range, merge_hint):
+def check(ledger, top, source, dest, dest_rev, tip, dispatch_range, merge_step):
     """Allow (return) when the ledger approves tip landing on dest; deny otherwise, naming the
-    change, what is on record, and the dispatch that opens the gate."""
+    change, what is on record, the dispatch that opens the gate, and merge_step, the sentence
+    naming the merge to run once approved."""
     d = ledger.decide(top, dest, dest_rev, tip, branch=source)
     if d["allow"]:
         return
@@ -1327,8 +1336,8 @@ def check(ledger, top, source, dest, dest_rev, tip, dispatch_range, merge_hint):
                 dest=dest, tip=d["tip"] or tip, fp=d["fingerprint"] or "(none)",
                 change=listing(d["on_record"]), branch=listing(d["on_record_branch"]),
                 rng=dispatch_range)
-    if merge_hint:
-        text += "\n\nThen merge it pinned and immediate: " + merge_hint
+    if merge_step:
+        text += "\n\n" + merge_step
     raise Deny(text)
 
 
@@ -1615,8 +1624,8 @@ def judge_create_cli(shape, ledger):
         if flags.get("-H") or flags.get("--head"):
             raise Deny(FORK.format("--head"))
         if flag_on(flags.get("--auto-merge")):
-            raise Deny(DEFERRED.format("glab mr create --auto-merge",
-                                       "glab mr merge <n> --sha <head> --auto-merge=false"))
+            raise Deny(DEFERRED.format("glab mr create --auto-merge", WAIT_THEN_MERGE.format(
+                "glab mr merge <n> --sha <head> --auto-merge=false")))
     allowed = GLAB_CREATE_ALLOWED if tool == "glab" else GH_CREATE_ALLOWED
     for name in flags:
         if name not in allowed:
@@ -2200,14 +2209,27 @@ def github_merge_queue(top, host, owner, name, dest):
         raise Deny(QUEUED.format(what))
 
 
-def merge_pinned(ledger, top, source, dest, head, pin, hint):
-    """A forge merge pinned to pin; hint is the immediate pinned merge, {} for the head."""
+def agent_merge(command):
+    """The immediate pinned merge an agent runs once approved, {} in command for the head; a
+    message introduces it with its own lead, {} for the command."""
+    return lambda lead, sha: lead.format(command.format(sha))
+
+
+def michael_merge(target):
+    """A GitHub PR's merge: an agent's token cannot merge, so every message hands it to
+    Michael, whatever its lead."""
+    return lambda lead, sha: GH_MERGE.format(target, sha)
+
+
+def merge_pinned(ledger, top, source, dest, head, pin, merge):
+    """A forge merge pinned to pin; merge(lead, sha) names the merge to run once sha is
+    approved (agent_merge, michael_merge)."""
     if pin is None:
-        raise Deny(UNPINNED.format(head, hint.format(head)))
+        raise Deny(UNPINNED.format(head, merge(ONCE_APPROVED, head)))
     if not FULL_ID.fullmatch(pin):
         raise Deny(FULL_SHA.format(pin))
     check(ledger, top, source, dest, "refs/remotes/origin/" + dest, pin,
-          "origin/{}...{}".format(dest, source), hint.format(pin))
+          "origin/{}...{}".format(dest, source), merge(THEN_MERGE, pin))
 
 
 def judge_merge_cli(shape, ledger):
@@ -2232,10 +2254,11 @@ def judge_merge_cli(shape, ledger):
         # glab turns auto-merge on by default while a pipeline runs: only an explicit
         # --auto-merge=false is an immediate merge.
         if not explicitly_off(flags.get("--auto-merge")) or flag_on(flags.get("--when-pipeline-succeeds")):
-            raise Deny(DEFERRED.format("glab mr merge without --auto-merge=false",
-                                       "glab mr merge <n> --sha <head> --auto-merge=false"))
+            raise Deny(DEFERRED.format(
+                "glab mr merge without --auto-merge=false",
+                WAIT_THEN_MERGE.format("glab mr merge <n> --sha <head> --auto-merge=false")))
     elif flag_on(flags.get("--auto")):
-        raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --merge --match-head-commit <head>"))
+        raise Deny(DEFERRED.format("gh pr merge --auto", GH_MERGE.format("<n>", "<head>")))
     allowed, verb = ((GLAB_MERGE_ALLOWED, "glab mr merge") if tool == "glab"
                      else (GH_MERGE_ALLOWED, "gh pr merge"))
     for flag in flags:
@@ -2252,7 +2275,7 @@ def judge_merge_cli(shape, ledger):
         source, dest, head, iid = gitlab_mr(top, project, number, branch, host)
         gitlab_merge_train(top, project, host)
         pin = one(flags, ("--sha",), "--sha")
-        hint = "glab mr merge " + (iid or "<n>") + " --sha {} --auto-merge=false"
+        merge = agent_merge("glab mr merge " + (iid or "<n>") + " --sha {} --auto-merge=false")
     else:
         if target is not None and "://" in target:
             target = url_number(target, host, path, PR_URL, "PR")
@@ -2260,21 +2283,23 @@ def judge_merge_cli(shape, ledger):
         source, dest, head = github_pr(top, target, host + "/" + path, owner, name)
         github_merge_queue(top, host, owner, name, dest)
         pin = one(flags, ("--match-head-commit",), "--match-head-commit")
-        hint = "gh pr merge " + (target or "<n>") + " --merge --match-head-commit {}"
-    merge_pinned(ledger, top, source, dest, head, pin, hint)
+        merge = michael_merge(target or "<n>")
+    merge_pinned(ledger, top, source, dest, head, pin, merge)
 
 
 def judge_merge_gitlab_api(shape, ledger, segment, number, fields, host):
     """A REST merge: the MR and the project's merge train are read from origin's project on
     host, the host the call was checked to reach."""
     top, host, path = gitlab_project(shape["cwd"], segment, host)
-    hint = "glab api -X PUT projects/{}/merge_requests/{}/merge -f sha={{}}".format(segment, number)
+    merge = agent_merge("glab api -X PUT projects/{}/merge_requests/{}/merge -f sha={{}}".format(
+        segment, number))
     if on_value(fields.get("merge_when_pipeline_succeeds")) or on_value(fields.get("auto_merge")):
-        raise Deny(DEFERRED.format("merge_when_pipeline_succeeds/auto_merge", hint.format("<head>")))
+        raise Deny(DEFERRED.format("merge_when_pipeline_succeeds/auto_merge",
+                                   merge(WAIT_THEN_MERGE, "<head>")))
     project = quote(path, safe="")
     source, dest, head, _ = gitlab_mr(top, project, number, None, host)
     gitlab_merge_train(top, project, host)
-    merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger), hint)
+    merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger), merge)
 
 
 def judge_merge_github_api(shape, ledger, owner, repo, number, fields, host):
@@ -2284,7 +2309,7 @@ def judge_merge_github_api(shape, ledger, owner, repo, number, fields, host):
     source, dest, head = github_pr(top, number, host + "/" + path, o, n)
     github_merge_queue(top, host, o, n, dest)
     merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger),
-                 "gh api -X PUT repos/{}/{}/pulls/{}/merge -f sha={{}}".format(owner, repo, number))
+                 michael_merge(number))
 
 
 def judge_api(shape, ledger):
@@ -2301,7 +2326,8 @@ def judge_api(shape, ledger):
     if is_graphql(endpoint):
         raise Deny(GRAPHQL)
     if BRANCH_MERGES.search(unquote(endpoint_parts(endpoint)[0])):
-        raise Deny(BRANCH_MERGE.format(tool))
+        raise Deny(BRANCH_MERGE.format(
+            tool, PROPOSE_ON_GITHUB if tool == "gh" else PROPOSE_THEN_MERGE))
     if not literal(endpoint):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:

@@ -1101,12 +1101,15 @@ is "L9 the GitHub REST merge" "$(decision "$W" "gh api -X PUT repos/acme/app/pul
 echo "M. a forge merge is pinned and immediate"
 is "M1 an unpinned glab merge is denied" "$(denies "$W" 'glab mr merge 7 --auto-merge=false' 'a forge merge must pin the head it merges')" 1
 is "M2 naming the head to pin" "$(reason "$W" 'glab mr merge 7 --auto-merge=false' | grep -c "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false")" 1
-is "M3 an unpinned gh merge is denied" "$(denies "$W" 'gh pr merge 9 --squash' 'a forge merge must pin the head it merges')" 1
-is "M4 an unpinned REST merge is denied" "$(denies "$W" 'gh api -X PUT repos/acme/app/pulls/9/merge' 'a forge merge must pin the head it merges')" 1
+is "M3 an unpinned gh merge is denied, naming Michael's admin merge" \
+   "$(denies "$W" 'gh pr merge 9 --squash' 'a forge merge must pin the head it merges') $(denies "$W" 'gh pr merge 9 --squash' "Michael merges it with: gh pr merge 9 --merge --admin --match-head-commit $HEAD_SHA.")" "1 1"
+is "M4 an unpinned REST merge is denied, naming Michael's admin merge" \
+   "$(denies "$W" 'gh api -X PUT repos/acme/app/pulls/9/merge' 'a forge merge must pin the head it merges') $(denies "$W" 'gh api -X PUT repos/acme/app/pulls/9/merge' "Michael merges it with: gh pr merge 9 --merge --admin --match-head-commit $HEAD_SHA.")" "1 1"
 is "M5 glab's default auto-merge is a deferred merge, even pinned" "$(denies "$W" "glab mr merge 7 --sha $HEAD_SHA" 'glab mr merge without --auto-merge=false is a deferred merge')" 1
 is "M6 naming --auto-merge=false" "$(reason "$W" "glab mr merge 7 --sha $HEAD_SHA" | grep -c -- '--auto-merge=false')" 1
 is "M7 glab --auto-merge, even pinned" "$(denies "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge" 'glab mr merge without --auto-merge=false is a deferred merge')" 1
-is "M8 gh --auto, even pinned" "$(denies "$W" "gh pr merge 9 --auto --match-head-commit $HEAD_SHA" 'gh pr merge --auto is a deferred merge')" 1
+is "M8 gh --auto, even pinned, naming Michael's admin merge" \
+   "$(denies "$W" "gh pr merge 9 --auto --match-head-commit $HEAD_SHA" 'gh pr merge --auto is a deferred merge') $(denies "$W" "gh pr merge 9 --auto --match-head-commit $HEAD_SHA" "an agent's step ends at the PR, since its token cannot merge: once a pre-merge review of the head approves it, Michael merges it with: gh pr merge <n> --merge --admin --match-head-commit <head>.")" "1 1"
 is "M9 merge_when_pipeline_succeeds, even pinned" "$(denies "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F merge_when_pipeline_succeeds=true" 'merge_when_pipeline_succeeds/auto_merge is a deferred merge')" 1
 is "M10 auto_merge, even pinned" "$(denies "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F auto_merge=true" 'merge_when_pipeline_succeeds/auto_merge is a deferred merge')" 1
 is "M11 an abbreviated pin" "$(denies "$W" "gh pr merge 9 --match-head-commit ${HEAD_SHA:0:12}" 'pin the head with a full commit id')" 1
@@ -1115,7 +1118,9 @@ echo "N. what the pin names"
 printf 'seven\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "never reviewed"
 UNREVIEWED="$(git -C "$FW" rev-parse HEAD)"; git -C "$FW" reset -q --hard HEAD~1
 is "N1 a pin whose fingerprint is unapproved is denied" "$(denies "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" 'no full-range pre-merge review of this change is on record')" 1
-is "N2 the deny names the pinned merge to run once approved" "$(reason "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" | grep -c "Then merge it pinned and immediate: gh pr merge 9 --merge --match-head-commit $UNREVIEWED")" 1
+is "N2 the deny names the pinned merge to run once approved: GitLab's the agent's, GitHub's Michael's" \
+   "$(denies "$W" "glab mr merge 7 --sha $UNREVIEWED --auto-merge=false" "Then merge it pinned and immediate: glab mr merge 7 --sha $UNREVIEWED --auto-merge=false") $(denies "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" "On GitHub an agent's step ends at the PR, since its token cannot merge: once a pre-merge review of the head approves it, Michael merges it with: gh pr merge 9 --merge --admin --match-head-commit $UNREVIEWED") $(denies "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" 'Then merge it pinned')" \
+   "1 1 0"
 is "N3 a destination origin does not have is denied" "$(MR_TARGET=ghost2 denies "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false" 'the destination ghost2 (refs/remotes/origin/ghost2) is not available locally')" 1
 git -C "$W" branch release2 main && publish release2
 is "N4 an MR retargeted to an unapproved destination is denied" "$(PR_BASE=release2 denies "$W" "gh pr merge 9 --match-head-commit $HEAD_SHA" 'feature -> release2')" 1
@@ -1274,8 +1279,8 @@ is "Q18 so are enqueuePullRequest, revertPullRequest, updatePullRequest and merg
 is "Q19 a review thread, or updating a PR's branch from its base, stays allowed" \
    "$(decision "$W" "gh api graphql -f query='mutation { addPullRequestReviewThread(input: {}) { clientMutationId } }'") $(decision "$W" "gh api graphql -f query='mutation { updatePullRequestBranch(input: {}) { clientMutationId } }'")" \
    "allow allow"
-is "Q20 a write to the merges endpoint is denied" \
-   "$(denies "$W" 'gh api repos/acme/app/merges -f base=main -f head=other' 'writes to a merges endpoint')" 1
+is "Q20 a write to the merges endpoint is denied, leaving the PR's merge to Michael" \
+   "$(denies "$W" 'gh api repos/acme/app/merges -f base=main -f head=other' 'writes to a merges endpoint') $(denies "$W" 'gh api repos/acme/app/merges -f base=main -f head=other' "Propose the branch as a PR: on GitHub an agent's step ends there, and Michael merges it once its pre-merge review approves it.")" "1 1"
 is "Q21 so is one to its absolute URL" \
    "$(denies "$W" 'gh api -X POST https://forge.example/api/v3/repos/acme/app/merges -f base=main -f head=feature' 'writes to a merges endpoint')" 1
 is "Q22 a gh write's pin in the query string is denied" \
