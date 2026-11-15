@@ -192,12 +192,10 @@ dev() {
     local main
     main="$(builtin cd "$repo" && _wt_primary)" || return 1
     _wt_prepare_for_herdr "$main" "$repo" || return 1
-    if (( app )); then
-      "${DEV_OPEN_SPACE:-$HOME/.config/herdr-app/bin/open-space}" "${focus[@]}" "$repo"
+    if (( ! app )); then
+      "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "${focus[@]}" --worktree "$main" "$repo"
       return $?
     fi
-    "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "${focus[@]}" --worktree "$main" "$repo"
-    return $?
   fi
 
   if (( app )); then

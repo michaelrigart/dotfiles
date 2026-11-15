@@ -315,11 +315,12 @@ exit 1
 S
 chmod +x "$STUBS/fzf"
 
-# Stub open-space: one argument per line, so a case can count them.
+# Stub open-space: one argument per line, so a case can count them; MOCK_OS_RC is its status.
 OSTUB="$STUBS/open-space"
 cat > "$OSTUB" <<'S'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$OS_ARG"
+exit "${MOCK_OS_RC:-0}"
 S
 chmod +x "$OSTUB"
 
@@ -1477,5 +1478,13 @@ HC_TERMINAL_ID=t9 run_dev "'$R3'"
 rc_is 0 "K6 the app opens a repository whose path has a space"
 eq "$(wc -l < "$OS_ARG" | tr -d ' ')" "1" "K6 open-space gets one argument line"
 eq "$(<$OS_ARG)" "$R3" "K6 that line is the repository, space intact"
+
+# wt reports a failed open through dev's status, so dev must return open-space's own.
+HC_TERMINAL_ID=t9 MOCK_OS_RC=3 run_dev "'$R1'"
+rc_is 3 "K7 a primary checkout: dev returns open-space's status"
+eq "$(<$LAYOUT_ARG)" "" "K7 a primary checkout: layout.sh is never invoked"
+HC_TERMINAL_ID=t9 MOCK_OS_RC=3 run_dev "'$WT'"
+rc_is 3 "K7 a linked checkout: dev returns open-space's status"
+eq "$(<$LAYOUT_ARG)" "" "K7 a linked checkout: layout.sh is never invoked"
 
 finish
