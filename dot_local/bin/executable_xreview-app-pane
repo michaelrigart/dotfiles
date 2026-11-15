@@ -2,8 +2,8 @@
 # xreview-app-pane — the `pane …` calls ~/.local/bin/xreview makes in the Herdr app, answered from it.
 # xreview runs this as "$PANE_CLI" (herdr for the TUI, this for the app); it is not a `herdr` on PATH.
 #
-# A pane is "app:<terminal>" (app:t27): no TUI pane id looks like that, and xreview names its
-# lock file after the checkout, so the locks cannot collide either. Every
+# A pane is "app:<terminal>" (app:t27): no TUI pane id looks like that. (xreview's lock is per
+# checkout, shared by both front ends on purpose, and does not depend on the id.) Every
 # call maps the id back to the core's terminal. Reads come from `herdr-app ls` (which terminal
 # is a local Codex, in which folder) and `hc get` (title, status, processes).
 #

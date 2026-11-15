@@ -79,8 +79,8 @@ f_title='(.terminal_title_stripped // .terminal_title)'
 f_id_re='^[[:space:]]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12})'
 f_pane_obj='.result.pane | objects'
 f_status='.agent_status // empty'
-f_busy='working|blocked)'
-f_gone='*'\''"pane_not_found"'\''*'
+f_busy='working|blocked'
+f_gone='"pane_not_found"'
 f_proc_check='.result.process_info
     | (.shell_pid | type == "number")
       and (.foreground_processes | type == "array"
@@ -91,7 +91,7 @@ f_codex='.foreground_process_group_id as $g
     | [.foreground_processes[]? | select(.name == "codex" or .argv0 == "codex")]
     | (map(select(.pid == $g)) + .) | .[0] // empty'
 f_freed='.foreground_process_group_id == .shell_pid'
-f_read='pane read "$1" --source visible --lines 12 --format text'
+f_read='--source visible --lines 12 --format text'
 
 x_find_pane() { # <root>; find_pane: the ids of the Codex panes in the root
   local snap; snap="$($shim pane list 2>/dev/null || true)"
@@ -112,11 +112,11 @@ x_title_id() { # <pane>; pane_title_id with title_id_from: the thread id prefix 
 x_status() { # <pane>; pane_guard: the status it reads
   x_pane_obj "$1" | jq -r $f_status 2>/dev/null
 }
-x_busy() { case "$(x_status "$1")" in working|blocked) return 0 ;; esac; return 1 }  # pane_guard
+x_busy() { case "$(x_status "$1")" in ${~f_busy}) return 0 ;; esac; return 1 }  # pane_guard
 x_gone() { # <pane>; pane_gone
   local err
   err="$($shim pane get "$1" 2>&1 >/dev/null)" || true
-  case "$err" in *'"pane_not_found"'*) return 0 ;; esac
+  case "$err" in *"$f_gone"*) return 0 ;; esac
   return 1
 }
 x_proc() { # <pane>; pane_proc: the process info, or exit 1
@@ -132,7 +132,7 @@ x_is_free() { # <pane>; pane_is_free: the shell is back in the foreground
   if proc="$(x_proc "$1")"; then x_freed "$proc"; return; fi
   return 1
 }
-x_screen() { $shim pane read "$1" --source visible --lines 12 --format text 2>/dev/null }  # pane_screen
+x_screen() { $shim pane read "$1" ${=f_read} 2>/dev/null }  # pane_screen
 
 # --- drift: each copied filter is in xreview, verbatim -------------------------------------
 xr=$(<$xreview)
@@ -143,13 +143,13 @@ check "drift: pane_title_id" drift $f_title
 check "drift: title_id_from (ID_RE)" drift "ID_RE='$f_id_re'"
 check "drift: pane_obj" drift $f_pane_obj
 check "drift: pane_guard (status)" drift $f_status
-check "drift: pane_guard (busy)" drift $f_busy
-check "drift: pane_gone" drift $f_gone
+check "drift: pane_guard (busy)" drift "$f_busy) die"
+check "drift: pane_gone" drift "*'$f_gone'*)"
 check "drift: pane_proc (check)" drift $f_proc_check
-check "drift: pane_proc (info)" drift $f_proc_info
+check "drift: pane_proc (info)" drift "jq -c '$f_proc_info'"
 check "drift: proc_codex" drift $f_codex
 check "drift: proc_freed" drift $f_freed
-check "drift: pane_screen" drift "\"\$PANE_CLI\" $f_read"
+check "drift: pane_screen" drift "\"\$PANE_CLI\" pane read \"\$1\" $f_read"
 check "xreview drives the helper by the name it is installed under" drift 'PANE_CLI=xreview-app-pane'
 
 # refuses <args...>: the shim fails loudly, prints nothing, calls nothing

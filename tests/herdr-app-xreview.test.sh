@@ -57,6 +57,12 @@ check "xreview is started with the PATH of folders the sandbox cannot write" sam
 check "the wrapper sets no PINNED_PATH" same "$(sed -n 2p $world/out)" "PINNED_PATH=unset"
 check "planted tools first on the caller's PATH: none of them runs" same "$(marks)" ""
 
+# Sessions recorded with the wrapper's path never set XREVIEW_APP_XREVIEW: the default is $HOME/.local/bin/xreview.
+mkdir -p $world/home/.local/bin; cp $world/xreview $world/home/.local/bin/xreview
+HOME=$world/home "$bin/xreview-app" round "two words" >$world/out 2>$world/err; rc=$?
+check "without XREVIEW_APP_XREVIEW it runs \$HOME/.local/bin/xreview" test $rc -eq 7
+check "...with the arguments unchanged" same "$(sed -n '3,$p' $world/out | tr '\n' ' ')" "[round] [two words] "
+
 XREVIEW_APP_XREVIEW=$world/absent "$bin/xreview-app" >$world/out 2>$world/err; rc=$?
 check "a missing xreview is an error" test $rc -ne 0
 
