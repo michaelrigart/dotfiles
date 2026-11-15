@@ -438,6 +438,7 @@ chmod +x "$FAILSTUBS/git"
 ROOTTMP=""
 setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   unset HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION HERDR_ENV HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_PANE_ID
+  export HERDR_PANE_ID=w0:p0   # the TUI unless a case clears it; outside both front ends is the app
   [[ -n "$ROOTTMP" ]] && rm -rf "$ROOTTMP"
   ROOTTMP=$(mkd) || { print -ru2 -- "mktemp failed"; exit 1 }
   ROOTTMP="${ROOTTMP:A}"        # resolve /tmp -> /private/tmp up front, so the paths
@@ -2237,9 +2238,9 @@ grep -Fxq -- "--worktree $REPO $HOME/Code/Org/repo-feature-plain" "$DLOG" \
   && _pass "T --no-focus: a plain wt passes layout.sh no flag" \
   || _fail "T --no-focus: a plain wt passes layout.sh no flag ($(<$DLOG))"
 
-# From the Herdr app (HC_TERMINAL_ID, no HERDR_ENV/HERDR_PANE_ID) wt reaches open-space through dev.
+# Outside a TUI pane (no HERDR_ENV/HERDR_PANE_ID; an app terminal or plain Ghostty) wt reaches open-space through dev.
 setup
-HC_TERMINAL_ID=t9 run "$REPO" wt --no-focus feature/app main
+HERDR_PANE_ID= HC_TERMINAL_ID=t9 run "$REPO" wt --no-focus feature/app main
 rc_is 0 "T app: wt succeeds from the Herdr app"
 [[ -d "$HOME/Code/Org/repo-feature-app" ]] && _pass "T app: the checkout is created at the sibling path" \
                                            || _fail "T app: the checkout is created at the sibling path"

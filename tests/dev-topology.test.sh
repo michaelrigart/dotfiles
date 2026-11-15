@@ -64,8 +64,9 @@ export PATH="$SCRATCH/bin:$PATH" DEV_LAYOUT="$SCRATCH/bin/layout.sh" XDG_STATE_H
 # The scripts under test pin their PATH (spec 2026-10-16, sandbox write boundary); the scratch
 # wrappers reach them through PINNED_PATH, which only the suites set.
 export PINNED_PATH="$PATH"
-# dev picks its front end from these; the topology is the TUI's.
+# dev picks its front end from these; the topology is the TUI's; a wrong pick must never reach the real app.
 unset HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
+export HERDR_PANE_ID=dev-topology DEV_OPEN_SPACE=/usr/bin/false
 
 # Start clean as well as finish clean: a run killed mid-way leaves state behind.
 # STOP before DELETE — `session delete` only acts on a stopped session, so deleting

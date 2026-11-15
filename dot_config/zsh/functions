@@ -180,10 +180,10 @@ dev() {
   repo="${repo:A}"
   [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1 }
 
-  # The front end: a TUI pane (HERDR_ENV, HERDR_PANE_ID) wins, else the app's terminal
-  # (HC_TERMINAL_ID), else the TUI.
+  # The front end (spec 2026-11-15, section 1): a TUI pane (HERDR_ENV, HERDR_PANE_ID) gets the
+  # TUI; anywhere else, plain terminals included, the app.
   local app=0
-  [[ -z "${HERDR_ENV-}" && -z "${HERDR_PANE_ID-}" && -n "${HC_TERMINAL_ID-}" ]] && app=1
+  [[ -z "${HERDR_ENV-}" && -z "${HERDR_PANE_ID-}" ]] && app=1
 
   # A linked checkout must enter through layout.sh's worktree mode, which keeps
   # Herdr's worktree provenance; an ordinary workspace could not be identified safely

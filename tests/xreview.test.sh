@@ -44,6 +44,8 @@ export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER" XREVI
        XREVIEW_TEXT_SCAN="$SRC/dot_local/bin/executable_agent-text-scan" RPC_SRC
 unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD XREVIEW_LEDGER_LOCK_WAIT \
       HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
+# The TUI unless a case clears it: outside both front ends is the app (spec 2026-11-15 section 1).
+export HERDR_PANE_ID=w0:p0
 PANE_CMD='codex --sandbox read-only --ask-for-approval never'
 
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
@@ -429,14 +431,14 @@ refusal_msg() { # refusal_msg <text> <output>: the message of the refusal whose 
     f { print }'
 }
 
-echo "FE. the front end follows the caller's environment (spec 2026-11-14 section 5.1)"
+echo "FE. the front end follows the caller's environment (spec 2026-11-15 section 1)"
 fe_dispatch() { bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1; }   # fe_dispatch: env set by the caller
 fresh
-out="$(HC_TERMINAL_ID=t9 fe_dispatch)"
+out="$(HERDR_PANE_ID= HC_TERMINAL_ID=t9 fe_dispatch)"
 is "FE1 an app terminal dispatches" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "FE1 through the app's driver, never herdr" "$(called '^app-pane pane list')/$(called '^herdr ')" "1/0"
 fresh
-out="$(HERDR_ENV=1 HC_TERMINAL_ID=t9 fe_dispatch)"
+out="$(HERDR_PANE_ID= HERDR_ENV=1 HC_TERMINAL_ID=t9 fe_dispatch)"
 is "FE2 HERDR_ENV outranks an app terminal: herdr, no app driver" \
    "$(printf '%s' "$out" | grep -c '^xr-')/$(called '^herdr pane list')/$(called '^app-pane ')" "1/1/0"
 fresh
@@ -444,21 +446,21 @@ out="$(HERDR_PANE_ID=w1:p2 HC_TERMINAL_ID=t9 fe_dispatch)"
 is "FE3 HERDR_PANE_ID outranks an app terminal: herdr, no app driver" \
    "$(printf '%s' "$out" | grep -c '^xr-')/$(called '^herdr pane list')/$(called '^app-pane ')" "1/1/0"
 fresh
-out="$(HC_TERMINAL_ID= fe_dispatch)"
-is "FE4 an empty HC_TERMINAL_ID is no app terminal: herdr" \
-   "$(printf '%s' "$out" | grep -c '^xr-')/$(called '^herdr pane list')/$(called '^app-pane ')" "1/1/0"
+out="$(HERDR_PANE_ID= fe_dispatch)"
+is "FE4 neither front end's variable is the app" \
+   "$(printf '%s' "$out" | grep -c '^xr-')/$(called '^app-pane pane list')/$(called '^herdr ')" "1/1/0"
 fresh
-out="$(HC_TERMINAL_ID=t9 LIST_FAIL=1 fe_dispatch)"; rc=$?
+out="$(HERDR_PANE_ID= HC_TERMINAL_ID=t9 LIST_FAIL=1 fe_dispatch)"; rc=$?
 is "FE5 an app whose panes cannot be listed refuses, naming the window" \
    "$rc/$(printf '%s' "$out" | grep -c "cannot list the Herdr app's panes - is its window open?")/$(called '^herdr ')" "1/1/0"
 fresh
-HC_TERMINAL_ID=t9 HOOKS_STATUS=untrusted fe_dispatch >/dev/null
+HERDR_PANE_ID= HC_TERMINAL_ID=t9 HOOKS_STATUS=untrusted fe_dispatch >/dev/null
 is "FE6 the app path never asks about the pane-map hook" "$(called 'xreview-rpc hooks-status')" 0
 fresh
 HOOKS_STATUS=untrusted fe_dispatch >/dev/null
 is "FE6 the TUI path still does" "$(called 'xreview-rpc hooks-status')" 1
 fresh; : > "$P/agent"   # no Codex pane for the checkout
-out="$(HC_TERMINAL_ID=t9 fe_dispatch)"; rc=$?
+out="$(HERDR_PANE_ID= HC_TERMINAL_ID=t9 fe_dispatch)"; rc=$?
 is "FE7 R5 an app terminal with no Codex pane refuses with the app's remedy, ending with the marker" \
    "$rc/$(refusal_msg 'no Codex pane for' "$out" | grep -c "(open the checkout's space with dev or wt from an app terminal, or set XREVIEW_PANE)")/$(refusal_msg 'no Codex pane for' "$out" | grep -c 'Michael applies the project layout')/$(refusal_msg 'no Codex pane for' "$out" | tail -n 1 | grep -c "$MARK_END")" "1/1/0/1"
 is "FE7 and no keystroke reaches any pane" "$(untouched)/$(called 'app-pane pane send-keys')" "yes/0"
@@ -1439,7 +1441,7 @@ is "P1 R28 the message ends with its own step, never the marker" \
 is "P1 untouched" "$(untouched)" yes
 is "P1 and no round consumed" "$(bash "$XREVIEW" round)" 0
 : > "$CALLS"
-out="$(HC_TERMINAL_ID=t9 XREVIEW_LOCK_WAIT=0.5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+out="$(HERDR_PANE_ID= HC_TERMINAL_ID=t9 XREVIEW_LOCK_WAIT=0.5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "P1b the app front end shares the checkout's lock" \
    "$rc/$(printf '%s' "$out" | grep -c 'xreview: another dispatch is using the Codex pane w1:p2')" "1/1"
 kill -9 "$holder"; wait "$holder" 2>/dev/null

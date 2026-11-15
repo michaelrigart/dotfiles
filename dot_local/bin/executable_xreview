@@ -22,12 +22,10 @@ set -euo pipefail
 # stays first for the codex launcher; the sandbox cannot write it. PINNED_PATH is for the
 # suites only.
 PATH=${PINNED_PATH:-$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
-# The Herdr front end the caller runs in (spec 2026-11-14, section 5.1): a TUI pane (HERDR_ENV or
-# HERDR_PANE_ID) wins over an app terminal (HC_TERMINAL_ID), and neither means the TUI. The panes
-# are driven through PANE_CLI, which answers the same `pane` subcommands for both.
-if [ -n "${HERDR_ENV:-}" ] || [ -n "${HERDR_PANE_ID:-}" ]; then FRONT_END=tui
-elif [ -n "${HC_TERMINAL_ID:-}" ]; then FRONT_END=app
-else FRONT_END=tui; fi
+# The Herdr front end (spec 2026-11-15, section 1): a TUI pane (HERDR_ENV or HERDR_PANE_ID) gets
+# the TUI; anywhere else, plain terminals included, the app. The panes are driven through
+# PANE_CLI, which answers the same `pane` subcommands for both.
+if [ -n "${HERDR_ENV:-}" ] || [ -n "${HERDR_PANE_ID:-}" ]; then FRONT_END=tui; else FRONT_END=app; fi
 if [ "$FRONT_END" = app ]; then PANE_CLI=xreview-app-pane; else PANE_CLI=herdr; fi
 # Without this, a `die` inside a function called via $(...) from ANOTHER function that is
 # itself invoked via $(...) (pane_command from inside pane_prepare, say) silently loses its
