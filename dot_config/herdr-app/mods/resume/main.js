@@ -137,6 +137,7 @@ export default class Resume extends View {
     this.seen = []; // what the last scan saw in each asked terminal
     this.button = []; // remembered terminals back at a shell that were not lost
     this.resuming = 0; // sends in flight
+    this.sending = new Set(); // their addresses: a launch under way is not for the button
     this.sig = "";
     this.at = 0;
     cx.timer.every(TICK, (cx) => this.tick(cx));
@@ -196,7 +197,8 @@ export default class Resume extends View {
         if (changed) setShared(KEY, next);
         this.firstSeen = r.firstSeen;
         this.seen = seen;
-        this.button = [...r.button, ...gaveUp];
+        for (const a of go) this.sending.add(a);
+        this.button = [...r.button, ...gaveUp].filter((a) => !this.sending.has(a));
         this.again = r.again; // a new shell is not settled yet: look again on the next tick
         if (gaveUp.length) heldToast(gaveUp.length);
         if (go.length) cx.spawn((cx) => this.send(cx, go, next, true));
@@ -216,13 +218,14 @@ export default class Resume extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const addresses = this.button.filter((a) => shared(KEY)?.[a]);
+        const addresses = this.button.filter((a) => !this.sending.has(a) && shared(KEY)?.[a]);
         const said = await answers(addresses.map((a) => shared(KEY)[a]));
         // As in scan: read fresh, decide and claim without awaiting in between.
         const saved = { ...(shared(KEY) ?? {}) };
         const live = addresses.filter((a) => saved[a]);
         const { go, held } = reserve(live, saved, this.seen, elsewhere(live.map((a) => saved[a]), said));
         const next = claim(saved, go, { sent: true });
+        for (const a of go) this.sending.add(a);
         if (go.length) setShared(KEY, next);
         this.button = this.button.filter((a) => !go.includes(a));
         if (held.length) heldToast(held.length);
@@ -246,6 +249,8 @@ export default class Resume extends View {
         return (await hc(["send", address, `cd ${quote(rec.cwd)} && ${(await written(rec)) ? rec.cmd : rec.fresh}`])).code === 0;
       } catch {
         return false;
+      } finally {
+        this.sending.delete(address);
       }
     }));
     const failed = sent.filter((ok) => !ok).length;
