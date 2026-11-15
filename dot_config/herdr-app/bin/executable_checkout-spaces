@@ -40,10 +40,20 @@ hc_run() { command env -u HC_TERMINAL_ID -u HC_SCOPE hc "$@" }
 # hc get, given five seconds: a terminal that cannot be asked about cannot be vouched for.
 hc_get() { /usr/bin/perl -e 'alarm shift; exec @ARGV' 5 env -u HC_TERMINAL_ID -u HC_SCOPE hc get "$1" --json 2>/dev/null }
 
-# listing, spaces, terminals, subagents: the app's answer and the close set read from it.
+# listing, spaces, terminals, subagents: the app's answer and the close set read from it. The
+# answer is taken only in the shape every traversal below and in do_check relies on (a jq error
+# inside $(...) is an empty result, which a check would read as "nothing found"); the foreign
+# spaces' terminals are held to it too, since check 5 walks them.
 load_set() {
-  listing=$(app ls 2>/dev/null) \
-    && jq -e 'type == "object" and (.spaces | type == "array")' <<<"$listing" >/dev/null 2>&1 || return 1
+  badshape=
+  listing=$(app ls 2>/dev/null) || return 1
+  jq -e 'type == "object" and (.spaces | type == "array") and all(.spaces[]; type == "object") and
+    all(.spaces[] | select(.machine == null);
+      (.id | type == "string") and (.tabs | type == "array") and
+      all(.tabs[]; type == "object" and (.terminals | type == "array") and
+        all(.terminals[]; type == "object" and (.terminal | type == "string") and
+          ((.sub_agents // []) | type == "array" and all(.[]; type == "string" or (type == "object" and (.terminal | type == "string")))))))' \
+    <<<"$listing" >/dev/null 2>&1 || { badshape=1; return 1 }
   local row rf
   local -a subs
   spaces=()
@@ -55,13 +65,13 @@ load_set() {
     fi
   done
   spaces+=( $subs )
-  ids=$(jq -nc '$ARGS.positional' --args $spaces)
+  ids=$(jq -nc '$ARGS.positional' --args $spaces) || return 1
   # Every terminal of the set, the sub-agents too (the listing names those by address only),
   # in the order of $spaces.
   terminals=$(jq -c --argjson ids "$ids" '[$ids[] as $i | .spaces[] | select(.id == $i)
-    | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)]' <<<"$listing")
+    | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)]' <<<"$listing") || return 1
   subagents=$(jq -c --argjson ids "$ids" '[$ids[] as $i | .spaces[] | select(.id == $i)
-    | .tabs[].terminals[] | (.sub_agents[]? | if type == "string" then . else .terminal end)]' <<<"$listing")
+    | .tabs[].terminals[] | (.sub_agents[]? | if type == "string" then . else .terminal end)]' <<<"$listing") || return 1
 }
 
 # Where a terminal is: "space / tab".
@@ -71,7 +81,11 @@ where_is() { jq -r --arg t "$1" 'first(.spaces[] as $s | $s.tabs[] as $b
 reason() { print -ru2 -- "checkout-spaces: refusing — $*" }
 
 unreachable() {
-  if [[ $verb == list ]]; then print -ru2 -- "checkout-spaces: cannot read the Herdr app's spaces"
+  if [[ -n $badshape ]]; then
+    if [[ $verb == list ]]; then print -ru2 -- "checkout-spaces: the Herdr app's answer was not in the expected shape"
+    else reason "the Herdr app's answer was not in the expected shape, so its spaces cannot be read"
+    fi
+  elif [[ $verb == list ]]; then print -ru2 -- "checkout-spaces: cannot read the Herdr app's spaces"
   else reason "cannot read the Herdr app's spaces — open its window, then retry"
   fi
   exit 1
@@ -81,21 +95,26 @@ unreachable() {
 # in the checkout refuses even when the checkout has no space of its own.
 do_check() {
   local -a reasons active editors inside missing
-  local t got name cwd hcls
+  local t got name cwd hcls busy miss hcbusy foreign
   [[ -z $caller ]] || ! jq -e --arg t "$caller" 'index($t) != null' <<<"$terminals" >/dev/null \
     || reasons+=( "this terminal ($caller) is inside a space being closed; run this from another space" )
 
   # Busy: an agent or sub-agent that is working or blocked. A pane terminal's status is the
   # app's; a sub-agent's is only in the core's listing, which `--all` keeps finished ones in.
-  active=( ${(f)"$(jq -r --argjson ids "$ids" '
+  busy=$(jq -r --argjson ids "$ids" '
     .spaces[] | select(.id as $i | $ids | index($i)) | .tabs[].terminals[] | ., (.sub_agents[]? | objects)
-    | select(.status == "working" or .status == "blocked") | "\(.app // "agent") (\(.terminal)) is \(.status)"' <<<"$listing")"} )
+    | select(.status == "working" or .status == "blocked") | "\(.app // "agent") (\(.terminal)) is \(.status)"' <<<"$listing") \
+    || reasons+=( "cannot read the status of the agents in the Herdr app's listing" )
+  active=( ${(f)busy} )
   if jq -e 'length > 0' <<<"$subagents" >/dev/null; then
-    if hcls=$(hc_run ls --all --json 2>/dev/null) && jq -e '.terminals | type == "array"' <<<"$hcls" >/dev/null 2>&1; then
-      missing=( ${(f)"$(jq -r --argjson s "$subagents" '[.terminals[].address] as $a | $s[] | select(. as $x | $a | index($x) | not)' <<<"$hcls")"} )
+    if hcls=$(hc_run ls --all --json 2>/dev/null) \
+        && jq -e '(.terminals | type == "array") and all(.terminals[]; type == "object" and (.address | type == "string"))' <<<"$hcls" >/dev/null 2>&1 \
+        && miss=$(jq -r --argjson s "$subagents" '[.terminals[].address] as $a | $s[] | select(. as $x | $a | index($x) | not)' <<<"$hcls") \
+        && hcbusy=$(jq -r --argjson t "$terminals" '.terminals[] | select(.address as $a | $t | index($a))
+          | select(.status == "working" or .status == "blocked") | "\(.agent // "agent") (\(.address)) is \(.status)"' <<<"$hcls"); then
+      missing=( ${(f)miss} )
       (( $#missing )) && reasons+=( "the Herdr core's listing (hc ls --all) does not include sub-agent(s) ${(j:, :)missing}, so their status is unknown" )
-      active+=( ${(f)"$(jq -r --argjson t "$terminals" '.terminals[] | select(.address as $a | $t | index($a))
-        | select(.status == "working" or .status == "blocked") | "\(.agent // "agent") (\(.address)) is \(.status)"' <<<"$hcls")"} )
+      active+=( ${(f)hcbusy} )
     else
       reasons+=( "cannot read the Herdr core's listing (hc ls --all --json), so the status of sub-agent(s) ${(j:, :)${(f)"$(jq -r '.[]' <<<"$subagents")"}} is unknown" )
     fi
@@ -107,6 +126,9 @@ do_check() {
   # pass them unseen.
   for t in ${(f)"$(jq -r '.[]' <<<"$terminals")"}; do
     got=$(hc_get "$t") && [[ -n $got ]] || { reasons+=( "cannot check terminal $t ($(where_is $t)): hc get did not answer" ); continue }
+    # A finished terminal answers without a foreground: nothing runs in it, so nothing is lost.
+    jq -e 'type == "object" and (.state == "finished" or (.foreground.name | type == "string"))' <<<"$got" >/dev/null 2>&1 \
+      || { reasons+=( "cannot check terminal $t ($(where_is $t)): hc get gave no foreground" ); continue }
     name=$(jq -r '.foreground.name // empty' <<<"$got" 2>/dev/null)
     [[ ${name#-} =~ $vim_re ]] && editors+=( "$name in $(where_is $t) ($t)" )
   done
@@ -114,10 +136,12 @@ do_check() {
 
   # Any other local terminal now inside the checkout holds it open, and its space is not ours.
   # One that cannot say where it is cannot be vouched for either.
-  for t in ${(f)"$(jq -r --argjson ids "$ids" '.spaces[] | select(.machine == null and (.id as $i | $ids | index($i) | not))
-      | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)' <<<"$listing")"}; do
+  foreign=$(jq -r --argjson ids "$ids" '.spaces[] | select(.machine == null and (.id as $i | $ids | index($i) | not))
+      | .tabs[].terminals[] | .terminal, (.sub_agents[]? | if type == "string" then . else .terminal end)' <<<"$listing") \
+    || inside+=( "cannot list the terminals of the other spaces, so where they are cannot be told" )
+  for t in ${(f)foreign}; do
     got=$(hc_get "$t")
-    cwd=$(jq -r '.foreground.cwd // empty' <<<"$got" 2>/dev/null)
+    cwd=$(jq -r '.foreground.cwd | select(type == "string")' <<<"$got" 2>/dev/null)
     if [[ -z $got || -z $cwd ]]; then
       inside+=( "cannot tell where terminal $t ($(where_is $t)) is: hc get gave no folder" )
     elif [[ $cwd == "$folder" || $cwd == "$folder"/* || ${cwd:A} == "$folder" || ${cwd:A} == "$folder"/* ]]; then
@@ -185,7 +209,9 @@ case $verb in
       closed+=( $id )
     done
     load_set || { print -ru2 -- "checkout-spaces: closed ${(j:, :)closed}, but cannot read the Herdr app's spaces to verify"; exit 1 }
-    left=( ${(f)"$(jq -r --argjson c "$want" '.spaces[] | select(.id as $i | $c | index($i)) | .id' <<<"$listing")"} )
+    leftout=$(jq -r --argjson c "$want" '.spaces[] | select(.id as $i | $c | index($i)) | .id' <<<"$listing") \
+      || { print -ru2 -- "checkout-spaces: closed ${(j:, :)closed}, but cannot tell from the Herdr app's spaces whether they are gone"; exit 1 }
+    left=( ${(f)leftout} )
     (( $#left )) && { print -ru2 -- "checkout-spaces: space(s) ${(j:, :)left} are still open after the close"; exit 1 }
     exit 0
     ;;

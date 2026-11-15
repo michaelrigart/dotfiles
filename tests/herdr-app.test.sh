@@ -196,6 +196,19 @@ newworld nofolder; print '{"state":"live"}' > $STUB_DIR/get-tNEW1.json
 cs check $wt >$world/out 2>&1; rc=$?
 check "another space's terminal that answers without a folder refuses" test $rc -eq 1
 check "...and is named" grep -q 'tNEW1.*gave no folder' $world/out
+# A terminal of the set whose answer shows nothing about its foreground is not vouched for.
+newworld empty-answer; print '{}' > $STUB_DIR/get-t2.json
+cs check $wt >$world/out 2>&1; rc=$?
+check "a terminal of the set that answers {} refuses" test $rc -eq 1
+check "...and is named" grep -q 't2.*gave no foreground' $world/out
+newworld finished; print '{"state":"finished"}' > $STUB_DIR/get-t2.json
+cs check $wt >/dev/null 2>&1; rc=$?
+check "a finished terminal, which answers without a foreground, passes" test $rc -eq 0
+# Another local space that is not in the shape the traversals rely on is not read around.
+newworld malformed-listing; jq '.spaces[2].tabs = null' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
+cs check $wt >$world/out 2>&1; rc=$?
+check "a listing with another local space whose tabs is null refuses" test $rc -eq 1
+check "...and says the answer was not in the expected shape" grep -q 'expected shape' $world/out
 
 # Unsaved buffers die with the terminal.
 for editor in nvim vim; do
@@ -228,8 +241,12 @@ check "a listing without spaces refuses" test $rc -eq 1
 
 newworld subagent-unknown
 jq '.spaces[0].tabs[0].terminals[0].sub_agents = ["t1s"]' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
-for how in missing failing; do
-  if [[ $how == failing ]]; then : > $STUB_DIR/hc-ls-fail; else print '{"terminals":[]}' > $STUB_DIR/hc-ls.json; fi
+for how in missing malformed failing; do
+  case $how in
+    failing) : > $STUB_DIR/hc-ls-fail ;;
+    malformed) print '{"terminals":["t1s"]}' > $STUB_DIR/hc-ls.json ;;
+    *) print '{"terminals":[]}' > $STUB_DIR/hc-ls.json ;;
+  esac
   cs check $wt >/dev/null 2>&1; rc=$?
   check "a sub-agent whose status hc ls does not give refuses ($how)" test $rc -eq 1
 done
