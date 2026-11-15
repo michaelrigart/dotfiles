@@ -138,9 +138,11 @@ apply_memory() {
   mkdir -p "$mem/rollout_summaries" || { log "$peer: cannot create the memory folder"; return 1; }
   for rel in $(printf '%s\n' "$paths" | grep -v '^raw_memories\.md$') $(printf '%s\n' "$paths" | grep '^raw_memories\.md$'); do
     if [ -f "$mem/$rel" ] && [ ! -L "$mem/$rel" ] && cmp -s "$stg/$rel" "$mem/$rel"; then continue; fi
-    if cp "$stg/$rel" "$tmp" \
-      && { [ ! -d "$mem/$rel" ] || [ -L "$mem/$rel" ] || rm -rf "${mem:?}/$rel"; } \
-      && mv -f "$tmp" "$mem/$rel"; then
+    if [ -d "$mem/$rel" ] && [ ! -L "$mem/$rel" ]; then
+      log "$peer: cannot write $rel into the memory, a directory is in its place, kept the previous import"
+      return 1
+    fi
+    if cp "$stg/$rel" "$tmp" && mv -fh "$tmp" "$mem/$rel"; then
       :
     else
       rm -f "$tmp"
@@ -196,7 +198,7 @@ EOF
     apply_memory "$peer" "$stg" "$mem" "$paths" || return 0
   fi
   render_instructions "$peer" > "$new" || return 1
-  cmp -s "$new" "$ext/instructions.md" 2>/dev/null || mv -f "$new" "$ext/instructions.md" \
+  cmp -s "$new" "$ext/instructions.md" 2>/dev/null || mv -fh "$new" "$ext/instructions.md" \
     || { log "$peer: cannot write instructions.md"; rc=1; }
   rm -f "$new"
   return "$rc"

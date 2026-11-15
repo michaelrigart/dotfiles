@@ -90,6 +90,14 @@ rm -rf "$INB"; cp -R "$ROOT/inbox.good" "$INB"
 run
 no "the next run, on the old generation, removes the y.md the failed run had copied" test -e "$EXT/memory/rollout_summaries/y.md"
 
+# A listed path that is a symlink to a directory is replaced by the file, never written through.
+mkdir "$S/otherdir"; rm "$EXT/memory/rollout_summaries/x.md"; ln -s "$S/otherdir" "$EXT/memory/rollout_summaries/x.md"
+run
+is "a listed path that is a symlink to a directory is replaced by the generation's file" "$(cat "$EXT/memory/rollout_summaries/x.md" 2>&1)" "x"
+ok "and is a regular file, not a link" test -f "$EXT/memory/rollout_summaries/x.md" -a ! -L "$EXT/memory/rollout_summaries/x.md"
+is "nothing was written into the link's target" "$(find "$S/otherdir" -mindepth 1 | wc -l | tr -d ' ')" 0
+rm -rf "$S/otherdir"
+
 rm "$S/rollout_summaries/b.md"
 rm "$INB/rollout_summaries/x.md"; printf 'y' > "$INB/rollout_summaries/y.md"; mkman "$INB"
 run; is "a second run exits 0" "$?" 0
