@@ -44,7 +44,7 @@
 - Test: `tests/xreview.test.sh`
 
 **Interfaces:**
-- Produces: `FRONT_END` (`tui` | `app`) and `PANE_CMD` (`herdr` | `xreview-app-pane`), set once at the top; every pane call is `"$PANE_CMD" pane …`. `lock_key <root>`: prints the lowercase SHA-256 hex of `<root>`'s bytes. `lock_pane <pane> <root>`: locks `$XDG_STATE_HOME/xreview/locks/$(lock_key <root>).lock`; its messages still name `<pane>`.
+- Produces: `FRONT_END` (`tui` | `app`) and `PANE_CLI` (`herdr` | `xreview-app-pane`), set once at the top; every pane call is `"$PANE_CLI" pane …`. `lock_key <root>`: prints the lowercase SHA-256 hex of `<root>`'s bytes. `lock_pane <pane> <root>`: locks `$XDG_STATE_HOME/xreview/locks/$(lock_key <root>).lock`; its messages still name `<pane>`.
 - Consumes: nothing. `xreview-app-pane` arrives in Task 5; until then only the suite's stub exists.
 
 - [ ] **Step 1: Clear the front-end variables in the suite.** Add `HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID` to the `unset` at the top of `tests/xreview.test.sh` (beside `XREVIEW_MAX_ROUNDS`).
@@ -65,9 +65,9 @@
 - [ ] **Step 4: Run them and see them fail.** Run: `./tests/run.sh xreview` (exact name: lifts the heavy gate). Expected: FE1, FE5, FE6, P1b, P7, P7b, P7c FAIL; everything else PASS.
 
 - [ ] **Step 5: Implement.**
-  - After the PATH line: the §5.1 rule sets `FRONT_END`; `PANE_CMD=herdr` for `tui`, `xreview-app-pane` for `app`.
-  - The 11 call sites become `"$PANE_CMD" pane …`, arguments unchanged.
-  - Messages: `cannot list herdr panes - is herdr running?` and `cannot read herdr's pane list` stay for `tui`; for `app` they read `cannot list the Herdr app's panes - is its window open?` and `cannot read the Herdr app's pane list`. The four `(herdr pane get)` / `(herdr pane process-info)` parentheticals name `$PANE_CMD` instead of the literal `herdr`.
+  - After the PATH line: the §5.1 rule sets `FRONT_END`; `PANE_CLI=herdr` for `tui`, `xreview-app-pane` for `app`.
+  - The 11 call sites become `"$PANE_CLI" pane …`, arguments unchanged.
+  - Messages: `cannot list herdr panes - is herdr running?` and `cannot read herdr's pane list` stay for `tui`; for `app` they read `cannot list the Herdr app's panes - is its window open?` and `cannot read the Herdr app's pane list`. The four `(herdr pane get)` / `(herdr pane process-info)` parentheticals name `$PANE_CLI` instead of the literal `herdr`.
   - `warn_pane_map_untrusted` is called only when `FRONT_END=tui`.
   - `lock_key <root>`, a function of its own defined just before `lock_pane`: `/usr/bin/python3 -I -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"`. `lock_pane <pane> <root>` names its file `$(lock_key "$2").lock` (a failed or empty key dies `cannot name the lock for the Codex pane <pane>; no review was started. Michael's call: report this and stop.`). Both callers pass `"$(pane_root)"`.
   - Update the header comment where it says the pane is a "herdr pane".
@@ -157,7 +157,7 @@
 
 - [ ] **Step 3: Run and see it fail.** Run: `./tests/xreview-app-pane.test.sh`, `./tests/herdr-app-xreview.test.sh`. Expected: the identity assertions and the new wrapper cases FAIL; the moved cases and the drift checks PASS.
 
-- [ ] **Step 4: Implement** the wrapper `hc_()` (or equivalent) in the helper and route its `hc get/keys/send/read` calls through it; update the header comment (it is xreview's app pane helper, called through `PANE_CMD`, not a `herdr` on PATH; the identity rule and why, citing §5.3). Replace `xreview-app`'s body with the Interfaces' two lines and a comment saying it remains for sessions recorded with its path until the TUI is retired (§5.7).
+- [ ] **Step 4: Implement** the wrapper `hc_()` (or equivalent) in the helper and route its `hc get/keys/send/read` calls through it; update the header comment (it is xreview's app pane helper, called through `PANE_CLI`, not a `herdr` on PATH; the identity rule and why, citing §5.3). Replace `xreview-app`'s body with the Interfaces' two lines and a comment saying it remains for sessions recorded with its path until the TUI is retired (§5.7).
 
 - [ ] **Step 5: Run and see it pass.** Run: `./tests/xreview-app-pane.test.sh`, `./tests/run.sh herdr-app xreview`. Expected: PASS.
 
