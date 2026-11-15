@@ -4,7 +4,8 @@
 **Date:** 2026-11-15
 **Branch:** `feat/herdr-app-auto-resume`
 **Sign-off:** Michael, 2026-11-15 (option A for a quit nobody saw); Codex spec review round 1's
-two findings: one fixed (Codex ownership), one decided by Michael (option A)
+two findings: one fixed (Codex ownership), one decided by Michael (option A); round 2's one finding
+fixed (launch reservation)
 
 Agents in the Herdr desktop app should come back on their own after their terminals are lost, as
 they do in the herdr TUI (`resume_agents_on_restore = true` in `~/.config/herdr/config.toml`), and
@@ -110,7 +111,13 @@ Before any resume, automatic or from the button, a session is skipped when:
 1. another terminal in the same batch already takes that session id;
 2. another of this computer's app terminals runs it now (the scan already knows each running
    agent's session id);
-3. `bin/session-running <claude|codex> <id>` exits 0. New helper, same shape as
+3. it was sent to a terminal less than 60 s ago, automatically or from the button, and no app
+   terminal is seen running it yet: a launch in flight. An agent publishes its session (Claude's
+   registry, Codex's loaded rollout) only once it has started, so without this a second terminal
+   that settles on a later scan, or a click in between, would send the same session again. The
+   reservation lives in the mod's memory, by session id, and ends when the session is seen running
+   or after 60 s;
+4. `bin/session-running <claude|codex> <id>` exits 0. New helper, same shape as
    `bin/session-written`:
    - Claude: a file in `~/.claude/sessions/` (Claude Code's own registry of running sessions, one
      per pid) has that `sessionId` and its pid is alive. Covers every Claude on the machine: app,
@@ -149,8 +156,9 @@ which a parallel line edits:
 
 1. **Decision:** a core restart (same root pids) resumes nothing, and a terminal at a shell is
    marked quit; a lost terminal (new pid) whose agent was running is resumed once its pid has held
-   for the settle time, a second terminal with the same session is not, a quit one is not, and one
-   whose session runs elsewhere waits. Revert check: the core-based rule fails the first half.
+   for the settle time, a second terminal with the same session is not (in the same scan, nor when
+   it settles on the next scan while the first one's launch is in flight), a quit one is not, and
+   one whose session runs elsewhere waits. Revert check: the core-based rule fails the first half.
 2. **Helper:** a Claude session whose registry pid is alive is running, and not once the pid is
    dead; a Codex session whose rollout the test holds open is running, and not once it is closed;
    an id listed in a scratch TUI `session.json` is running.
@@ -198,3 +206,5 @@ Options:
 
 - A quit nobody saw, then a loss: resumed (decided above).
 - Pid reuse across a reboot can make a lost terminal look kept: it gets the button.
+- A launch reservation is in memory: an app restart or a mod reload in the seconds between a send
+  and the agent publishing its session forgets it.
