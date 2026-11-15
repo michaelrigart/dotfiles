@@ -16,7 +16,7 @@
 - No test or step runs anything against the live Herdr app, herdr-core, the TUI, or a real checkout: no unstubbed `herdr-app`, `hc`, `herdr`, `wt-rm` or `git worktree remove`. `tests/dev-topology.test.sh` is never run by an agent.
 - Never edit a deployed file (`~/.config/...`, `~/.local/bin/...`); edit the chezmoi source.
 - Out of bounds (parallel lines): `dot_config/herdr-app/mods/resume/`, `dot_config/herdr-app/keys.json.tmpl`, `wt-app --prompt`, any new popup mod.
-- The helper's pinned PATH, verbatim: `$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`.
+- The helper's pinned PATH, verbatim: `PATH=${PINNED_PATH:-$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}`. `PINNED_PATH` is for the suites only, as in xreview: `/opt/homebrew/bin/herdr-app` is the live app on Michael's machine, so a suite simulating "no app" must replace the whole PATH, not remove a stub.
 - The helper runs every `hc` call with `HC_TERMINAL_ID` and `HC_SCOPE` removed (`env -u HC_TERMINAL_ID -u HC_SCOPE`); it reads the caller's `HC_TERMINAL_ID` only for the caller check.
 - Execute suites (`./tests/x.test.sh` or `./tests/run.sh <name>`), never `bash tests/x.test.sh`. Report totals as passed/total. Read `tests/AGENTS.md` before changing a suite.
 - Tests: one case per new behaviour or plausible regression, extending existing cases first; no variant matrices.
@@ -125,7 +125,7 @@ git commit -m "Pick the Herdr app for callers outside a TUI pane"
 
 - [ ] **Step 1: Move and add the cases (failing first)**
 
-In `tests/herdr-app.test.sh` add `cs() { "$bin/checkout-spaces" "$@" </dev/null }` beside `retire()`, and add the helper to the guard list at line 19. Retarget, keeping each case's world setup and descriptions:
+In `tests/herdr-app.test.sh` add `cs() { "$bin/checkout-spaces" "$@" </dev/null }` beside `retire()`, and add the helper to the guard list at line 19. `newworld`'s `unset` line also unsets `STUB_LS_DOWN`, `STUB_WTRM_CLOSE` and `PINNED_PATH`, so no knob leaks into the next world (file knobs live in the per-world `$STUB_DIR`). Retarget, keeping each case's world setup and descriptions:
 - `busy-working`/`busy-blocked`, `inside`, `subagent`, `subspace`, `wandered-in`, `unaskable`, `editor-*`: `cs check $wt`; expect rc non-zero and `not_did 'space.close'` (drop the `wt-rm` half of those patterns).
 - `subspace-idle`, `wandered-out`: `cs close $wt`; keep their `did`/`not_did`/`before` assertions, with `before 'sp-sub' 'herdr-app ls'`-style ordering replaced by "sp-wt closes before sp-sub".
 - `unaskable-foreign`: now `cs check $wt` expects rc 1 and the output names `tNEW1` (description: "another space's terminal that cannot be asked about refuses").
@@ -134,10 +134,11 @@ In `tests/herdr-app.test.sh` add `cs() { "$bin/checkout-spaces" "$@" </dev/null 
 New cases, each in its own `newworld`:
 
 ```zsh
-newworld noapp; rm $HOME/.local/bin/herdr-app
+newworld noapp; mkdir $world/nobin; export PINNED_PATH=$world/nobin:/usr/bin:/bin
 check "no app: check passes" cs check $wt
 check "no app: list is the empty set" test "$(cs list $wt)" = '{"spaces":[],"terminals":[],"records":[]}'
 check "no app: nothing is called" not_did 'herdr-app'
+unset PINNED_PATH
 
 newworld down; export STUB_LS_DOWN=1
 cs check $wt >$world/out 2>&1; rc=$?
@@ -164,11 +165,13 @@ newworld stuck; : > $STUB_DIR/stuck-sp-wt
 cs close $wt >/dev/null 2>&1; rc=$?
 check "a space that survives the close refuses" test $rc -eq 1
 
-newworld closefail; add_space sp-sub $wt/sub tS idle; : > $STUB_DIR/closefail-sp-sub
+newworld closefail; add_space sp-sub $wt/sub tS idle; add_space sp-sub2 $wt/sub2 tS2 idle
+: > $STUB_DIR/closefail-sp-sub
 cs close $wt >$world/out 2>&1; rc=$?
 check "a failed close stops and names" test $rc -eq 1
 check "...the space it closed" grep -q 'sp-wt' $world/out
 check "...and the one that failed" grep -q 'sp-sub' $world/out
+check "...and closes nothing after it" not_did 'space.close {"id":"sp-sub2"'
 
 newworld gone; rm -rf $wt
 check "a gone checkout's space closes" cs close $wt
@@ -298,7 +301,7 @@ git commit -m "Close the checkout's app spaces in wt-rm"
 - [ ] **Step 1: Update retire's cases (failing first)**
 
 - Delete the `dirty` case (`wt-rm` refuses a dirty checkout itself).
-- `ok`, `warned`, `fail`, `reopen`, `fresh`, `ownrecords`, `norecords`: export `STUB_WTRM_CLOSE=$wt`. In `ok` and `fail`, replace "the space closes before wt-rm runs" with `check "retire closes no space itself before wt-rm" before 'wt-rm ' 'space.close'`.
+- `ok`, `warned`, `fail`, `reopen`, `fresh`, `ownrecords`, `norecords`: export `STUB_WTRM_CLOSE=$wt`. In `ok` and `fail`, replace "the space closes before wt-rm runs" with `check "retire closes no space itself before wt-rm" before 'wt-rm ' 'space.close'`. `ok` also calls `records cid-claude cid-codex` first: its two agents need records, or `close`'s missing-record warning on stderr keeps the tab open and "success closes its own tab" fails.
 - New:
 
 ```zsh
@@ -310,7 +313,7 @@ check "...before wt-rm runs" not_did 'wt-rm '
 newworld refusedearly; export STUB_WTRM_RC=1
 print | "$bin/retire" $wt >$world/out 2>&1
 check "a wt-rm that closed nothing offers no reopen" not_did 'space.new'
-check "...and does not ask" ! grep -q 'Enter reopens' $world/out
+grep -q 'Enter reopens' $world/out; check "...and does not ask" test $? -ne 0
 ```
 
 - [ ] **Step 2: Run, expect the changed cases to fail**
