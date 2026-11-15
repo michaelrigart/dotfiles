@@ -5,7 +5,8 @@
 **Branch:** `feat/herdr-app-auto-resume`
 **Sign-off:** Michael, 2026-11-15 (option A for a quit nobody saw); Codex spec review round 1's
 two findings: one fixed (Codex ownership), one decided by Michael (option A); round 2's one finding
-fixed (launch reservation)
+fixed (launch reservation); round 3's one finding fixed (the reservation persisted in the records,
+with no expiry)
 
 Agents in the Herdr desktop app should come back on their own after their terminals are lost, as
 they do in the herdr TUI (`resume_agents_on_restore = true` in `~/.config/herdr/config.toml`), and
@@ -90,19 +91,22 @@ drops `core`, and gains:
 
 - `pid`: the terminal's root pid when the agent was last seen running.
 - `quit`: true once the terminal was seen back at a shell under that same pid.
+- `sent`: true from the moment a resume of this record is claimed until the terminal is seen
+  running an agent (see "Never twice" below).
 
 Per scan, for each of this computer's panes with a record:
 
-- Agent running: refresh the record (`pid` now, `quit` cleared) when the command, the pid or `quit`
-  differs.
+- Agent running: refresh the record (`pid` now, `quit` and `sent` cleared) when the command, the
+  pid, `quit` or `sent` differs.
 - Shell under the recorded pid: set `quit`; the terminal joins the button's list.
 - Shell under another pid, record not `quit`: **lost**. Resumed automatically once the same new pid
   has been seen for at least 3 s (replaces "3 s after the core started", which says nothing about a
   shell recovered later or by a live core). Until then, look again on the next tick.
 - Shell, record without `pid` (written before this change): treated as `quit`. Safe direction.
 
-Before sending, each lost terminal is claimed: its record's `pid` becomes the new shell's. A resume
-that fails then reads as a quit on the next scan (button), never a retry.
+Before sending, each lost terminal is claimed: its record's `pid` becomes the new shell's, and
+`sent` is set (check 3 below), in one write. A resume that fails then reads as a quit on the next
+scan (button), never a retry.
 
 ### Never twice, never where it already runs
 
@@ -111,12 +115,16 @@ Before any resume, automatic or from the button, a session is skipped when:
 1. another terminal in the same batch already takes that session id;
 2. another of this computer's app terminals runs it now (the scan already knows each running
    agent's session id);
-3. it was sent to a terminal less than 60 s ago, automatically or from the button, and no app
-   terminal is seen running it yet: a launch in flight. An agent publishes its session (Claude's
-   registry, Codex's loaded rollout) only once it has started, so without this a second terminal
-   that settles on a later scan, or a click in between, would send the same session again. The
-   reservation lives in the mod's memory, by session id, and ends when the session is seen running
-   or after 60 s;
+3. another terminal's record holds it as **sent**: a launch not yet seen running. An agent
+   publishes its session (Claude's registry, Codex's loaded rollout) only once it has started, so
+   without this a second terminal that settles on a later scan, or a click in between, would send
+   the same session again. Every resume, automatic or from the button, sets `sent` on the target's
+   record in the same write as its claim, before anything is sent; it is persisted with the
+   records, so an app restart or a mod reload keeps it, and nothing expires it with time. It is
+   cleared only when that terminal is seen running an agent (the session is then owned through
+   check 2 while it runs), or with the record when the terminal closes. A launch that failed
+   leaves its terminal at a shell with the button and still holding the session: the session can
+   then be resumed only there (its own button), never in a second terminal;
 4. `bin/session-running <claude|codex> <id>` exits 0. New helper, same shape as
    `bin/session-written`:
    - Claude: a file in `~/.claude/sessions/` (Claude Code's own registry of running sessions, one
@@ -134,8 +142,8 @@ Before any resume, automatic or from the button, a session is skipped when:
    and a warning says so once per run (fail closed).
 
 A lost terminal whose session reads as running stays pending: it is checked again on each scan,
-for up to 2 minutes from its new shell's first sighting, then claimed, so it falls to the button,
-where the same checks apply. The wait is for Codex: its daemon keeps a conversation loaded about a
+for up to 2 minutes from its new shell's first sighting, then claimed without `sent` (nothing is
+sent to it), so it falls to the button, where the same checks apply. The wait is for Codex: its daemon keeps a conversation loaded about a
 minute after the client dies, so after a loss that the daemon survived the session reads as
 running at first. A toast counts the terminals that fell to the button this way ("1 not resumed:
 already running elsewhere").
@@ -157,8 +165,9 @@ which a parallel line edits:
 1. **Decision:** a core restart (same root pids) resumes nothing, and a terminal at a shell is
    marked quit; a lost terminal (new pid) whose agent was running is resumed once its pid has held
    for the settle time, a second terminal with the same session is not (in the same scan, nor when
-   it settles on the next scan while the first one's launch is in flight), a quit one is not, and
-   one whose session runs elsewhere waits. Revert check: the core-based rule fails the first half.
+   it settles on a later scan, from the persisted records alone, as after a reload, while the first
+   one's launch is unresolved), a quit one is not, and one whose session runs elsewhere waits.
+   Revert check: the core-based rule fails the first half.
 2. **Helper:** a Claude session whose registry pid is alive is running, and not once the pid is
    dead; a Codex session whose rollout the test holds open is running, and not once it is closed;
    an id listed in a scratch TUI `session.json` is running.
@@ -206,5 +215,3 @@ Options:
 
 - A quit nobody saw, then a loss: resumed (decided above).
 - Pid reuse across a reboot can make a lost terminal look kept: it gets the button.
-- A launch reservation is in memory: an app restart or a mod reload in the seconds between a send
-  and the agent publishing its session forgets it.
