@@ -1,6 +1,7 @@
 # hercules as a second agent machine: NetBird, a LAN-first ssh rule, shared agent memory
 
-**Status:** Approved
+**Status:** Implemented (branch `feat/hercules-agent-machine`, its PR against `main`; plan
+`docs/superpowers/plans/2026-11-15-hercules-agent-machine.md`)
 **Date:** 2026-11-15
 **Branch:** `feat/hercules-agent-machine`
 **Sign-off:** Michael, 2026-11-15 (Codex memory exchanged through extensions, not skipped; the ten
