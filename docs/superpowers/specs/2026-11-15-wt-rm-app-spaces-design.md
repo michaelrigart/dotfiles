@@ -272,6 +272,10 @@ first, no variant matrices.
 - On a scratch worktree with its app space open (idle Claude and Codex): `wt-rm <branch>` from
   another space prints the resume commands, closes the space and removes the checkout; with an
   agent working there it refuses and closes nothing; run from a terminal of that space it refuses.
+- From plain Ghostty and from a TUI pane, `wt-rm` on a scratch worktree with an idle app space
+  prints the resume commands, closes the space and removes the checkout.
+- `wt-rm` succeeds while another line's agents are running sub-agents in their own spaces (check 5
+  reads every local terminal).
 - The menu's Retire worktree on a scratch worktree removes it and closes its tab; with an agent
   working it refuses in the retire tab.
 - This line's own `wt-rm feat/wt-rm-app-spaces`, run from the main checkout's space once this
