@@ -222,7 +222,8 @@ h worktree remove --workspace "$WWS" --force >/dev/null 2>&1 || native_rm_rc=$?
 # The approved teardown path closes Herdr state, crosses only its own Git lock after
 # all checks, removes the checkout and deletes the merged branch.
 custom_rm_rc=0
-( cd "$PRIMARY" && source "$SRC_FUNCS" && HERDR_SESSION="$SESSION" wt-rm live-wt ) >/dev/null 2>&1 || custom_rm_rc=$?
+# The app is the herdr-app and wt-functions suites' subject: this suite must never reach the live app.
+( cd "$PRIMARY" && source "$SRC_FUNCS" && _wt_app_spaces() { return 0 } && HERDR_SESSION="$SESSION" wt-rm live-wt ) >/dev/null 2>&1 || custom_rm_rc=$?
 remaining_wt=$(h workspace list | jq -r --arg d "$WT" \
   '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
 [[ "$custom_rm_rc" == 0 && ! -d "$WT" && "$remaining_wt" == 0 ]] \
