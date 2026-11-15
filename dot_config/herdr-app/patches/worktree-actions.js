@@ -32,10 +32,11 @@ export function worktree(args, plan) {
   if (args.action === "retire") return retire(space, plan);
   // The wt popup is shown by an invisible copy of mods/popup, opened here with the folder as
   // its props: the menu's tasks end with it, and the selection below is not yet visible to the
-  // layout's copy, which would run wt in the space that was active before. 2 px, since up to 1
+  // layout's copy, which would run wt in the space that was active before. A window, since a
+  // stray click or Esc would close a popup before it has opened the prompt; 2 px, since up to 1
   // is a share of the window.
   if (args.action === "new") {
-    openOverlay({ mod: "popup", kind: "popup", frame: "none", width: 2, height: 2, props: { wt: plan.top } });
+    openOverlay({ mod: "popup", kind: "window", frame: "none", width: 2, height: 2, props: { wt: plan.top } });
     run("space.select", { id: space.id });
     return;
   }
