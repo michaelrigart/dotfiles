@@ -200,7 +200,7 @@ check "...and is named" grep -q 'tNEW1.*gave no folder' $world/out
 # in its root's terminal, lsof each member's folder. The caller's own terminal is the one seen
 # (wt-rm runs the helper from it, and hc often cannot name that foreground).
 newworld group; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 777 > $STUB_DIR/tpgid-4242
-print -l "$UID 777" "0 1" > $STUB_DIR/uid-pgid
+print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
 print -l / $main > $STUB_DIR/lsof-777
 cs check $wt >$world/out 2>&1; rc=$?
 check "a terminal without a folder passes when its foreground group is outside the checkout" test $rc -eq 0
@@ -212,13 +212,13 @@ check "...and names the terminal and the folder" grep -qF -- "t9 (proj / retire)
 print -l / $main > $STUB_DIR/lsof-777; print "0 777" >> $STUB_DIR/uid-pgid
 cs check $wt >$world/out 2>&1; rc=$?
 check "...and refuses when another user's process is in the group, whatever lsof listed" test $rc -eq 1
-print -l "$UID 777" "0 1" > $STUB_DIR/uid-pgid
+print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
 rm $STUB_DIR/lsof-777
 cs check $wt >$world/out 2>&1; rc=$?
 check "...and refuses when the group cannot be read" test $rc -eq 1
 # lsof escapes bytes outside printable ASCII, so such a checkout path cannot be matched against its answer.
 newworld group-café; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 777 > $STUB_DIR/tpgid-4242
-print -l "$UID 777" "0 1" > $STUB_DIR/uid-pgid
+print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
 print -l / $main > $STUB_DIR/lsof-777
 cs check $wt >$world/out 2>&1; rc=$?
 check "a checkout path lsof would escape refuses the group read" test $rc -eq 1
