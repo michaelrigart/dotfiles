@@ -99,6 +99,11 @@ Per scan, for each of this computer's panes with a record:
 - Agent running: refresh the record (`pid` now, `quit` and `sent` cleared) when the command, the
   pid, `quit` or `sent` differs.
 - Shell under the recorded pid: set `quit`; the terminal joins the button's list.
+- Another program in front under the recorded pid (neither a shell nor `claude`/`codex`): set
+  `quit`, without the button. The agent is no longer in front, so a quit that the next program
+  hid from the scan (an agent quit, then a dev server started within a scan) is still seen. An
+  agent briefly behind its own editor is marked too; it is refreshed as soon as it is back in
+  front, and a loss in that moment gives the button instead of a resume.
 - Shell under another pid, record not `quit`: **lost**. Resumed automatically once the same new pid
   has been seen for at least 3 s (replaces "3 s after the core started", which says nothing about a
   shell recovered later or by a live core). Until then, look again on the next tick.
@@ -129,7 +134,11 @@ Before any resume, automatic or from the button, a session is skipped when:
    `bin/session-written`:
    - Claude: a file in `~/.claude/sessions/` (Claude Code's own registry of running sessions, one
      per pid) has that `sessionId` and its pid is alive. Covers every Claude on the machine: app,
-     TUI, any terminal.
+     TUI, any terminal. A file left by a Claude that died without cleanup, whose pid now belongs
+     to another process, does not count: Claude records its own start time (`procStart`, the
+     format of `TZ=UTC LC_ALL=C ps -o lstart=`), and a live pid whose start time differs from it
+     is another process. Only a mismatch of two readable times in that format says so; anything
+     else keeps the file counting (fail closed).
    - Codex: some process holds the session's rollout file open (`lsof` on
      `~/.codex/sessions/**/rollout-*-<id>.jsonl`). Codex's rollout recorder keeps the file open
      while the conversation is loaded: measured, the Codex daemon held 22 rollouts open, one per
