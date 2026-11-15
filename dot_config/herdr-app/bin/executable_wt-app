@@ -1,0 +1,42 @@
+#!/bin/zsh
+# wt-app <branch> [start-point] — `wt` for the Herdr app.
+# wt-app --prompt               — the same, asking for the branch. The app's key runs this
+#                                 in a tab of its own.
+# wt-app --no-focus <branch> .. — the same, leaving the user's focus where it was (the new
+#                                 space does not take it).
+#
+# The checkout is made by wt's own lifecycle (~/.config/zsh/functions): the sibling
+# <repo>-<branch> folder, the per-target lock, .worktreehook, .worktreeinclude, the mise
+# trust carry and the Git worktree lock that keeps removal behind wt-rm. Only the last step
+# differs from `wt`: the checkout opens as a space in the app (open-space), not as a
+# workspace in the TUI.
+#
+# Run from inside the repository or one of its worktrees, as with `wt`.
+
+prompt= nofocus=
+while [[ "${1:-}" == --prompt || "${1:-}" == --no-focus ]]; do
+  [[ $1 == --prompt ]] && prompt=1 || nofocus=1
+  shift
+done
+
+if [[ -n $prompt ]]; then
+  print -n -- "Branch: "
+  IFS= read -r branch || branch=""
+  [[ -n $branch ]] || { print -ru2 -- "wt-app: cancelled (no branch entered)."; exit 1 }
+  set -- "$branch"
+fi
+[[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt-app [--no-focus] <branch> [start-point] | wt-app [--no-focus] --prompt"; exit 1 }
+
+source "$HOME/.config/zsh/functions" || exit 1
+(( $+functions[_wt_create_or_prepare] )) || {
+  print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines _wt_create_or_prepare."; exit 1 }
+
+typeset -g _WT_NOTICE=
+_wt_create_or_prepare "$@" || exit 1
+"${0:A:h}/open-space" ${nofocus:+--no-focus} "$_WT_DEST" || exit 1
+
+# The app leaves a shell behind in the prompt's tab. After a failure that shell keeps the
+# message readable, and so it does for the lines a reopen leaves in _WT_NOTICE (the
+# untrusted-config report, the never-prepared line after a carry). Otherwise the tab has
+# nothing left to say and closes itself.
+if [[ -n $prompt && -z "${_WT_NOTICE:-}" ]]; then "${0:A:h}/close-own-tab"; fi

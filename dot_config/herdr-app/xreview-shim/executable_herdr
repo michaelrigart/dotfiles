@@ -1,0 +1,147 @@
+#!/bin/zsh
+# herdr — the `herdr pane …` calls ~/.local/bin/xreview makes, answered from the Herdr app.
+# Not the TUI's herdr: xreview-app puts this folder first on PATH for one xreview process only.
+#
+# A pane is "app:<terminal>" (app:t27): no TUI pane id looks like that, and xreview names its
+# lock file after the id with ':' turned into '_', so the locks cannot collide either. Every
+# call maps the id back to the core's terminal. Reads come from `herdr-app ls` (which terminal
+# is a local Codex, in which folder) and `hc get` (title, status, processes).
+#
+# Answered, in exactly the form xreview uses them (anything else fails on stderr and does nothing):
+#   pane list
+#   pane get <id>
+#   pane process-info --pane <id>
+#   pane send-keys <id> ctrl+c
+#   pane run <id> <text>
+#   pane read <id> --source visible --lines <n> --format text
+#   pane report-agent-session <id> --source herdr:codex --agent codex --agent-session-id <sid> --seq <n>
+#
+# Scope: `list` names only local terminals whose agent is Codex. The calls on one id also take
+# a terminal with no agent, as a Codex pane that xreview has just quit is one; a terminal of
+# another agent, a remote one or an unknown one is "not found", and nothing is sent to it.
+emulate -L zsh
+setopt no_unset pipe_fail
+
+unsupported() {
+  print -ru2 -- "herdr (xreview shim): unsupported: herdr $*"
+  exit 2
+}
+# The TUI's own envelope on stderr: xreview takes exactly this for a closed pane.
+not_found() { # <call> <id>
+  jq -nc --arg c "$1" --arg i "$2" '{error: {code: "pane_not_found", message: "pane \($i) not found"}, id: "cli:pane:\($c)"}' >&2
+  exit 1
+}
+# Anything else that went wrong is a failed read, never a closed pane.
+broken() { print -ru2 -- "herdr (xreview shim): $*"; exit 1 }
+
+app_ls() { command herdr-app ls 2>/dev/null || broken "cannot read the app's spaces (is the window open?)" }
+
+# the_terminal <call> <id> — the terminal behind an id, with its row of `herdr-app ls` in $row.
+the_terminal() {
+  [[ $2 =~ '^app:(t[0-9a-z]+)$' ]] || not_found "$1" "$2"
+  terminal=$match[1]
+  local listing; listing=$(app_ls) || exit 1
+  # An app that is starting or restarting lists no spaces yet: that is no evidence of a closed pane.
+  jq -e '(.spaces | length) > 0' <<<"$listing" >/dev/null 2>&1 || broken "the app lists no spaces (is it starting?)"
+  row=$(jq -c --arg t $terminal 'first(.spaces[] | select(.machine == null) | . as $s
+      | .tabs[].terminals[] | select(.terminal == $t and (.app == null or .app == "codex"))
+      | {terminal, folder: $s.folder, status, app}) // empty' <<<"$listing") || broken "cannot read the app's spaces"
+  [[ -n $row ]] || not_found "$1" "$2"
+}
+
+# the_core <call> <id> — `hc get` of the terminal, in $got; a finished terminal is gone.
+the_core() {
+  local out; out=$(command hc get $terminal --json 2>&1) || {
+    jq -e '.error.kind == "not_found"' <<<"$out" >/dev/null 2>&1 && not_found "$1" "$2"
+    broken "hc get $terminal failed"
+  }
+  # Only a terminal that parsed and is not live is closed; output that does not parse is a failed read.
+  local state; state=$(jq -r '.state | strings' <<<"$out" 2>/dev/null) && [[ -n $state ]] \
+    || broken "hc get $terminal gave an answer that is not a terminal"
+  [[ $state == live ]] || not_found "$1" "$2"
+  got=$out
+}
+
+[[ ${1:-} == pane ]] || unsupported "$@"
+shift
+case ${1:-} in
+list)
+  (( $# == 1 )) || unsupported pane "$@"
+  # The app's own status for each terminal: one call lists them all.
+  app_ls | jq -c '{id: "cli:pane:list", result: {type: "pane_list", panes: [
+    .spaces[] | select(.machine == null) | . as $s | .tabs[].terminals[] | select(.app == "codex")
+    | {pane_id: "app:\(.terminal)", terminal_id: .terminal, agent: "codex",
+       agent_status: (.status // "unknown"), cwd: $s.folder}]}}'
+  ;;
+get)
+  (( $# == 2 )) || unsupported pane "$@"
+  the_terminal get "$2"; the_core get "$2"
+  # terminal_title_stripped is the TUI's: control characters out, then the leading run of
+  # whitespace and non-ASCII spinner glyphs Codex puts before its thread id (as
+  # ~/.codex/herdr-codex-pane-map.py's RAW_LEAD_RE reads a raw title). No agent, no status:
+  # the TUI says "unknown" then.
+  jq -c --argjson r $row --arg id $2 '(.title // "") as $title | {id: "cli:pane:get", result: {type: "pane_info", pane: {
+      pane_id: $id, terminal_id: $r.terminal,
+      agent: $r.app,
+      agent_status: (.status.state // "unknown"),
+      cwd: $r.folder, foreground_cwd: .foreground.cwd,
+      terminal_title: $title,
+      terminal_title_stripped: ($title | gsub("[\\x00-\\x1f\\x7f]"; "") | gsub("^[\\s\\x{80}-\\x{10FFFF}]+"; ""))}}}' <<<$got
+  ;;
+process-info)
+  (( $# == 3 )) && [[ $2 == --pane ]] || unsupported pane "$@"
+  the_terminal process_info "$3"; the_core process_info "$3"
+  shell=$(jq -r '.pid | numbers' <<<$got) && fg=$(jq -r '.foreground.pid | numbers' <<<$got) \
+    && [[ -n $shell && -n $fg ]] || broken "hc get $terminal names no shell or foreground process"
+  # A terminal whose root process is not a shell (a bare `codex` split, `hc run -- codex`, an
+  # `exec codex`) has nothing to be "freed" to: its root process would read as the shell back in
+  # the foreground while Codex runs. The root's name is asked of ps as it is now, not taken from
+  # how it was launched, which `exec` makes stale. xreview refuses a pane it cannot read.
+  root=$(ps -o comm= -p $shell 2>/dev/null) && root=${root:t} && root=${root#-} \
+    || broken "cannot read the root process $shell of $terminal"
+  [[ $root == (zsh|bash|sh|dash|ksh|fish) ]] || broken "the root process of $terminal is $root, not a shell"
+  # hc names the foreground process, not its group. A shell in the foreground leads its own
+  # group; any other process is asked. Two readings are no evidence of a freed shell, so they
+  # fail: hc naming the foreground something other than a shell where ps says the root is one,
+  # and a foreground in its root's own group (a shell without job control runs its children
+  # there, so the group would equal the shell's pid while Codex runs).
+  if [[ $fg == $shell ]]; then
+    fgname=$(jq -r '.foreground.name | strings' <<<$got) && fgname=${fgname:t} && fgname=${fgname#-} \
+      || broken "hc get $terminal names no foreground process"
+    [[ $fgname == (zsh|bash|sh|dash|ksh|fish) ]] || broken "hc names the foreground of $terminal $fgname, but ps says its root $shell is $root"
+    pgid=$shell
+  else
+    pgid=$(ps -o pgid= -p $fg 2>/dev/null) && pgid=${pgid//[[:space:]]/} && [[ $pgid == <-> ]] \
+      || broken "cannot read the process group of $fg"
+    [[ $pgid != $shell ]] || broken "the foreground $fg of $terminal runs in the group of its shell $shell (no job control)"
+  fi
+  jq -c --arg id $3 --argjson g $pgid '{id: "cli:pane:process_info", result: {type: "pane_process_info", process_info: {
+      pane_id: $id, shell_pid: .pid, foreground_process_group_id: $g,
+      foreground_processes: [.foreground | {pid, name, argv, argv0: (.argv[0] // "" | split("/") | last),
+        cmdline: (.argv | join(" ")), cwd}]}}}' <<<$got
+  ;;
+send-keys)
+  (( $# == 3 )) && [[ $3 == ctrl+c ]] || unsupported pane "$@"
+  the_terminal send-keys "$2"
+  command hc keys $terminal ctrl+c
+  ;;
+run)
+  (( $# == 3 )) || unsupported pane "$@"
+  the_terminal run "$2"
+  command hc send $terminal "$3"
+  ;;
+read)
+  (( $# == 8 )) && [[ $3 == --source && $4 == visible && $5 == --lines && $6 == <-> && $6 -gt 0 \
+    && $7 == --format && $8 == text ]] || unsupported pane "$@"
+  the_terminal read "$2"
+  # hc read gives the screen; the bottom of it is what `--lines` asks for.
+  command hc read $terminal | tail -n $6
+  ;;
+report-agent-session)
+  (( $# == 10 )) && [[ $3 == --source && $4 == herdr:codex && $5 == --agent && $6 == codex \
+    && $7 == --agent-session-id && $9 == --seq && $2 == app:* ]] || unsupported pane "$@"
+  # The app tracks its agents itself; xreview treats this call as best effort anyway.
+  exit 0
+  ;;
+*) unsupported pane "$@" ;;
+esac

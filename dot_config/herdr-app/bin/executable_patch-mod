@@ -1,0 +1,63 @@
+#!/usr/bin/python3 -I
+# patch-mod <menu|spaces> <mod folder> — apply bin/respaces' edits to the main.js of a clone
+# of Herdr's `menu` or `spaces` mod. Each edit must match exactly once: if Herdr changed one
+# of those lines this stops with a message and the clone stays unpatched.
+import sys
+
+if len(sys.argv) != 3 or sys.argv[1] not in ("menu", "spaces"):
+    sys.exit("usage: patch-mod <menu|spaces> <mod folder>")
+shipped, path = sys.argv[1], sys.argv[2] + "/main.js"
+text = open(path, encoding="utf-8").read()
+
+EDITS = {
+    "spaces": [
+        # 1. Load the badge logic.
+        ('} from "herdr";\n',
+         '} from "herdr";\nimport { Phases } from "./phases.js";\n'),
+        # 2. Start it with the view.
+        ('    cx.timer.every(250, (cx) => this.checkNew(cx));\n',
+         '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n'),
+        # 3. End each row on its badge.
+        ('          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),\n',
+         '          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1())\n'
+         '          .children(this.phases.badge(w.id, t)),\n'),
+        # 4. A right-click opens the menu with the worktree items.
+        ('openOverlay({ mod: "menu", kind: "popup"',
+         'openOverlay({ mod: "michael-menu", kind: "popup"'),
+    ],
+    "menu": [
+        # 1. Load the worktree actions.
+        ('import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from "herdr";\n',
+         'import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from "herdr";\n'
+         'import { worktree, checkoutPlan } from "./worktree-actions.js";\n'),
+        # 2. Remove becomes Retire, offered from `retire`: the checkout of the space's own
+        #    folder, worked out below. New and Open stay on the shipped, live-folder rule.
+        ('function items(p, git) {\n', 'function items(p, git, retire) {\n'),
+        ('        ...(git === "linked" ? [["Remove worktree", "worktree", { space: tg.id, action: "remove" }]] : []),\n',
+         '        ...(retire ? [["Retire worktree", "worktree", { space: tg.id, action: "retire" }]] : []),\n'),
+        ('    const it = items(props(), this.git)[i];\n', '    const it = items(props(), this.git, this.retirePlan)[i];\n'),
+        ('    const list = items(props(), this.git);\n', '    const list = items(props(), this.git, this.retirePlan);\n'),
+        # 3. The three items run the actions instead of opening the worktree dialog. They
+        #    must not wait for anything: the overlay's unfinished tasks end when it closes.
+        ('    if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", '
+         '...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });\n',
+         '    if (it[1] === "worktree") worktree(it[2], it[2].action === "retire" ? this.retirePlan : this.plan);\n'),
+        # 4. What the actions need is worked out here, while the menu is open. A remote space
+        #    has none of the scripts: it keeps Rename and Close.
+        ('        this.git = await checkout(folder, space.machine).catch(() => null);\n',
+         '        const git = space.machine ? null : await checkout(folder, space.machine).catch(() => null);\n'
+         '        this.plan = git ? await checkoutPlan(folder).catch(() => null) : null;\n'
+         '        this.git = this.plan ? git : null;\n'
+         '        const own = space.machine || !space.folder ? null : await checkout(space.folder, null).catch(() => null);\n'
+         '        this.retirePlan = own === "linked" ? await checkoutPlan(space.folder).catch(() => null) : null;\n'),
+    ],
+}[shipped]
+
+for number, (old, new) in enumerate(EDITS, 1):
+    found = text.count(old)
+    if found != 1:
+        sys.exit(f"respaces: {shipped} edit {number} matches {found} times in Herdr's {shipped} mod, not once; "
+                 "the clone is left unpatched.")
+    text = text.replace(old, new)
+
+open(path, "w", encoding="utf-8").write(text)

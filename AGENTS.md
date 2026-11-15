@@ -16,10 +16,10 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   reads them from 1Password at apply and they live only in the deployed `~/.claude/settings.json`.
   Preview that target through `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`, never whole; a
   dry-run diff of it can print the token lines as context, so filter that output too.
-- `.chezmoiignore` is an **allowlist** for `~/.claude`, `~/.codex`, and Alfred: ignore
-  the directory contents, then re-include one file at a time, one level at a time — a
-  re-include cannot reach inside an ignored directory. A new managed file under those
-  trees needs its own `!` entry, or `chezmoi add` silently drops it.
+- `.chezmoiignore` is an **allowlist** for `~/.claude`, `~/.codex`, `~/.config/herdr-app` and
+  Alfred: ignore the directory contents, then re-include one file at a time, one level at a
+  time — a re-include cannot reach inside an ignored directory. A new managed file under
+  those trees needs its own `!` entry, or `chezmoi add` silently drops it.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `tests/`, `.scripts/` are ignored so
   they never land in `$HOME`.
 - Edit the source in a `wt` checkout (never in the main one); it deploys once merged, when
@@ -35,6 +35,12 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   its clone into `~/.cache` hits a sandbox denial. Data variables (`.name`, `.email`,
   `.is_arm`) come from `.chezmoi.toml.tmpl`, which `chezmoi apply --init` re-renders — not
   plain `apply`; `.known_hostnames` comes from `.chezmoidata/machines.toml`.
+- chezmoi manages only Michael's files in `~/.config/herdr-app` (the allowlist). `settings.json`
+  is a `create_` seed (the app writes it): `add --create` brings a live change back; plain `add`
+  (file or tree) makes it fully managed, `re-add` skips it. `mods/michael-spaces` and
+  `mods/michael-menu` come from `bin/respaces`, never added. Edit `.json.tmpl` files in the source
+  (`add` asks to drop the template). Suites: `tests/herdr-app*.test.sh`; `patch-mod` checks skip
+  without the app, fail after an update moves a patched line.
 - The `chezmoi` wrapper (`dot_config/zsh/functions`): Michael's `apply`, `update` and
   previews (`diff`, `status`, `cat`, …) deploy or render a fresh clone of origin's main, and
   only from a clean main equal to it. `--dirty-ok` is for a deliberate local change. Every
@@ -147,10 +153,10 @@ wait (`0` does not wait): past it the runner prints `giving up`, runs no suite, 
 and exits 75; a value that is not a non-negative integer exits 2. A nested runner sees
 `RUN_SH_LOCKED=1` and does not lock again. Never wrap it in `lockf` yourself.
 
-**Execute suites, never prefix an interpreter.** Every suite carries a correct shebang (most
-bash; `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `op-edit` and
-`wt-functions` are zsh). `./tests/x.test.sh` is always right; `bash tests/x.test.sh` on a zsh
-suite reports bogus syntax errors that read exactly like a regression.
+**Execute suites, never prefix an interpreter.** Every suite carries a correct shebang (most bash;
+`chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `herdr-app`, `herdr-app-xreview`,
+`op-edit` and `wt-functions` are zsh). `./tests/x.test.sh` is always right; `bash tests/x.test.sh`
+on a zsh suite reports bogus syntax errors that read exactly like a regression.
 
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
 skipped by default (a `heavy` tag gives only the suite's timing; what the suite loads is in the
@@ -205,14 +211,13 @@ currently is.)
 judges each on its **exit status**, and cross-checks that against the counted assertions: a
 suite that dies partway is reported `INCONSISTENT` instead of folded into a total.
 
-While chezmoi's external cache is cold (after adding or bumping an external, before the
-warm-up), `codex-config`, `claude-settings`, `live-feedback-skill` and `git-pre-push-hook` exit 2
-with an `INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
-That is not a regression. `xreview-guard-cli` does the same
-after a glab, gh or az upgrade changes the commands, or the `api` flags, the pre-merge gate was
-measured against: it exits 2 with an `INCONCLUSIVE:` line naming what was added or removed. It
-also exits 2 when a CLI, or the az extension directory, is missing. That is not a regression
-either.
+While chezmoi's external cache is cold (after adding or bumping an external, before the warm-up),
+`codex-config`, `claude-settings`, `live-feedback-skill` and `git-pre-push-hook` exit 2 with an
+`INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row. That
+is not a regression. `xreview-guard-cli` does the same after a glab, gh or az upgrade changes the
+commands, or the `api` flags, the pre-merge gate was measured against: it exits 2 with an
+`INCONCLUSIVE:` line naming what was added or removed. It also exits 2 when a CLI, or the az
+extension directory, is missing. That is not a regression either.
 
 **Reading a run.** A `????` row is not a verdict: the suite asserted nothing, or its exit
 status contradicts its assertions (`INCONSISTENT`). Read the exit status the row prints and the

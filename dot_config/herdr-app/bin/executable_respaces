@@ -1,0 +1,50 @@
+#!/bin/zsh
+# respaces — rebuild the two clones this setup keeps of Herdr's mods:
+#   michael-menu    the `menu` mod, its worktree items replaced (New and Open worktree open a
+#                   tab running wt-app / open-space; Retire worktree replaces Remove)
+#   michael-spaces  the `spaces` mod, with the phase badge in each row, and a right-click
+#                   that opens michael-menu
+# Run it after a Herdr update, or after editing patches/phases.js or patches/worktree-actions.js.
+#
+# Herdr's shipped mods are read-only and a clone is never updated, so each clone is made
+# again from the current mod and the same small edits are applied to it. Each edit must match
+# exactly once: if Herdr changed one of those lines this stops, and what was cloned stays a
+# plain clone until the edit is brought up to date. michael-menu goes first, so a sidebar
+# never points at a menu that does not exist.
+#
+# Needs the app's window open (mod.clone is an app command); the edits themselves are
+# bin/patch-mod.
+emulate -L zsh
+setopt err_exit no_unset pipe_fail
+
+home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
+
+# One run at a time: two would race on the mv and mod.clone below. The lock goes when this
+# process exits, so a crash leaves none behind.
+zmodload zsh/system
+touch "$home/.respaces.lock"
+zsystem flock -t 0 "$home/.respaces.lock" || { print -ru2 -- "respaces: another respaces is running. Nothing was changed."; exit 1 }
+
+# clone <shipped> <as> — a fresh clone; an earlier one is set aside, not deleted: nothing in
+# it is the only copy, but it costs nothing to keep.
+clone() {
+  local mod=$home/mods/$2
+  if [[ -d $mod ]]; then
+    mv "$mod" "$(mktemp -d "${TMPDIR:-/tmp}/$2.XXXXXX")/"
+  fi
+  command herdr-app do mod.clone "$(jq -nc --arg name "$1" --arg as "$2" '{name: $name, as: $as}')" >/dev/null
+}
+
+# Before anything is moved: a clone that fails with the window closed would leave the
+# sidebar opening a menu that is gone.
+command herdr-app status >/dev/null 2>&1 || { print -ru2 -- "respaces: the app's window is not reachable; open it first. Nothing was changed."; exit 1 }
+
+clone menu michael-menu
+cp "$home/patches/worktree-actions.js" "$home/mods/michael-menu/worktree-actions.js"
+"${0:A:h}/patch-mod" menu "$home/mods/michael-menu"
+command herdr-app check "$home/mods/michael-menu"
+
+clone spaces michael-spaces
+cp "$home/patches/phases.js" "$home/mods/michael-spaces/phases.js"
+"${0:A:h}/patch-mod" spaces "$home/mods/michael-spaces"
+command herdr-app check "$home/mods/michael-spaces"

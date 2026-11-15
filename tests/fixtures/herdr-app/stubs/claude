@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stub claude for tests/herdr-app.test.sh: logs its arguments one by one, as they were split, to $STUB_LOG.
+printf 'claude-args' >> "$STUB_LOG"; for a in "$@"; do printf ' [%s]' "$a" >> "$STUB_LOG"; done; echo >> "$STUB_LOG"
+# $STUB_DIR/claude-argv: the same, one per line, for tests that compare them whole
+: > "$STUB_DIR/claude-argv"; for a in "$@"; do printf '%s\n' "$a" >> "$STUB_DIR/claude-argv"; done

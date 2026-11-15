@@ -1,0 +1,17 @@
+#!/usr/bin/python3 -I
+# folder-gone <path> — exit 0 when the path positively does not exist (ENOENT), 1 when it
+# does, 2 when that cannot be told (no permission, anything else that is not ENOENT).
+#
+# `test -d` fails the same way for all of those, and a space must be called "gone" only when
+# its folder is. An unmounted volume's mountpoint under /Volumes is ENOENT too, so it shows
+# "gone"; the click that follows still asks before closing anything.
+import os
+import sys
+
+try:
+    os.stat(sys.argv[1])
+except FileNotFoundError:
+    sys.exit(0)
+except OSError:
+    sys.exit(2)
+sys.exit(1)

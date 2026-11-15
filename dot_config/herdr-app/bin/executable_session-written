@@ -1,0 +1,12 @@
+#!/bin/sh
+# session-written <claude|codex> <session-id> — exit 0 when that agent has written the
+# session's transcript to disk, 1 when it has not (or the agent is unknown).
+#
+# Neither agent writes a session before its first message, and resuming one that was never
+# written fails ("no conversation found"). One rule for both users: mods/resume brings back
+# a lost terminal, bin/retire brings back a retired space.
+case "$1" in
+  claude) for f in "$HOME"/.claude/projects/*/"$2".jsonl; do [ -f "$f" ] && exit 0; done; exit 1 ;;
+  codex) [ -n "$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name "*$2.jsonl" -print -quit 2>/dev/null)" ] ;;
+  *) exit 1 ;;
+esac

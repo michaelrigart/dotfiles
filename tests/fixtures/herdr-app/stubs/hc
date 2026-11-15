@@ -1,0 +1,27 @@
+#!/bin/sh
+# Stub hc: nothing under test may reach the real herdr-core.
+#   ls        $STUB_DIR/hc-ls.json: terminals with their LAUNCH folder (.cwd) and status
+#   get <t>   what runs in it and where it is NOW (.foreground.name from $STUB_DIR/fg-<t>,
+#             .foreground.cwd from $STUB_DIR/cwd-<t>, default "/"); fails if $STUB_DIR/fail-<t>.
+#             tests/herdr-app-xreview.test.sh: $STUB_DIR/get-<t>.json is answered whole when it exists, and
+#             $STUB_DIR/gone-<t> makes it answer as the real one does for a terminal it lacks
+#   read <t>  $STUB_DIR/read-<t>
+#   keys, send   only logged; "hc-args" gives their arguments one by one, as they were split
+echo "hc $*" >> "$STUB_LOG"
+case "$1" in
+  ls) if [ -f "$STUB_DIR/hc-ls.json" ]; then cat "$STUB_DIR/hc-ls.json"; else echo '{"terminals":[]}'; fi ;;
+  get)
+    [ ! -f "$STUB_DIR/fail-$2" ] || exit 1
+    if [ -f "$STUB_DIR/gone-$2" ]; then
+      echo "{\"error\":{\"hint\":\"see \`hc ls --all\`\",\"kind\":\"not_found\",\"message\":\"no terminal \\\"$2\\\"\"}}"; exit 3
+    fi
+    if [ -f "$STUB_DIR/get-$2.json" ]; then cat "$STUB_DIR/get-$2.json"; exit 0; fi
+    name=zsh; cwd=/
+    [ ! -f "$STUB_DIR/fg-$2" ] || name=$(cat "$STUB_DIR/fg-$2")
+    [ ! -f "$STUB_DIR/cwd-$2" ] || cwd=$(cat "$STUB_DIR/cwd-$2")
+    printf '{"foreground":{"name":"%s","cwd":"%s"}}\n' "$name" "$cwd" ;;
+  read) [ ! -f "$STUB_DIR/read-$2" ] || cat "$STUB_DIR/read-$2" ;;
+  keys|send)
+    printf 'hc-args' >> "$STUB_LOG"; for a in "$@"; do printf ' [%s]' "$a" >> "$STUB_LOG"; done; echo >> "$STUB_LOG" ;;
+  *) echo '{}' ;;
+esac

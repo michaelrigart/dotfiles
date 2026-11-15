@@ -398,4 +398,7 @@ log_info "       b. Run .scripts/configure.sh, which enables snippet auto-expans
 log_info "          restarts Alfred so it indexes the collection (a NEW collection is only"
 log_info "          discovered at launch, so a bare 'chezmoi apply' is not enough)."
 log_info "       Verify with: ./tests/alfred-relay.test.sh"
+log_info "  6. Herdr app: open it once, run ~/.config/herdr-app/bin/respaces with its window open"
+log_info "     (it builds the michael-spaces and michael-menu mods from Herdr's), then pick the"
+log_info "     michael layout (cmd-shift-L)."
 echo ""

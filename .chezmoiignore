@@ -121,6 +121,34 @@ tests/
 !.codex/hooks.json
 !.codex/herdr-codex-pane-map.py
 
+# Herdr desktop app: allowlist-only, like the blocks above. The tree mixes Michael's
+# authored files with app state (view.json and shared.json hold repo paths and session
+# ids), Herdr's shipped code and the generated michael-* clones, so ignore the contents
+# and re-include only what he writes, one level at a time. A mod's shipped gpui-kit.d.ts
+# and jsconfig.json stay ignored.
+.config/herdr-app/*
+!.config/herdr-app/bin
+!.config/herdr-app/patches
+!.config/herdr-app/xreview-shim
+!.config/herdr-app/keys.json
+!.config/herdr-app/programs.json
+!.config/herdr-app/claude-settings.json
+!.config/herdr-app/settings.json
+!.config/herdr-app/layouts/
+.config/herdr-app/layouts/*
+!.config/herdr-app/layouts/michael.json
+!.config/herdr-app/themes/
+.config/herdr-app/themes/*
+!.config/herdr-app/themes/tokyo-night.json
+!.config/herdr-app/mods/
+.config/herdr-app/mods/*
+!.config/herdr-app/mods/nav
+!.config/herdr-app/mods/resume
+!.config/herdr-app/mods/usage
+!.config/herdr-app/mods/respaces-guard
+.config/herdr-app/mods/*/gpui-kit.d.ts
+.config/herdr-app/mods/*/jsconfig.json
+
 # Neovim plugin lockfile. lazy.nvim rewrites it on every plugin update, so managing it
 # here means routine maintenance leaves the source and the target out of sync until
 # someone remembers to re-add it — a diff to reconcile after every update, forever.
