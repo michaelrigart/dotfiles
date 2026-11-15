@@ -86,8 +86,8 @@ has "an unindexed memory file is named" "$(ctx orphan)" "orphan.md"
 d="$(mem conflict)"; note "$d" a.md; link a.md > "$d/MEMORY.md"
 note "$d" 'a.sync-conflict-20261115-101010-ABCDEFG.md'
 out="$(ctx conflict)"
-has "a Syncthing conflict copy is named on the conflict line" "$out" \
-  "Syncthing conflict copies (the same note changed on two machines): a.sync-conflict-20261115-101010-ABCDEFG.md"
+is "a Syncthing conflict copy is named on the conflict line" \
+  "$(printf '%s\n' "$out" | grep '^- Syncthing conflict copies' | grep -c 'a.sync-conflict-20261115-101010-ABCDEFG.md')" 1
 is "a conflict copy is not reported as unlisted" "$(printf '%s' "$out" | grep -c 'does not list')" 0
 d="$(mem names)"; note "$d" 'my note.md'; note "$d" 'a+b.md'
 { link 'my note.md'; link 'a+b.md'; } > "$d/MEMORY.md"

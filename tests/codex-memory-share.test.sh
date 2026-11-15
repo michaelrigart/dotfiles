@@ -51,7 +51,15 @@ echo "A. round trip, run after run"
 fresh
 run; is "the first run exits 0" "$?" 0
 is "the outbox MANIFEST lists three files" "$(lines "$OUT/MANIFEST")" 3
-ok "the outbox generation verifies against its own MANIFEST, as the peer will check it" sh -c 'cd "$1" && shasum -a 256 -c --status MANIFEST' _ "$OUT"
+# The peer's side, for real: the export delivered into another HOME's inbox is imported, so a
+# MANIFEST form the import refuses (./ paths, shasum -b markers) fails here, not on the Macs.
+T2="$ROOT/selfcheck.home"
+mkdir -p "$T2/.codex/memories" "$T2/.local/state/codex-memory-share/inbox"
+cp -R "$OUT" "$T2/.local/state/codex-memory-share/inbox/selfcheck"
+env -u CODEX_MEMORY_SHARE_LOCKED HOME="$T2" "$SCRIPT"
+is "the export, delivered to another Mac's inbox, imports (the peer's check)" \
+  "$(cat "$T2/.codex/memories/extensions/selfcheck/memory/raw_memories.md" 2>&1)" "raw v1"
+ok "and its summary comes with it" cmp -s "$S/rollout_summaries/a.md" "$T2/.codex/memories/extensions/selfcheck/memory/rollout_summaries/a.md"
 ok "Codex's lock file is still there (lockf kept it)" test -f "$T/.codex/memories.lock"
 ok "outbox raw_memories.md matches the source" cmp -s "$S/raw_memories.md" "$OUT/raw_memories.md"
 ok "outbox a.md matches the source" cmp -s "$S/rollout_summaries/a.md" "$OUT/rollout_summaries/a.md"
@@ -105,7 +113,7 @@ is "and its summaries" "$(find "$EXT/memory/rollout_summaries" -name '*.md' | wc
 echo "B. busy lock"
 fresh
 run
-lockf -k -s "$T/.codex/memories.lock" sleep 5 & HOLDER=$!
+lockf -k -s "$T/.codex/memories.lock" sleep 60 >/dev/null 2>&1 </dev/null & HOLDER=$!
 held=no
 for _ in $(seq 50); do
   lockf -k -s -t 0 "$T/.codex/memories.lock" true; [ $? -eq 75 ] && { held=yes; break; }
@@ -117,7 +125,7 @@ rm -f "$INB/raw_memories.md"; printf 'peer v2' > "$INB/raw_memories.md"; mkman "
 run; is "a run against a busy lock exits 0" "$?" 0
 is "and leaves the outbox alone" "$(cat "$OUT/raw_memories.md")" "raw v1"
 is "and the extension alone" "$(cat "$EXT/memory/raw_memories.md")" "peer v1"
-kill "$HOLDER" 2>/dev/null; pkill -P "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; HOLDER=""
+pkill -P "$HOLDER" 2>/dev/null; kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; HOLDER=""
 run
 is "the next run exports" "$(cat "$OUT/raw_memories.md")" "raw v2"
 is "and imports" "$(cat "$EXT/memory/raw_memories.md")" "peer v2"

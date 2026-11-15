@@ -393,9 +393,13 @@ space opens at home and on the hotspot.
    hercules path `~/.local/state/codex-memory-share/inbox/fenrir`, Receive Only. No versioning.
 5. Folder `codex-memory-hercules`: the mirror image (hercules outbox Send Only, fenrir
    `inbox/hercules` Receive Only).
-6. Load the exchange on both: `launchctl bootstrap gui/$(id -u)
-   ~/Library/LaunchAgents/be.netronix.codex-memory-share.plist` (or run `.scripts/configure.sh`).
-   After the next Codex session starts, `~/.codex/memories/extensions/<peer>/` exists.
+6. Load the exchange on both: run `.scripts/configure.sh` (it boots the agent out, then
+   bootstraps it, so a re-run picks up an edited plist). The manual alternative for a first load is
+   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.codex-memory-share.plist`.
+   The next `codex-memory-share` run (within 10 minutes, or at load) creates
+   `~/.codex/memories/extensions/<peer>/` once the peer's generation has arrived and this Mac has
+   `~/.codex/memories`. The peer's knowledge reaches `MEMORY.md` after the next root Codex
+   session's consolidation.
 
 **F. Keep hercules awake.** System Settings → Energy on a desktop Mac (on a MacBook: Battery →
 Options, on the adapter, lid open): **Prevent automatic sleeping when the display is off** on,
@@ -415,3 +419,7 @@ stops at the FileVault login until someone logs in.
 **H. Verify the memory paths.** Write a test memory note on fenrir in some project; it appears on
 hercules within a minute (and the reverse). Within an hour of Codex use on each side,
 `~/.codex/memories/extensions/<peer>/memory/raw_memories.md` matches the peer's own file.
+After the first consolidation that follows an import, `~/.codex/memories/MEMORY.md` on that Mac
+carries `[from <peer>]` entries covering more than a handful of the peer's threads (Codex truncates
+a large Phase-2 workspace diff, and fenrir's first import is about 570 KB plus 200 summaries); if it
+shows only a few, the next consolidation reads the rest.

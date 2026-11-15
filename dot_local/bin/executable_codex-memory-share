@@ -98,6 +98,7 @@ render_instructions() {
 ## Instructions
 * `memory/` mirrors the Codex memory inputs of the machine `<peer>`: its `raw_memories.md` and `rollout_summaries/`, extracted from threads that ran on `<peer>`, not on this machine.
 * Treat added or modified files under `memory/` exactly like added or modified local `raw_memories.md` and `rollout_summaries/*.md`: an ingestion queue to consolidate.
+* When the workspace diff is truncated, or shows files under `memory/` as added or modified, read those files directly (`memory/raw_memories.md` in full when it is new) rather than relying on the diff excerpt.
 * A deleted file under `memory/` means `<peer>` no longer selects that thread. Remove memory supported only by it, as for a deleted local rollout summary; keep what other evidence still supports.
 * Include the tag "[from <peer>]" after any information derived from these files.
 * Paths, rollout files and thread ids in these files belong to `<peer>`. Keep them as references only; never try to open those rollouts here.
