@@ -219,10 +219,12 @@ fi
 # a forge merge is pinned and immediate, creation names its destination, and a fix round
 # needs a fresh full-range round. A skill that drifts from these teaches a call the gate
 # denies, and the guard must read every flag the skill tells the model to pass. A GitHub
-# merge is Michael's, with --admin: an agent's token cannot merge.
+# merge is Michael's, with --admin: an agent's token cannot merge. Both forges compare the
+# pin with the full head id, so a merge command handed on with a short one fails.
 for phrase in 'full range against the branch it will land on' '<dest>...<branch>' \
               'names its destination explicitly' 'never deferred' '--auto-merge=false' \
               '--sha <head>' '--merge --admin --match-head-commit <head>' 'fresh full-range round' \
+              'the head with a full commit id' \
               '--diff <repo-path>:<range>' 'xreview/ledgers/' '--head <branch>'; do
   if grep -qF -- "$phrase" "$SKILL"; then
     _pass "the skill says '$phrase'"

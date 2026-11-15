@@ -70,9 +70,11 @@ branch already published to origin. A forge merge by an agent pins the head and 
 never deferred: wait for the pipeline, then merge immediately with
 `glab mr merge <n> --sha <head> --auto-merge=false`. On GitHub an agent's step ends at the PR,
 since its token cannot merge: once the pre-merge review approves the head, Michael merges with
-`gh pr merge <n> --merge --admin --match-head-commit <head>`. Run each of your commands as a
-plain command of its own: a chain, a pipe or any other environment assignment on the verb is
-denied.
+`gh pr merge <n> --merge --admin --match-head-commit <head>`. Pin the head with a full commit id
+(all 40 characters), never an abbreviation: both forges compare it with the head as a string,
+and the gate refuses a short one. A report that hands Michael the command quotes the id in full.
+Run each of your commands as a plain command of its own: a chain, a pipe or any other environment
+assignment on the verb is denied.
 
 **Never gate a dispatch on which model or effort the pane is running.** Whatever the Codex pane
 is set to is Michael's choice, and it is not yours to verify, question, or report as a problem.
