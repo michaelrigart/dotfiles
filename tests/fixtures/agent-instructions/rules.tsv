@@ -89,3 +89,4 @@ ext-bump-scan	.chezmoiexternal.toml	agent-text-scan --diff	yes	A bump reads the 
 ext-bump-warm	.chezmoiexternal.toml	managed >/dev/null	no	outside the sandbox	a bump warms the cache outside the sandbox
 ext-bump-closes	.chezmoiexternal.toml	Closes #<issue>	no	commit message	the bump commit message closes the issue
 a-herdr-bare	AGENTS.md	never call `command herdr` bare	no	--session;HERDR_SOCKET_PATH	herdr scripts thread --session and never call herdr bare
+cc-excluded-front-end	.chezmoitemplates/agents/claude-code.md	act on the Herdr front end	yes	`xreview` and `wt` act on the Herdr front end the caller runs in, the app's space or the TUI's workspace\; a pane only in the other one is not found.	xreview and wt follow the caller's front end

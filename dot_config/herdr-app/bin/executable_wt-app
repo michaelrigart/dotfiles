@@ -1,17 +1,14 @@
 #!/bin/zsh
-# wt-app <branch> [start-point] — `wt` for the Herdr app.
-# wt-app --prompt               — the same, asking for the branch. The app's key runs this
-#                                 in a tab of its own.
-# wt-app --no-focus <branch> .. — the same, leaving the user's focus where it was (the new
-#                                 space does not take it).
+# wt-app --prompt               — `wt`, asking for the branch. The app's new-worktree key runs
+#                                 this in a tab of its own: it is the key's helper and stays.
+# wt-app <branch> [start-point] — hands over to `wt`. This plain form and --no-focus remain for
+#                                 sessions recorded with the path (their system prompt and
+#                                 --settings name it), until the TUI is retired.
+# wt-app --no-focus <branch> .. — the same, leaving the user's focus where it was.
 #
-# The checkout is made by wt's own lifecycle (~/.config/zsh/functions): the sibling
-# <repo>-<branch> folder, the per-target lock, .worktreehook, .worktreeinclude, the mise
-# trust carry and the Git worktree lock that keeps removal behind wt-rm. Only the last step
-# differs from `wt`: the checkout opens as a space in the app (open-space), not as a
-# workspace in the TUI.
-#
-# Run from inside the repository or one of its worktrees, as with `wt`.
+# `wt` (~/.config/zsh/functions) makes the checkout under its own lifecycle and, from an app
+# terminal, `dev` opens it as a space (open-space). Run from inside the repository or one of its
+# worktrees, as with `wt`. It keeps the caller's PATH: it is `wt`.
 
 prompt= nofocus=
 while [[ "${1:-}" == --prompt || "${1:-}" == --no-focus ]]; do
@@ -28,12 +25,10 @@ fi
 [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt-app [--no-focus] <branch> [start-point] | wt-app [--no-focus] --prompt"; exit 1 }
 
 source "$HOME/.config/zsh/functions" || exit 1
-(( $+functions[_wt_create_or_prepare] )) || {
-  print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines _wt_create_or_prepare."; exit 1 }
+(( $+functions[wt] )) || {
+  print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines wt."; exit 1 }
 
-typeset -g _WT_NOTICE=
-_wt_create_or_prepare "$@" || exit 1
-"${0:A:h}/open-space" ${nofocus:+--no-focus} "$_WT_DEST" || exit 1
+wt ${nofocus:+--no-focus} "$@" || exit 1
 
 # The app leaves a shell behind in the prompt's tab. After a failure that shell keeps the
 # message readable, and so it does for the lines a reopen leaves in _WT_NOTICE (the

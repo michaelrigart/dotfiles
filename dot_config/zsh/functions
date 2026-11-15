@@ -141,7 +141,8 @@ functions-reload() {
 # session names any more, so such an argument matches no repo by basename or substring
 # and falls through to the fzf picker.
 #
-# Resolution only. Everything about Herdr lives in layout.sh.
+# Resolution only, then the front end decides: the Herdr TUI (layout.sh) or, from the Herdr
+# desktop app, an app space (open-space). Everything about either lives in that script.
 dev() {
   emulate -L zsh
   (( $+functions[_wt_git] )) || { functions-reload _wt_git && dev "$@"; return }
@@ -179,17 +180,28 @@ dev() {
   repo="${repo:A}"
   [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1 }
 
+  # The front end: a TUI pane (HERDR_ENV, HERDR_PANE_ID) wins, else the app's terminal
+  # (HC_TERMINAL_ID), else the TUI.
+  local app=0
+  [[ -z "${HERDR_ENV-}" && -z "${HERDR_PANE_ID-}" && -n "${HC_TERMINAL_ID-}" ]] && app=1
+
   # A linked checkout must enter through layout.sh's worktree mode, which keeps
   # Herdr's worktree provenance; an ordinary workspace could not be identified safely
-  # by wt-rm.
+  # by wt-rm. The app takes the same lifecycle lock first, then opens the checkout itself.
   if [[ -f "$repo/.git" ]]; then
     local main
     main="$(builtin cd "$repo" && _wt_primary)" || return 1
     _wt_prepare_for_herdr "$main" "$repo" || return 1
-    "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "${focus[@]}" --worktree "$main" "$repo"
-    return $?
+    if (( ! app )); then
+      "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "${focus[@]}" --worktree "$main" "$repo"
+      return $?
+    fi
   fi
 
+  if (( app )); then
+    "${DEV_OPEN_SPACE:-$HOME/.config/herdr-app/bin/open-space}" "${focus[@]}" "$repo"
+    return $?
+  fi
   "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "${focus[@]}" "$repo"
 }
 

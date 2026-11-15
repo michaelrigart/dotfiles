@@ -42,7 +42,8 @@ printf '%s=off\n' framing fit delta omit_plans > "$XDG_CONFIG_HOME/xreview/packe
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
 export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER" XREVIEW_PACKET="$PACKET" \
        XREVIEW_TEXT_SCAN="$SRC/dot_local/bin/executable_agent-text-scan" RPC_SRC
-unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD XREVIEW_LEDGER_LOCK_WAIT
+unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD XREVIEW_LEDGER_LOCK_WAIT \
+      HC_TERMINAL_ID HC_SCOPE HC_TERMINAL_SOCKET HERDR_ENV HERDR_PANE_ID
 PANE_CMD='codex --sandbox read-only --ask-for-approval never'
 
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
@@ -102,7 +103,9 @@ pane_json() {
     "$af" "$s" "${PANE_CWD:-$CWD}" "$t" "$t"
 }
 case "$1 $2" in
-  "pane list") printf '{"result":{"panes":[%s%s]}}\n' "$(pane_json)" "${EXTRA_PANES:-}" ;;
+  # LIST_FAIL: the pane list fails with no output (herdr not running, or the app's window closed).
+  "pane list") [ -n "${LIST_FAIL:-}" ] && exit 1
+              printf '{"result":{"panes":[%s%s]}}\n' "$(pane_json)" "${EXTRA_PANES:-}" ;;
   "pane get")
     # A closed pane gets herdr's real answer: exit 1 and a pane_not_found envelope on stderr.
     # GONE_AFTER_KEYS and GONE_AFTER_RUN close it mid-dispatch (T4).
@@ -192,6 +195,8 @@ case "$1 $2" in
 esac
 exit 0
 H
+# The Herdr app's driver: the same pane, logged under its own name.
+sed 's/%sherdr %s/%sapp-pane %s/' "$STUB/herdr" > "$STUB/xreview-app-pane"
 cat > "$STUB/codex-daemon" <<'D'
 #!/bin/sh
 echo "codex-daemon $*" >> "$CALLS"
@@ -383,7 +388,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
         SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE ENSURE_MARK \
-        ENSURE_WRITES_CONF HOOKS_STATUS HOOKS_STATUS_RC RPC_ARCHIVE_FAIL_FOR RPC_RESOLVE_OUT
+        ENSURE_WRITES_CONF HOOKS_STATUS HOOKS_STATUS_RC RPC_ARCHIVE_FAIL_FOR RPC_RESOLVE_OUT LIST_FAIL
   export NEW_UUID="$U1"
   packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
@@ -423,6 +428,40 @@ refusal_msg() { # refusal_msg <text> <output>: the message of the refusal whose 
     !f && /^xreview: / && index($0, ENVIRON["T"]) { f = 1 }
     f { print }'
 }
+
+echo "FE. the front end follows the caller's environment (spec 2026-11-14 section 5.1)"
+fe_dispatch() { bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1; }   # fe_dispatch: env set by the caller
+fresh
+out="$(HC_TERMINAL_ID=t9 fe_dispatch)"
+is "FE1 an app terminal dispatches" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "FE1 through the app's driver, never herdr" "$(called '^app-pane pane list')/$(called '^herdr ')" "1/0"
+fresh
+out="$(HERDR_ENV=1 HC_TERMINAL_ID=t9 fe_dispatch)"
+is "FE2 HERDR_ENV outranks an app terminal: herdr, no app driver" \
+   "$(printf '%s' "$out" | grep -c '^xr-')/$(called '^herdr pane list')/$(called '^app-pane ')" "1/1/0"
+fresh
+out="$(HERDR_PANE_ID=w1:p2 HC_TERMINAL_ID=t9 fe_dispatch)"
+is "FE3 HERDR_PANE_ID outranks an app terminal: herdr, no app driver" \
+   "$(printf '%s' "$out" | grep -c '^xr-')/$(called '^herdr pane list')/$(called '^app-pane ')" "1/1/0"
+fresh
+out="$(HC_TERMINAL_ID= fe_dispatch)"
+is "FE4 an empty HC_TERMINAL_ID is no app terminal: herdr" \
+   "$(printf '%s' "$out" | grep -c '^xr-')/$(called '^herdr pane list')/$(called '^app-pane ')" "1/1/0"
+fresh
+out="$(HC_TERMINAL_ID=t9 LIST_FAIL=1 fe_dispatch)"; rc=$?
+is "FE5 an app whose panes cannot be listed refuses, naming the window" \
+   "$rc/$(printf '%s' "$out" | grep -c "cannot list the Herdr app's panes - is its window open?")/$(called '^herdr ')" "1/1/0"
+fresh
+HC_TERMINAL_ID=t9 HOOKS_STATUS=untrusted fe_dispatch >/dev/null
+is "FE6 the app path never asks about the pane-map hook" "$(called 'xreview-rpc hooks-status')" 0
+fresh
+HOOKS_STATUS=untrusted fe_dispatch >/dev/null
+is "FE6 the TUI path still does" "$(called 'xreview-rpc hooks-status')" 1
+fresh; : > "$P/agent"   # no Codex pane for the checkout
+out="$(HC_TERMINAL_ID=t9 fe_dispatch)"; rc=$?
+is "FE7 R5 an app terminal with no Codex pane refuses with the app's remedy, ending with the marker" \
+   "$rc/$(refusal_msg 'no Codex pane for' "$out" | grep -c "(open the checkout's space with dev or wt from an app terminal, or set XREVIEW_PANE)")/$(refusal_msg 'no Codex pane for' "$out" | grep -c 'Michael applies the project layout')/$(refusal_msg 'no Codex pane for' "$out" | tail -n 1 | grep -c "$MARK_END")" "1/1/0/1"
+is "FE7 and no keystroke reaches any pane" "$(untouched)/$(called 'app-pane pane send-keys')" "yes/0"
 
 echo "A. rounds are not capped by default; XREVIEW_MAX_ROUNDS is an opt-in bound"
 fresh
@@ -1368,8 +1407,8 @@ is "no title-reset escape sequence in the code (the two-step reset is gone)" \
    "$(printf '%s' "$code" | grep -cF '2;xreview')" 0
 is "pane_prepare never calls thread-resolve any more (the thread is always already known)" \
    "$(awk '/^pane_prepare\(\)/{f=1} f{print} f && /^}/{exit}' "$XREVIEW" | grep -c 'thread-resolve')" 0
-is "the marker ends exactly the 23 lines of R1-R23 (R26-R37 carry none, R34-R36 included)" \
-   "$(grep -c "Michael's call: report this and stop[.]" "$XREVIEW")" 23
+is "the marker ends exactly the 25 lines of R1-R23, the app's R5 and the lock-name refusal (R26-R37 carry none, R34-R36 included)" \
+   "$(grep -c "Michael's call: report this and stop[.]" "$XREVIEW")" 25
 
 echo "I. a repository path with a space"
 mkdir -p "$ROOT/sp ace" && cd "$ROOT/sp ace" || exit 1
@@ -1384,7 +1423,7 @@ is "its state lands in its own directory" "$(cat "$SPSTATE/review-thread" 2>/dev
 cd "$ROOT/repo" || exit 1
 
 echo "P. one dispatch at a time per pane (spec 2026-10-01 §4.9)"
-LOCKF="$XDG_STATE_HOME/xreview/locks/w1_p2.lock"
+LOCKF="$XDG_STATE_HOME/xreview/locks/$(printf '%s' "$CWD" | shasum -a 256 | cut -c1-64).lock"
 fresh; mkdir -p "$(dirname "$LOCKF")"; rm -f "$ROOT/held"
 /usr/bin/python3 -c 'import fcntl,sys,time
 f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(60)' \
@@ -1399,6 +1438,10 @@ is "P1 R28 the message ends with its own step, never the marker" \
    "$(refusal_msg 'another dispatch is using' "$out" | tail -n 1 | grep -c 'wait for it, then dispatch again$')/$(refusal_msg 'another dispatch is using' "$out" | grep -cF "$MARK")" "1/0"
 is "P1 untouched" "$(untouched)" yes
 is "P1 and no round consumed" "$(bash "$XREVIEW" round)" 0
+: > "$CALLS"
+out="$(HC_TERMINAL_ID=t9 XREVIEW_LOCK_WAIT=0.5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "P1b the app front end shares the checkout's lock" \
+   "$rc/$(printf '%s' "$out" | grep -c 'xreview: another dispatch is using the Codex pane w1:p2')" "1/1"
 kill -9 "$holder"; wait "$holder" 2>/dev/null
 : > "$CALLS"
 out="$(XREVIEW_LOCK_WAIT=2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
@@ -1425,7 +1468,7 @@ rm -f "$XDG_STATE_HOME/xreview/locks"
 fresh; rm -rf "$XDG_STATE_HOME/xreview/locks"; mkdir -p "$LOCKF"   # a directory where the pane's lock file goes
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 rmdir "$LOCKF"
-is "P4b an unopenable lock file refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot open .*w1_p2.lock')" "1/1"
+is "P4b an unopenable lock file refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot open .*\.lock')" "1/1"
 is "P4b R19 and the message ends with the marker" "$(refusal_msg 'cannot open' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
 is "P4b untouched" "$(untouched)" yes
 for bad in abc . 1.2.3 $'5\nx'; do
@@ -1434,17 +1477,47 @@ for bad in abc . 1.2.3 $'5\nx'; do
   is "P5 a garbage XREVIEW_LOCK_WAIT ($(printf '%q' "$bad")) falls back to the default" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 done
 # P7: unlock_pane closes fd 9 and nothing else - stderr must stay visible afterwards, and the
-# lock must be free for the next locker.
+# lock must be free for the next locker (opened "r": the lock file must exist, named by the root).
 fresh
-lock_src="$(sed -n '/^lock_pane() {/,/^}/p;/^unlock_pane() {/p' "$XREVIEW")"
+lock_src="$(sed -n '/^lock_key() {/,/^}/p;/^lock_pane() {/,/^}/p;/^unlock_pane() {/p' "$XREVIEW")"
+A_SHA="$(printf '%s' /a/b | shasum -a 256 | cut -c1-64)"
 out="$(bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
 $lock_src
-lock_pane wP:p7
+lock_pane wP:p7 /a/b
 unlock_pane
 echo probe >&2
-/usr/bin/python3 -c 'import fcntl,sys; fcntl.flock(open(sys.argv[1], \"a\"), fcntl.LOCK_EX | fcntl.LOCK_NB)' \"\$XDG_STATE_HOME/xreview/locks/wP_p7.lock\" && echo free" 2>&1)"
+/usr/bin/python3 -c 'import fcntl,sys; fcntl.flock(open(sys.argv[1], \"r\"), fcntl.LOCK_EX | fcntl.LOCK_NB)' \"\$XDG_STATE_HOME/xreview/locks/$A_SHA.lock\" && echo free" 2>&1)"
 is "P7 stderr written after unlock_pane is still visible" "$(printf '%s' "$out" | grep -cx probe)" 1
 is "P7 and the lock is free after unlock_pane" "$(printf '%s' "$out" | grep -cx free)" 1
+# P7b: two roots that differ only in a character the old file name flattened to "_" are two locks.
+# The holder keeps /a/b locked until the sentinel is removed (bounded at 30 s, so a broken test
+# cannot hang): it holds exactly as long as the probes need, however loaded the machine is.
+rm -f "$ROOT/held7"; : > "$ROOT/release7"
+bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
+$lock_src
+lock_pane x /a/b
+: > \"$ROOT/held7\"
+for _ in \$(seq 300); do [ -e \"$ROOT/release7\" ] || break; sleep 0.1; done" &
+holder=$!
+for _ in $(seq 50); do [ -e "$ROOT/held7" ] && break; sleep 0.1; done
+out="$(XREVIEW_LOCK_WAIT=0.5 bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
+$lock_src
+lock_pane x /a_b && echo got" 2>&1)"
+is "P7b a different root is not blocked by a held lock" "$(printf '%s' "$out" | grep -cx got)" 1
+out="$(XREVIEW_LOCK_WAIT=0.5 bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
+$lock_src
+lock_pane x /a/b && echo got" 2>&1)"
+is "P7b while the same root is held" "$(printf '%s' "$out" | grep -cx got)" 0
+rm -f "$ROOT/release7"; wait "$holder" 2>/dev/null
+# P7c: a root of any length names a lock file of the same length.
+long="/$(printf 'd%.0s' {1..300})"
+out="$(bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
+$lock_src
+lock_pane x \"$long\" && echo got" 2>&1)"
+is "P7c a 300-character root locks" "$(printf '%s' "$out" | grep -cx got)" 1
+long_name="$(printf '%s' "$long" | shasum -a 256 | cut -c1-64).lock"
+is "P7c and its lock file name is 69 bytes" \
+   "${#long_name}/$([ -e "$XDG_STATE_HOME/xreview/locks/$long_name" ] && echo yes || echo no)" "69/yes"
 # P8: a helper that fails for any reason but the bound is not "another dispatch". The lock
 # helper is swapped for a stand-in that runs the real python with fd 9 closed (flock raises
 # EBADF, the helper's own exit-2 path), or that exits 75 (the bound ran out), or exits 1 (any other status is "cannot lock"). No sandbox-safe way
@@ -1460,7 +1533,7 @@ for variant in nolock exit1 timeout; do
   out="$(bash "$ROOT/xreview-$variant" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
   if [ "$variant" = nolock ] || [ "$variant" = exit1 ]; then
     is "P8 a helper that cannot lock ($variant) refuses as 'cannot lock'" \
-       "$rc/$(printf '%s' "$out" | grep -c "^xreview: cannot lock the Codex pane w1:p2 (.*w1_p2.lock); no review was started. $MARK\$")" "1/1"
+       "$rc/$(printf '%s' "$out" | grep -c "^xreview: cannot lock the Codex pane w1:p2 (.*/$(printf '%s' "$CWD" | shasum -a 256 | cut -c1-64).lock); no review was started. $MARK\$")" "1/1"
     is "P8 R20 ($variant) and the message ends with the marker" "$(refusal_msg 'cannot lock the Codex pane' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
     is "P8 and never as contention" "$(printf '%s' "$out" | grep -c 'another dispatch')" 0
     is "P8 and no traceback" "$(printf '%s' "$out" | grep -c 'Traceback')" 0
@@ -1469,6 +1542,19 @@ for variant in nolock exit1 timeout; do
        "$rc/$(printf '%s' "$out" | grep -c '^xreview: another dispatch is using the Codex pane w1:p2; no review was started - wait for it, then dispatch again$')" "1/1"
   fi
   is "P8 $variant: untouched" "$(untouched)" yes
+done
+# P8b: the key helper failing, or naming nothing, is no lock at all: the dispatch refuses before
+# any key or turn. lock_key's interpreter is swapped the way P8 swaps the flock helper's.
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/py-emptykey"
+chmod +x "$ROOT/py-emptykey"
+for variant in exit1 emptykey; do
+  sed "/^lock_key() {/,/^}/ s#/usr/bin/python3#$ROOT/py-$variant#" "$XREVIEW" > "$ROOT/xreview-key-$variant"
+  fresh
+  out="$(bash "$ROOT/xreview-key-$variant" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "P8b a lock key that cannot be made ($variant) refuses" \
+     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot name the lock for the Codex pane w1:p2; no review was started. $MARK")" "1/1"
+  is "P8b R38 ($variant) and the message ends with the marker" "$(refusal_msg 'cannot name the lock' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
+  is "P8b $variant: untouched" "$(untouched)" yes
 done
 # P9: the lock helper is inline Python, run unsandboxed from the repository, and a plain
 # `python3 -c` puts the current directory first on sys.path: a sandbox-written fcntl.py there

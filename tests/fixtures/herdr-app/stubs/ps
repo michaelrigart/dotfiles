@@ -1,5 +1,5 @@
 #!/bin/sh
-# Stub ps for tests/herdr-app-xreview.test.sh, logging what it answers to $STUB_LOG; anything else is the real
+# Stub ps for tests/xreview-app-pane.test.sh, logging what it answers to $STUB_LOG; anything else is the real
 # ps, which the other suites may use.
 #   -o pgid= -p <pid>   $STUB_DIR/pgid-<pid>; fails without it
 #   -o comm= -p <pid>   $STUB_DIR/comm-<pid> (a login shell is "-zsh", a path is a path); a shell,

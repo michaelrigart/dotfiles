@@ -80,7 +80,8 @@ missing git-forge-guard       dot_claude/executable_git-forge-guard.sh
 missing herdr-app             dot_config/herdr-app/bin/executable_retire
 missing herdr-app             dot_config/zsh/functions
 missing herdr-app-xreview     dot_config/herdr-app/bin/executable_xreview-app
-missing herdr-app-xreview     dot_config/herdr-app/xreview-shim/executable_herdr
+missing xreview-app-pane      dot_local/bin/executable_xreview-app-pane
+missing xreview-app-pane      dot_local/bin/executable_xreview
 missing herdr-phase           dot_config/herdr/executable_phase.sh
 missing live-rm-denies        dot_claude/modify_private_settings.json
 missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh

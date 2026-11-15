@@ -5,7 +5,7 @@
 #
 #   --no-focus          leave the user's focus where it was: space.new always takes it, so the
 #                       active space is noted first and selected again at the end.
-#   --claude-cmd <cmd>  start Claude with this shell command instead of bin/claude-app.
+#   --claude-cmd <cmd>  start Claude with this shell command instead of plain `claude`.
 #   --codex-cmd <cmd>   start Codex with this shell command instead of the TUI's pane command.
 #                       Both are for retire's reopen, which brings agents back with their
 #                       recorded resume commands; without them nothing below changes.
@@ -13,11 +13,16 @@
 # A new space gets two tabs: "agents" (Claude left, Codex right) and "runtime" (two shells
 # stacked). A folder that already has a space is focused instead.
 #
-# Claude starts through bin/claude-app, which tells it to use xreview-app. Codex runs the
-# TUI's pane command (~/.config/herdr/codex-pane-command) on the shared launchd daemon: this
-# pane is the reviewer xreview-app drives, and xreview resumes and restarts it with that same
-# command, so the two must agree. The app guide's warning about a shared daemon concerns one
+# Claude starts as plain `claude` (bin/claude-app remains only for sessions recorded with its
+# path). Codex runs the TUI's pane command (~/.config/herdr/codex-pane-command) on the shared
+# launchd daemon: this pane is the reviewer xreview drives, and xreview resumes and restarts it
+# with that same command, so the two must agree. The app guide's warning about a shared daemon concerns one
 # started from a terminal, which takes that terminal's identity; this daemon is launchd's.
+#
+# It runs unsandboxed, after the caller's PATH has served a repository's hooks, so its PATH is
+# pinned before anything runs: a folder the caller puts first (a mise _.path the sandbox can
+# write) must not supply herdr-app, jq, git or fzf.
+PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
 emulate -L zsh
 setopt err_exit no_unset pipe_fail
 
@@ -90,8 +95,8 @@ if [[ -z $codex_cmd ]]; then
   [[ -n $codex_cmd ]] || { pick=; die "missing $pane_cmd_file - the Codex pane command is defined there" }
 fi
 
-made=$(app do space.new "$(jq -nc --arg n "${repo:t}" --arg f "$repo" --arg c "$claude_cmd" --arg b "$here/claude-app" \
-  '{name: $n, folder: $f, tab: "agents", argv: (if $c == "" then [$b] else ["eval", $c] end)}')")
+made=$(app do space.new "$(jq -nc --arg n "${repo:t}" --arg f "$repo" --arg c "$claude_cmd" \
+  '{name: $n, folder: $f, tab: "agents", argv: (if $c == "" then ["claude"] else ["eval", $c] end)}')")
 space=$(jq -er .space <<<"$made")
 agents=$(jq -er .tab <<<"$made")
 pane=$(pane_of "$(jq -er .terminal <<<"$made")")

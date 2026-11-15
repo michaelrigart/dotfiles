@@ -31,6 +31,7 @@ read_screen() { screen="$(herdr pane read "$pane" --source visible 2>/dev/null)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
 [ -f "$XREVIEW" ] || { echo "missing file under test: $XREVIEW" >&2; exit 2; }
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+PANE_CLI=herdr   # xreview sets it at its top, outside the extraction; the canary drives the TUI
 die() { printf 'xreview: %s\n' "$1" >&2; return 1; }
 xr_src="$(sed -n '/^pane_proc() {/,/^}/p;/^proc_codex() {/,/^}/p;/^resume_target() {/,/^}/p;/^daemon_pid() {/,/^}/p;/^connected_to_daemon() {/,/^}/p' "$XREVIEW")"
 for fn in pane_proc proc_codex resume_target daemon_pid connected_to_daemon; do
