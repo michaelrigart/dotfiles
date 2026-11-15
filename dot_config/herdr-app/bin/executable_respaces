@@ -1,7 +1,7 @@
 #!/bin/zsh
 # respaces — rebuild the two clones this setup keeps of Herdr's mods:
-#   michael-menu    the `menu` mod, its worktree items replaced (New and Open worktree open a
-#                   tab running wt-app / open-space; Retire worktree replaces Remove)
+#   michael-menu    the `menu` mod, its worktree items replaced (New worktree opens the wt popup,
+#                   Open worktree a tab running open-space; Retire worktree replaces Remove)
 #   michael-spaces  the `spaces` mod, with the phase badge in each row, and a right-click
 #                   that opens michael-menu
 # Run it after a Herdr update, or after editing patches/phases.js or patches/worktree-actions.js.

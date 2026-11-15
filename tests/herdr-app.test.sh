@@ -17,7 +17,7 @@ SRC=${0:A:h:h}
 # The installed Herdr app's own mods, which the patch-mod checks read; taken before any
 # newworld points HERDR_APP_HOME at a scratch folder.
 shipped=${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods
-for f in dot_config/herdr-app/bin/executable_{checkout-spaces,claude-app,close-own-tab,folder-gone,open-space,patch-mod,respaces,retire,session-written,wt-app} \
+for f in dot_config/herdr-app/bin/executable_{checkout-spaces,claude-app,close-own-tab,edit-scrollback,folder-gone,open-space,patch-mod,respaces,retire,session-written,wt-app} \
          dot_config/herdr-app/{claude-settings,programs}.json.tmpl dot_config/zsh/functions; do
   [[ -f $SRC/$f ]] || { print -u2 -- "missing $f"; exit 2 }
 done
@@ -389,21 +389,70 @@ check "wt-app --no-focus gives focus back to the active space" did 'space.select
 check "the focus comes back after the space is made" before 'space.new' 'space.select {"id":"sp-main"}'
 check "the focus is the last thing that moves" test "$(grep '^herdr-app do' $LOG | tail -1)" = 'herdr-app do space.select {"id":"sp-main"}'
 
-# --prompt asks for the branch on stdin and, with nothing left to say, closes its own tab.
+# run_held <stdin line, or "" for none> <command...> — the command with that line on stdin and
+# its output in $world/out, stdin then held open until the command says "Press Enter to close"
+# and a moment has passed. Its status comes back, and $world/held exists if it was still running
+# when stdin was released: a hold is a blocking read, so a command that does not hold is gone by
+# then.
+run_held() {
+  local line=$1; shift
+  rm -f $world/released $world/held; : > $world/out
+  ( [[ -z $line ]] || print -r -- "$line"; for i in {1..100}; do grep -q 'Press Enter to close' $world/out && break; sleep 0.1; done
+    sleep 0.5; : > $world/released; print ) |
+    ( "$@" >$world/out 2>&1; rc=$?; [[ -e $world/released ]] && : > $world/held; exit $rc )
+}
+
+# --prompt asks for the branch on stdin. It ends when wt does: a popup closes with it, and a tab
+# (the key outside the michael layout) is closed by wt-app itself.
 newworld prompt
 ( cd $main && print newbranch | "$bin/wt-app" --prompt ) >$world/out 2>&1; rc=$?
 check "wt-app --prompt succeeds" test $rc -eq 0
 check "wt-app --prompt makes the space for the entered branch" did 'space.new.*proj-newbranch'
 check "wt-app --prompt closes its own tab" did 'tab.close {"id":"tb-r","confirmed":true}'
 check "the tab closes after the space is made" before 'space.new' 'tab.close'
+check "wt-app --prompt does not hold the popup open" test -z "$(grep 'Press Enter to close.' $world/out)"
 
-# When wt fails the tab stays, with the message on screen: a folder where the checkout would go
-# that is not a worktree makes wt refuse.
+# When wt fails the popup is held open, with the message on screen: a folder where the checkout
+# would go that is not a worktree makes wt refuse. The tab stays too, if there is one.
 newworld prompt-fails; mkdir $world/repos/proj-junk
-( cd $main && print junk | "$bin/wt-app" --prompt ) >$world/out 2>&1; rc=$?
+( cd $main && run_held junk "$bin/wt-app" --prompt ); rc=$?
 check "wt-app --prompt exits non-zero when wt fails" test $rc -ne 0
 check "...makes no space" not_did 'space.new'
-check "...and keeps its tab open" not_did 'tab.close'
+check "...says to press Enter" grep -q 'Press Enter to close.' $world/out
+check "...and was still waiting for it when released" test -e $world/held
+check "...and keeps its tab" not_did 'tab.close'
+
+# --prompt is wt-prompt, which has no --no-focus.
+newworld prompt-nofocus
+( cd $main && "$bin/wt-app" --prompt --no-focus </dev/null ) >$world/out 2>&1; rc=$?
+check "wt-app --prompt --no-focus is refused" test $rc -ne 0
+check "...with the usage line" grep -q '^usage: wt-app' $world/out
+check "...and makes no space" not_did 'space.new'
+
+# --- edit-scrollback ------------------------------------------------------------------------
+# The terminal's text goes to Neovim in a temp file, cursor on the last line, and the file goes
+# when Neovim does. The screen's trailing blank lines are not part of it.
+newworld scrollback
+mkdir -p $world/nvim-bin $world/tmp
+cat > $world/nvim-bin/nvim <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$STUB_DIR/nvim-args"
+cp "$3" "$STUB_DIR/nvim-saw"
+echo "$3" > "$STUB_DIR/nvim-file"
+exit ${STUB_NVIM_RC:-0}
+EOF
+chmod +x $world/nvim-bin/nvim
+printf 'one\ntwo\n\n\n' > $STUB_DIR/read-t5
+PATH=$world/nvim-bin:$PATH TMPDIR=$world/tmp "$bin/edit-scrollback" t5 >$world/out 2>&1; rc=$?
+check "edit-scrollback succeeds" test $rc -eq 0
+check "edit-scrollback reads the terminal's history" did 'hc read t5 --lines'
+check "nvim opens at the last line of a file" test "$(sed -n 1p $STUB_DIR/nvim-args)" = +
+check "nvim gets the terminal's text, without the trailing blank lines" test "$(<$STUB_DIR/nvim-saw)" = $'one\ntwo'
+check "the temp file is gone afterwards" test ! -e "$(<$STUB_DIR/nvim-file)"
+# A failing Neovim holds the popup open, as a failing read does, instead of closing it unread.
+run_held "" env STUB_NVIM_RC=3 PATH=$world/nvim-bin:$PATH TMPDIR=$world/tmp "$bin/edit-scrollback" t5; rc=$?
+check "edit-scrollback reports a failing nvim" test $rc -eq 1 -a "$(grep -c 'nvim exited 3' $world/out)" -eq 1
+check "...and holds the popup open until it is read" test -e $world/held
 
 newworld nofocus-off
 ( cd $main && "$bin/wt-app" other ) >$world/out 2>&1; rc=$?

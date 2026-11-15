@@ -1,9 +1,10 @@
 #!/bin/zsh
 # close-own-tab — close the app tab this script's terminal is in.
 #
-# For the helpers a key starts in a tab of their own (wt-app --prompt, open-space --pick):
-# the app leaves a shell behind when such a command ends, so a helper with nothing left to
-# say closes its tab itself. Outside the app's terminals it does nothing.
+# For the helpers a key starts in a tab of its own (open-space --pick, and wt-app --prompt where
+# the key is not the popup's): the app leaves a shell behind when such a command ends, so a
+# helper with nothing left to say closes its tab itself.
+# Outside the app's terminals it does nothing.
 #
 # It runs unsandboxed, so its PATH is pinned before anything runs: a folder the caller's PATH
 # puts first (a repository's mise _.path) must not supply herdr-app or jq.

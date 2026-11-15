@@ -1,6 +1,8 @@
 #!/bin/zsh
-# wt-app --prompt               — `wt`, asking for the branch. The app's new-worktree key runs
-#                                 this in a tab of its own: it is the key's helper and stays.
+# wt-app --prompt               — `wt-prompt`, the TUI's popup surface: it asks for the branch and
+#                                 holds on what must be read. The app's new-worktree key and the
+#                                 space menu's New worktree run this in a popup (mods/popup),
+#                                 which closes when it ends.
 # wt-app <branch> [start-point] — hands over to `wt`. This plain form and --no-focus remain for
 #                                 sessions recorded with the path (their system prompt and
 #                                 --settings name it), until the TUI is retired.
@@ -15,23 +17,31 @@ while [[ "${1:-}" == --prompt || "${1:-}" == --no-focus ]]; do
   [[ $1 == --prompt ]] && prompt=1 || nofocus=1
   shift
 done
+usage="usage: wt-app [--no-focus] <branch> [start-point] | wt-app --prompt"
+[[ -z $prompt || -z $nofocus ]] || { print -ru2 -- "$usage"; exit 1 }
+[[ -n $prompt || -n "${1:-}" ]] || { print -ru2 -- "$usage"; exit 1 }
+
+# The popup closes with this command, so a failure before wt-prompt takes over is held open
+# the way wt-prompt holds its own.
+hold() {
+  print -r -- "Press Enter to close."
+  IFS= read -r || true
+}
+
+source "$HOME/.config/zsh/functions" || { [[ -z $prompt ]] || hold; exit 1 }
 
 if [[ -n $prompt ]]; then
-  print -n -- "Branch: "
-  IFS= read -r branch || branch=""
-  [[ -n $branch ]] || { print -ru2 -- "wt-app: cancelled (no branch entered)."; exit 1 }
-  set -- "$branch"
+  (( $+functions[wt-prompt] )) || {
+    print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines wt-prompt."; hold; exit 1 }
+  wt-prompt || exit $?
+  # Outside the michael layout the global key still runs this in a tab, where the app leaves a
+  # shell behind: a success has nothing left to say, so the tab closes itself. In a popup the
+  # terminal is in no tab, and close-own-tab finds none and does nothing.
+  "${0:A:h}/close-own-tab"
+  exit 0
 fi
-[[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt-app [--no-focus] <branch> [start-point] | wt-app [--no-focus] --prompt"; exit 1 }
 
-source "$HOME/.config/zsh/functions" || exit 1
 (( $+functions[wt] )) || {
   print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines wt."; exit 1 }
 
 wt ${nofocus:+--no-focus} "$@" || exit 1
-
-# The app leaves a shell behind in the prompt's tab. After a failure that shell keeps the
-# message readable, and so it does for the lines a reopen leaves in _WT_NOTICE (the
-# untrusted-config report, the never-prepared line after a carry). Otherwise the tab has
-# nothing left to say and closes itself.
-if [[ -n $prompt && -z "${_WT_NOTICE:-}" ]]; then "${0:A:h}/close-own-tab"; fi

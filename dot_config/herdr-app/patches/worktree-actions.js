@@ -1,6 +1,6 @@
 // What the michael-menu clone does for a space's worktree items: New worktree, Open worktree
-// and Retire worktree. Each runs one of ~/.config/herdr-app/bin's scripts in a tab, where its
-// prompt and its output stay readable.
+// and Retire worktree. New worktree opens mods/popup's wt prompt; Open and Retire run one of
+// ~/.config/herdr-app/bin's scripts in a tab, where its prompt and its output stay readable.
 //
 // Source of truth: ~/.config/herdr-app/patches/worktree-actions.js. bin/respaces copies it
 // into the michael-menu clone of Herdr's `menu` mod; edit it here, then run respaces.
@@ -9,7 +9,7 @@
 // with it. So nothing here waits: checkoutPlan() runs while the menu is open, and worktree()
 // only reads what the window already knows.
 
-import { run, spaces, exec, appHome } from "herdr";
+import { run, spaces, exec, appHome, openOverlay } from "herdr";
 
 const bin = (name) => `${appHome()}/bin/${name}`;
 
@@ -30,12 +30,19 @@ export function worktree(args, plan) {
   const space = spaces().find((s) => s.id === args.space);
   if (!space || !plan) return;
   if (args.action === "retire") return retire(space, plan);
-  // wt-app and open-space work from inside the repository, which the tab starts in. A tab
-  // does not bring its space forward, and its prompt is what the person is waiting for.
-  const [name, argv] = args.action === "new"
-    ? ["new worktree", [bin("wt-app"), "--prompt"]]
-    : ["open worktree", [bin("open-space"), "--pick"]];
-  run("tab.new", { space: space.id, folder: plan.top, name, argv });
+  // The wt popup is shown by an invisible copy of mods/popup, opened here with the folder as
+  // its props: the menu's tasks end with it, and the selection below is not yet visible to the
+  // layout's copy, which would run wt in the space that was active before. A window, since a
+  // stray click or Esc would close a popup before it has opened the prompt; 2 px, since up to 1
+  // is a share of the window.
+  if (args.action === "new") {
+    openOverlay({ mod: "popup", kind: "window", frame: "none", width: 2, height: 2, props: { wt: plan.top } });
+    run("space.select", { id: space.id });
+    return;
+  }
+  // open-space works from inside the repository, which the tab starts in. A tab does not bring
+  // its space forward, and its prompt is what the person is waiting for.
+  run("tab.new", { space: space.id, folder: plan.top, name: "open worktree", argv: [bin("open-space"), "--pick"] });
   run("space.select", { id: space.id });
 }
 

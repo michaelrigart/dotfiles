@@ -81,6 +81,7 @@ dot_config/git/hooks/executable_secret-scan	py	git-pre-push-hook	git-pre-push-ho
 dot_config/git/signing.pub.tmpl	data	git-signing-config	git-signing-config
 dot_config/herdr-app/bin/executable_claude-app	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_close-own-tab	zsh	herdr-app	herdr-app,herdr-app-xreview
+dot_config/herdr-app/bin/executable_edit-scrollback	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_folder-gone	py	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_open-space	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_patch-mod	py	herdr-app	herdr-app,herdr-app-xreview
@@ -97,6 +98,8 @@ dot_config/herdr-app/keys.json.tmpl	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/layouts/michael.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/nav/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/nav/mod.json	data	-	herdr-app,herdr-app-xreview
+dot_config/herdr-app/mods/popup/main.js	data	-	herdr-app,herdr-app-xreview
+dot_config/herdr-app/mods/popup/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/respaces-guard/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/respaces-guard/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/resume/decide.js	data	herdr-app-resume	herdr-app,herdr-app-resume,herdr-app-xreview
