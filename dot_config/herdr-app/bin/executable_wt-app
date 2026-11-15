@@ -33,8 +33,12 @@ source "$HOME/.config/zsh/functions" || { [[ -z $prompt ]] || hold; exit 1 }
 if [[ -n $prompt ]]; then
   (( $+functions[wt-prompt] )) || {
     print -ru2 -- "wt-app: ~/.config/zsh/functions no longer defines wt-prompt."; hold; exit 1 }
-  wt-prompt
-  exit $?
+  wt-prompt || exit $?
+  # Outside the michael layout the global key still runs this in a tab, where the app leaves a
+  # shell behind: a success has nothing left to say, so the tab closes itself. In a popup the
+  # terminal is in no tab, and close-own-tab finds none and does nothing.
+  "${0:A:h}/close-own-tab"
+  exit 0
 fi
 
 (( $+functions[wt] )) || {
