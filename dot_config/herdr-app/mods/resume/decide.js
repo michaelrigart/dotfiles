@@ -4,15 +4,18 @@
 // A terminal is lost when its root process (the pid `hc get` reports) is not the one its record
 // was made under. herdr-core restarting keeps every terminal and its pid, so a restart loses none.
 //   Rec  = { app, id, cwd, cmd, fresh, pid?, quit?, sent? }   what is saved per terminal address
-//   Seen = { address, pid, shell, now }   what a scan saw: the root pid (null when unknown),
-//          whether a shell is in front, and the agent running now ({app, id, cwd, cmd, fresh}) or null
+//   Seen = { address, pid, shell, other, now }   what a scan saw: the root pid (null when unknown),
+//          whether a shell is in front, whether some other program is (neither a shell nor claude or
+//          codex; false when unknown), and the agent running now ({app, id, cwd, cmd, fresh}) or null
 
 // Shells the core has just recovered may not read typed input yet.
 export const SETTLE = 3000;
 // How long a lost terminal whose session runs elsewhere waits before it falls to the button.
 export const PATIENCE = 120000;
 
-// Records after this scan, and what to do about each terminal:
+// Records after this scan, and what to do about each terminal. A record under the same pid with
+// another program in front is marked quit without the button: the agent is gone from the front,
+// and the next program may have hidden its quit from every scan.
 //   button  terminals at a shell that were not lost (an agent quit on purpose, or a failed resume)
 //   lost    terminals whose new shell has held its pid for SETTLE
 //   again   a new shell has not settled yet: look again soon
@@ -24,13 +27,18 @@ export function classify(saved, seen, firstSeen, now) {
   const lost = [];
   let changed = false;
   let again = false;
-  for (const { address, pid, shell, now: agent } of seen) {
+  for (const { address, pid, shell, other, now: agent } of seen) {
     const rec = out[address];
     if (agent) {
       if (!rec || rec.cmd !== agent.cmd || rec.pid !== pid || rec.quit || rec.sent) {
         out[address] = { ...agent, pid };
         changed = true;
       }
+      continue;
+    }
+    if (other && rec && rec.pid === pid && !rec.quit) {
+      out[address] = { ...rec, quit: true };
+      changed = true;
       continue;
     }
     if (!shell || !rec) continue;

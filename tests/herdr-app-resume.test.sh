@@ -64,7 +64,8 @@ const T = 1000000;
   const saved = { a: rec("X", 100), b: rec("X", 101), q: rec("Y", 102, { quit: true }), e: rec("Z", 103) };
   const seen = [["a", 900], ["b", 901], ["q", 902], ["e", 903]].map(([address, pid]) => ({ address, pid, shell: true, now: null }));
   const r1 = classify(saved, seen, {}, T);
-  check("loss: nothing resumes before the new shells settle", r1.lost.length === 0 && r1.again);
+  check("loss: nothing resumes before the new shells settle", r1.lost.length === 0 && r1.again
+    && classify(r1.saved, seen, r1.firstSeen, T + SETTLE - 1).lost.length === 0);
   const r2 = classify(r1.saved, seen, r1.firstSeen, T + SETTLE);
   check("loss: settled terminals are lost, a quit one only gets the button", r2.lost.join() === "a,b,e" && r2.button.join() === "q");
   const { go, held } = reserve(r2.lost, r2.saved, seen, new Set(["Z"]));

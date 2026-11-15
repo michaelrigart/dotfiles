@@ -6,6 +6,8 @@
 // or another terminal already takes it. The core itself restarting is no loss: it keeps every
 // terminal, with the same root process. One back at a shell under the same process had its agent
 // quit on purpose: that only gets the button in the status bar (or "resume.all" from keys.json).
+// One under the same process with some other program in front (neither a shell nor an agent)
+// is marked quit too, without the button: a quit that the next program hid from every scan.
 // What is decided lives in decide.js.
 //
 // No agent hooks. The session id comes from what each agent already publishes:
@@ -174,8 +176,10 @@ export default class Resume extends View {
           const t = await get(p.terminal);
           const pid = Number.isInteger(t?.pid) ? t.pid : null;
           const name = t?.foreground?.name ?? "";
-          if (SHELLS.includes(name.replace(/^-/, ""))) return { address: p.terminal, pid, shell: true, now: null };
-          return { address: p.terminal, pid, shell: false, now: await record(t) };
+          if (SHELLS.includes(name.replace(/^-/, ""))) return { address: p.terminal, pid, shell: true, other: false, now: null };
+          // Another program in front (a failed `hc get` has no name, so it is not one).
+          const other = name !== "" && name !== "claude" && name !== "codex";
+          return { address: p.terminal, pid, shell: false, other, now: await record(t) };
         }));
         // Which sessions run elsewhere is asked for the terminals a first look calls lost.
         const first = { ...known };
