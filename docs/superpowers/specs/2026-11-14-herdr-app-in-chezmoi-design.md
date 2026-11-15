@@ -224,7 +224,10 @@ patched line. The allowlist sentence names the tree. The Layout block's
   cask already installed.
 - `rm -r ~/.config/herdr-app/tests`: the suites now live in the repo.
 - From then on, app config changes go through a `wt` checkout of the dotfiles. To bring a live
-  edit back, use `command chezmoi --source <checkout> add <file>`. A file the allowlist doesn't
-  cover needs its `!` entry first.
+  edit back, use `command chezmoi --source <checkout> add <file>`, except `settings.json`: it
+  needs `add --create`, because a plain `add` (of the file or the tree) replaces the
+  `create_` seed with a fully managed file, so the next apply resets the app's own writes
+  (and `re-add` skips it). The `.json.tmpl` files are edited in the source instead. A file the
+  allowlist doesn't cover needs its `!` entry first.
 - The `herdr-app-trial` memory says the app config is unmanaged and that nothing for it goes
   in git. Both stop being true at merge.
