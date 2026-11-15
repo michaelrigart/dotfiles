@@ -63,6 +63,11 @@
 
 {{- /* Enforce feature flags. */ -}}
 {{- $config = setValueAtPath "features.memories" true $config -}}
+{{- /* Fresh Codex profiles default the memory pipeline to v2 (~/.codex/memories_v2), existing
+       ones to v1. Both machines must use one root for `codex-memory-share`; moving to v2
+       changes this pin and the script's root together (spec
+       2026-11-15-hercules-agent-machine).                                               */ -}}
+{{- $config = setValueAtPath "memories.version" "v1" $config -}}
 {{- $config = setValueAtPath "features.prevent_idle_sleep" true $config -}}
 {{- /* Required by the Herdr codex integration: its hook only fires with this set.
        Pinned HERE rather than left to `herdr integration install`, because that

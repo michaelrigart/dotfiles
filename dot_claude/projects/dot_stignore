@@ -1,0 +1,4 @@
+// Syncthing: only Claude Code memory notes sync between machines
+// (spec 2026-11-15-hercules-agent-machine). Everything else is per machine.
+!/*/memory/*.md
+*
