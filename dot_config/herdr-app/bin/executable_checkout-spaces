@@ -83,14 +83,17 @@ in_checkout() { [[ $1 == "$folder" || $1 == "$folder"/* || ${1:A} == "$folder" |
 
 # The folder of every process in the foreground group of a terminal's top-level process, one per
 # line, for a terminal whose hc get answer names no folder of its own. Non-zero, printing
-# nothing, when the group or its folders cannot be read.
+# nothing, when the group or its folders cannot be read, or when the checkout's path holds a byte
+# lsof would escape (outside printable ASCII, or a backslash), which its answer could not match.
 group_folders() {
   local pid group out
+  setopt local_options no_multibyte
+  [[ $folder != *[^\ -\[\]-\~]* ]] || return 1
   pid=$(jq -r '.pid | select(type == "number")' <<<"$1" 2>/dev/null) && [[ $pid == <-> ]] || return 1
   group=$(ps -o tpgid= -p $pid 2>/dev/null) || return 1
   group=${group//[[:space:]]/}
   [[ $group == <-> ]] && (( group > 0 )) || return 1
-  out=$(/usr/bin/perl -e 'alarm shift; exec @ARGV' 5 lsof -b -w -a -g $group -d cwd -Fn 2>/dev/null) || return 1
+  out=$(/usr/bin/perl -e 'alarm shift; exec @ARGV' 5 env LC_ALL=C lsof -b -w -a -g $group -d cwd -Fn 2>/dev/null) || return 1
   out=$(print -r -- "$out" | sed -n 's/^n//p')
   [[ -n $out ]] || return 1
   print -r -- $out

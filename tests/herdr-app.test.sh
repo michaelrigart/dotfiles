@@ -210,6 +210,11 @@ check "...and names the terminal and the folder" grep -qF -- "t9 (proj / retire)
 rm $STUB_DIR/lsof-777
 cs check $wt >$world/out 2>&1; rc=$?
 check "...and refuses when the group cannot be read" test $rc -eq 1
+# lsof escapes bytes outside printable ASCII, so such a checkout path cannot be matched against its answer.
+newworld group-café; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 777 > $STUB_DIR/tpgid-4242
+print -l / $main > $STUB_DIR/lsof-777
+cs check $wt >$world/out 2>&1; rc=$?
+check "a checkout path lsof would escape refuses the group read" test $rc -eq 1
 # A terminal of the set whose answer shows nothing about its foreground is not vouched for.
 newworld empty-answer; print '{}' > $STUB_DIR/get-t2.json
 cs check $wt >$world/out 2>&1; rc=$?
