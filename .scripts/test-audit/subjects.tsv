@@ -98,6 +98,7 @@ dot_config/herdr-app/mods/nav/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/nav/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/respaces-guard/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/respaces-guard/mod.json	data	-	herdr-app,herdr-app-xreview
+dot_config/herdr-app/mods/resume/decide.js	data	herdr-app-resume	herdr-app,herdr-app-resume,herdr-app-xreview
 dot_config/herdr-app/mods/resume/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/resume/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/usage/main.js	data	-	herdr-app,herdr-app-xreview

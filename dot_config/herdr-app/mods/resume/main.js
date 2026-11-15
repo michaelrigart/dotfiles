@@ -1,9 +1,12 @@
-// Bring agent sessions back after a restart. herdr-core gives a lost terminal a shell in
-// its last folder and never runs its command again, so this remembers, per terminal, the
-// command that resumes the exact session there, and which core it was running under.
-// A terminal back at a bare shell under a different core was lost in a restart: it is
-// resumed at once. One back at a shell under the same core had its agent quit on purpose:
-// that only gets the button in the status bar (or "resume.all" from keys.json).
+// Bring agent sessions back after a terminal is lost. herdr-core gives a lost terminal a shell
+// in its last folder and never runs its command again, so this remembers, per terminal, the
+// command that resumes the exact session there, and the root process (`hc get` .pid) it ran
+// under. A terminal back at a bare shell under a different root process was lost: it is
+// resumed once that shell has settled, unless the session runs anywhere else (bin/session-running)
+// or another terminal already takes it. The core itself restarting is no loss: it keeps every
+// terminal, with the same root process. One back at a shell under the same process had its agent
+// quit on purpose: that only gets the button in the status bar (or "resume.all" from keys.json).
+// What is decided lives in decide.js.
 //
 // No agent hooks. The session id comes from what each agent already publishes:
 //   Claude Code  ~/.claude/sessions/<pid>.json, its own registry of running sessions
@@ -13,16 +16,13 @@
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, machines, hc, exec, readTextFile, home, appHome, shared, setShared, theme, notify, nextCommand } from "herdr";
+import { PATIENCE, classify, reserve, claim } from "./decide.js";
 
 const TICK = 1500; // how often it looks whether any pane changed (no process is run)
 const EVERY = 10000; // how often it asks the core anyway
 const SHELLS = ["zsh", "bash", "fish", "sh", "dash", "ksh"];
-const KEY = "resume.sessions"; // terminal address -> { app, id, cwd, cmd, fresh }
+const KEY = "resume.sessions"; // terminal address -> { app, id, cwd, cmd, fresh, pid?, quit?, sent? }
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
-// Two looks at the same core differ in start time only by rounding.
-const sameCore = (a, b) => Boolean(a && b) && a.pid === b.pid && Math.abs(a.start - b.start) < 5000;
-// Shells the core has just recovered may not read typed input yet.
-const SETTLE = 3000;
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 // argv without the program and without any earlier way of naming a session.
@@ -34,15 +34,6 @@ function flags(argv, drop) {
     out.push(argv[i]);
   }
   return out;
-}
-
-async function coreNow() {
-  try {
-    const s = JSON.parse((await hc(["server", "status", "--json"])).stdout);
-    return Number.isInteger(s?.pid) && Number.isFinite(s?.uptime_ms) ? { pid: s.pid, start: Date.now() - s.uptime_ms } : null;
-  } catch {
-    return null;
-  }
 }
 
 async function get(address) {
@@ -98,9 +89,54 @@ async function written({ app, id }) {
   }
 }
 
+// Whether a session runs anywhere now (bin/session-running): exit 1 alone says it does not.
+// Any other answer, or no run at all, counts as running, and says so once per run.
+let warnedRunning = false;
+async function running({ app, id }) {
+  try {
+    const code = (await exec(`${appHome()}/bin/session-running`, [app, id], { timeout: 10000 })).code;
+    if (code === 0) return true;
+    if (code === 1) return false;
+  } catch {}
+  if (!warnedRunning) {
+    warnedRunning = true;
+    notify({ title: "Cannot tell whether agent sessions run elsewhere", body: "bin/session-running did not answer: those sessions are not resumed.", level: "warning" });
+  }
+  return true;
+}
+
+// id -> whether it runs, for the distinct sessions of these records.
+async function answers(recs) {
+  const byId = new Map(recs.map((r) => [r.id, r]));
+  const out = new Map();
+  await Promise.all([...byId].map(async ([id, rec]) => out.set(id, await running(rec))));
+  return out;
+}
+
+// The sessions that count as running elsewhere: an id nobody answered for is one of them.
+const elsewhere = (recs, said) => new Set(recs.filter((r) => said.get(r.id) !== false).map((r) => r.id));
+
+// Records of terminals that are gone, dropped from `saved` once this computer's layout has
+// loaded: right after a start there are no panes yet, and that must not read as "every
+// terminal is gone". True when it dropped any.
+function forget(saved) {
+  if (machines().find((m) => m.name === null)?.layout !== "ready") return false;
+  const live = new Set(panes().filter((p) => p.terminal && !p.terminal.includes("/")).map((p) => p.terminal));
+  let changed = false;
+  for (const address of Object.keys(saved)) {
+    if (!live.has(address)) { delete saved[address]; changed = true; }
+  }
+  return changed;
+}
+
+const heldToast = (n) => notify({ title: `${n} not resumed: already running elsewhere`, level: "warning" });
+
 export default class Resume extends View {
   init(_props, cx) {
-    this.lost = []; // remembered terminals that are back at a bare shell
+    this.firstSeen = {}; // lost-path terminal address -> { pid, at }: when its new shell was first seen
+    this.seen = []; // what the last scan saw in each asked terminal
+    this.button = []; // remembered terminals back at a shell that were not lost
+    this.resuming = 0; // sends in flight
     this.sig = "";
     this.at = 0;
     cx.timer.every(TICK, (cx) => this.tick(cx));
@@ -126,56 +162,44 @@ export default class Resume extends View {
     this.busy = true;
     cx.spawn(async (cx) => {
       try {
-        const saved = { ...(shared(KEY) ?? {}) };
-        const core = await coreNow();
         // This computer's terminals only: a remote address carries its machine's name.
         const local = panes().filter((p) => p.terminal && !p.terminal.includes("/"));
-        const live = new Set(local.map((p) => p.terminal));
-        let changed = false;
-        // Forget a terminal only once this computer's layout has loaded: right after a
-        // start there are no panes yet, and that must not read as "every terminal is gone".
-        if (machines().find((m) => m.name === null)?.layout === "ready") {
-          for (const address of Object.keys(saved)) {
-            if (!live.has(address)) { delete saved[address]; changed = true; }
-          }
-        }
         // The pane's own `program` is no guide here: it keeps an agent's last report after
         // the agent has quit, and has none for a Claude that never reported. What runs in
         // the terminal now is asked of the core, for every pane that could matter, at once.
-        const asked = local.filter((p) => !(p.program?.shell && !saved[p.terminal]));
+        const known = shared(KEY) ?? {};
+        const asked = local.filter((p) => !(p.program?.shell && !known[p.terminal]));
         const seen = await Promise.all(asked.map(async (p) => {
           const t = await get(p.terminal);
-          const running = t?.foreground?.name ?? "";
-          if (SHELLS.includes(running.replace(/^-/, ""))) return { address: p.terminal, shell: true };
-          return { address: p.terminal, now: await record(t) };
+          const pid = Number.isInteger(t?.pid) ? t.pid : null;
+          const name = t?.foreground?.name ?? "";
+          if (SHELLS.includes(name.replace(/^-/, ""))) return { address: p.terminal, pid, shell: true, now: null };
+          return { address: p.terminal, pid, shell: false, now: await record(t) };
         }));
-        const lost = [], restarted = [];
-        for (const { address, shell, now } of seen) {
-          const rec = saved[address];
-          if (shell) {
-            if (rec) (core && rec.core && !sameCore(rec.core, core) ? restarted : lost).push(address);
-            continue;
-          }
-          if (now && (now.cmd !== rec?.cmd || (core && !sameCore(rec?.core, core)))) {
-            saved[address] = { ...now, core };
-            changed = true;
-          }
-        }
-        let auto = [];
-        if (restarted.length) {
-          if (Date.now() - core.start < SETTLE) {
-            this.again = true; // look again on the next tick, once the shells are up
-          } else {
-            // Claimed for this core before sending: a resume that fails leaves the button,
-            // never a loop of retries.
-            for (const address of restarted) saved[address] = { ...saved[address], core };
-            changed = true;
-            auto = restarted;
-          }
-        }
-        if (changed) setShared(KEY, saved);
-        this.lost = lost;
-        if (auto.length) this.restore(cx, auto);
+        // Which sessions run elsewhere is asked for the terminals a first look calls lost.
+        const first = { ...known };
+        forget(first);
+        const lost0 = classify(first, seen, this.firstSeen, Date.now()).lost;
+        const said = await answers(lost0.map((a) => first[a]));
+        // From here to setShared nothing is awaited: the records are read fresh, decided on
+        // and claimed in one go, so no other scan or click can take the same session between.
+        const saved = { ...(shared(KEY) ?? {}) };
+        let changed = forget(saved);
+        const now = Date.now();
+        const r = classify(saved, seen, this.firstSeen, now);
+        const { go, held } = reserve(r.lost, r.saved, seen, elsewhere(r.lost.map((a) => r.saved[a]), said));
+        const gaveUp = held.filter((a) => now - r.firstSeen[a].at >= PATIENCE);
+        // Claimed for this terminal's new shell before sending: a resume that fails leaves
+        // the button, never a loop of retries.
+        const next = claim(claim(r.saved, go, { firstSeen: r.firstSeen, sent: true }), gaveUp, { firstSeen: r.firstSeen });
+        changed = changed || r.changed || go.length > 0 || gaveUp.length > 0;
+        if (changed) setShared(KEY, next);
+        this.firstSeen = r.firstSeen;
+        this.seen = seen;
+        this.button = [...r.button, ...gaveUp];
+        this.again = r.again; // a new shell is not settled yet: look again on the next tick
+        if (gaveUp.length) heldToast(gaveUp.length);
+        if (go.length) cx.spawn((cx) => this.send(cx, go, next, true));
       } finally {
         this.busy = false;
         cx.notify();
@@ -183,40 +207,61 @@ export default class Resume extends View {
     });
   }
 
-  // `auto`: the terminals a restart lost, resumed without a click; else the button's.
-  restore(cx, auto) {
-    const saved = shared(KEY) ?? {};
-    const lost = (auto ?? this.lost).filter((address) => saved[address]);
-    if (!lost.length) return auto ? null : notify({ title: "No agent sessions to resume", timeout: 2000 });
-    if (this.resuming) return;
-    this.resuming = true;
+  // The button, or "resume.all": the terminals at a shell that were not lost.
+  restore(cx) {
+    if (!this.button.length) return notify({ title: "No agent sessions to resume", timeout: 2000 });
+    if (this.clicked) return;
+    this.clicked = true;
+    this.resuming++;
     cx.notify();
     cx.spawn(async (cx) => {
-      // All at once: each send waits on its own terminal, not on the one before it.
-      const sent = await Promise.all(lost.map(async (address) => {
-        const rec = saved[address];
-        try {
-          return (await hc(["send", address, `cd ${quote(rec.cwd)} && ${(await written(rec)) ? rec.cmd : rec.fresh}`])).code === 0;
-        } catch {
-          return false;
-        }
-      }));
-      const failed = sent.filter((ok) => !ok).length;
-      const what = `${lost.length - failed}${failed ? ` of ${lost.length}` : ""} agent ${lost.length === 1 ? "session" : "sessions"}`;
-      if (failed) notify({ title: `Resumed ${what}`, level: "warning" });
-      else if (auto) notify({ title: `Resumed ${what} after a restart`, timeout: 3000 });
-      if (!auto) this.lost = [];
-      this.resuming = false;
-      cx.notify();
+      try {
+        const addresses = this.button.filter((a) => shared(KEY)?.[a]);
+        const said = await answers(addresses.map((a) => shared(KEY)[a]));
+        // As in scan: read fresh, decide and claim without awaiting in between.
+        const saved = { ...(shared(KEY) ?? {}) };
+        const live = addresses.filter((a) => saved[a]);
+        const { go, held } = reserve(live, saved, this.seen, elsewhere(live.map((a) => saved[a]), said));
+        const next = claim(saved, go, { sent: true });
+        if (go.length) setShared(KEY, next);
+        this.button = this.button.filter((a) => !go.includes(a));
+        if (held.length) heldToast(held.length);
+        if (go.length) await this.send(cx, go, next, false);
+      } finally {
+        this.clicked = false;
+        this.resuming--;
+        cx.notify();
+      }
     });
+  }
+
+  // Sends each terminal its resume command; `auto`: they were lost, not clicked.
+  async send(cx, addresses, saved, auto) {
+    this.resuming++;
+    cx.notify();
+    // All at once: each send waits on its own terminal, not on the one before it.
+    const sent = await Promise.all(addresses.map(async (address) => {
+      const rec = saved[address];
+      try {
+        return (await hc(["send", address, `cd ${quote(rec.cwd)} && ${(await written(rec)) ? rec.cmd : rec.fresh}`])).code === 0;
+      } catch {
+        return false;
+      }
+    }));
+    const failed = sent.filter((ok) => !ok).length;
+    const what = `${addresses.length - failed}${failed ? ` of ${addresses.length}` : ""} agent ${addresses.length === 1 ? "session" : "sessions"}`;
+    if (failed) notify({ title: `Resumed ${what}`, level: "warning" });
+    else if (auto) notify({ title: `Resumed ${what} after a restart`, timeout: 3000 });
+    this.resuming--;
+    cx.notify();
   }
 
   render() {
     const t = theme();
-    const n = this.lost.length;
+    const n = this.button.length;
     return h_flex().size_full().px(10).items_center().justify_end()
       .bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8)
-      .when(this.resuming, (el) => el.child(h_flex().gap(6).px(6).text_color(t.muted)
+      .when(this.resuming > 0, (el) => el.child(h_flex().gap(6).px(6).text_color(t.muted)
         .child(div().frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 90)).child("resuming…")))
       .when(n > 0 && !this.resuming, (el) => el.child(
         div().id("resume-all").px(6).rounded(4).text_color(t.accent).cursor_pointer()
