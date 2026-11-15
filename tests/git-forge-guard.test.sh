@@ -1278,6 +1278,24 @@ expect_default "push <remote> while on main"            "$ONMAIN" 'git push orig
 expect_default "push HEAD while on main"                "$ONMAIN" 'git push origin HEAD'
 expect_default "a delete through --show-current, on main" "$ONMAIN" 'git push origin --delete "$(git branch --show-current)"'
 expect_default "-d through rev-parse --abbrev-ref, on main" "$ONMAIN" 'git push -d origin "$(git rev-parse --abbrev-ref HEAD)"'
+# A local tag named main makes `symbolic-ref --short HEAD` print heads/main: the guard reads the
+# full ref, so the current branch is still main.
+TAGGED=$(clone tagged); git -C "$TAGGED" switch -q main; git -C "$TAGGED" tag main
+expect_default "a bare push on main, with a tag named main"   "$TAGGED" 'git push'
+expect_default "push <remote> on main, with a tag named main" "$TAGGED" 'git push origin'
+expect_default "push HEAD on main, with a tag named main"     "$TAGGED" 'git push origin HEAD'
+expect_default "-u HEAD on main, with a tag named main"       "$TAGGED" 'git push -u origin HEAD'
+expect_default "--show-current on main, with a tag named main" "$TAGGED" 'git push origin "$(git branch --show-current)"'
+expect_default "rev-parse --abbrev-ref on main, with a tag named main" "$TAGGED" 'git push origin "$(git rev-parse --abbrev-ref HEAD)"'
+TAGGED_PR=$(clone tagged-pushremote); git -C "$TAGGED_PR" switch -q main; git -C "$TAGGED_PR" tag main
+git -C "$TAGGED_PR" config branch.main.pushRemote other
+has_reason   "branch.main.pushRemote is read under main, with a tag named main" \
+             "unsupported push configuration for the push guard: branch.main.pushRemote" "$TAGGED_PR" 'git push'
+# A local branch named <remote>/<default> makes `symbolic-ref --short refs/remotes/<remote>/HEAD`
+# print remotes/<remote>/<default>: the guard reads the full ref, so the default is still named.
+SHADOW=$(clone shadow); git -C "$SHADOW" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+git -C "$SHADOW" branch develop; git -C "$SHADOW" branch origin/develop
+expect_default "the default branch with a local branch named origin/<default>" "$SHADOW" 'git push origin develop'
 has_reason   "the deny is the default-branch text" "$DEFAULT_DENY" "$R" 'git push origin main'
 TRUNK=$(clone trunk); git -C "$TRUNK" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
 git -C "$TRUNK" branch trunk

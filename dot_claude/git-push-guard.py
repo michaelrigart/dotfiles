@@ -820,9 +820,12 @@ def recursing_submodules(repo):
 
 
 def default_branch(repo, remote):
-    head = repo.run("symbolic-ref", "--quiet", "--short", "refs/remotes/" + remote + "/HEAD")
-    if head and head.strip().startswith(remote + "/"):
-        return head.strip()[len(remote) + 1:]
+    # The full ref, never --short: git disambiguates a short name that another ref also
+    # matches (a local branch named origin/main prints remotes/origin/main).
+    prefix = "refs/remotes/" + remote + "/"
+    head = repo.run("symbolic-ref", "--quiet", prefix + "HEAD")
+    if head and head.strip().startswith(prefix):
+        return head.strip()[len(prefix):]
     for ref in ("refs/remotes/" + remote + "/", "refs/heads/"):
         for name in ("main", "master"):
             if repo.has_ref(ref + name):
@@ -1179,8 +1182,11 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False, wr
     recursing = recursing_submodules(repo)
     if recursing:
         raise Deny(UNSUPPORTED.format(recursing + ", which also pushes submodule commits"))
-    branch = repo.run("symbolic-ref", "--quiet", "--short", "HEAD")
+    # The full ref, never --short: a tag named main makes --short print heads/main.
+    branch = repo.run("symbolic-ref", "--quiet", "HEAD")
     branch = branch.strip() if branch else None
+    if branch is not None:
+        branch = branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else None
     if branch and repo.config("branch." + branch + ".pushRemote") is not None:
         raise Deny(UNSUPPORTED.format("branch." + branch + ".pushRemote"))
     remote = remote_arg or (branch and repo.config("branch." + branch + ".remote")) or "origin"

@@ -1034,7 +1034,10 @@ Expected: `exit 0`; every row `ok` or `excepted`, the GitHub rows `ok` now judgi
 
 If it fails:
 - A GitHub row `drift` for a missing `main-merge-owner` prints its `gh api --method POST …/rulesets` line: filter it into a file and run it as in step 12, with `want` set to the repository.
-- A row that prints a `# in the UI: https://github.com/<owner>/<repo>/rules/<ruleset-id>: …` note has a `main-merge-owner` that is wrong (not active, a second rule, another bypass actor or mode): fix that page as the note says.
+- A GitHub row `drift` for a `main-merge-owner` that is wrong prints one of three things, by what is wrong with it:
+  - Not active: the check ignores a ruleset that is not active, so it prints the `main-merge-owner` POST and no note. GitHub refuses that POST with 422 "name must be unique". Set that ruleset's Enforcement to Active in its page (the repository's Settings, Rules, Rulesets), then run the check again.
+  - A second rule: the note `# in the UI: https://github.com/<owner>/<repo>/rules/<ruleset-id>: remove Restrict updates; main-merge-owner carries it` on that ruleset's own page. The right fix is to remove the other rule from `main-merge-owner`, so that it carries `update` alone. Its POST is printed too and also 422s: ignore it.
+  - Another bypass actor or mode: the note `# in the UI: …/rules/<ruleset-id>: bypass list only Repository admin, For pull requests only`. Fix that page as the note says.
 - Any other row: the step of its forge (2 to 6, 12).
 
 No rollback: it changes nothing.
