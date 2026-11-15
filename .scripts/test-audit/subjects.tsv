@@ -159,6 +159,7 @@ tests/fixtures/herdr-app/stubs/claude	sh	-	herdr-app
 tests/fixtures/herdr-app/stubs/fzf	sh	-	herdr-app
 tests/fixtures/herdr-app/stubs/hc	sh	-	herdr-app,xreview-app-pane
 tests/fixtures/herdr-app/stubs/herdr-app	sh	-	herdr-app,xreview-app-pane
+tests/fixtures/herdr-app/stubs/lsof	sh	-	herdr-app
 tests/fixtures/herdr-app/stubs/ps	sh	-	herdr-app,xreview-app-pane
 tests/fixtures/herdr-app/stubs/wt-rm	sh	-	herdr-app
 tests/fixtures/herdr-app/tui-shapes.json	data	-	xreview-app-pane

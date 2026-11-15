@@ -3,7 +3,7 @@
 # `chezmoi add` leaves alone in the app's folder, on dot_config/herdr-app as chezmoi renders it. Run:
 # ./tests/herdr-app.test.sh
 #
-# herdr-app, hc, fzf, claude and wt-rm are stubs (tests/fixtures/herdr-app/stubs) first on PATH and
+# herdr-app, hc, fzf, claude, wt-rm, ps and lsof are stubs (tests/fixtures/herdr-app/stubs) first on PATH and
 # linked into the scratch HOME's .local/bin, the first folder of the PATH open-space and
 # close-own-tab pin; every call lands in one log, so the order of calls is what is asserted. The repositories are real, in a
 # scratch folder, and so is dot_config/zsh/functions (linked into a scratch HOME): retire's own
@@ -61,7 +61,7 @@ newworld() {
   # open-space and close-own-tab pin their PATH, whose first folder is $HOME/.local/bin: the
   # trusted stubs are there, whatever the caller's PATH holds.
   mkdir -p $world/home/.local/bin
-  local s; for s in herdr-app hc fzf claude wt-rm; do ln -s $here/fixtures/herdr-app/stubs/$s $world/home/.local/bin/$s; done
+  local s; for s in herdr-app hc fzf claude wt-rm ps lsof; do ln -s $here/fixtures/herdr-app/stubs/$s $world/home/.local/bin/$s; done
   unset STUB_WTRM_RC STUB_WTRM_WARN STUB_DOWN STUB_LS_DOWN STUB_WTRM_CLOSE CODEX_HOME XDG_CONFIG_HOME
   : > $LOG; : > $STUB_DIR/closed
   main=$world/repos/proj; wt=$world/repos/proj-feat
@@ -196,6 +196,32 @@ newworld nofolder; print '{"state":"live"}' > $STUB_DIR/get-tNEW1.json
 cs check $wt >$world/out 2>&1; rc=$?
 check "another space's terminal that answers without a folder refuses" test $rc -eq 1
 check "...and is named" grep -q 'tNEW1.*gave no folder' $world/out
+# A terminal that answers without a folder is judged by its foreground group: ps gives the group
+# in its root's terminal, lsof each member's folder. The caller's own terminal is the one seen
+# (wt-rm runs the helper from it, and hc often cannot name that foreground).
+newworld group; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 777 > $STUB_DIR/tpgid-4242
+print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
+print -l / $main > $STUB_DIR/lsof-777
+cs check $wt >$world/out 2>&1; rc=$?
+check "a terminal without a folder passes when its foreground group is outside the checkout" test $rc -eq 0
+print -l / $wt/src > $STUB_DIR/lsof-777
+cs check $wt >$world/out 2>&1; rc=$?
+check "...refuses when one process of that group is inside" test $rc -eq 1
+check "...and names the terminal and the folder" grep -qF -- "t9 (proj / retire) is in $wt/src" $world/out
+# lsof cannot read another user's process, so a listing that looks clean proves nothing then.
+print -l / $main > $STUB_DIR/lsof-777; print "0 777" >> $STUB_DIR/uid-pgid
+cs check $wt >$world/out 2>&1; rc=$?
+check "...and refuses when another user's process is in the group, whatever lsof listed" test $rc -eq 1
+print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
+rm $STUB_DIR/lsof-777
+cs check $wt >$world/out 2>&1; rc=$?
+check "...and refuses when the group cannot be read" test $rc -eq 1
+# lsof escapes bytes outside printable ASCII, so such a checkout path cannot be matched against its answer.
+newworld group-café; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 777 > $STUB_DIR/tpgid-4242
+print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
+print -l / $main > $STUB_DIR/lsof-777
+cs check $wt >$world/out 2>&1; rc=$?
+check "a checkout path lsof would escape refuses the group read" test $rc -eq 1
 # A terminal of the set whose answer shows nothing about its foreground is not vouched for.
 newworld empty-answer; print '{}' > $STUB_DIR/get-t2.json
 cs check $wt >$world/out 2>&1; rc=$?

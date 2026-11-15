@@ -1,11 +1,16 @@
 # wt-rm closes the checkout's app spaces; outside both front ends means the app
 
-**Status:** Implemented (branch `feat/wt-rm-app-spaces`, its PR against `main`; plan
-`docs/superpowers/plans/2026-11-15-wt-rm-app-spaces.md`)
+**Status:** Implemented (branch `feat/wt-rm-app-spaces`, PR #22; plan
+`docs/superpowers/plans/2026-11-15-wt-rm-app-spaces.md`; the amendment of 2026-11-15: branch
+`fix/checkout-spaces-caller`, its PR against `main`; plan
+`docs/superpowers/plans/2026-11-15-checkout-spaces-caller.md`).
 **Date:** 2026-11-15
 **Branch:** `feat/wt-rm-app-spaces`
 **Sign-off:** Michael, 2026-11-15, with the five rulings below as written; Codex spec review
 approved (round 2; round 1's three findings fixed).
+**Amended:** 2026-11-15, after PR #22's acceptance: check 5 reads the foreground job's folders
+(`ps`, `lsof`) of a terminal that answers without a folder, instead of refusing it at once. See
+"Amendment (2026-11-15)" below; §2 says so where check 5 stands.
 
 Builds on `docs/superpowers/specs/2026-11-14-herdr-app-native-tools-design.md` (its §5.1 rule and
 its non-goal "wt-rm closing app spaces"), which stays as written; this spec replaces those two
@@ -153,6 +158,11 @@ prefers their records). This is Retire's rule today, unchanged.
    terminal that cannot be asked about, or answers without a folder, refuses too, naming it and
    its space: where it is cannot be told, so neither front end may close yet. (Retire today lets
    it pass and leaves it to check 4, which runs only after the close.)
+
+> **2026-11-15 — amended.** A terminal that answers without a folder is no longer refused at
+> once: the folders of every process in its foreground group (`ps`, `lsof`) are tested instead,
+> and it refuses only when one is in the checkout or the group cannot be read. See "Amendment
+> (2026-11-15)".
 
 Everything else in the set closes with it: idle and done agents, shells, servers. A process that
 survives the close is still caught by check 4.
@@ -308,3 +318,93 @@ first, no variant matrices.
 - Exact refusal wording, and whether the helper's messages carry its own name or the caller's.
 - How the `wt-rm` stub in `herdr-app.test.sh` closes spaces for the reopen cases.
 - Where in `dev.test.sh` and `xreview.test.sh` the top-level `HERDR_PANE_ID` export goes.
+
+## Amendment (2026-11-15): check 5 and a terminal that answers without a folder
+
+**Branch:** `fix/checkout-spaces-caller`. **Plan:**
+`docs/superpowers/plans/2026-11-15-checkout-spaces-caller.md`.
+**Sign-off:** Michael, 2026-11-15; Codex spec review approved (round 3; rounds 1 and 2's three
+findings fixed).
+
+**What happened.** In PR #22's acceptance, `wt-rm accept-wtrm` from Michael's app shell `t10s`
+passed `wt-rm`'s first `check`, then refused at the re-check inside `close`: "cannot tell where
+terminal t10s (chezmoi / runtime) is: hc get gave no folder". Nothing was closed or removed. In
+that shell, the helper's own call, `hc get "$HC_TERMINAL_ID" --json`, answered `.foreground.cwd`
+3 times in 10 and `"state": "live"` with `"foreground": null` 7 times. Idle and agent terminals,
+asked read-only the same day, answered with a folder 96 times in 96.
+
+**Cause.** Check 5 asks hc about every terminal of every other local space. When `wt-rm` runs
+from an app terminal outside the close set (inside it, check 1 refuses), the caller's own terminal
+is one of them. While the helper runs, that terminal's foreground is the helper's own short-lived
+process chain (the helper, `perl`, `env`, `hc`), and hc mostly answers it as no foreground.
+Retire runs `wt-rm` from its own tab, so it trips the same way.
+
+**Check 5, amended.** A terminal of another local space that answers `hc get` without a folder is
+no longer refused at once; its foreground job is read directly:
+
+1. `ps -o tpgid=` on the terminal's root process (`hc get`'s top-level `.pid`) gives the process
+   group in that terminal's foreground;
+2. `lsof -a -g <group> -d cwd` gives the folder of every process in that group, bounded to five
+   seconds as `hc get` is;
+3. `check` refuses when any of those folders, raw or resolved, is the checkout or lies under it,
+   naming the terminal and the folder. It also refuses ("cannot tell where terminal … is") when
+   the answer names no root pid, `ps` or `lsof` fails, or `lsof` names no folder. (Added in the
+   task review:) it refuses the same way when the checkout's own path holds a byte `lsof`
+   escapes: `lsof` runs under `LC_ALL=C`, where it escapes every byte outside printable ASCII
+   and renders a backslash as `\\`, so no folder it names could be matched against such a path.
+   (Added in the pre-merge review:) it also refuses when a process of the group belongs to
+   another user, read from one `ps -A -o uid=,pgid=` snapshot: `lsof` cannot read such a
+   process, leaves it out and still succeeds, so its folder would go unseen. Every process of
+   the helper's own user is one `lsof` can read. (`ps` shows `nobody` as uid -2.)
+
+A terminal that answers with a folder is tested as before: hc's one foreground process stands for
+its job, as in the design above. A terminal that does not answer still refuses. Background jobs,
+outside the foreground group, stay check 4's, as before.
+
+The caller's own terminal gets no exception, and it needs none. While the helper runs from it,
+that terminal's foreground job is the helper's own: the helper, whatever started it in the same
+group (`wt-rm`, or Retire and its subshell) and their children. So `lsof` names their folders,
+the helper's own among them. If the caller does not own its terminal's foreground, the group read
+is whatever does: `HC_TERMINAL_ID` is inherited by every process started in that terminal.
+Measured 2026-11-15 from this line's own app terminal, read-only:
+
+- `hc get` names the root shell as `.pid` and `claude` as the foreground;
+- `ps` gives the root's `tpgid` as `claude`'s group;
+- `lsof -a -g <that group> -d cwd -Fn` lists both of its processes with their folders, in 12 ms;
+- the Claude Code session's own Bash command has no controlling terminal (`tpgid` 0, tty `??`),
+  so it is outside that group.
+
+**Considered and declined.**
+
+- Skipping the caller's terminal and testing the helper's own folder in its place. It sees
+  neither another process of the caller's foreground job in the checkout (a script there that
+  starts `wt-rm` from another folder) nor a foreground that is not the helper's.
+- Excusing the caller's terminal when its foreground group is the helper's own, and testing the
+  helper's folder in its place. It has the first blind spot above.
+- A bounded retry for a terminal that answers without a foreground. Reading the group answers
+  it: a terminal whose foreground group changed between hc's lookup and its read is read the
+  same way, and refuses only when its group cannot be read or is in the checkout.
+
+**Tests** (`tests/herdr-app.test.sh`). The `ps` stub gains a `tpgid=` answer, from
+`$STUB_DIR/tpgid-<pid>`. A new `lsof` stub answers `-g <group>` from `$STUB_DIR/lsof-<group>`
+and fails without it; it gets a `subjects.tsv` row and is linked into the scratch
+`$HOME/.local/bin` beside the other stubs. One new case beside `nofolder`, for the caller t9 in
+the main checkout's space, answering `{"state":"live","pid":<root>}`:
+
+- its foreground group's folders all outside the checkout: `check` passes;
+- one of them inside the checkout: `check` refuses, naming t9 and the folder;
+- `lsof` failing for the group: `check` refuses;
+- (added in the task review) a checkout path with a non-ASCII byte: `check` refuses;
+- (added in the pre-merge review) a process of the group owned by another user, whatever
+  `lsof` listed: `check` refuses. The `ps` stub gains `-A -o uid=,pgid=`, and its fixtures
+  carry a `nobody` line (uid -2), so the real output's shape is pinned.
+
+The `nofolder` case (another terminal answering `{"state":"live"}`, no root pid) still refuses.
+Each assertion passes the revert check.
+
+**Acceptance, Michael's, after merge and `chezmoi apply`** (unchecked items in the PR):
+
+- On a scratch worktree with its app space open, `wt-rm <branch>` from an app shell in another
+  space prints the resume commands, closes the space and removes the checkout, with no "gave no
+  folder" refusal.
+- Retire worktree on a second scratch worktree removes it and closes its tab.

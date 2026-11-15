@@ -1,7 +1,9 @@
 #!/bin/sh
-# Stub ps for tests/xreview-app-pane.test.sh, logging what it answers to $STUB_LOG; anything else is the real
+# Stub ps for tests/xreview-app-pane.test.sh and tests/herdr-app.test.sh, logging what it answers to $STUB_LOG; anything else is the real
 # ps, which the other suites may use.
 #   -o pgid= -p <pid>   $STUB_DIR/pgid-<pid>; fails without it
+#   -o tpgid= -p <pid>  (tests/herdr-app.test.sh) $STUB_DIR/tpgid-<pid>; fails without it
+#   -A -o uid=,pgid=    (tests/herdr-app.test.sh) $STUB_DIR/uid-pgid; fails without it
 #   -o comm= -p <pid>   $STUB_DIR/comm-<pid> (a login shell is "-zsh", a path is a path); a shell,
 #                       /bin/zsh, when there is none; fails if $STUB_DIR/commfail-<pid> exists
 if [ "$1" = -o ] && [ "$3" = -p ]; then
@@ -11,11 +13,22 @@ if [ "$1" = -o ] && [ "$3" = -p ]; then
       [ -f "$STUB_DIR/pgid-$4" ] || exit 1
       cat "$STUB_DIR/pgid-$4"
       exit 0 ;;
+    tpgid=)
+      echo "ps $*" >> "$STUB_LOG"
+      [ -f "$STUB_DIR/tpgid-$4" ] || exit 1
+      cat "$STUB_DIR/tpgid-$4"
+      exit 0 ;;
     comm=)
       echo "ps $*" >> "$STUB_LOG"
       [ ! -f "$STUB_DIR/commfail-$4" ] || exit 1
       if [ -f "$STUB_DIR/comm-$4" ]; then cat "$STUB_DIR/comm-$4"; else echo /bin/zsh; fi
       exit 0 ;;
   esac
+fi
+if [ "$*" = "-A -o uid=,pgid=" ]; then
+  echo "ps $*" >> "$STUB_LOG"
+  [ -f "$STUB_DIR/uid-pgid" ] || exit 1
+  cat "$STUB_DIR/uid-pgid"
+  exit 0
 fi
 exec /bin/ps "$@"
