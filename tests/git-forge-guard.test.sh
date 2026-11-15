@@ -411,15 +411,17 @@ reason() {
   run "$1" "$2" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null
 }
 # expect_default <label> <cwd> <command>: a push of the default branch is the silent deny, whose
-# reason is exactly the one text (Push guard, the default branch is Michael's).
+# reason is exactly the one text (Push guard, the default branch is Michael's). The verdict and
+# the reason come from the same answer: an ask with this reason is a failure.
 DEFAULT_DENY="Push guard: the default branch is Michael's; push the branch and open a merge request or pull request."
 expect_default() {
-  local label=$1 got
-  got=$(reason "$2" "$3")
-  if [ "$got" = "$DEFAULT_DENY" ]; then
+  local label=$1 out got
+  out=$(run "$2" "$3")
+  got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput | "\(.permissionDecision // "none"): \(.permissionDecisionReason // "no reason")"' 2>/dev/null)
+  if [ "$got" = "deny: $DEFAULT_DENY" ]; then
     pass=$((pass + 1)); printf '  ok   %s\n' "$label"
   else
-    fail=$((fail + 1)); printf '  FAIL %s (want the default-branch deny, got: %s)\n' "$label" "${got:-no reason}"
+    fail=$((fail + 1)); printf '  FAIL %s (want the default-branch deny, got: %s)\n' "$label" "${got:-allow}"
   fi
 }
 # has_reason <label> <needle> <cwd> <command>
@@ -1289,6 +1291,7 @@ expect_default "--show-current on main, with a tag named main" "$TAGGED" 'git pu
 expect_default "rev-parse --abbrev-ref on main, with a tag named main" "$TAGGED" 'git push origin "$(git rev-parse --abbrev-ref HEAD)"'
 TAGGED_PR=$(clone tagged-pushremote); git -C "$TAGGED_PR" switch -q main; git -C "$TAGGED_PR" tag main
 git -C "$TAGGED_PR" config branch.main.pushRemote other
+expect deny  "branch.main.pushRemote under main, with a tag named main" "$TAGGED_PR" 'git push'
 has_reason   "branch.main.pushRemote is read under main, with a tag named main" \
              "unsupported push configuration for the push guard: branch.main.pushRemote" "$TAGGED_PR" 'git push'
 # A local branch named <remote>/<default> makes `symbolic-ref --short refs/remotes/<remote>/HEAD`
