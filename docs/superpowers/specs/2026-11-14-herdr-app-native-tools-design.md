@@ -1,6 +1,7 @@
 # xreview and wt on the Herdr desktop app
 
-**Status:** Approved
+**Status:** Implemented (branch `feat/herdr-app-native-tools`, its PR against `main`; plan
+`docs/superpowers/plans/2026-11-15-herdr-app-native-tools.md`)
 **Date:** 2026-11-14
 **Branch:** `feat/herdr-app-native-tools`
 **Sign-off:** Michael, 2026-11-15; Codex spec review approved (round 2; round 1's two findings
