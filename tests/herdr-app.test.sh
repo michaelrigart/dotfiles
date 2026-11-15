@@ -56,7 +56,7 @@ newworld() {
   print -r -- 'codex --sandbox read-only --ask-for-approval never' > $world/home/.config/herdr/codex-pane-command
   export HOME=$world/home HERDR_APP_HOME=$world/app STUB_DIR=$world/state LOG=$world/state/log
   export STUB_LOG=$LOG STUB_LS=$world/state/ls.json
-  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm HC_TERMINAL_ID=t9 DEV_OPEN_SPACE=$bin/open-space HC_SCOPE=space
+  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm STUB_CHECKOUT_SPACES=$bin/checkout-spaces HC_TERMINAL_ID=t9 DEV_OPEN_SPACE=$bin/open-space HC_SCOPE=space
   # open-space and close-own-tab pin their PATH, whose first folder is $HOME/.local/bin: the
   # trusted stubs are there, whatever the caller's PATH holds.
   mkdir -p $world/home/.local/bin
@@ -119,11 +119,6 @@ newworld notrepo; mkdir $world/plain
 retire $world/plain >/dev/null 2>&1; rc=$?
 check "refuses a folder that is not a repository" test $rc -ne 0
 check "not a repository: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
-
-newworld dirty; print x > $wt/untracked
-retire $wt >/dev/null 2>&1; rc=$?
-check "refuses a dirty worktree" test $rc -ne 0
-check "dirty: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
 
 newworld elsewhere; mv $wt $world/repos/moved; git -C $main worktree repair $world/repos/moved 2>/dev/null
 retire $world/repos/moved >/dev/null 2>&1; rc=$?
@@ -272,18 +267,19 @@ PATH=$world/shadow:$PATH cs close $wt >/dev/null 2>&1
 check "the helper ignores a caller PATH" test ! -e $world/shadow-ran
 
 # --- retire: success -----------------------------------------------------------------------
-newworld ok
+newworld ok; export STUB_WTRM_CLOSE=$wt
+records cid-claude cid-codex
 retire $wt >/dev/null 2>&1; rc=$?
 check "success exits 0" test $rc -eq 0
 check "closes the space with confirmation" did 'space.close {"id":"sp-wt","confirmed":true}'
 check "wt-rm runs in the main checkout with the branch" did "wt-rm cwd=${main:A} args=feat\$"
-check "the space closes before wt-rm runs" before 'space.close' 'wt-rm '
+check "retire closes no space itself before wt-rm" before 'wt-rm ' 'space.close'
 check "success closes its own tab" did 'tab.close {"id":"tb-r","confirmed":true}'
 check "the own tab closes after wt-rm" before 'wt-rm ' 'tab.close'
 check "success does not reopen" not_did 'space.new'
 
 # wt-rm can succeed and still warn (branch kept, files recreated): the tab stays for Enter.
-newworld warned; export STUB_WTRM_WARN=1
+newworld warned; export STUB_WTRM_CLOSE=$wt STUB_WTRM_WARN=1
 retire $wt >$world/out 2>&1; rc=$?
 check "a warned success exits 0" test $rc -eq 0
 check "a warned success keeps its warning on screen" grep -q "not fully merged" $world/out
@@ -292,16 +288,16 @@ print | "$bin/retire" $wt >/dev/null 2>&1
 check "Enter closes the tab after a warned success" did 'tab.close {"id":"tb-r","confirmed":true}'
 
 # --- retire: failure -----------------------------------------------------------------------
-newworld fail; export STUB_WTRM_RC=3
+newworld fail; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 retire $wt >$world/out 2>&1; rc=$?
 check "failure exits non-zero" test $rc -ne 0
 check "failure keeps wt-rm's output" grep -q STUB-WT-RM-OUTPUT $world/out
 check "failure keeps the tab" not_did 'tab.close'
 check "failure without Enter does not reopen" not_did 'space.new'
-check "the space was closed before wt-rm" before 'space.close' 'wt-rm '
+check "retire closes no space itself before wt-rm" before 'wt-rm ' 'space.close'
 
 # Enter reopens, agents resumed from the records read before the close.
-newworld reopen; export STUB_WTRM_RC=3
+newworld reopen; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 records cid-claude cid-codex
 mkdir -p $HOME/.claude/projects/p; : > $HOME/.claude/projects/p/cid-claude.jsonl
 export CODEX_HOME=$world/codex; mkdir -p $CODEX_HOME/sessions/2026
@@ -321,7 +317,7 @@ cs close $wt >$world/out 2>&1
 check "every agent's resume command is printed" test "$(grep -c -e cid-claude -e cid-codex -e cid-third $world/out)" -eq 3
 
 # A session never written has nothing to resume: that agent starts fresh.
-newworld fresh; export STUB_WTRM_RC=3
+newworld fresh; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 records cid-claude cid-codex
 export CODEX_HOME=$world/codex; mkdir -p $CODEX_HOME/sessions
 print | "$bin/retire" $wt >$world/out 2>&1
@@ -330,7 +326,7 @@ check "reopen: an unwritten Claude session is not resumed" not_did "space.new.*-
 check "reopen: an unwritten Codex session starts fresh" did "pane.split.*codex.*--fresh"
 
 # The records of a second space, or a subfolder space listed first, never displace the worktree's own.
-newworld ownrecords; export STUB_WTRM_RC=3
+newworld ownrecords; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 add_space sp-sub $wt/sub tS idle; add_space sp-away $main tA idle
 jq '.spaces |= sort_by(.id != "sp-sub")' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
 records cid-claude cid-codex
@@ -341,9 +337,19 @@ check "reopen takes the worktree's own record, not a subfolder space's" did "spa
 check "reopen never takes another space's record" not_did "space.new.*\(sub\|away\)"
 
 # No records at all: open-space's defaults.
-newworld norecords; export STUB_WTRM_RC=3
+newworld norecords; export STUB_WTRM_CLOSE=$wt STUB_WTRM_RC=3
 print | "$bin/retire" $wt >$world/out 2>&1
 check "reopen without records starts plain claude" did 'space.new.*"argv":\["claude"\]'
+
+newworld listdown; export STUB_LS_DOWN=1
+retire $wt >/dev/null 2>&1; rc=$?
+check "an unreachable app refuses retire" test $rc -ne 0
+check "...before wt-rm runs" not_did 'wt-rm '
+
+newworld refusedearly; export STUB_WTRM_RC=1
+print | "$bin/retire" $wt >$world/out 2>&1
+check "a wt-rm that closed nothing offers no reopen" not_did 'space.new'
+grep -q 'Enter reopens' $world/out; check "...and does not ask" test $? -ne 0
 
 # --- wt-app and open-space --no-focus ------------------------------------------------------
 # sp-main is active, so it is what focus must come back to.

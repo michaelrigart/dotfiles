@@ -9,10 +9,9 @@
 // with it. So nothing here waits: checkoutPlan() runs while the menu is open, and worktree()
 // only reads what the window already knows.
 
-import { run, spaces, agents, notify, exec, appHome } from "herdr";
+import { run, spaces, exec, appHome } from "herdr";
 
 const bin = (name) => `${appHome()}/bin/${name}`;
-const inside = (path, dir) => path === dir || path.startsWith(`${dir.replace(/\/+$/, "")}/`);
 
 // The checkout a space was made at: its top level and the main checkout, the first entry of
 // `git worktree list`, as wt's own _wt_primary reads it. `folder`: the space's own `.folder`
@@ -24,13 +23,6 @@ export async function checkoutPlan(folder) {
   const main = /^worktree (.+)$/m.exec(listed.stdout)?.[1];
   if (top.code !== 0 || listed.code !== 0 || !main) return null;
   return { top: top.stdout.trim(), main };
-}
-
-// The worktree's own spaces, the ones retire closes: local, with their folder in the checkout
-// or under it. Never a space only because a terminal of it has gone there: retire refuses
-// while one is, and names it.
-function closing(top) {
-  return spaces().filter((s) => !s.machine && s.folder && inside(s.folder, top));
 }
 
 // `args`: the item's { space, action }. `plan`: checkoutPlan() of that space.
@@ -47,23 +39,11 @@ export function worktree(args, plan) {
   run("space.select", { id: space.id });
 }
 
+// The retire tab goes in the main checkout's space, else in a new space at the main checkout:
+// never in a space that may close (wt puts every worktree beside the main checkout, and retire
+// refuses any other folder). What closes, and whether it may, is checkout-spaces' to decide.
 function retire(space, { top, main }) {
-  const gone = new Set(closing(top).map((s) => s.id));
-  gone.add(space.id);
-  const busy = agents().filter((a) => gone.has(a.space) && (a.status === "working" || a.status === "blocked"));
-  if (busy.length) {
-    notify({
-      title: "Not retired: an agent is busy",
-      body: busy.map((a) => `${a.program?.name || a.app || "agent"} in ${a.space_name} / ${a.tab_name} is ${a.status}`).join("\n"),
-      level: "warning",
-    });
-    return;
-  }
-  // retire runs in a tab of its own: never in a space it closes, which would take the tab
-  // down with it. The main checkout's space if it is open, else the one in front, else a
-  // new space at the main checkout.
-  const others = spaces().filter((s) => !gone.has(s.id) && !s.machine);
-  const target = others.find((s) => s.folder === main) ?? others.find((s) => s.active);
+  const target = spaces().find((s) => !s.machine && s.folder === main);
   const argv = [bin("retire"), top];
   if (target) {
     run("tab.new", { space: target.id, folder: main, name: "retire", argv });
