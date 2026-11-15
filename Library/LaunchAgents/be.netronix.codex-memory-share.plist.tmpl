@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Exchange Codex memory inputs with the other Mac on a timer.
+
+  Managed by chezmoi (source: Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl).
+  Bootstrapped by .scripts/configure.sh; load by hand with:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.codex-memory-share.plist
+
+  codex-memory-share exports this machine's raw_memories.md and rollout_summaries/ as a verified
+  generation into a Syncthing outbox, and imports the peer's complete generation as a Codex
+  memory extension. It takes Codex's own memories lock for every read and write in
+  ~/.codex/memories, and exits 0 silently when the lock is busy or Codex has no memory yet; the
+  next run retries. Design: docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md,
+  section 4.
+
+  The script pins its own PATH and logs its own errors to
+  ~/.local/state/codex-memory-share/error.log, so launchd's output goes nowhere.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>be.netronix.codex-memory-share</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ .chezmoi.homeDir }}/.local/bin/codex-memory-share</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>
