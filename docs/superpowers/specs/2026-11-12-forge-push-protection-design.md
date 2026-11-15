@@ -932,5 +932,39 @@ Counts only; no repository is named.
   afterwards: 43 of his own GitHub rows ok. The 14 rows of another owner's organisation are
   unreadable (HTTP 403, not resolvable for his login) and are in his exceptions file.
 - **Scratch repository** (step 13): deleted, with its clone.
-- **Outstanding** on 2026-11-14: GitLab (steps 2 to 4), Azure DevOps (step 5), the secret list
-  of section 2.1, and steps 14 to 16. The check exits 1 until GitLab and Azure are done.
+- **GitLab token** (step 2, 2026-11-15): fine-grained, on all his memberships. Its permissions as
+  `personal_access_tokens/self` reports them (`granular_scopes`): `read_project`,
+  `read_repository`, `read_branch`, `read_commit`, `read_protected_branch`, `read_merge_request`,
+  `create_merge_request`, `update_merge_request`, `read_work_item`, `create_work_item`,
+  `update_work_item`, `read_pipeline`, `read_job`; at the user boundary `read_user` and
+  `read_personal_access_token`; at the instance boundary `read_user`, which the assignee lookup of
+  `glab mr create` needs. No merge, approve, protect, code (Git over HTTPS) or project write.
+  Merge request notes are Work Item permissions. Listing every project (`GET /projects`) needs
+  Project read at the user boundary, which it lacks and nothing needs: the check addresses a
+  project by its path. GET calls with it read a project, its protected branches, merge requests,
+  pipelines, branches and commits.
+- **GitLab rules** (steps 3, 4 and 6, 2026-11-15): 36 projects in drift and 3 unreadable (HTTP 403
+  or 404). The PATCH of section 2.2 was accepted as printed and changed each rule in place (rule
+  ids unchanged), on his personal projects and on group projects. 34 projects are protected and
+  verified, 18 by PATCH and 16 by POST. A rule made by the POST gets GitLab's default merge level,
+  Maintainers, so a Developer there no longer merges into the default branch. Correction 11,
+  decided per project by him: on 32 of the 34 another member could push, an agent account
+  (Developer) on 19 and a colleague (Developer, through the group) on 13, and he protected them;
+  the 2 where another Owner or Maintainer works are in his exceptions file, with the 3 he cannot
+  administer. Each project's rules were recorded before the change, outside the repository.
+- **Azure DevOps** (step 5, 2026-11-15): `az` answers from his terminal; the hang is an agent
+  session's. Of the 3 repositories, one lacked the reviewers policy: the printed create was
+  accepted and the row reads ok, which confirms the type id `fa4e907d-c16b-4a4c-9dfa-4906e5d171dd`.
+  One was ok already. One reads drift on the permissions (a bypass or force-push right effective
+  for his user); he left it as it is, and it is in his exceptions file. The Branch security dialog
+  was not compared with the check's reading, so the permission bits stay unverified against it.
+- **Self-hosted GitLab** (one checkout, a host the check does not read): in his exceptions file
+  (section 2.4).
+- **Check of merge 3** (step 17, run by him from this line's checkout, 2026-11-15): exit 0; 100
+  repositories: 79 ok, 0 drift, 0 unreadable, 21 excepted; 4 checkouts without an `origin`
+  skipped. The 21: 14 GitHub repositories of another owner, 5 GitLab projects (3 not his to
+  administer, 2 shared), 1 Azure repository and the self-hosted one. The 43 GitHub rows read ok
+  with `main-merge-owner` judged.
+- **Outstanding** on 2026-11-15: step 14's loop (the `update` rulesets and the secret list of
+  section 2.1) and step 15 (a new agent session after an apply, which also brings it
+  `GITLAB_TOKEN`).
