@@ -139,13 +139,13 @@ check "detached: nothing closed, nothing removed" not_did 'space.close\|wt-rm'
 # --- checkout-spaces: refusals change nothing ----------------------------------------------
 for busy in working blocked; do
   newworld busy-$busy; ls_json $busy
-  cs check $wt >$world/out 2>&1; rc=$?
+  cs close $wt >$world/out 2>&1; rc=$?
   check "refuses while an agent is $busy" test $rc -ne 0
   check "$busy agent: nothing closed" not_did 'space.close'
 done
 
 newworld inside; jq '.spaces[0].tabs[0].terminals += [{terminal: "t9", pane: "p9", status: null, app: null, sub_agents: []}]' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
-cs check $wt >/dev/null 2>&1; rc=$?
+cs close $wt >/dev/null 2>&1; rc=$?
 check "refuses when run from inside the space being closed" test $rc -ne 0
 check "inside: nothing closed" not_did 'space.close'
 
@@ -167,6 +167,8 @@ cs close $wt >/dev/null 2>&1; rc=$?
 check "an idle subfolder space is closed with the checkout" did 'space.close {"id":"sp-sub","confirmed":true}'
 check "a folder that only shares the prefix is left alone" not_did 'sp-sibling'
 check "the checkout's own space closes before the subfolder's" before 'space.close {"id":"sp-wt"' 'space.close {"id":"sp-sub"'
+# the caller (HC_TERMINAL_ID=t9) is read once for its own check; every hc call runs without it
+check "hc runs without the caller's identity" test "$(grep -c '^hc ' $LOG)" -gt 0 -a "$(grep '^hc ' $LOG | grep -cv ' id=unset scope=unset$')" -eq 0
 
 # Only the checkout's own spaces close. Another space's terminal counts by where it is now.
 newworld wandered-out; add_space sp-away $main tA idle; launched_in tA $wt; now_in tA $main
@@ -181,6 +183,9 @@ check "refuses a shell launched elsewhere that has cd'd in" test $rc -ne 0
 check "the refusal names the terminal" grep -q 'tA' $world/out
 check "a foreign space with a terminal inside is not closed" not_did 'sp-away'
 check "foreign terminal inside: nothing closed" not_did 'space.close'
+jq '.spaces |= map(select(.id != "sp-wt"))' $STUB_LS > $STUB_LS.new; mv $STUB_LS.new $STUB_LS
+cs check $wt >/dev/null 2>&1; rc=$?
+check "...and refuses when the checkout has no space of its own" test $rc -eq 1
 
 newworld unaskable; print x > $STUB_DIR/fail-t2
 cs check $wt >$world/out 2>&1; rc=$?
@@ -229,6 +234,9 @@ for how in missing failing; do
   cs check $wt >/dev/null 2>&1; rc=$?
   check "a sub-agent whose status hc ls does not give refuses ($how)" test $rc -eq 1
 done
+rm $STUB_DIR/hc-ls-fail; jq -n '{terminals: [{address: "t1s", agent: "claude-code", status: "idle", cwd: "/x"}]}' > $STUB_DIR/hc-ls.json
+cs check $wt >/dev/null 2>&1; rc=$?
+check "a sub-agent that hc ls lists as idle passes" test $rc -eq 0
 
 newworld badrecords; print 'not json' > $HERDR_APP_HOME/shared.json
 cs close $wt >$world/out 2>$world/err; rc=$?

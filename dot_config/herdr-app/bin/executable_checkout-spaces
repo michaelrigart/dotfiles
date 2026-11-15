@@ -77,9 +77,9 @@ unreachable() {
   exit 1
 }
 
-# 0 safe (or nothing to close), 1 refused, every reason printed.
+# 0 safe (or nothing to close), 1 refused, every reason printed. Another space's terminal now
+# in the checkout refuses even when the checkout has no space of its own.
 do_check() {
-  (( $#spaces )) || return 0
   local -a reasons active editors inside missing
   local t got name cwd hcls
   [[ -z $caller ]] || ! jq -e --arg t "$caller" 'index($t) != null' <<<"$terminals" >/dev/null \
