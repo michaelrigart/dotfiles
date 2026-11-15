@@ -2,8 +2,7 @@
 //   popup.lazygit      alt+g          lazygit, 90% x 90%
 //   popup.scratch      alt+p          a scratch shell, 80% x 80%
 //   popup.scrollback   alt+s          the focused terminal's scrollback in Neovim, 90% x 90%
-//   popup.wt           cmd+shift+g    `wt` asking for a branch, 60% x 40% (and the space
-//                                     menu's New worktree)
+//   popup.wt           cmd+shift+g    `wt` asking for a branch, 60% x 40%
 //
 // Each is a terminal the core runs that no space holds, shown in a modal dialog over the window.
 // The dialog closes by itself when its terminal ends, so a popup lasts as long as its program.
@@ -12,18 +11,38 @@
 //
 // The core runs it on this computer, so in a space on another machine lazygit and scratch open
 // a tab there, as before. Scrollback and wt still run here, from the home folder.
+//
+// The space menu's New worktree is the one popup with a second way in: the menu hands the
+// folder over as props (`props.wt`) of an invisible overlay copy of this mod, which shows the
+// wt popup there and closes itself. The menu's own tasks end with it, and a space it has just
+// selected is not yet visible to the layout's copy, which would read the previous space.
 
 import { View, div } from "gpui-kit";
-import { spaces, focused, run, hc, home, appHome, notify, openOverlay, nextCommand } from "herdr";
+import { spaces, focused, run, hc, home, appHome, notify, openOverlay, closeOverlay, props, nextCommand } from "herdr";
 
 // The person's interactive login shell around the program, as the app does for a tab's argv:
 // a repository's mise tools reach lazygit's git hooks, and wt finds what it does in a tab.
 const LOGIN = ["/bin/sh", "-c", 'exec "${SHELL:-/bin/zsh}" -lic \'exec "$@"\' popup "$@"', "sh"];
 
 const COMMANDS = ["lazygit", "scratch", "scrollback", "wt"];
+// The wt popup, for the key and for the menu's overlay copy alike.
+const WT = { width: 0.6, height: 0.4 };
+const wtArgv = () => [`${appHome()}/bin/wt-app`, "--prompt"];
 
 export default class Popup extends View {
   init(_props, cx) {
+    if (props()?.wt) {
+      // The menu's overlay copy: it draws nothing and has one job.
+      cx.spawn(async (cx) => {
+        try {
+          await this.show(wtArgv(), props().wt, WT.width, WT.height, cx);
+        } catch (e) {
+          notify({ title: "Popup wt failed", body: String(e?.message ?? e), level: "warning" });
+        }
+        closeOverlay(props().overlay);
+      });
+      return;
+    }
     // One at a time and in order: a second press while one is opening must not race it.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -65,7 +84,7 @@ export default class Popup extends View {
     // The space's own folder, not a pane's live one, which may have wandered into another checkout.
     const space = spaces().find((s) => s.active);
     const cwd = space && !space.machine && space.folder ? space.folder : home();
-    return this.show([`${appHome()}/bin/wt-app`, "--prompt"], cwd, 0.6, 0.4, cx);
+    return this.show(wtArgv(), cwd, WT.width, WT.height, cx);
   }
 
   async show(argv, cwd, width, height, cx) {

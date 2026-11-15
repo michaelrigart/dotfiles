@@ -9,7 +9,7 @@
 // with it. So nothing here waits: checkoutPlan() runs while the menu is open, and worktree()
 // only reads what the window already knows.
 
-import { run, spaces, exec, appHome } from "herdr";
+import { run, spaces, exec, appHome, openOverlay } from "herdr";
 
 const bin = (name) => `${appHome()}/bin/${name}`;
 
@@ -30,10 +30,13 @@ export function worktree(args, plan) {
   const space = spaces().find((s) => s.id === args.space);
   if (!space || !plan) return;
   if (args.action === "retire") return retire(space, plan);
-  // The wt popup runs in the active space's folder, so the space comes forward first.
+  // The wt popup is shown by an invisible copy of mods/popup, opened here with the folder as
+  // its props: the menu's tasks end with it, and the selection below is not yet visible to the
+  // layout's copy, which would run wt in the space that was active before. 2 px, since up to 1
+  // is a share of the window.
   if (args.action === "new") {
+    openOverlay({ mod: "popup", kind: "popup", frame: "none", width: 2, height: 2, props: { wt: plan.top } });
     run("space.select", { id: space.id });
-    run("popup.wt");
     return;
   }
   // open-space works from inside the repository, which the tab starts in. A tab does not bring
