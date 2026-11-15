@@ -1,0 +1,57 @@
+#!/bin/sh
+# session-running <claude|codex> <session-id> — exit 0 when that agent session runs now (or the
+# herdr TUI keeps it), 1 when it does not, 2 when it cannot tell (unknown agent, an id that is
+# not a lowercase UUID, or a missing jq or, for codex, lsof).
+#
+# A Claude registry file whose pid is alive counts unless it provably belongs to another process:
+# the file's procStart (Claude's own start time) and the pid's start time (ps -o lstart=) are both
+# readable, both shaped like `Sat Nov 14 23:35:09 2026`, and differ. Anything else counts.
+#
+# mods/resume asks this before every resume: a session that already runs somewhere must never be
+# started a second time.
+export LC_ALL=C
+app=$1 id=$2
+case "$id" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *) exit 2 ;;
+esac
+# /usr/bin/jq starts in a few ms; the first jq on PATH may be a mise shim (about 70 ms a call).
+if [ -x /usr/bin/jq ]; then jq=/usr/bin/jq; else jq=jq; command -v jq >/dev/null 2>&1 || exit 2; fi
+# A start time with its padding collapsed, or nothing when it is not in lstart's shape.
+lstart() {
+  t=$(printf '%s' "$1" | tr -s ' ')
+  t=${t# }; t=${t% }
+  case "$t" in
+    [A-Z][a-z][a-z]\ [A-Z][a-z][a-z]\ [0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\ [0-9][0-9][0-9][0-9] | \
+    [A-Z][a-z][a-z]\ [A-Z][a-z][a-z]\ [0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\ [0-9][0-9][0-9][0-9]) printf '%s' "$t" ;;
+  esac
+}
+tui=$HOME/.config/herdr/session.json
+if [ -f "$tui" ]; then
+  n=$("$jq" -r --arg id "$id" '[.. | objects | select(has("agent_session")) | .agent_session.value? | select(. == $id)] | length' "$tui" 2>/dev/null) || exit 2
+  [ "$n" -gt 0 ] && exit 0
+fi
+case "$app" in
+  claude)
+    for f in "$HOME"/.claude/sessions/*.json; do
+      [ -f "$f" ] || continue
+      pid=${f##*/}; pid=${pid%.json}
+      kill -0 "$pid" 2>/dev/null || continue
+      sid=$("$jq" -r '.sessionId' "$f" 2>/dev/null) || exit 2
+      case "$sid" in ''|null) exit 2 ;; esac
+      [ "$sid" = "$id" ] || continue
+      # The pid may have been reused by another process after Claude died without cleanup.
+      then_=$(lstart "$("$jq" -r '.procStart // empty' "$f" 2>/dev/null)")
+      now_=$(lstart "$(TZ=UTC ps -o lstart= -p "$pid" 2>/dev/null)")
+      [ -n "$then_" ] && [ -n "$now_" ] && [ "$then_" != "$now_" ] && continue
+      exit 0
+    done
+    exit 1 ;;
+  codex)
+    command -v lsof >/dev/null 2>&1 || exit 2
+    # No word splitting: a rollout path may hold spaces (a HOME or CODEX_HOME with one).
+    [ -n "$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name "rollout-*$id.jsonl" -exec lsof -t -- {} + 2>/dev/null)" ] && exit 0
+    pgrep -f "(^|/)codex .*$id" >/dev/null 2>&1 && exit 0
+    exit 1 ;;
+  *) exit 2 ;;
+esac

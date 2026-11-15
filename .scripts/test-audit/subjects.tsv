@@ -87,6 +87,7 @@ dot_config/herdr-app/bin/executable_patch-mod	py	herdr-app	herdr-app,herdr-app-x
 dot_config/herdr-app/bin/executable_respaces	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_retire	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_session-written	sh	herdr-app	herdr-app,herdr-app-xreview
+dot_config/herdr-app/bin/executable_session-running	sh	herdr-app-resume	herdr-app,herdr-app-resume,herdr-app-xreview
 dot_config/herdr-app/bin/executable_wt-app	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_xreview-app	zsh	herdr-app-xreview	herdr-app,herdr-app-xreview
 dot_config/herdr-app/claude-settings.json.tmpl	data	herdr-app	herdr-app,herdr-app-xreview
@@ -97,6 +98,7 @@ dot_config/herdr-app/mods/nav/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/nav/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/respaces-guard/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/respaces-guard/mod.json	data	-	herdr-app,herdr-app-xreview
+dot_config/herdr-app/mods/resume/decide.js	data	herdr-app-resume	herdr-app,herdr-app-resume,herdr-app-xreview
 dot_config/herdr-app/mods/resume/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/resume/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/usage/main.js	data	-	herdr-app,herdr-app-xreview
