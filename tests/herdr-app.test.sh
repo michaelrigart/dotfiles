@@ -399,12 +399,23 @@ check "wt-app --prompt closes no tab" not_did 'tab.close'
 check "wt-app --prompt does not hold the popup open" test -z "$(grep 'Press Enter to close.' $world/out)"
 
 # When wt fails the popup is held open, with the message on screen: a folder where the checkout
-# would go that is not a worktree makes wt refuse.
-newworld prompt-fails; mkdir $world/repos/proj-junk
-( cd $main && print junk | "$bin/wt-app" --prompt ) >$world/out 2>&1; rc=$?
+# would go that is not a worktree makes wt refuse. The hold is a blocking read, so stdin stays open
+# until the message is on screen and a moment has passed; wt-app must still be running then.
+newworld prompt-fails; mkdir $world/repos/proj-junk; : > $world/out
+( print junk; for i in {1..100}; do grep -q 'Press Enter to close' $world/out && break; sleep 0.1; done
+  sleep 0.5; : > $world/released; print ) |
+  ( cd $main && "$bin/wt-app" --prompt >$world/out 2>&1; rc=$?; [[ -e $world/released ]] && : > $world/held; exit $rc ); rc=$?
 check "wt-app --prompt exits non-zero when wt fails" test $rc -ne 0
 check "...makes no space" not_did 'space.new'
-check "...and holds the popup open" grep -q 'Press Enter to close.' $world/out
+check "...says to press Enter" grep -q 'Press Enter to close.' $world/out
+check "...and was still waiting for it when released" test -e $world/held
+
+# --prompt is wt-prompt, which has no --no-focus.
+newworld prompt-nofocus
+( cd $main && "$bin/wt-app" --prompt --no-focus </dev/null ) >$world/out 2>&1; rc=$?
+check "wt-app --prompt --no-focus is refused" test $rc -ne 0
+check "...with the usage line" grep -q '^usage: wt-app' $world/out
+check "...and makes no space" not_did 'space.new'
 
 # --- edit-scrollback ------------------------------------------------------------------------
 # The terminal's text goes to Neovim in a temp file, cursor on the last line, and the file goes
@@ -416,6 +427,7 @@ cat > $world/nvim-bin/nvim <<'EOF'
 printf '%s\n' "$@" > "$STUB_DIR/nvim-args"
 cp "$3" "$STUB_DIR/nvim-saw"
 echo "$3" > "$STUB_DIR/nvim-file"
+exit ${STUB_NVIM_RC:-0}
 EOF
 chmod +x $world/nvim-bin/nvim
 printf 'one\ntwo\n\n\n' > $STUB_DIR/read-t5
@@ -425,6 +437,9 @@ check "edit-scrollback reads the terminal's history" did 'hc read t5 --lines'
 check "nvim opens at the last line of a file" test "$(sed -n 1p $STUB_DIR/nvim-args)" = +
 check "nvim gets the terminal's text, without the trailing blank lines" test "$(<$STUB_DIR/nvim-saw)" = $'one\ntwo'
 check "the temp file is gone afterwards" test ! -e "$(<$STUB_DIR/nvim-file)"
+# A failing Neovim holds the popup open, as a failing read does, instead of closing it unread.
+print | STUB_NVIM_RC=3 PATH=$world/nvim-bin:$PATH TMPDIR=$world/tmp "$bin/edit-scrollback" t5 >$world/out 2>&1; rc=$?
+check "edit-scrollback reports a failing nvim and holds" test $rc -eq 1 -a "$(grep -c -e 'nvim exited 3' -e 'Press Enter to close.' $world/out)" -eq 2
 
 newworld nofocus-off
 ( cd $main && "$bin/wt-app" other ) >$world/out 2>&1; rc=$?
