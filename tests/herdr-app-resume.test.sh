@@ -12,7 +12,8 @@ done
 [ -x "$J" ] || { echo "INCONCLUSIVE: no jsc" >&2; exit 2; }
 root=$(mktemp -d "${TMPDIR:-/tmp}/herdr-app-resume.XXXXXX") || exit 1
 trap 'rm -rf "$root"' EXIT
-export HOME=$root
+export HOME="$root/home dir" # a space in it: the helper must not split rollout paths
+mkdir -p "$HOME"
 unset CODEX_HOME
 
 passed=0 total=0

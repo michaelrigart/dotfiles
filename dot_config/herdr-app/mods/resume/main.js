@@ -226,9 +226,14 @@ export default class Resume extends View {
         const said = await answers(addresses.map((a) => shared(KEY)[a]));
         // As in scan: read fresh, decide and claim without awaiting in between.
         const saved = { ...(shared(KEY) ?? {}) };
-        const live = addresses.filter((a) => saved[a] && !this.sending.has(a));
+        // Still on the button now: a scan during the wait above may have found an agent or another
+        // program in front of it.
+        const live = addresses.filter((a) => saved[a] && !this.sending.has(a) && this.button.includes(a));
         const { go, held } = reserve(live, saved, this.seen, elsewhere(live.map((a) => saved[a]), said));
-        const next = claim(saved, go, { sent: true });
+        // The record takes the root pid the last scan saw at that shell, which send() checks again.
+        const pids = {};
+        for (const x of this.seen) if (go.includes(x.address) && x.pid != null) pids[x.address] = { pid: x.pid };
+        const next = claim(saved, go, { firstSeen: pids, sent: true });
         for (const a of go) this.sending.add(a);
         if (go.length) setShared(KEY, next);
         this.button = this.button.filter((a) => !go.includes(a));
@@ -242,7 +247,10 @@ export default class Resume extends View {
     });
   }
 
-  // Sends each terminal its resume command; `auto`: they were lost, not clicked.
+  // Sends each terminal its resume command; `auto`: they were lost, not clicked. Right before
+  // its send, each terminal is asked again: it must still be at a shell under the pid its record
+  // holds (claimed), or the command would be typed into whatever runs there now. A record
+  // without a pid (written before pids were kept) has nothing to compare.
   async send(cx, addresses, saved, auto) {
     this.resuming++;
     cx.notify();
@@ -250,7 +258,10 @@ export default class Resume extends View {
     const sent = await Promise.all(addresses.map(async (address) => {
       const rec = saved[address];
       try {
-        return (await hc(["send", address, `cd ${quote(rec.cwd)} && ${(await written(rec)) ? rec.cmd : rec.fresh}`])).code === 0;
+        const cmd = (await written(rec)) ? rec.cmd : rec.fresh;
+        const t = await get(address);
+        if (!SHELLS.includes((t?.foreground?.name ?? "").replace(/^-/, "")) || (rec.pid != null && t.pid !== rec.pid)) return false;
+        return (await hc(["send", address, `cd ${quote(rec.cwd)} && ${cmd}`])).code === 0;
       } catch {
         return false;
       } finally {

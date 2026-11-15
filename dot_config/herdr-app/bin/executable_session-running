@@ -49,9 +49,8 @@ case "$app" in
     exit 1 ;;
   codex)
     command -v lsof >/dev/null 2>&1 || exit 2
-    for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name "rollout-*$id.jsonl" 2>/dev/null); do
-      [ -n "$(lsof -t -- "$f" 2>/dev/null)" ] && exit 0
-    done
+    # No word splitting: a rollout path may hold spaces (a HOME or CODEX_HOME with one).
+    [ -n "$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name "rollout-*$id.jsonl" -exec lsof -t -- {} + 2>/dev/null)" ] && exit 0
     pgrep -f "(^|/)codex .*$id" >/dev/null 2>&1 && exit 0
     exit 1 ;;
   *) exit 2 ;;
