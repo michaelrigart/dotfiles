@@ -222,7 +222,7 @@ export default class Resume extends View {
         const said = await answers(addresses.map((a) => shared(KEY)[a]));
         // As in scan: read fresh, decide and claim without awaiting in between.
         const saved = { ...(shared(KEY) ?? {}) };
-        const live = addresses.filter((a) => saved[a]);
+        const live = addresses.filter((a) => saved[a] && !this.sending.has(a));
         const { go, held } = reserve(live, saved, this.seen, elsewhere(live.map((a) => saved[a]), said));
         const next = claim(saved, go, { sent: true });
         for (const a of go) this.sending.add(a);
