@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. In this repository the controller loads the `plan-run` skill first; it overrides superpowers.
 
+**Status:** Completed 2026-11-15 (branch `feat/wt-rm-app-spaces`, its PR against `main`).
+Do not run it again; its execution notes bind that run only.
+
 **Goal:** `wt-rm` closes the checkout's Herdr app spaces through one shared rule (`checkout-spaces`), Retire and the menu use that rule instead of their own, and xreview and `dev` pick the app for any caller outside a TUI pane.
 
 **Architecture:** A new zsh helper in the app's folder (`bin/checkout-spaces list|check|close <checkout>`) owns which app spaces are the checkout's and when they may close. `wt-rm` calls `check`, then its unchanged TUI close, then `close`; Retire calls `list` and then `wt-rm`. The front-end rule in xreview and `dev` shrinks to "a TUI variable, else the app".

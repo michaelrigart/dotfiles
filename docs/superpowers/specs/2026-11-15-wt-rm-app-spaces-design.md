@@ -1,6 +1,7 @@
 # wt-rm closes the checkout's app spaces; outside both front ends means the app
 
-**Status:** In progress (branch `feat/wt-rm-app-spaces`)
+**Status:** Implemented (branch `feat/wt-rm-app-spaces`, its PR against `main`; plan
+`docs/superpowers/plans/2026-11-15-wt-rm-app-spaces.md`)
 **Date:** 2026-11-15
 **Branch:** `feat/wt-rm-app-spaces`
 **Sign-off:** Michael, 2026-11-15, with the five rulings below as written; Codex spec review
