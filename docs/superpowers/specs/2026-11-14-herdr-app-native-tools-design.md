@@ -213,8 +213,10 @@ rebasing onto its merge.
 - An app session started before this applies keeps its recorded hint and `--settings` path, also on
   resume, so `xreview-app`, `wt-app`, `claude-app` and `claude-settings.json` keep working as thin
   wrappers until the TUI is retired.
-- The TUI-retirement line, when Michael calls it, removes those four, xreview's `herdr` branch and
-  §5.1 rule, `dev`'s `layout.sh` path, `layout.sh` itself and the `herdr *` exclusion.
+- The TUI-retirement line, when Michael calls it, removes `xreview-app`, `claude-app`,
+  `claude-settings.json` and `wt-app`'s plain and `--no-focus` forms, xreview's `herdr` branch and
+  §5.1 rule, `dev`'s `layout.sh` path, `layout.sh` itself and the `herdr *` exclusion. `wt-app
+  --prompt` stays: it is the app's new-worktree key (§5.6).
 - Apply when no review is running: a dispatch in flight under the old pane-keyed lock and one
   under the new checkout-keyed lock would not see each other.
 
@@ -261,7 +263,8 @@ rebasing onto its merge.
   from an app session, a plain `xreview` dispatch drives that space's Codex pane; a driver's
   `xreview -C <checkout>` drives a line's pane in another space; `dev --no-focus <existing
   checkout>` focuses or opens its space without taking focus, and the next real `wt --no-focus`
-  opens one; from a TUI pane, `xreview` still drives the TUI's Codex pane. (Builder's call: a
+  opens one; from a TUI pane, `xreview` still drives the TUI's Codex pane; a Claude tab started
+  from the app's own menu runs plain `claude` (`programs.json` no longer overrides it). (Builder's call: a
   pre-merge run from source needs sandbox escapes, a scratch branch that only `wt-rm` removes,
   and would write a review receipt from unshipped code.)
 
