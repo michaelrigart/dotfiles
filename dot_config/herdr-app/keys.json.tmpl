@@ -63,8 +63,25 @@
     "alt-w": "window.close",
     "alt-b": "layout.toggle:sidebar",
     "alt-q": "space.close",
-    "alt-g": "popup.lazygit",
-    "cmd-shift-g": "popup.wt",
+    "alt-g": {
+      "command": "terminal.open",
+      "args": {
+        "argv": [
+          "lazygit"
+        ],
+        "name": "lazygit"
+      }
+    },
+    "cmd-shift-g": {
+      "command": "terminal.open",
+      "args": {
+        "argv": [
+          "{{ .chezmoi.homeDir }}/.config/herdr-app/bin/wt-app",
+          "--prompt"
+        ],
+        "name": "new worktree"
+      }
+    },
     "cmd-shift-o": {
       "command": "terminal.open",
       "args": {
@@ -77,8 +94,12 @@
     },
     "cmd-alt-r": "michael-spaces.refresh",
     "cmd-shift-r": "resume.all",
-    "alt-p": "popup.scratch",
-    "alt-s": "popup.scrollback",
+    "alt-p": {
+      "command": "terminal.open",
+      "args": {
+        "name": "scratch"
+      }
+    },
     "ctrl-h": "nav.left",
     "ctrl-j": "nav.down",
     "ctrl-k": "nav.up",
@@ -86,6 +107,12 @@
     "alt-a": "nav.agents",
     "alt-r": "nav.runtime",
     "alt-e": "nav.editor"
+  },
+  "layout:michael": {
+    "alt-g": "popup.lazygit",
+    "alt-p": "popup.scratch",
+    "alt-s": "popup.scrollback",
+    "cmd-shift-g": "popup.wt"
   },
   "terminal": {
     "cmd-f": "terminal.search",
