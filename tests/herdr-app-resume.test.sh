@@ -23,6 +23,7 @@ rc() { "$H" "$@" >/dev/null 2>&1; echo $?; }
 # --- session-running ------------------------------------------------------------------------
 c=11111111-1111-4111-8111-111111111111 x=22222222-2222-4222-8222-222222222222 u=33333333-3333-4333-8333-333333333333
 mkdir -p "$HOME/.claude/sessions" "$HOME/.codex/sessions/2026/11/15" "$HOME/.config/herdr"
+printf '{"pid":1,' > "$HOME/.claude/sessions/1.json"
 sleep 60 & live=$!
 printf '{"pid":%d,"sessionId":"%s"}' "$live" "$c" > "$HOME/.claude/sessions/$live.json"
 check "a Claude session whose registry pid is alive is running" test "$(rc claude $c)" = 0
