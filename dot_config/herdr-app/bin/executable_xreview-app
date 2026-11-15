@@ -1,48 +1,7 @@
 #!/bin/zsh
-# xreview-app [xreview args…] — ~/.local/bin/xreview against the Herdr app instead of the TUI.
-#
-# xreview is untouched. It talks to the TUI through `herdr pane …`; this runs it with
-# xreview-shim/ (a `herdr` that answers those calls from the app) first on its PATH, for
-# that one process only. Nothing is installed and no other herdr is touched.
-#
-# xreview resets its own PATH at the top, to PINNED_PATH when that is set (its suites use it),
-# so prepending to PATH alone would never reach it: the folder goes into PINNED_PATH too,
-# in front of the PATH xreview would have used (read from xreview itself, below).
-#
-# This runs outside Claude Code's sandbox with the caller's PATH, which a sandboxed agent can have
-# put a writable folder on. So PATH is pinned to folders it cannot write before anything runs, the
-# xreview PATH line is read with zsh builtins only, and xreview starts with the PATH it will set.
-#
+# xreview-app [xreview args…] — kept for sessions recorded with its path, until the TUI is retired
+# (spec 2026-11-14, 5.7). xreview now picks the Herdr app front end itself, from the terminal it runs in.
+# This runs outside Claude Code's sandbox with the caller's PATH, so PATH is pinned to folders the sandbox cannot write.
 # XREVIEW_APP_XREVIEW replaces the xreview command; for the tests only.
-emulate -L zsh
-setopt no_unset
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
-
-shim=${0:A:h:h}/xreview-shim
-real=${XREVIEW_APP_XREVIEW:-$HOME/.local/bin/xreview}
-[[ -x $shim/herdr ]] || { print -ru2 -- "xreview-app: $shim/herdr is not executable."; exit 1 }
-[[ -x $real ]] || { print -ru2 -- "xreview-app: $real is not executable."; exit 1 }
-
-# The PATH xreview would have used, read from the xreview about to run instead of kept as a copy
-# that could drift: the default of its `PATH=${PINNED_PATH:-…}; export PATH` line, with $HOME
-# expanded and nothing else. A line that is not there exactly once, or has any other variable
-# in it, is not understood; running on a guess would give xreview a different PATH than its own.
-default_path() {
-  local prefix='PATH=${PINNED_PATH:-' suffix='}; export PATH' text line value
-  local -a lines
-  text=$(<$real) || return 1
-  lines=( ${(M)${(f)text}:#"$prefix"*"$suffix"} )
-  (( $#lines == 1 )) || return 1
-  line=$lines[1]
-  value=${${line#"$prefix"}%"$suffix"}
-  value=${value//'$HOME'/$HOME}
-  [[ -n $value && $value != *'$'* ]] || return 1
-  print -r -- $value
-}
-if [[ -z ${PINNED_PATH:-} ]]; then
-  PINNED_PATH=$(default_path) || { print -ru2 -- "xreview-app: xreview's PATH line changed; update xreview-app"; exit 1 }
-fi
-
-export PINNED_PATH=$shim:$PINNED_PATH
-export PATH=$PINNED_PATH
-exec $real "$@"
+exec "${XREVIEW_APP_XREVIEW:-$HOME/.local/bin/xreview}" "$@"

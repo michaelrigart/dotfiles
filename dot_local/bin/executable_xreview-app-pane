@@ -1,11 +1,16 @@
 #!/bin/zsh
-# herdr — the `herdr pane …` calls ~/.local/bin/xreview makes, answered from the Herdr app.
-# Not the TUI's herdr: xreview-app puts this folder first on PATH for one xreview process only.
+# xreview-app-pane — the `pane …` calls ~/.local/bin/xreview makes in the Herdr app, answered from it.
+# xreview runs this as "$PANE_CLI" (herdr for the TUI, this for the app); it is not a `herdr` on PATH.
 #
 # A pane is "app:<terminal>" (app:t27): no TUI pane id looks like that, and xreview names its
-# lock file after the id with ':' turned into '_', so the locks cannot collide either. Every
+# lock file after the checkout, so the locks cannot collide either. Every
 # call maps the id back to the core's terminal. Reads come from `herdr-app ls` (which terminal
 # is a local Codex, in which folder) and `hc get` (title, status, processes).
+#
+# Every hc call goes through hc_, which drops the caller's terminal identity (HC_TERMINAL_ID,
+# HC_SCOPE). xreview runs in an app terminal, and `hc send` from a known terminal wraps its
+# message to an agent terminal as <hc from="t87">…</hc>, which the shell then refuses: the
+# `codex … resume` line would never run (spec 2026-11-14, 5.3).
 #
 # Answered, in exactly the form xreview uses them (anything else fails on stderr and does nothing):
 #   pane list
@@ -23,7 +28,7 @@ emulate -L zsh
 setopt no_unset pipe_fail
 
 unsupported() {
-  print -ru2 -- "herdr (xreview shim): unsupported: herdr $*"
+  print -ru2 -- "xreview-app-pane: unsupported: $*"
   exit 2
 }
 # The TUI's own envelope on stderr: xreview takes exactly this for a closed pane.
@@ -32,7 +37,10 @@ not_found() { # <call> <id>
   exit 1
 }
 # Anything else that went wrong is a failed read, never a closed pane.
-broken() { print -ru2 -- "herdr (xreview shim): $*"; exit 1 }
+broken() { print -ru2 -- "xreview-app-pane: $*"; exit 1 }
+
+# hc_ <args…> — hc without the caller's terminal identity (the header says why).
+hc_() { command env -u HC_TERMINAL_ID -u HC_SCOPE hc "$@" }
 
 app_ls() { command herdr-app ls 2>/dev/null || broken "cannot read the app's spaces (is the window open?)" }
 
@@ -51,7 +59,7 @@ the_terminal() {
 
 # the_core <call> <id> — `hc get` of the terminal, in $got; a finished terminal is gone.
 the_core() {
-  local out; out=$(command hc get $terminal --json 2>&1) || {
+  local out; out=$(hc_ get $terminal --json 2>&1) || {
     jq -e '.error.kind == "not_found"' <<<"$out" >/dev/null 2>&1 && not_found "$1" "$2"
     broken "hc get $terminal failed"
   }
@@ -123,19 +131,19 @@ process-info)
 send-keys)
   (( $# == 3 )) && [[ $3 == ctrl+c ]] || unsupported pane "$@"
   the_terminal send-keys "$2"
-  command hc keys $terminal ctrl+c
+  hc_ keys $terminal ctrl+c
   ;;
 run)
   (( $# == 3 )) || unsupported pane "$@"
   the_terminal run "$2"
-  command hc send $terminal "$3"
+  hc_ send $terminal "$3"
   ;;
 read)
   (( $# == 8 )) && [[ $3 == --source && $4 == visible && $5 == --lines && $6 == <-> && $6 -gt 0 \
     && $7 == --format && $8 == text ]] || unsupported pane "$@"
   the_terminal read "$2"
   # hc read gives the screen; the bottom of it is what `--lines` asks for.
-  command hc read $terminal | tail -n $6
+  hc_ read $terminal | tail -n $6
   ;;
 report-agent-session)
   (( $# == 10 )) && [[ $3 == --source && $4 == herdr:codex && $5 == --agent && $6 == codex \

@@ -3,11 +3,12 @@
 #   ls        $STUB_DIR/hc-ls.json: terminals with their LAUNCH folder (.cwd) and status
 #   get <t>   what runs in it and where it is NOW (.foreground.name from $STUB_DIR/fg-<t>,
 #             .foreground.cwd from $STUB_DIR/cwd-<t>, default "/"); fails if $STUB_DIR/fail-<t>.
-#             tests/herdr-app-xreview.test.sh: $STUB_DIR/get-<t>.json is answered whole when it exists, and
+#             tests/xreview-app-pane.test.sh: $STUB_DIR/get-<t>.json is answered whole when it exists, and
 #             $STUB_DIR/gone-<t> makes it answer as the real one does for a terminal it lacks
 #   read <t>  $STUB_DIR/read-<t>
 #   keys, send   only logged; "hc-args" gives their arguments one by one, as they were split
-echo "hc $*" >> "$STUB_LOG"
+#   every call's log line ends with the caller's identity as the stub got it: "id=<HC_TERMINAL_ID> scope=<HC_SCOPE>", "unset" for none
+echo "hc $* id=${HC_TERMINAL_ID-unset} scope=${HC_SCOPE-unset}" >> "$STUB_LOG"
 case "$1" in
   ls) if [ -f "$STUB_DIR/hc-ls.json" ]; then cat "$STUB_DIR/hc-ls.json"; else echo '{"terminals":[]}'; fi ;;
   get)

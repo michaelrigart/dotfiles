@@ -129,7 +129,6 @@ tests/
 .config/herdr-app/*
 !.config/herdr-app/bin
 !.config/herdr-app/patches
-!.config/herdr-app/xreview-shim
 !.config/herdr-app/keys.json
 !.config/herdr-app/programs.json
 !.config/herdr-app/claude-settings.json
