@@ -559,6 +559,15 @@ mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
   git -C "$1" commit -q -m hook
 }
 
+# app_spaces_stub [check-rc] [close-rc] — checkout-spaces in the scratch HOME, logging each call to $HLOG
+app_spaces_stub() {
+  mkdir -p "$HOME/.config/herdr-app/bin"
+  print -r -- "#!/bin/sh
+echo \"checkout-spaces \$*\" >> '$HLOG'
+case \$1 in check) exit ${1:-0} ;; close) exit ${2:-0} ;; esac" > "$HOME/.config/herdr-app/bin/checkout-spaces"
+  chmod +x "$HOME/.config/herdr-app/bin/checkout-spaces"
+}
+
 print -r -- "B. wt — destination validation"
 setup
 mkdir -p "$HOME/Code/Org/repo-husk/tmp/cache"     # leftover husk: no .git at all
@@ -1675,8 +1684,12 @@ eq "$OUT" "q12" "Q12 the branch is kept by the failed retry"
 eq "$(lock_reason_of "$Q12")" "wt-managed; remove with command wt-rm" \
    "Q12 the registration and its lock survive the failed retry"
 chmod 700 "$Q12_REG"
+app_spaces_stub 0 0
+: > "$HLOG"
 run "$REPO" wt-rm q12
 rc_is 0 "Q12 a retry finishes the partial removal"
+hlogged "checkout-spaces check $Q12" "Q12 the retry checks the gone checkout's app spaces"
+hlogged "checkout-spaces close $Q12" "Q12 the retry closes the gone checkout's app spaces"
 has "is already gone — finishing its removal without re-running teardown" "Q12 the retry says teardown is skipped"
 has "reclaim its resources yourself" "Q12 the retry says what it leaves to the user"
 eq "$(wc -l < "$REPO/q12-teardowns" | tr -d ' ')" "1" "Q12 teardown ran once, not again on the retry"
@@ -1861,7 +1874,7 @@ OUT="$(builtin cd "$REPO" && source "$FUNCS" \
           wt-rm q23 2>&1)"; RC=$?
 rc_is 1 "q23 a removal that fails before deleting anything fails wt-rm"
 eq "$(grep -c . "$FLOG")" "1" "q23 fixture: exactly the one remove call was failed"
-has "worktree kept, Herdr workspaces closed" "q23 an intact checkout is reported as kept"
+has "worktree kept, Herdr workspaces and app spaces closed" "q23 an intact checkout is reported as kept"
 hasnt "delete what is left" "q23 decorated ls output never reads as a missing .git link"
 has "retry: wt-rm q23" "q23 it offers the retry"
 has "wt-prepare q23 && wt q23" "q23 it offers the resume route"
@@ -2420,6 +2433,71 @@ rc_is 1 "U4 a nested repository's workspace refuses removal"
 has "inside the checkout" "U4 the refusal says why"
 hunlogged "workspace close" "U4 nothing is closed"
 
+# U4b-U4d: wt-rm checks the app's spaces, then closes the TUI's workspaces, then the app's.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/app-ok-teardown-ran"
+exit 0'
+run "$REPO" wt app-ok
+HAPPOK="$HOME/Code/Org/repo-app-ok"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w7\",\"label\":\"app-ok\",\"worktree\":{\"checkout_path\":\"$HAPPOK\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$HAPPOK\"}]}}"
+app_spaces_stub 0 0
+: > "$HLOG"
+run "$REPO" wt-rm app-ok
+rc_is 0 "U4b wt-rm with the app's spaces closable removes the checkout"
+U_CHECK="$(grep -n "checkout-spaces check $HAPPOK" "$HLOG" | head -1 | cut -d: -f1)"
+U_TUI="$(grep -n "workspace close w7" "$HLOG" | head -1 | cut -d: -f1)"
+U_CLOSE="$(grep -n "checkout-spaces close $HAPPOK" "$HLOG" | head -1 | cut -d: -f1)"
+[[ -n "$U_CHECK" && -n "$U_TUI" && -n "$U_CLOSE" && "$U_CHECK" -lt "$U_TUI" && "$U_TUI" -lt "$U_CLOSE" ]] \
+  && _pass "U4b the app check precedes the TUI close, which precedes the app close" \
+  || _fail "U4b the app check precedes the TUI close, which precedes the app close (check=$U_CHECK tui=$U_TUI close=$U_CLOSE)"
+[[ -d "$HAPPOK" ]] && _fail "U4b the checkout is removed" || _pass "U4b the checkout is removed"
+
+# U4c: an app check that refuses stops everything before the TUI closes or teardown runs.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/app-refuse-teardown-ran"
+exit 0'
+run "$REPO" wt app-refuse
+HAPPREF="$HOME/Code/Org/repo-app-refuse"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w7\",\"label\":\"app-refuse\",\"worktree\":{\"checkout_path\":\"$HAPPREF\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$HAPPREF\"}]}}"
+app_spaces_stub 1 0
+: > "$HLOG"
+run "$REPO" wt-rm app-refuse
+rc_is 1 "U4c an app check that refuses fails wt-rm"
+has "nothing was closed or removed" "U4c it says nothing was closed or removed"
+hunlogged "workspace close" "U4c the TUI's workspace is not closed"
+hunlogged "checkout-spaces close" "U4c the app's spaces are not closed"
+[[ -f "$REPO/app-refuse-teardown-ran" ]] && _fail "U4c teardown is skipped" || _pass "U4c teardown is skipped"
+[[ -d "$HAPPREF" ]] && _pass "U4c the checkout survives" || _fail "U4c the checkout survives"
+
+# U4d: an app close that fails after the TUI closed removes nothing and runs no teardown.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/app-fail-teardown-ran"
+exit 0'
+run "$REPO" wt app-fail
+HAPPFAIL="$HOME/Code/Org/repo-app-fail"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w7\",\"label\":\"app-fail\",\"worktree\":{\"checkout_path\":\"$HAPPFAIL\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$HAPPFAIL\"}]}}"
+app_spaces_stub 0 1
+: > "$HLOG"
+run "$REPO" wt-rm app-fail
+rc_is 1 "U4d an app close that fails fails wt-rm"
+has "its Herdr workspaces are" "U4d it says the TUI's workspaces are closed"
+has "nothing was removed" "U4d it says nothing was removed"
+hlogged "workspace close w7" "U4d the TUI's workspace was closed first"
+[[ -f "$REPO/app-fail-teardown-ran" ]] && _fail "U4d teardown is skipped" || _pass "U4d teardown is skipped"
+[[ -d "$HAPPFAIL" ]] && _pass "U4d the checkout survives" || _fail "U4d the checkout survives"
+
 # U5: any named session other than $HERDR_SESSION refuses before anything is read or closed.
 setup
 run "$REPO" wt named
@@ -2562,7 +2640,7 @@ export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"pane_id\
 export MOCK_H_CLOSE_TOUCH="$HFLUSH/flushed-by-herdr.txt"
 run "$REPO" wt-rm herdr-flush
 rc_is 1 "U14 dirt flushed by Herdr shutdown is caught"
-has "closing Herdr workspaces left changes" "U14 check 2 reports the flush"
+has "closing Herdr workspaces and app spaces left changes" "U14 check 2 reports the flush"
 [[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "U14 teardown does not run" || _pass "U14 teardown does not run"
 
 # U15: a stopped default session that remembers the checkout refuses.
@@ -4400,7 +4478,7 @@ teardown_not_ran "XR5b the teardown hook does not run"
 xrfix xr6; xr_herdr
 MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6
 rc_is 1 "XR6 a config that is untrusted once the workspaces are closed stops wt-rm"
-has "wt-rm: ~/Code/Org/repo-xr6 has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces closed." "XR6 the headline names the file"
+has "wt-rm: ~/Code/Org/repo-xr6 has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces and app spaces closed." "XR6 the headline names the file"
 has "    Review the mise config, then retry: wt-rm xr6" "XR6 the retry line"
 hlogged "workspace close" "XR6 the workspace was closed"
 teardown_not_ran "XR6 the teardown hook does not run"
@@ -4414,7 +4492,7 @@ xrfix xr6c; xr_herdr
 : > "$REPO/mise.local.toml"; mise_seed "$REPO/mise.local.toml"
 MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6c
 rc_is 1 "XR6c a config untrusted after the close stops wt-rm even though main trusts identical bytes"
-has "has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces closed." "XR6c the headline names the file"
+has "has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces and app spaces closed." "XR6c the headline names the file"
 mlog_no_line "trust $X/mise.local.toml" "XR6c the re-check issues no trust"
 grep -q '^trust ' "$MLOG" && _fail "XR6c no trust call at all in this run" || _pass "XR6c no trust call at all in this run"
 teardown_not_ran "XR6c the teardown hook does not run"
@@ -4427,14 +4505,14 @@ ln "$X/mise.local.toml" "$X/.mise.toml"
 mise_seed "$X/.mise.toml"; cat "$MLOG" >> "$XALL"; : > "$MLOG"
 MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6b
 rc_is 1 "XR6b two untrusted files stop wt-rm"
-has "has untrusted mise config (mise.local.toml, .mise.toml) — teardown not run, Herdr workspaces closed." "XR6b both are named, comma separated"
+has "has untrusted mise config (mise.local.toml, .mise.toml) — teardown not run, Herdr workspaces and app spaces closed." "XR6b both are named, comma separated"
 teardown_not_ran "XR6b the teardown hook does not run"
 
 # XR7: the read right before teardown fails.
 xrfix xr7; xr_herdr
 MOCK_H_CLOSE_TOUCH="$ROOTTMP/closed" MOCK_MISE_SHOW_FAIL_WHEN="$ROOTTMP/closed" run "$REPO" wt-rm xr7
 rc_is 1 "XR7 an unreadable trust status before teardown stops wt-rm"
-has "wt-rm: cannot read mise's trust status for ~/Code/Org/repo-xr7 — teardown not run, Herdr workspaces closed." "XR7 the headline"
+has "wt-rm: cannot read mise's trust status for ~/Code/Org/repo-xr7 — teardown not run, Herdr workspaces and app spaces closed." "XR7 the headline"
 has "    Review the mise config, then retry: wt-rm xr7" "XR7 the retry line"
 hlogged "workspace close" "XR7 the workspace was closed"
 teardown_not_ran "XR7 the teardown hook does not run"
