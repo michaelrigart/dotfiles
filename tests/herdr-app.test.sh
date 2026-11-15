@@ -390,9 +390,10 @@ check "the focus comes back after the space is made" before 'space.new' 'space.s
 check "the focus is the last thing that moves" test "$(grep '^herdr-app do' $LOG | tail -1)" = 'herdr-app do space.select {"id":"sp-main"}'
 
 # run_held <stdin line, or "" for none> <command...> — the command with that line on stdin and
-# its output in $world/out, stdin then held open until the command says "Press Enter to close" and a moment
-# has passed. Its status comes back, and $world/held exists if it was still running when stdin
-# was released: a hold is a blocking read, so a command that does not hold is gone by then.
+# its output in $world/out, stdin then held open until the command says "Press Enter to close"
+# and a moment has passed. Its status comes back, and $world/held exists if it was still running
+# when stdin was released: a hold is a blocking read, so a command that does not hold is gone by
+# then.
 run_held() {
   local line=$1; shift
   rm -f $world/released $world/held; : > $world/out
