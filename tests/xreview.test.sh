@@ -1485,12 +1485,14 @@ echo probe >&2
 is "P7 stderr written after unlock_pane is still visible" "$(printf '%s' "$out" | grep -cx probe)" 1
 is "P7 and the lock is free after unlock_pane" "$(printf '%s' "$out" | grep -cx free)" 1
 # P7b: two roots that differ only in a character the old file name flattened to "_" are two locks.
-rm -f "$ROOT/held7"
+# The holder keeps /a/b locked until the sentinel is removed (bounded at 30 s, so a broken test
+# cannot hang): it holds exactly as long as the probes need, however loaded the machine is.
+rm -f "$ROOT/held7"; : > "$ROOT/release7"
 bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
 $lock_src
 lock_pane x /a/b
 : > \"$ROOT/held7\"
-sleep 5" &
+for _ in \$(seq 300); do [ -e \"$ROOT/release7\" ] || break; sleep 0.1; done" &
 holder=$!
 for _ in $(seq 50); do [ -e "$ROOT/held7" ] && break; sleep 0.1; done
 out="$(XREVIEW_LOCK_WAIT=0.5 bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
@@ -1501,7 +1503,7 @@ out="$(XREVIEW_LOCK_WAIT=0.5 bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2
 $lock_src
 lock_pane x /a/b && echo got" 2>&1)"
 is "P7b while the same root is held" "$(printf '%s' "$out" | grep -cx got)" 0
-kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+rm -f "$ROOT/release7"; wait "$holder" 2>/dev/null
 # P7c: a root of any length names a lock file of the same length.
 long="/$(printf 'd%.0s' {1..300})"
 out="$(bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
@@ -1535,6 +1537,19 @@ for variant in nolock exit1 timeout; do
        "$rc/$(printf '%s' "$out" | grep -c '^xreview: another dispatch is using the Codex pane w1:p2; no review was started - wait for it, then dispatch again$')" "1/1"
   fi
   is "P8 $variant: untouched" "$(untouched)" yes
+done
+# P8b: the key helper failing, or naming nothing, is no lock at all: the dispatch refuses before
+# any key or turn. lock_key's interpreter is swapped the way P8 swaps the flock helper's.
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/py-emptykey"
+chmod +x "$ROOT/py-emptykey"
+for variant in exit1 emptykey; do
+  sed "/^lock_key() {/,/^}/ s#/usr/bin/python3#$ROOT/py-$variant#" "$XREVIEW" > "$ROOT/xreview-key-$variant"
+  fresh
+  out="$(bash "$ROOT/xreview-key-$variant" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "P8b a lock key that cannot be made ($variant) refuses" \
+     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot name the lock for the Codex pane w1:p2; no review was started. $MARK")" "1/1"
+  is "P8b R38 ($variant) and the message ends with the marker" "$(refusal_msg 'cannot name the lock' "$out" | tail -n 1 | grep -c "$MARK_END")" 1
+  is "P8b $variant: untouched" "$(untouched)" yes
 done
 # P9: the lock helper is inline Python, run unsandboxed from the repository, and a plain
 # `python3 -c` puts the current directory first on sys.path: a sandbox-written fcntl.py there

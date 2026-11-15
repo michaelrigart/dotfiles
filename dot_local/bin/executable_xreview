@@ -24,11 +24,11 @@ set -euo pipefail
 PATH=${PINNED_PATH:-$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 # The Herdr front end the caller runs in (spec 2026-11-14, section 5.1): a TUI pane (HERDR_ENV or
 # HERDR_PANE_ID) wins over an app terminal (HC_TERMINAL_ID), and neither means the TUI. The panes
-# are driven through PANE_CMD, which answers the same `pane` subcommands for both.
+# are driven through PANE_CLI, which answers the same `pane` subcommands for both.
 if [ -n "${HERDR_ENV:-}" ] || [ -n "${HERDR_PANE_ID:-}" ]; then FRONT_END=tui
 elif [ -n "${HC_TERMINAL_ID:-}" ]; then FRONT_END=app
 else FRONT_END=tui; fi
-if [ "$FRONT_END" = app ]; then PANE_CMD=xreview-app-pane; else PANE_CMD=herdr; fi
+if [ "$FRONT_END" = app ]; then PANE_CLI=xreview-app-pane; else PANE_CLI=herdr; fi
 # Without this, a `die` inside a function called via $(...) from ANOTHER function that is
 # itself invoked via $(...) (pane_command from inside pane_prepare, say) silently loses its
 # exit status: bash historically runs command substitutions with -e off inside them unless
@@ -187,7 +187,7 @@ pane_root() {
 find_pane() {
   local root snap ids n
   root="$(pane_root)"
-  snap="$("$PANE_CMD" pane list 2>/dev/null || true)"
+  snap="$("$PANE_CLI" pane list 2>/dev/null || true)"
   if [ -z "$snap" ]; then
     if [ "$FRONT_END" = app ]; then die "cannot list the Herdr app's panes - is its window open?"; fi
     die "cannot list herdr panes - is herdr running?"
@@ -213,7 +213,7 @@ find_pane() {
 }
 
 pane_field() { # pane_field <pane> <jq-path>
-  "$PANE_CMD" pane get "$1" 2>/dev/null | jq -r ".result.pane | $2 // empty" 2>/dev/null || true
+  "$PANE_CLI" pane get "$1" 2>/dev/null | jq -r ".result.pane | $2 // empty" 2>/dev/null || true
 }
 
 title_id_from() { # title_id_from <raw-title>: the thread id PREFIX at its start, if any
@@ -230,7 +230,7 @@ pane_obj() { # pane_obj <pane>: herdr's pane object, as compact JSON, on a genui
   # exited 0 with an `{"error":…}` envelope or anything else that is not a pane. A failed
   # read is never an observation of anything (I-1).
   local out rc=0
-  out="$("$PANE_CMD" pane get "$1" 2>/dev/null)" || rc=$?
+  out="$("$PANE_CLI" pane get "$1" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
   printf '%s' "$out" | jq -ce '.result.pane | objects' 2>/dev/null || return 1
 }
@@ -257,7 +257,7 @@ pane_gone() { # pane_gone <pane>: true (exit 0) when herdr reports the pane clos
   # after a failed read. herdr answers a closed pane with exit 1 and a `pane_not_found`
   # envelope on stderr - distinct from any other read failure, which just keeps waiting.
   local err
-  err="$("$PANE_CMD" pane get "$1" 2>&1 >/dev/null)" || true
+  err="$("$PANE_CLI" pane get "$1" 2>&1 >/dev/null)" || true
   case "$err" in
     *'"pane_not_found"'*) return 0 ;;
   esac
@@ -271,7 +271,7 @@ pane_proc() { # pane_proc <pane>: herdr's process info for the pane, as compact 
   # - or the read failed too: a Codex process without them would be passed over by the
   # guard, which could then never check the thread it resumes.
   local out
-  out="$("$PANE_CMD" pane process-info --pane "$1" 2>/dev/null)" || return 1
+  out="$("$PANE_CLI" pane process-info --pane "$1" 2>/dev/null)" || return 1
   printf '%s' "$out" | jq -e '.result.process_info
     | (.shell_pid | type == "number")
       and (.foreground_processes | type == "array"
@@ -358,7 +358,7 @@ pane_guard() {
   # One successful read serves both the status and the title: a read that fails is a check
   # that could not be completed, never an idle pane or an empty title.
   obj="$(pane_obj "$pane")" \
-    || die "cannot read the Codex pane $pane ($PANE_CMD pane get); no review was started. Michael's call: report this and stop."
+    || die "cannot read the Codex pane $pane ($PANE_CLI pane get); no review was started. Michael's call: report this and stop."
   status="$(printf '%s' "$obj" | jq -r '.agent_status // empty' 2>/dev/null)"
   case "$status" in
     working|blocked) die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again" ;;
@@ -381,7 +381,7 @@ pane_guard() {
   # A foreground group that is not the shell and holds no Codex process is no observation: it
   # could be a TUI on a pre-session screen, resuming a thread the guard cannot read.
   if [ -z "$codex" ] && ! proc_freed "$proc"; then
-    die "cannot read the Codex pane $pane's process ($PANE_CMD pane process-info); no review was started. Michael's call: report this and stop."
+    die "cannot read the Codex pane $pane's process ($PANE_CLI pane process-info); no review was started. Michael's call: report this and stop."
   fi
   if [ -n "$codex" ]; then
     target="$(resume_target "$codex")" \
@@ -396,7 +396,7 @@ pane_screen() { # pane_screen <pane>: the bottom of the pane's visible screen - 
   # waiting - control characters stripped, trailing blank lines dropped, each line indented
   # under the message. Prints nothing when the read fails. Untrusted text: evidence only.
   local out text esc tail12
-  out="$("$PANE_CMD" pane read "$1" --source visible --lines 12 --format text 2>/dev/null)" || return 0
+  out="$("$PANE_CLI" pane read "$1" --source visible --lines 12 --format text 2>/dev/null)" || return 0
   text="$(printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
       | awk '{ l[NR] = $0 } NF { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' \
       | tail -n 12)" || text=""
@@ -531,9 +531,9 @@ pane_quit() {
   start="$(epoch_now)"
   pane_is_free "$pane" && return 0
   for _rung in 1 2 3; do
-    "$PANE_CMD" pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
+    "$PANE_CLI" pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
     sleep "$gap"
-    "$PANE_CMD" pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
+    "$PANE_CLI" pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
     rstart="$(epoch_now)"
     while :; do
       pane_is_free "$pane" && return 0
@@ -565,7 +565,7 @@ pane_resume() {
   proc="$(pane_proc "$pane")" && proc_freed "$proc" || { warn_pane_unwatched "$pane"; return 1; }
   cmd="$(pane_command)" || { warn_pane_unwatched "$pane"; return 1; }
   start="$(epoch_now)"
-  "$PANE_CMD" pane run "$pane" "$cmd -C $(printf '%q' "$root") resume $thread" >/dev/null 2>&1 \
+  "$PANE_CLI" pane run "$pane" "$cmd -C $(printf '%q' "$root") resume $thread" >/dev/null 2>&1 \
     || { warn_pane_unwatched "$pane"; return 1; }
   while :; do
     raw=""; brc=0; now=""
@@ -597,7 +597,7 @@ _dispatch_exit_guard() { # _dispatch_exit_guard <pane>: the EXIT trap armed whil
   # fails: errexit holds inside an EXIT trap, so a failing command there skips all that follows.
   local cmd
   cmd="$(pane_command 2>/dev/null)" || return 0
-  "$PANE_CMD" pane run "$1" "$cmd" >/dev/null 2>&1 || true
+  "$PANE_CLI" pane run "$1" "$cmd" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -641,12 +641,12 @@ move_pane_to() {
 }
 
 report_to_herdr() { # report_to_herdr <pane> <thread>
-  "$PANE_CMD" pane report-agent-session "$1" --source herdr:codex --agent codex \
+  "$PANE_CLI" pane report-agent-session "$1" --source herdr:codex --agent codex \
     --agent-session-id "$2" --seq "$(/usr/bin/python3 -I -c 'import time; print(time.time_ns())')" \
     >/dev/null 2>&1 || true
 }
 
-# --- one dispatch per pane (spec 2026-10-01 §4.9; G9) ----------------------------------
+# --- one dispatch per checkout (spec 2026-11-14 §5.2; spec 2026-10-01 §4.9; G9) ----------
 # A kernel flock on descriptor 9, taken by a python helper on the inherited descriptor. The
 # lock belongs to the open file, so it holds until this process closes fd 9 or exits -
 # crashes included. No stale lock is ever left behind to reclaim. The lock file is never
@@ -1356,7 +1356,7 @@ cmd_dispatch() {
   # The process is read once, here: the guard and pane_free's fast path judge this same
   # observation, and a dispatch that cannot read it refuses before any keystroke.
   proc="$(pane_proc "$pane")" \
-    || die "cannot read the Codex pane $pane's process ($PANE_CMD pane process-info); no review was started. Michael's call: report this and stop."
+    || die "cannot read the Codex pane $pane's process ($PANE_CLI pane process-info); no review was started. Michael's call: report this and stop."
   # A herdr-idle pane can still be mid-turn on the daemon side: a disconnected TUI keeps its
   # title's thread id prefix, and a TUI on a pre-session screen is about to open the thread
   # its argv resumes. The guard refuses on either, or when it cannot tell.
@@ -1942,7 +1942,7 @@ _slice_start() {
     return 0
   fi
   proc="$(pane_proc "$pane")" \
-    || die "cannot read the Codex pane $pane's process ($PANE_CMD pane process-info). Michael's call: report this and stop."
+    || die "cannot read the Codex pane $pane's process ($PANE_CLI pane process-info). Michael's call: report this and stop."
   pane_guard "$pane" "$proc"
   th="$(xreview-rpc thread-start --cwd "$(repo_root)" --started "$(state_dir)/started")" || die "could not start a new review thread"
   assert_id "$th"
