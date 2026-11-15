@@ -1,0 +1,32 @@
+#!/bin/sh
+# session-running <claude|codex> <session-id> — exit 0 when that agent session runs now (or the
+# herdr TUI keeps it), 1 when it does not, 2 when it cannot tell (unknown agent, an id that is
+# not a lowercase UUID, or a missing jq or, for codex, lsof).
+#
+# mods/resume asks this before every resume: a session that already runs somewhere must never be
+# started a second time.
+app=$1 id=$2
+case "$id" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *) exit 2 ;;
+esac
+command -v jq >/dev/null 2>&1 || exit 2
+tui=$HOME/.config/herdr/session.json
+if [ -f "$tui" ]; then
+  [ "$(jq -r --arg id "$id" '[.. | objects | select(has("agent_session")) | .agent_session.value? | select(. == $id)] | length' "$tui" 2>/dev/null)" -gt 0 ] 2>/dev/null && exit 0
+fi
+case "$app" in
+  claude)
+    for pid in $(jq -r --arg id "$id" 'select(.sessionId == $id) | .pid' "$HOME"/.claude/sessions/*.json 2>/dev/null); do
+      kill -0 "$pid" 2>/dev/null && exit 0
+    done
+    exit 1 ;;
+  codex)
+    command -v lsof >/dev/null 2>&1 || exit 2
+    for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name "rollout-*$id.jsonl" 2>/dev/null); do
+      [ -n "$(lsof -t -- "$f" 2>/dev/null)" ] && exit 0
+    done
+    pgrep -f "(^|/)codex .*$id" >/dev/null 2>&1 && exit 0
+    exit 1 ;;
+  *) exit 2 ;;
+esac

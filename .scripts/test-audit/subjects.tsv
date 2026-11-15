@@ -87,6 +87,7 @@ dot_config/herdr-app/bin/executable_patch-mod	py	herdr-app	herdr-app,herdr-app-x
 dot_config/herdr-app/bin/executable_respaces	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_retire	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_session-written	sh	herdr-app	herdr-app,herdr-app-xreview
+dot_config/herdr-app/bin/executable_session-running	sh	herdr-app-resume	herdr-app,herdr-app-resume,herdr-app-xreview
 dot_config/herdr-app/bin/executable_wt-app	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_xreview-app	zsh	herdr-app-xreview	herdr-app,herdr-app-xreview
 dot_config/herdr-app/claude-settings.json.tmpl	data	herdr-app	herdr-app,herdr-app-xreview
