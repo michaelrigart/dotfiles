@@ -58,7 +58,8 @@ the extra settings have nothing left to do, while the TUI keeps working until Mi
    lock moves from the pane to the checkout, so the two can never run reviews of one checkout at
    once.
 4. **`xreview-app`, `wt-app` and `claude-settings.json` stay as thin wrappers until the TUI is
-   retired;** the TUI-retirement line removes them with the TUI path.
+   retired;** the TUI-retirement line removes them with the TUI path. (Amended 2026-11-15: `wt-app
+   --prompt` stays, because it is the app's new-worktree key; see §5.7.)
 5. **The helper calls `hc` without the caller's terminal identity** (2026-11-15), rather than
    `notes = false` in herdr-core's config for everything (§5.3).
 
@@ -260,7 +261,7 @@ rebasing onto its merge.
   as this session's prompt says); no code from this branch runs against the live app, the Codex
   daemon or the ledger before merge.
 - **Acceptance, Michael's, after merge and `chezmoi apply`** (listed in the PR as unchecked items):
-  from an app session, a plain `xreview` dispatch drives that space's Codex pane; a driver's
+  from an app session, a plain `xreview` dispatch drives that space's Codex pane, on a dispatch whose pane has to be quit and resumed (a pane not already on the review thread) and comes back on the review thread with no "the review is running but not shown in pane" warning (the identity fix fails quietly otherwise: the resume only warns and the review still completes); a driver's
   `xreview -C <checkout>` drives a line's pane in another space; `dev --no-focus <existing
   checkout>` focuses or opens its space without taking focus, and the next real `wt --no-focus`
   opens one; from a TUI pane, `xreview` still drives the TUI's Codex pane; a Claude tab started

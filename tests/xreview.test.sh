@@ -457,6 +457,11 @@ is "FE6 the app path never asks about the pane-map hook" "$(called 'xreview-rpc 
 fresh
 HOOKS_STATUS=untrusted fe_dispatch >/dev/null
 is "FE6 the TUI path still does" "$(called 'xreview-rpc hooks-status')" 1
+fresh; : > "$P/agent"   # no Codex pane for the checkout
+out="$(HC_TERMINAL_ID=t9 fe_dispatch)"; rc=$?
+is "FE7 R5 an app terminal with no Codex pane refuses with the app's remedy, ending with the marker" \
+   "$rc/$(refusal_msg 'no Codex pane for' "$out" | grep -c "(open the checkout's space with dev or wt from an app terminal, or set XREVIEW_PANE)")/$(refusal_msg 'no Codex pane for' "$out" | grep -c 'Michael applies the project layout')/$(refusal_msg 'no Codex pane for' "$out" | tail -n 1 | grep -c "$MARK_END")" "1/1/0/1"
+is "FE7 and no keystroke reaches any pane" "$(untouched)/$(called 'app-pane pane send-keys')" "yes/0"
 
 echo "A. rounds are not capped by default; XREVIEW_MAX_ROUNDS is an opt-in bound"
 fresh
@@ -1402,8 +1407,8 @@ is "no title-reset escape sequence in the code (the two-step reset is gone)" \
    "$(printf '%s' "$code" | grep -cF '2;xreview')" 0
 is "pane_prepare never calls thread-resolve any more (the thread is always already known)" \
    "$(awk '/^pane_prepare\(\)/{f=1} f{print} f && /^}/{exit}' "$XREVIEW" | grep -c 'thread-resolve')" 0
-is "the marker ends exactly the 24 lines of R1-R23 and the lock-name refusal (R26-R37 carry none, R34-R36 included)" \
-   "$(grep -c "Michael's call: report this and stop[.]" "$XREVIEW")" 24
+is "the marker ends exactly the 25 lines of R1-R23, the app's R5 and the lock-name refusal (R26-R37 carry none, R34-R36 included)" \
+   "$(grep -c "Michael's call: report this and stop[.]" "$XREVIEW")" 25
 
 echo "I. a repository path with a space"
 mkdir -p "$ROOT/sp ace" && cd "$ROOT/sp ace" || exit 1

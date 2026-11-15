@@ -155,7 +155,7 @@ and exits 75; a value that is not a non-negative integer exits 2. A nested runne
 
 **Execute suites, never prefix an interpreter.** Every suite carries a correct shebang (most bash;
 `chezmoi-wrapper`, `dev`, `dev-integrations`, `dev-topology`, `herdr-app`, `herdr-app-xreview`,
-`op-edit` and `wt-functions` are zsh). `./tests/x.test.sh` is always right; `bash tests/x.test.sh`
+`op-edit`, `wt-functions` and `xreview-app-pane` are zsh). `./tests/x.test.sh` is always right; `bash tests/x.test.sh`
 on a zsh suite reports bogus syntax errors that read exactly like a regression.
 
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are

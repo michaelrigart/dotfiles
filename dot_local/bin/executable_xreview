@@ -207,7 +207,8 @@ find_pane() {
   n="$(printf '%s' "$ids" | grep -c . || true)"
   case "$n" in
     1) printf '%s\n' "$ids" ;;
-    0) die "no Codex pane for $root (Michael applies the project layout, or sets XREVIEW_PANE). Michael's call: report this and stop." ;;
+    0) if [ "$FRONT_END" = app ]; then die "no Codex pane for $root (open the checkout's space with dev or wt from an app terminal, or set XREVIEW_PANE). Michael's call: report this and stop."; fi
+       die "no Codex pane for $root (Michael applies the project layout, or sets XREVIEW_PANE). Michael's call: report this and stop." ;;
     *) die "several Codex panes for $root: $(printf '%s' "$ids" | tr '\n' ' ' | sed 's/ $//'); Michael can set XREVIEW_PANE to one of them. Michael's call: report this and stop." ;;
   esac
 }
