@@ -135,13 +135,17 @@ New cases, each in its own `newworld`:
 
 ```zsh
 # No app: the stub link gone, and a copy of the helper whose pinned PATH lacks /opt/homebrew/bin,
-# where Michael's machine has the live herdr-app. The copy must differ, or the pin line moved.
+# where Michael's machine has the live herdr-app. The copy is run only once it names no
+# /opt/homebrew at all: if the pin line has changed shape, the case fails without running it.
 newworld noapp; rm $HOME/.local/bin/herdr-app
 sed 's#:/opt/homebrew/bin$##' $bin/checkout-spaces > $world/cs-noapp; chmod +x $world/cs-noapp
-check "no app: the test copy drops /opt/homebrew/bin from the pin" differs $bin/checkout-spaces $world/cs-noapp
-check "no app: check passes" $world/cs-noapp check $wt
-check "no app: list is the empty set" test "$($world/cs-noapp list $wt)" = '{"spaces":[],"terminals":[],"records":[]}'
-check "no app: nothing is called" not_did 'herdr-app'
+if grep -q /opt/homebrew $world/cs-noapp || ! differs $bin/checkout-spaces $world/cs-noapp; then
+  check "no app: the test copy drops /opt/homebrew/bin from the pin (not run)" false
+else
+  check "no app: check passes" $world/cs-noapp check $wt
+  check "no app: list is the empty set" test "$($world/cs-noapp list $wt)" = '{"spaces":[],"terminals":[],"records":[]}'
+  check "no app: nothing is called" not_did 'herdr-app'
+fi
 
 newworld down; export STUB_LS_DOWN=1
 cs check $wt >$world/out 2>&1; rc=$?
