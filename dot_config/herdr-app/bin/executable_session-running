@@ -23,6 +23,7 @@ case "$app" in
       pid=${f##*/}; pid=${pid%.json}
       kill -0 "$pid" 2>/dev/null || continue
       sid=$(jq -r '.sessionId' "$f" 2>/dev/null) || exit 2
+      case "$sid" in ''|null) exit 2 ;; esac
       [ "$sid" = "$id" ] && exit 0
     done
     exit 1 ;;
