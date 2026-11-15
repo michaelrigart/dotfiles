@@ -2842,6 +2842,7 @@ export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GS")"
 run "$REPO" wt-rm grace-stays
 rc_is 1 "a process still there after the grace period blocks removal"
 has "still in use by a running process after waiting 5 s" "the refusal says it waited"
+has "Herdr's workspaces and app spaces for this checkout are closed already" "the refusal says the app spaces are closed too"
 eq "$(wc -l < "$SLOG" | tr -d ' ')" "10" "it polled exactly ten times"
 eq "$(sort -u "$SLOG")" "0.5" "every poll sleeps 0.5 s"
 eq "$(grep -c . "$LLOG")" "11" "it scans once more after the last sleep"

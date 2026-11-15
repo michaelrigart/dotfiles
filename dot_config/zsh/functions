@@ -1133,6 +1133,18 @@ _wt_app_spaces() {
   "$helper" "$1" "$2"
 }
 
+# Both front ends' close, in the one order wt-rm and its registration path share: check the app's
+# spaces, close the TUI workspaces (which refuse first if anything else is in them), then close
+# the app's spaces. Non-zero on any refusal; <qb> is the quoted branch for the retry hint.
+_wt_close_front_ends() {
+  local dest="$1" qb="$2"
+  _wt_app_spaces check "$dest" || { print -ru2 -- "wt-rm: nothing was closed or removed."; return 1 }
+  _wt_stop_herdr_workspaces "$dest" || return 1
+  _wt_app_spaces close "$dest" || {
+    print -ru2 -- "wt-rm: the Herdr app's spaces for $dest are not all closed (its Herdr workspaces are) — nothing was removed. Retry: wt-rm $qb"
+    return 1 }
+}
+
 # Close the checkout's own Herdr workspaces, after refusing if anything else is in it.
 # Spec: docs/superpowers/specs/2026-10-01-herdr-wt-simplification-design.md §1.
 _wt_stop_herdr_workspaces() {
@@ -1545,11 +1557,7 @@ _wt_rm_registration() {
     1) ;;
     *) return 1 ;;
   esac
-  _wt_app_spaces check "$dest" || { print -ru2 -- "wt-rm: nothing was closed or removed."; return 1 }
-  _wt_stop_herdr_workspaces "$dest" || return 1
-  _wt_app_spaces close "$dest" || {
-    print -ru2 -- "wt-rm: the Herdr app's spaces for $dest are not all closed (its Herdr workspaces are) — nothing was removed. Retry: wt-rm $qb"
-    return 1 }
+  _wt_close_front_ends "$dest" "$qb" || return 1
 
   print -ru2 -- "wt-rm: $dest is already gone — finishing its removal without re-running teardown."
   print -ru2 -- "    If it was deleted by hand rather than by an interrupted wt-rm, reclaim its resources yourself."
@@ -1659,13 +1667,8 @@ wt-rm() {
       return 1
     fi
 
-    # Check the app's spaces, then close the checkout's own Herdr workspaces (refusing first if
-    # anything else is in them, spec §1), then the app's spaces (spec 2026-11-15 §3).
-    _wt_app_spaces check "$dest" || { print -ru2 -- "wt-rm: nothing was closed or removed."; return 1 }
-    _wt_stop_herdr_workspaces "$dest" || return 1
-    _wt_app_spaces close "$dest" || {
-      print -ru2 -- "wt-rm: the Herdr app's spaces for $dest are not all closed (its Herdr workspaces are) — nothing was removed. Retry: wt-rm $qb"
-      return 1 }
+    # Check the app's spaces, then close both front ends (spec 2026-11-15 §3).
+    _wt_close_front_ends "$dest" "$qb" || return 1
 
     # Check 2 — closing the workspaces can flush files into the checkout.
     _wt_clean "$dest"
@@ -1765,7 +1768,7 @@ wt-rm() {
     if [[ -n "$busy" ]]; then
       print -ru2 -- "wt-rm: $dest is still in use by a running process after waiting 5 s — removal aborted. Resources may already be reclaimed."
       for line in ${(f)busy}; do print -ru2 -- "    $line"; done
-      print -ru2 -- "    Herdr's workspaces for this checkout are closed already; these are still in it."
+      print -ru2 -- "    Herdr's workspaces and app spaces for this checkout are closed already; these are still in it."
       print -ru2 -- "    Stop them — from .worktreehook teardown if the project starts them — then retry: wt-rm $qb"
       return 1
     fi
