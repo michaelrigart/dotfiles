@@ -1,19 +1,26 @@
 #!/bin/sh
 # Stub herdr-app for tests/herdr-app.test.sh: logs every call to $STUB_LOG and answers from the fixture
 # $STUB_LS, minus the spaces a `space.close` has closed since. `ls` fails when $STUB_LS_DOWN is set.
+#   $STUB_DIR/ls-raw         when present, `ls` prints it verbatim and exits 0 (an answer that is no listing)
+#   $STUB_DIR/stuck-<id>     `space.close` of that space answers {} but the space stays listed
+#   $STUB_DIR/closefail-<id> `space.close` of that space prints {"error":"stub"} and exits 1
 echo "herdr-app $*" >> "$STUB_LOG"
 case "$1" in
   status) [ -z "$STUB_DOWN" ] || exit 1; echo '{"errors":[]}' ;;
   ls)
     [ -z "${STUB_LS_DOWN:-}" ] || exit 1
+    if [ -f "$STUB_DIR/ls-raw" ]; then cat "$STUB_DIR/ls-raw"; exit 0; fi
     jq --rawfile c "$STUB_DIR/closed" \
       '($c | split("\n")) as $x | .spaces |= map(select(.id as $i | $x | index($i) | not))' "$STUB_LS" ;;
   do)
     case "$2" in
       space.close)
-        jq -r .id <<EOT >> "$STUB_DIR/closed"
+        id=$(jq -r .id <<EOT
 $3
 EOT
+)
+        if [ -f "$STUB_DIR/closefail-$id" ]; then echo '{"error":"stub"}'; exit 1; fi
+        [ -f "$STUB_DIR/stuck-$id" ] || echo "$id" >> "$STUB_DIR/closed"
         # The app forgets nothing itself, but resume's records follow its terminals: gone
         # once the space is, so retire has to have read them first.
         rm -f "$HERDR_APP_HOME/shared.json"

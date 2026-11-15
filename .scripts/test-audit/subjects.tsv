@@ -86,6 +86,7 @@ dot_config/herdr-app/bin/executable_open-space	zsh	herdr-app	herdr-app,herdr-app
 dot_config/herdr-app/bin/executable_patch-mod	py	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_respaces	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_retire	zsh	herdr-app	herdr-app,herdr-app-xreview
+dot_config/herdr-app/bin/executable_checkout-spaces	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_session-written	sh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_wt-app	zsh	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/bin/executable_xreview-app	zsh	herdr-app-xreview	herdr-app,herdr-app-xreview
