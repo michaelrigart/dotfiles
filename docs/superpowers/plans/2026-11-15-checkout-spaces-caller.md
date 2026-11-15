@@ -6,7 +6,8 @@
 Do not run it again; its execution notes bind that run only. The task review added one guard
 beyond Task 1's text: `group_folders` also fails when the checkout's path holds a byte `lsof`
 escapes under `LC_ALL=C` (spec, Amendment step 3); the final review moved the five-second bound
-into one `bounded` helper.
+into one `bounded` helper; Codex's pre-merge review added a second: it also fails when a process
+of the group belongs to another user (one `ps -A -o uid=,pgid=` snapshot, same step).
 
 **Goal:** `checkout-spaces` check 5 stops refusing a terminal that answers `hc get` without a folder when the folders of its foreground group can be read and none is in the checkout, so `wt-rm` and Retire run from an app terminal no longer refuse on their own terminal.
 

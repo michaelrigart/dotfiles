@@ -352,6 +352,10 @@ no longer refused at once; its foreground job is read directly:
    task review:) it refuses the same way when the checkout's own path holds a byte `lsof`
    escapes: `lsof` runs under `LC_ALL=C`, where it escapes every byte outside printable ASCII
    and renders a backslash as `\\`, so no folder it names could be matched against such a path.
+   (Added in the pre-merge review:) it also refuses when a process of the group belongs to
+   another user, read from one `ps -A -o uid=,pgid=` snapshot: `lsof` cannot read such a
+   process, leaves it out and still succeeds, so its folder would go unseen. Every process of
+   the helper's own user is one `lsof` can read. (`ps` shows `nobody` as uid -2.)
 
 A terminal that answers with a folder is tested as before: hc's one foreground process stands for
 its job, as in the design above. A terminal that does not answer still refuses. Background jobs,
@@ -390,7 +394,10 @@ the main checkout's space, answering `{"state":"live","pid":<root>}`:
 - its foreground group's folders all outside the checkout: `check` passes;
 - one of them inside the checkout: `check` refuses, naming t9 and the folder;
 - `lsof` failing for the group: `check` refuses;
-- (added in the task review) a checkout path with a non-ASCII byte: `check` refuses.
+- (added in the task review) a checkout path with a non-ASCII byte: `check` refuses;
+- (added in the pre-merge review) a process of the group owned by another user, whatever
+  `lsof` listed: `check` refuses. The `ps` stub gains `-A -o uid=,pgid=`, and its fixtures
+  carry a `nobody` line (uid -2), so the real output's shape is pinned.
 
 The `nofolder` case (another terminal answering `{"state":"live"}`, no root pid) still refuses.
 Each assertion passes the revert check.
