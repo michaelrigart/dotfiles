@@ -78,6 +78,24 @@ load_set() {
 where_is() { jq -r --arg t "$1" 'first(.spaces[] as $s | $s.tabs[] as $b
   | select(any($b.terminals[]; .terminal == $t or (.sub_agents // [] | index($t)))) | "\($s.name) / \($b.name)") // "?"' <<<"$listing" }
 
+# 0 when a folder, raw or resolved, is the checkout or lies under it.
+in_checkout() { [[ $1 == "$folder" || $1 == "$folder"/* || ${1:A} == "$folder" || ${1:A} == "$folder"/* ]] }
+
+# The folder of every process in the foreground group of a terminal's top-level process, one per
+# line, for a terminal whose hc get answer names no folder of its own. Non-zero, printing
+# nothing, when the group or its folders cannot be read.
+group_folders() {
+  local pid group out
+  pid=$(jq -r '.pid | select(type == "number")' <<<"$1" 2>/dev/null) && [[ $pid == <-> ]] || return 1
+  group=$(ps -o tpgid= -p $pid 2>/dev/null) || return 1
+  group=${group//[[:space:]]/}
+  [[ $group == <-> ]] && (( group > 0 )) || return 1
+  out=$(/usr/bin/perl -e 'alarm shift; exec @ARGV' 5 lsof -b -w -a -g $group -d cwd -Fn 2>/dev/null) || return 1
+  out=$(print -r -- "$out" | sed -n 's/^n//p')
+  [[ -n $out ]] || return 1
+  print -r -- $out
+}
+
 reason() { print -ru2 -- "checkout-spaces: refusing — $*" }
 
 unreachable() {
@@ -95,7 +113,7 @@ unreachable() {
 # in the checkout refuses even when the checkout has no space of its own.
 do_check() {
   local -a reasons active editors inside missing
-  local t got name cwd hcls busy miss hcbusy foreign
+  local t got name cwd cwds hcls busy miss hcbusy foreign
   [[ -z $caller ]] || ! jq -e --arg t "$caller" 'index($t) != null' <<<"$terminals" >/dev/null \
     || reasons+=( "this terminal ($caller) is inside a space being closed; run this from another space" )
 
@@ -142,11 +160,20 @@ do_check() {
   for t in ${(f)foreign}; do
     got=$(hc_get "$t")
     cwd=$(jq -r '.foreground.cwd | select(type == "string")' <<<"$got" 2>/dev/null)
-    if [[ -z $got || -z $cwd ]]; then
-      inside+=( "cannot tell where terminal $t ($(where_is $t)) is: hc get gave no folder" )
-    elif [[ $cwd == "$folder" || $cwd == "$folder"/* || ${cwd:A} == "$folder" || ${cwd:A} == "$folder"/* ]]; then
-      inside+=( "terminal $t ($(where_is $t)) is in $cwd; cd out of the checkout or close it" )
+    if [[ -n $cwd ]]; then
+      cwds=( $cwd )
+    elif [[ -n $got ]] && cwds=( ${(f)"$(group_folders "$got")"} ) && (( $#cwds )); then
+      :
+    else
+      cwds=()
+      inside+=( "cannot tell where terminal $t ($(where_is $t)) is: hc get gave no folder${got:+ and its foreground group could not be read}" )
     fi
+    for cwd in $cwds; do
+      if in_checkout $cwd; then
+        inside+=( "terminal $t ($(where_is $t)) is in $cwd; cd out of the checkout or close it" )
+        break
+      fi
+    done
   done
   (( $#inside )) && reasons+=( $inside )
 

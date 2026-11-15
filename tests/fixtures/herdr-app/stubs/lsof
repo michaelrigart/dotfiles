@@ -1,0 +1,21 @@
+#!/bin/sh
+# Stub lsof for tests/herdr-app.test.sh, logging what it answers to $STUB_LOG; anything else is the real lsof.
+#   -g <group>   $STUB_DIR/lsof-<group>, one folder per line, answered as -Fn prints them (p, fcwd, n<folder>
+#                for each); fails without it
+group=
+prev=
+for a in "$@"; do
+  [ "$prev" = -g ] && group=$a
+  prev=$a
+done
+if [ -n "$group" ]; then
+  echo "lsof $*" >> "$STUB_LOG"
+  [ -f "$STUB_DIR/lsof-$group" ] || exit 1
+  n=0
+  while IFS= read -r dir; do
+    n=$((n + 1))
+    printf 'p%s\nfcwd\nn%s\n' "$n" "$dir"
+  done < "$STUB_DIR/lsof-$group"
+  exit 0
+fi
+exec /usr/sbin/lsof "$@"
