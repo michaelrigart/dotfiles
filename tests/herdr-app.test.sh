@@ -3,8 +3,9 @@
 # alone in the app's folder, on dot_config/herdr-app as chezmoi renders it. Run:
 # ./tests/herdr-app.test.sh
 #
-# herdr-app, hc and wt-rm are stubs (tests/fixtures/herdr-app/stubs) first on PATH; every call
-# lands in one log, so the order of calls is what is asserted. The repositories are real, in a
+# herdr-app, hc, fzf, claude and wt-rm are stubs (tests/fixtures/herdr-app/stubs) first on PATH and
+# linked into the scratch HOME's .local/bin, the first folder of the PATH open-space and
+# close-own-tab pin; every call lands in one log, so the order of calls is what is asserted. The repositories are real, in a
 # scratch folder, and so is dot_config/zsh/functions (linked into a scratch HOME): retire's checks
 # run for real. The real wt-rm is never run, and no stub touches the app.
 emulate -L zsh
@@ -44,6 +45,7 @@ before() { local a b; a=$(at "$1"); b=$(at "$2"); (( a > 0 && b > a )) }
 # --- one scratch world per case ------------------------------------------------------------
 # $main is a repository with one linked worktree $wt on branch feat, made as wt makes it.
 newworld() {
+  PATH=$PATH_BASE  # a case that shadowed programs on PATH must not reach the next world's setup
   world=$root/$1; mkdir -p $world/home/.config $world/app $world/state $world/repos/fresh
   ln -s $SRC/dot_config/zsh $world/home/.config/zsh
   # The TUI's pane command, as open-space and xreview read it.
@@ -51,7 +53,11 @@ newworld() {
   print -r -- 'codex --sandbox read-only --ask-for-approval never' > $world/home/.config/herdr/codex-pane-command
   export HOME=$world/home HERDR_APP_HOME=$world/app STUB_DIR=$world/state LOG=$world/state/log
   export STUB_LOG=$LOG STUB_LS=$world/state/ls.json
-  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm HC_TERMINAL_ID=t9
+  export RETIRE_WT_RM=$here/fixtures/herdr-app/stubs/wt-rm HC_TERMINAL_ID=t9 DEV_OPEN_SPACE=$bin/open-space
+  # open-space and close-own-tab pin their PATH, whose first folder is $HOME/.local/bin: the
+  # trusted stubs are there, whatever the caller's PATH holds.
+  mkdir -p $world/home/.local/bin
+  local s; for s in herdr-app hc fzf claude wt-rm; do ln -s $here/fixtures/herdr-app/stubs/$s $world/home/.local/bin/$s; done
   unset STUB_WTRM_RC STUB_WTRM_WARN STUB_DOWN CODEX_HOME XDG_CONFIG_HOME
   : > $LOG; : > $STUB_DIR/closed
   main=$world/repos/proj; wt=$world/repos/proj-feat
@@ -260,7 +266,7 @@ check "reopen never takes another space's record" not_did "space.new.*\(sub\|awa
 # No records at all: open-space's defaults.
 newworld norecords; export STUB_WTRM_RC=3
 print | "$bin/retire" $wt >$world/out 2>&1
-check "reopen without records uses the defaults" did 'space.new.*"argv":\["'$bin'/claude-app"\]'
+check "reopen without records starts plain claude" did 'space.new.*"argv":\["claude"\]'
 
 # --- wt-app and open-space --no-focus ------------------------------------------------------
 # sp-main is active, so it is what focus must come back to.
@@ -268,10 +274,19 @@ newworld focus
 mkdir -p $world/hooks
 ( cd $main && "$bin/wt-app" --no-focus newbranch ) >$world/out 2>&1; rc=$?
 check "wt-app --no-focus succeeds" test $rc -eq 0
-check "wt-app --no-focus makes the space" did 'space.new'
+check "wt-app --no-focus makes the space for the new checkout" did 'space.new.*"folder":"'$world'/repos/proj-newbranch"'
+check "wt-app --no-focus made the checkout through wt" test -e $world/repos/proj-newbranch/.git
 check "wt-app --no-focus gives focus back to the active space" did 'space.select {"id":"sp-main"}'
 check "the focus comes back after the space is made" before 'space.new' 'space.select {"id":"sp-main"}'
 check "the focus is the last thing that moves" test "$(grep '^herdr-app do' $LOG | tail -1)" = 'herdr-app do space.select {"id":"sp-main"}'
+
+# --prompt asks for the branch on stdin and, with nothing left to say, closes its own tab.
+newworld prompt
+( cd $main && print newbranch | "$bin/wt-app" --prompt ) >$world/out 2>&1; rc=$?
+check "wt-app --prompt succeeds" test $rc -eq 0
+check "wt-app --prompt makes the space for the entered branch" did 'space.new.*proj-newbranch'
+check "wt-app --prompt closes its own tab" did 'tab.close {"id":"tb-r","confirmed":true}'
+check "the tab closes after the space is made" before 'space.new' 'tab.close'
 
 newworld nofocus-off
 ( cd $main && "$bin/wt-app" other ) >$world/out 2>&1; rc=$?
@@ -379,42 +394,51 @@ newworld panecmd-given; rm $HOME/.config/herdr/codex-pane-command
 check "--codex-cmd does not need the pane command file" test $rc -eq 0
 check "...and runs that command" test "$(jq -r '.argv[4]' <<<"$(codex_split)")" = 'codex resume x'
 
-# Claude starts through claude-app, which hands it the hint and the settings file and passes
-# on everything else, in order. claude is a stub on PATH.
+# Claude starts as plain claude. claude-app stays only for sessions recorded with its path, and
+# passes everything on untouched. claude is a stub on PATH.
 newworld claude-app
 "$bin/open-space" --no-focus $world/repos/fresh >/dev/null 2>&1
-check "the Claude tab starts claude-app" did 'space.new.*"argv":\["'$bin'/claude-app"\]'
-# The hint's path to xreview-app must be the very command the settings put outside the sandbox
-# (an excluded command matches its text exactly), and the hint and the settings reach claude
-# first, with everything else after them in order.
-claude_args() { # <claude-app args...>: what claude was started with, one per line, in $cargs
-  : > $LOG; "$bin/claude-app" "$@" >/dev/null 2>&1; rc=$?
-  cargs=("${(@f)$(<$STUB_DIR/claude-argv)}")
-}
-claude_args --resume abc -p 'two words' --model x
+check "the Claude tab starts plain claude" did 'space.new.*"argv":\["claude"\]'
+check "...and no tab starts claude-app" not_did '"argv":\["[^"]*claude-app'
+: > $LOG; "$bin/claude-app" --x y >/dev/null 2>&1; rc=$?
 check "claude-app runs claude" test $rc -eq 0
-check "claude gets the hint first, then the settings file" test "$cargs[1]" = --append-system-prompt -a "$cargs[3]" = --settings
-check "...the settings file is the one beside the app's bin" test "$cargs[4]" = ${bin:h}/claude-settings.json
-check "...and then the arguments, in order" test "${(j: | :)cargs[5,-1]}" = '--resume | abc | -p | two words | --model | x'
-hint=$cargs[2]
-[[ $hint =~ '`(/[^` ]+) <args>`' ]] && hinted=$match[1] || hinted=
-excluded=$(jq -r '.sandbox.excludedCommands[0]' $cargs[4])
-check "the hint names an absolute path to xreview-app" test "${hinted[1]}" = / -a "${hinted:t}" = xreview-app
-check "...which is the settings' excluded command without its arguments" test "$hinted" = "${excluded% \*}"
-check "...which exists and is executable" test -x "$hinted"
-[[ $hint =~ '`(/[^` ]+) --no-focus <branch> \[start-point\]`' ]] && wthinted=$match[1] || wthinted=
-wtexcluded=$(jq -r '.sandbox.excludedCommands[1]' $cargs[4])
-check "the hint names an absolute path to wt-app, the settings' second excluded command without its arguments" \
-  test "${wthinted[1]}" = / -a "${wthinted:t}" = wt-app -a "$wthinted" = "${wtexcluded% \*}"
-check "...and wt-app is executable" test -x "$wthinted"
-claude_args
-check "claude-app with no arguments of its own adds nothing else" test ${#cargs} -eq 4 -a "$cargs[2]" = "$hint"
-# The settings file puts exactly that xreview-app form outside the sandbox; programs.json gives
-# the app's own menus the wrapper.
-check "the settings exclude xreview-app and wt-app by their full paths, with arguments" \
+check "claude-app passes its arguments and adds none" test "$(<$STUB_DIR/claude-argv)" = $'--x\ny'
+: > $LOG; "$bin/claude-app" >/dev/null 2>&1
+check "claude-app without arguments starts bare claude" test -z "$(<$STUB_DIR/claude-argv)" -a "$(grep -c '^claude-args' $LOG)" -eq 1
+# The settings file stays as it was, for the sessions that recorded it; programs.json no longer
+# overrides how the app's own menus start Claude.
+check "the settings still exclude xreview-app and wt-app by their full paths, with arguments" \
   jq -e --arg c "${bin:h}/bin/xreview-app *" --arg w "${bin:h}/bin/wt-app *" '. == {sandbox: {excludedCommands: [$c, $w]}}' ${bin:h}/claude-settings.json >/dev/null
-check "programs.json starts Claude through claude-app" \
-  jq -e --arg c "$bin/claude-app" '. == {programs: {claude: {run: [$c]}}}' ${bin:h}/programs.json >/dev/null
+check "programs.json has no claude override" \
+  jq -e '.programs | has("claude") | not' ${bin:h}/programs.json >/dev/null
+
+# --- the pinned PATH -------------------------------------------------------------------------
+# open-space and close-own-tab run unsandboxed after the caller's PATH has served a repository's
+# hooks, so a folder first on that PATH (a mise _.path the sandbox can write) must reach neither
+# herdr-app nor jq: the trusted stubs are in $HOME/.local/bin, the shadows only touch a marker.
+shadowed_world() {
+  newworld $1; mkdir -p $world/evil
+  local c; for c in herdr-app jq; do
+    printf '#!/bin/sh\ntouch %s/marker\nexit 1\n' $world >| $world/evil/$c; chmod +x $world/evil/$c
+  done
+  export PATH=$world/evil:$PATH_BASE
+}
+shadowed_world pinned-open
+"$bin/open-space" --no-focus $world/repos/fresh >/dev/null 2>&1; rc=$?
+check "open-space succeeds with herdr-app and jq shadowed on the caller's PATH" test $rc -eq 0
+check "...and made the space through the trusted herdr-app" did 'space.new'
+check "...and split the Codex pane" did 'pane.split'
+check "...and never ran a shadow" test ! -e $world/marker
+shadowed_world pinned-pick; git init -q $world/repos/fresh
+( cd $world/repos/fresh && "$bin/open-space" --pick ) >/dev/null 2>&1; rc=$?
+check "open-space --pick succeeds with the PATH shadowed (git, awk and fzf from the pinned one)" test $rc -eq 0
+check "...made the space and closed its own tab" test "$(grep -c 'space.new' $LOG)" -eq 1 -a "$(grep -c 'tab.close' $LOG)" -eq 1
+check "...and never ran a shadow" test ! -e $world/marker
+shadowed_world pinned-close
+"$bin/close-own-tab" >/dev/null 2>&1; rc=$?
+check "close-own-tab succeeds with herdr-app and jq shadowed on the caller's PATH" test $rc -eq 0
+check "...and closed the tab through the trusted herdr-app" did 'tab.close {"id":"tb-r","confirmed":true}'
+check "...and never ran a shadow" test ! -e $world/marker
 
 # --- the helpers -----------------------------------------------------------------------------
 newworld helpers
