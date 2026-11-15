@@ -221,6 +221,16 @@
               "content": {
                 "mod": "respaces-guard"
               }
+            },
+            {
+              "id": "popup",
+              "type": "block",
+              "size": {
+                "px": 0
+              },
+              "content": {
+                "mod": "popup"
+              }
             }
           ]
         }

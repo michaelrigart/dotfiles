@@ -145,6 +145,7 @@ tests/
 !.config/herdr-app/mods/resume
 !.config/herdr-app/mods/usage
 !.config/herdr-app/mods/respaces-guard
+!.config/herdr-app/mods/popup
 .config/herdr-app/mods/*/gpui-kit.d.ts
 .config/herdr-app/mods/*/jsconfig.json
 
