@@ -1,13 +1,14 @@
 #!/bin/zsh
-# Tests for bin/retire and for wt-app / open-space --no-focus, and for what `chezmoi add` leaves
-# alone in the app's folder, on dot_config/herdr-app as chezmoi renders it. Run:
+# Tests for bin/checkout-spaces, bin/retire, wt-app and open-space (--no-focus), and for what
+# `chezmoi add` leaves alone in the app's folder, on dot_config/herdr-app as chezmoi renders it. Run:
 # ./tests/herdr-app.test.sh
 #
 # herdr-app, hc, fzf, claude and wt-rm are stubs (tests/fixtures/herdr-app/stubs) first on PATH and
 # linked into the scratch HOME's .local/bin, the first folder of the PATH open-space and
 # close-own-tab pin; every call lands in one log, so the order of calls is what is asserted. The repositories are real, in a
-# scratch folder, and so is dot_config/zsh/functions (linked into a scratch HOME): retire's checks
-# run for real. The real wt-rm is never run, and no stub touches the app.
+# scratch folder, and so is dot_config/zsh/functions (linked into a scratch HOME): retire's own
+# checks run for real, and checkout-spaces runs for real against the stubs. The real wt-rm is never
+# run, and no stub touches the app.
 emulate -L zsh
 setopt no_unset pipe_fail
 
@@ -191,6 +192,10 @@ newworld unaskable-foreign; print x > $STUB_DIR/fail-tNEW1
 cs check $wt >$world/out 2>&1; rc=$?
 check "another space's terminal that cannot be asked about refuses" test $rc -eq 1
 check "...and is named" grep -q 'tNEW1' $world/out
+newworld nofolder; print '{"state":"live"}' > $STUB_DIR/get-tNEW1.json
+cs check $wt >$world/out 2>&1; rc=$?
+check "another space's terminal that answers without a folder refuses" test $rc -eq 1
+check "...and is named" grep -q 'tNEW1.*gave no folder' $world/out
 
 # Unsaved buffers die with the terminal.
 for editor in nvim vim; do
@@ -211,7 +216,6 @@ if grep -q /opt/homebrew $world/cs-noapp || ! differs $bin/checkout-spaces $worl
 else
   check "no app: check passes" $world/cs-noapp check $wt
   check "no app: list is the empty set" test "$($world/cs-noapp list $wt)" = '{"spaces":[],"terminals":[],"records":[]}'
-  check "no app: nothing is called" not_did 'herdr-app'
 fi
 
 newworld down; export STUB_LS_DOWN=1
@@ -238,6 +242,11 @@ newworld badrecords; print 'not json' > $HERDR_APP_HOME/shared.json
 cs close $wt >$world/out 2>$world/err; rc=$?
 check "unreadable records still close" test $rc -eq 0
 check "...and name the agents without a record" grep -q 't1' $world/err
+
+newworld onerecord; records cid-claude cid-codex; jq 'del(.["resume.sessions"].t2)' $HERDR_APP_HOME/shared.json > $world/sh.new; mv $world/sh.new $HERDR_APP_HOME/shared.json
+cs close $wt >$world/out 2>$world/err; rc=$?
+check "a readable file lacking an agent's record still closes" test $rc -eq 0
+check "...and the warning names only the agent without one" grep -q 'no resume record for codex (t2);' $world/err
 
 newworld stuck; : > $STUB_DIR/stuck-sp-wt
 cs close $wt >/dev/null 2>&1; rc=$?

@@ -22,7 +22,7 @@ EOT
         if [ -f "$STUB_DIR/closefail-$id" ]; then echo '{"error":"stub"}'; exit 1; fi
         [ -f "$STUB_DIR/stuck-$id" ] || echo "$id" >> "$STUB_DIR/closed"
         # The app forgets nothing itself, but resume's records follow its terminals: gone
-        # once the space is, so retire has to have read them first.
+        # once the space is, so checkout-spaces has to have read them first.
         rm -f "$HERDR_APP_HOME/shared.json"
         echo '{}' ;;
       space.new) echo '{"space":"spNEW","tab":"tbNEW","terminal":"tNEW1"}' ;;
