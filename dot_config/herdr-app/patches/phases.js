@@ -68,6 +68,10 @@ function glCi(status) {
   return s === "success" ? "ok" : s === "failed" ? "fail" : GL_RUN.includes(s) ? "run" : "";
 }
 
+// How a badge reads, on a row and in a folded repository's summary of the rows it hides.
+const tones = (t) => ({ draft: t.ansi11, review: t.ansi3, merged: t.dim, "not wt": t.blocked });
+const marks = (t) => ({ ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["◐", t.ansi3] });
+
 export class Phases {
   // `cx`: the view's, for its timer; every later callback gets its own.
   constructor(cx) {
@@ -282,25 +286,40 @@ export class Phases {
   fold(rows, rail) {
     this.kids = {};
     this.owner = {};
+    this.under = {};
     let last = null;
     for (const r of rows) {
       if (!r.tree) { last = r; continue; }
       this.kids[r.g.repo] = (this.kids[r.g.repo] ?? 0) + 1;
+      (this.under[r.g.repo] ??= []).push(r.w);
       if (last) this.owner[r.g.repo] = last.w.id;
     }
     return rail ? rows : rows.filter((r) => !r.tree || !this.hidden.has(r.g.repo));
   }
 
+  // The most urgent thing among a folded repository's hidden worktrees, as [glyph, colour,
+  // what it says], or null: CI failed, then a review waiting, then the space you are in.
+  urgent(repo, t) {
+    const hidden = this.under[repo] ?? [];
+    const by = hidden.map((w) => this.by[w.id]).filter(Boolean);
+    if (by.some((r) => r.ci === "fail")) return [...marks(t).fail.slice(0, 2), "A hidden worktree's CI failed"];
+    if (by.some((r) => r.phase === "review")) return ["review", tones(t).review, "A hidden worktree waits for review"];
+    if (hidden.some((w) => w.active)) return ["◆", t.accent, "The space you are in is hidden"];
+    return null;
+  }
+
   // The fold toggle on the row a repository's worktrees follow: a chevron, and how many are
-  // hidden while folded.
+  // hidden while folded, with the most urgent state among them.
   toggle(id, t) {
     const repo = Object.keys(this.owner).find((k) => this.owner[k] === id);
     const n = this.kids[repo];
     if (!n) return [];
     const folded = this.hidden.has(repo);
+    const flag = folded ? this.urgent(repo, t) : null;
     return [h_flex().id(`fold-${id}`).flex_none().gap(4).px(4).items_center().rounded(4).text_size(11.5).text_color(t.dim)
       .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .tooltip(folded ? `Show ${n} worktree${n === 1 ? "" : "s"}` : "Hide worktrees")
+      .tooltip(folded ? `Show ${n} worktree${n === 1 ? "" : "s"}${flag ? `. ${flag[2]}` : ""}` : "Hide worktrees")
+      .when(Boolean(flag), (el) => el.child(div().text_color(flag[1]).child(flag[0])))
       .on_click((_e, cx) => {
         cx.stop_propagation();
         folded ? this.hidden.delete(repo) : this.hidden.add(repo);
@@ -331,8 +350,8 @@ export class Phases {
     }
     // Active (no MR yet) says nothing: nearly every worktree is, and ● is the machine status's.
     if (r.phase === "active") return [];
-    const tone = { draft: t.ansi11, review: t.ansi3, merged: t.dim, "not wt": t.blocked };
-    const ci = { ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["◐", t.ansi3] }[r.ci];
+    const tone = tones(t);
+    const ci = marks(t)[r.ci];
     const text = r.ref ? `${r.phase} ${r.ref}` : r.phase;
     return [h_flex().flex_none().gap(5).items_center().text_size(11.5)
       .child(div().text_color(tone[r.phase]).child(text))
