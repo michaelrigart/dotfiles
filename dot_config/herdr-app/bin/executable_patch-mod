@@ -17,13 +17,19 @@ EDITS = {
         # 2. Start it with the view.
         ('    cx.timer.every(250, (cx) => this.checkNew(cx));\n',
          '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n'),
-        # 3. End each row on its badge.
-        ('          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),\n',
-         '          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1())\n'
-         '          .children(this.phases.badge(w.id, t)),\n'),
+        # 3. A worktree under its repository is labelled by its branch, and each row ends on its
+        #    badge. gitTail drops a branch equal to the name it is given, so it is given the branch.
+        ('.text_color(t.foreground).child(w.name))\n'
+         '          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),\n',
+         '.text_color(t.foreground).child(this.phases.label(w, g, tree, t)))\n'
+         '          .child(g ? this.gitTail(g, tree, this.phases.asBranch(w, g, tree) ?? w.name, t) : div().flex_1())\n'
+         '          .children(this.phases.end(w.id, t)),\n'),
         # 4. A right-click opens the menu with the worktree items.
         ('openOverlay({ mod: "menu", kind: "popup"',
          'openOverlay({ mod: "michael-menu", kind: "popup"'),
+        # 5. A repository's worktree rows fold away (the toggle is in the row's end, above).
+        ('    const rows = this.ordered();\n',
+         '    const rows = this.phases.fold(this.ordered(), collapsed);\n'),
     ],
     "menu": [
         # 1. Load the worktree actions.

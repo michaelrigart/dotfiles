@@ -15,7 +15,7 @@
 //     or for two minutes after a push, otherwise every 60 s;
 //   - local state at least every 60 s, for edits that touch nothing under .git.
 
-import { div } from "gpui-kit";
+import { div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, exec, home, appHome, notify, nextCommand, watchFolder } from "herdr";
 
@@ -80,6 +80,9 @@ export class Phases {
     this.dirty = false;
     this.seen = "";
     this.at = 0;
+    this.kids = {}; // repo -> how many worktree spaces sit under it, folded or not
+    this.owner = {}; // repo -> the space whose row they follow (and which carries the fold toggle)
+    try { this.hidden = new Set(JSON.parse(localStorage.getItem("repos.folded") ?? "[]")); } catch { this.hidden = new Set(); }
     cx.timer.every(TICK, (cx) => this.tick(cx));
     this.tick(cx);
     // "michael-spaces.refresh" in keys.json: look everything up now, whatever the TTL. For
@@ -249,6 +252,69 @@ export class Phases {
       mrs[m.sourceBranch] = { state: "open", ref: `!${m.iid}`, draft: m.draft === true, ci: glCi(m.pipelines?.nodes?.[0]?.status) };
     }
     return mrs;
+  }
+
+  // A worktree row under its repository: the branch is the label when the space still has the
+  // name wt gave it (bin/open-space names it after the checkout folder, `<repo>-<branch with /
+  // as ->`), so the name and the branch are not both shown. A renamed space keeps its name.
+  // Returns the branch, or null to leave the row as it is.
+  asBranch(w, g, tree) {
+    if (!tree || !g?.branch || g.branch === "(detached)") return null;
+    const name = w.name.toLowerCase();
+    const automatic = [g.branch, `${g.name}-${g.branch.replaceAll("/", "-")}`];
+    return automatic.some((a) => a.toLowerCase() === name) ? g.branch : null;
+  }
+
+  // The row's name: the branch with its type (fix/, feat/, ...) dimmed, or the space's name.
+  label(w, g, tree, t) {
+    const branch = this.asBranch(w, g, tree);
+    if (!branch) return w.name;
+    const cut = branch.indexOf("/") + 1;
+    if (!cut) return branch;
+    return h_flex().min_w(0)
+      .child(div().flex_none().text_color(t.dim).child(branch.slice(0, cut)))
+      .child(div().min_w(0).truncate().child(branch.slice(cut)));
+  }
+
+  // The rows the list draws: a folded repository's worktree spaces are left out. The narrow
+  // rail has no toggle, so it keeps them. Also notes, per repository, how many worktrees
+  // follow which row.
+  fold(rows, rail) {
+    this.kids = {};
+    this.owner = {};
+    let last = null;
+    for (const r of rows) {
+      if (!r.tree) { last = r; continue; }
+      this.kids[r.g.repo] = (this.kids[r.g.repo] ?? 0) + 1;
+      if (last) this.owner[r.g.repo] = last.w.id;
+    }
+    return rail ? rows : rows.filter((r) => !r.tree || !this.hidden.has(r.g.repo));
+  }
+
+  // The fold toggle on the row a repository's worktrees follow: a chevron, and how many are
+  // hidden while folded.
+  toggle(id, t) {
+    const repo = Object.keys(this.owner).find((k) => this.owner[k] === id);
+    const n = this.kids[repo];
+    if (!n) return [];
+    const folded = this.hidden.has(repo);
+    return [h_flex().id(`fold-${id}`).flex_none().gap(4).px(4).items_center().rounded(4).text_size(11.5).text_color(t.dim)
+      .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(folded ? `Show ${n} worktree${n === 1 ? "" : "s"}` : "Hide worktrees")
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        folded ? this.hidden.delete(repo) : this.hidden.add(repo);
+        try { localStorage.setItem("repos.folded", JSON.stringify([...this.hidden])); } catch {}
+        cx.notify();
+      })
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .when(folded, (el) => el.child(String(n)))
+      .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none())];
+  }
+
+  // Everything a space's row ends on.
+  end(id, t) {
+    return [...this.badge(id, t), ...this.toggle(id, t)];
   }
 
   // What a space's row ends on: nothing, or one element. Active is a dot: nearly every
