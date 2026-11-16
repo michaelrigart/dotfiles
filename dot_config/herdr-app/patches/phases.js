@@ -317,8 +317,7 @@ export class Phases {
     return [...this.badge(id, t), ...this.toggle(id, t)];
   }
 
-  // What a space's row ends on: nothing, or one element. Active is a dot: nearly every
-  // worktree is, and the row has little room.
+  // What a space's row ends on: nothing, or one element.
   badge(id, t) {
     const r = this.by[id];
     if (!r) return [];
@@ -330,9 +329,11 @@ export class Phases {
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .child("gone")];
     }
-    const tone = { active: t.ansi2, draft: t.ansi11, review: t.ansi3, merged: t.dim, "not wt": t.blocked };
-    const ci = { ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["●", t.ansi3] }[r.ci];
-    const text = r.phase === "active" ? "●" : r.ref ? `${r.phase} ${r.ref}` : r.phase;
+    // Active (no MR yet) says nothing: nearly every worktree is, and ● is the machine status's.
+    if (r.phase === "active") return [];
+    const tone = { draft: t.ansi11, review: t.ansi3, merged: t.dim, "not wt": t.blocked };
+    const ci = { ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["◐", t.ansi3] }[r.ci];
+    const text = r.ref ? `${r.phase} ${r.ref}` : r.phase;
     return [h_flex().flex_none().gap(5).items_center().text_size(11.5)
       .child(div().text_color(tone[r.phase]).child(text))
       .when(Boolean(ci), (el) => el.child(div().text_color(ci[1]).child(ci[0])))];
