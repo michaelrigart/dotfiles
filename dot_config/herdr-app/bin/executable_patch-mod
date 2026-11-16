@@ -24,7 +24,7 @@ EDITS = {
          '          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),\n',
          '.text_color(t.foreground).child(this.rows.label(w, g, tree, t)))\n'
          '          .child(g ? this.rows.tail(this, w, g, tree, t) : div().flex_1())\n'
-         '          .children(this.rows.end(w.id, t)),\n'),
+         '          .children(this.rows.end(w, t)),\n'),
         # 4. A right-click opens the menu with the worktree items.
         ('openOverlay({ mod: "menu", kind: "popup"',
          'openOverlay({ mod: "michael-menu", kind: "popup"'),

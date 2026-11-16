@@ -106,15 +106,30 @@ export class Rows {
     return out;
   }
 
-  // The most urgent thing among a folded repository's hidden worktrees, as [glyph, colour,
-  // what it says], or null: CI failed, then a review waiting, then the space you are in.
+  // An agent in the space waits for you ("blocked": the same state the Agents list calls
+  // "Needs you"). The app keeps it on the space, so this reads nothing more.
+  waiting(w) {
+    return w.status === "blocked";
+  }
+
+  // What needs you in a space: [glyph, colour, what it says], red like a failed CI but a "!".
+  waitingMark(t) {
+    return ["!", t.blocked, "An agent is waiting for you"];
+  }
+
+  // What stands out among a folded repository's hidden worktrees, as [glyph, colour, what it
+  // says] marks, most urgent first: what needs you (an agent waiting, CI failed), then a review
+  // waiting, then the space you are in. Empty when none.
   urgent(repo, t) {
     const hidden = this.under[repo] ?? [];
     const by = hidden.map((w) => this.phases.by[w.id]).filter(Boolean);
-    if (by.some((r) => r.ci === "fail")) return [...marks(t).fail.slice(0, 2), "A hidden worktree's CI failed"];
-    if (by.some((r) => r.phase === "review")) return ["review", tones(t).review, "A hidden worktree waits for review"];
-    if (hidden.some((w) => w.active)) return ["◆", t.foreground, "The space you are in is hidden"];
-    return null;
+    const needs = [];
+    if (hidden.some((w) => this.waiting(w))) needs.push(this.waitingMark(t));
+    if (by.some((r) => r.ci === "fail")) needs.push([...marks(t).fail.slice(0, 2), "A hidden worktree's CI failed"]);
+    if (needs.length) return needs;
+    if (by.some((r) => r.phase === "review")) return [["review", tones(t).review, "A hidden worktree waits for review"]];
+    if (hidden.some((w) => w.active)) return [["◆", t.foreground, "The space you are in is hidden"]];
+    return [];
   }
 
   // The fold toggle on the row a repository's worktrees follow: a chevron, and how many are
@@ -124,11 +139,11 @@ export class Rows {
     const n = this.kids[repo];
     if (!n) return [];
     const folded = this.hidden.has(repo);
-    const flag = folded ? this.urgent(repo, t) : null;
+    const flags = folded ? this.urgent(repo, t) : [];
     return [h_flex().id(`fold-${id}`).flex_none().gap(4).px(4).items_center().rounded(4).text_size(11.5).text_color(t.dim)
       .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .tooltip(folded ? `Show ${n} worktree${n === 1 ? "" : "s"}${flag ? `. ${flag[2]}` : ""}` : "Hide worktrees")
-      .when(Boolean(flag), (el) => el.child(div().text_color(flag[1]).child(flag[0])))
+      .tooltip(folded ? `Show ${n} worktree${n === 1 ? "" : "s"}${flags.map((f) => `. ${f[2]}`).join("")}` : "Hide worktrees")
+      .children(flags.map((f) => div().text_color(f[1]).child(f[0])))
       .on_click((_e, cx) => {
         cx.stop_propagation();
         folded ? this.hidden.delete(repo) : this.hidden.add(repo);
@@ -140,8 +155,14 @@ export class Rows {
       .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none())];
   }
 
-  // Everything a space's row ends on: its phase badge, and the fold toggle on a repository's row.
-  end(id, t) {
-    return [...this.phases.badge(id, t), ...this.toggle(id, t)];
+  // Everything a space's row ends on: a "!" when an agent in it waits for you, its phase badge,
+  // and the fold toggle on a repository's row.
+  end(w, t) {
+    const mark = this.waiting(w) ? this.waitingMark(t) : null;
+    return [
+      ...(mark ? [div().id(`waiting-${w.id}`).flex_none().text_size(11.5).font_bold().text_color(mark[1]).tooltip(mark[2]).child(mark[0])] : []),
+      ...this.phases.badge(w.id, t),
+      ...this.toggle(w.id, t),
+    ];
   }
 }
