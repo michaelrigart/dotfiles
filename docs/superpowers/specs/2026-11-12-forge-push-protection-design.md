@@ -965,18 +965,26 @@ Counts only; no repository is named.
   skipped. The 21: 14 GitHub repositories of another owner, 5 GitLab projects (3 not his to
   administer, 2 shared), 1 Azure repository and the self-hosted one. The 43 GitHub rows read ok
   with `main-merge-owner` judged.
+- **Outstanding** on 2026-11-15: step 14's loop (the `update` rulesets and the secret list of
+  section 2.1) and step 15 (a new agent session after an apply, which also brings it
+  `GITLAB_TOKEN`).
+- **Steps 18 and 19**: merged on 2026-11-15 as `7aacfd0`, pulled and applied; the deployed guard
+  helper and shell guard equal main's source. `./tests/run.sh git-forge-guard` on main's tree
+  (2026-11-16): 856/856. The check from the main checkout: step 14 below.
 - **Step 14** (his terminal, after merge 3 was merged and applied): the check from the
   main checkout exits 0 with the counts of step 17. The loop reported a repository carrying two
   `update` rulesets: the second is a tag ruleset (release tags; deletion, non-fast-forward and
   update, no bypass), not drift. The loop selected every ruleset carrying `update`, whatever its
   target, and now selects branch rulesets only (the check reads only the default branch's rules,
-  so it was never misled). Secrets: two, on two
-  repositories. One is a package registry's API key, not a GitHub credential. The other is a
-  fine-grained token of his, limited to the repository of a package tap (Contents write there,
-  Metadata read): that repository has no rulesets and no checkout under `~/Code`, so it is outside
-  the scope, and the token cannot merge into a repository in scope. The condition of section 2.1
-  holds. A workflow on a branch an agent pushes could still use the token to change the tap's
-  formula, which is outside this spec.
+  so it was never misled). Secrets: two, on two repositories. One is a package registry's API key,
+  not a GitHub credential. The other is a fine-grained token of his, limited to the repository of
+  a package tap (Contents write there, Metadata read): that repository has no rulesets and no
+  checkout under `~/Code`, so it is outside the scope, and the token cannot merge into a
+  repository in scope. Read by their reason (a workflow using the credential would merge as him),
+  the condition of section 2.1 and section 6's "every ruleset carrying `update`" mean Contents
+  write on a repository in scope and every branch ruleset; so read, both hold, and the steps file
+  now words them so. A workflow on a branch an agent pushes could still use the token to change
+  the tap's formula: a residual beside the one in "Residual", outside this spec.
 - **Step 15** (a new agent session in the main checkout, sandboxed, 2026-11-16): `live-agent-auth`
   2/2 with `AUTH=READY`, `GITLAB_SSH=READY`, no `GITHUB_SSH` key, exit 0; the session's SSH
   transport greets him on GitHub; `gh auth status` names `GH_TOKEN` as the active account's source
@@ -988,6 +996,7 @@ Counts only; no repository is named.
   77 ok, 0 drift, 2 unreadable, 21 excepted. Its GitHub rows read ok, where his steps expected
   `unreadable`: GitHub shows a ruleset's bypass list to a token of an admin's account without the
   Administration permission, so the session's check judges `main-merge-owner` in full (test 8's
-  "admins only" is the account, not the token). The 2 unreadable are Azure: `az` fails from the
+  "admins only" is the account, not the token, and section 3's empty list shows from a session
+  too). The 2 unreadable are Azure: `az` fails from the
   session with a traceback (earlier sessions: a hang) and answers from his terminal, which is why
   the exit-0 proof comes from there. The session reads his exceptions file (21 excepted).

@@ -5,7 +5,7 @@
 **Spec:** `docs/superpowers/specs/2026-11-12-forge-push-protection-design.md` (sections 1.1, 2, 3, 6 and 7, and "Revision 2", which you signed on 2026-11-14).
 **Plan:** `docs/superpowers/plans/2026-11-12-forge-push-protection-merge-1.md` (Task 9, "Michael's steps"), rewritten here for revision 2.
 
-**Where things stand (2026-11-16).** Merges 1 to 3 are merged and applied (2026-11-13, 2026-11-14 and 2026-11-15; merge 3 is pull request #25). GitHub is done: the rulesets are on every repository in scope, `main-merge-owner` included (all 43 repositories, since 2026-11-14). GitLab and Azure DevOps are done (steps 2 to 6, 2026-11-15): 34 GitLab projects protected, the rest and one Azure repository in your exceptions file. Steps 14 to 19 are done; the spec's Implementation notes hold the counts and results. Only step 20 is left, once the pull request that records steps 14 and 15 is merged.
+**Where things stand (2026-11-16).** Merges 1 to 3 are merged and applied (2026-11-13, 2026-11-14 and 2026-11-15; merge 3 is pull request #25). GitHub is done: the rulesets are on every repository in scope, `main-merge-owner` included (all 43 repositories, since 2026-11-14). GitLab and Azure DevOps are done (steps 2 to 6, 2026-11-15): 34 GitLab projects protected, the rest and one Azure repository in your exceptions file. Steps 14 to 19 are done; the spec's Implementation notes hold the counts and results. Only step 20 is left, once the pull request that records steps 14 to 19 is merged.
 
 **Steps 7 to 13 are done.** They stay below as the reference and the rollback. The check on `main` now prints the GitHub target of revision 2; do not run a printed GitHub POST again unless a row reads `drift`.
 
@@ -947,7 +947,7 @@ Start a **new** Claude Code session after step 10's apply (the tokens are read f
 ./tests/run.sh live-agent-auth
 ```
 
-Expected: `AUTH=READY`, `GITLAB_SSH=READY`, exit 0, and no `GITHUB_SSH` key: merge 2 removes that probe. **UNVERIFIED:** the suite's exact keys after merge 2; the line's report lists them. `KEY_REJECTED` for GitLab means the sandbox key was refused.
+Expected: `AUTH=READY`, `GITLAB_SSH=READY`, exit 0, and no `GITHUB_SSH` key: merge 2 removes that probe. Measured on 2026-11-16: those two keys, 2/2. `KEY_REJECTED` for GitLab means the sandbox key was refused.
 
 The session's own transport (the wrapper and configuration git uses, not a bare `ssh`):
 
@@ -997,7 +997,7 @@ The check as the agent:
 ~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"
 ```
 
-Expected (measured on 2026-11-16): the GitLab and GitHub rows `ok` or `excepted`. GitHub shows a ruleset's bypass list to a token of an admin's account even without the Administration permission, so the session's check judges `main-merge-owner` in full. The Azure rows read `unreadable`, because `az` fails from a session (a traceback on 2026-11-16, a hang before), so the exit status is 1 and the exit-0 proof of step 14 comes from your own terminal. The session reads your exceptions file: its `excepted` count matches the file's lines.
+Expected (measured on 2026-11-16): the GitLab and GitHub rows `ok` or `excepted`. GitHub shows a ruleset's bypass list to a token of an admin's account even without the Administration permission, so the session's check judges `main-merge-owner` in full. The Azure rows read `unreadable`, because `az` fails from a session (a traceback on 2026-11-16, a hang before), so the exit status is 1 and the exit-0 proof of step 14 comes from your own terminal. The session reads your exceptions file: its `excepted` count equals the number of URL lines in the file.
 
 If it fails: a GitHub row `unreadable` with `HTTP 403` or `404` for the agent means the token cannot read that repository's rules, or the repository is outside the token's selection (step 10).
 
@@ -1124,5 +1124,5 @@ Recorded so you can overrule any of them; none is a code change in merge 2.
 
 - **Merge 3** (group E): deleting the hidden-spelling machinery, the default-branch push going from ask to deny, the check's `main-merge-owner` and the `global.md` wording (section 4). Merged on 2026-11-15 (pull request #25) and applied; steps 14 to 19 are done, step 20 remains.
 - **A private in-scope repository on Free** (step 8) is made public, covered by Pro or taken out of agent work before merge 3.
-- **The line's checkout** stays until the pull request recording steps 14 and 15 is merged; then step 20, `wt-rm feat/forge-push-protection`.
+- **The line's checkout** stays until the pull request recording steps 14 to 19 is merged; then step 20, `wt-rm feat/forge-push-protection`.
 - If your steps have not happened when merge 2 is done, the line stops there and is reported as waiting on you.
