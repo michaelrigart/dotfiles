@@ -12,6 +12,13 @@
 # Last, with the prompt drawn, the functions file changes on disk; Enter on `f` must print the
 # reload line (the preexec hook) and only then the new output.
 #
+# Then a TERM this machine has no terminfo entry for, as an ssh login from Ghostty brings
+# (xterm-ghostty without Ghostty's TERMINFO). The login shell (Homebrew zsh) starts with a
+# startup file that sources the SOURCE zshenv, as dot_zshrc does first, and recolours the line
+# on every key, as zsh-syntax-highlighting does. Typed text must read back once on the line as
+# a terminal shows it; the line editor without a terminfo entry repeats it ("eexxiit"). A local
+# Ghostty tab's TERM, found through its TERMINFO, must be left alone.
+#
 # Needs a pseudo-terminal, which the sandbox does not provide; there it exits 2.
 #   ./tests/zshrc.test.sh
 # test-requires: unsandboxed  # opens a pseudo-terminal; the sandbox has no pty devices
@@ -19,7 +26,14 @@ set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 ZSHRC="$SRC/dot_zshrc"
 [ -f "$ZSHRC" ] || { echo "missing script under test: $ZSHRC" >&2; exit 2; }
+ZSHENV="$SRC/dot_config/zsh/zshenv"
+[ -f "$ZSHENV" ] || { echo "missing script under test: $ZSHENV" >&2; exit 2; }
 [ -x /bin/zsh ] || { echo "no /bin/zsh" >&2; exit 2; }
+LOGIN_ZSH=/opt/homebrew/bin/zsh
+[ -x "$LOGIN_ZSH" ] || { echo "no Homebrew zsh at $LOGIN_ZSH, the login shell provision.sh sets" >&2; exit 2; }
+GHOSTTY_TI=/Applications/Ghostty.app/Contents/Resources/terminfo
+ls "$GHOSTTY_TI"/*/xterm-ghostty >/dev/null 2>&1 ||
+  { echo "INCONCLUSIVE: no xterm-ghostty entry under $GHOSTTY_TI (the Brewfile installs Ghostty)" >&2; exit 2; }
 PY="$(command -v python3)" || { echo "no python3" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
@@ -123,6 +137,100 @@ case "$result" in
     is "and the command list still runs to the end" "$bdone" yes
     is "a changed functions file prints the reload line on the next command" "$rl" yes
     is "and the reload line comes before the new function's output" "$rlorder" yes ;;
+esac
+
+# One line per TERM: "<the prompt line as shown after typing exit>|<TERM>|<TERMINFO_DIRS>",
+# or a diagnostic starting with "error".
+terms="$("$PY" -I - "$LOGIN_ZSH" "$ZSHENV" "$T" "$GHOSTTY_TI" <<'PY' 2>"$T/py-term.err"
+import os, pty, re, select, sys, time
+zsh, zshenv, tmp, ghostty = sys.argv[1:5]
+rc = tmp + "/term-rc"
+os.makedirs(rc, exist_ok=True)
+with open(rc + "/.zshrc", "w") as fh:
+    fh.write('source "%s"\n' % zshenv
+             + 'zle-line-pre-redraw() { region_highlight=("0 $#BUFFER fg=green") }\n'
+             + "zle -N zle-line-pre-redraw\nPS1='P> '\n")
+
+def read_until(fd, marker, timeout=5.0):
+    buf, end = b"", time.time() + timeout
+    while time.time() < end:
+        if marker is not None and marker in buf:
+            return buf
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+    return buf
+
+def shown(out, prompt=b"P> "):
+    # The prompt line as a terminal shows it: text overwrites at the cursor, CR, BS and the
+    # CSI cursor moves and line erase act, and every other escape draws nothing.
+    line, col, i = list(prompt), len(prompt), 0
+    while i < len(out):
+        m = re.match(rb"\x1b\[([0-9;?]*)([@-~])", out[i:])
+        if m:
+            n = int(m.group(1)) if m.group(1).isdigit() else 1
+            if m.group(2) == b"D": col = max(0, col - n)
+            elif m.group(2) == b"C": col += n
+            elif m.group(2) == b"K": del line[col:]
+            i += m.end()
+            continue
+        c = out[i]
+        i += 1
+        if c == 0x1b: i += 1
+        elif c == 0x0d: col = 0
+        elif c == 0x08: col = max(0, col - 1)
+        elif c >= 0x20:
+            line += [0x20] * (col + 1 - len(line))
+            line[col] = c
+            col += 1
+    return bytes(line).decode(errors="replace")
+
+def run(term, extra):
+    env = dict({"HOME": tmp + "/home", "ZDOTDIR": rc, "TERM": term, "PATH": "/usr/bin:/bin"}, **extra)
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execve(zsh, ["zsh", "-i"], env)
+    try:
+        out = read_until(fd, b"P> ")
+        if b"P> " not in out:
+            return "error: no prompt with TERM=%s" % term
+        out = out[out.rfind(b"P> ") + 3:]
+        for ch in b"exit":
+            os.write(fd, bytes([ch]))
+            out += read_until(fd, bytes([ch]))
+        out += read_until(fd, None, 0.3)
+        os.write(fd, b'\x15print -r -- "S-$((1+1))|$TERM|${TERMINFO_DIRS-unset}|E-$((2+2))"\r')
+        m = re.search(rb"S-2\|(.*?)\|(.*?)\|E-4", read_until(fd, b"E-4"))
+        if not m:
+            return "error: no state line with TERM=%s" % term
+        return "%s|%s|%s" % (shown(out), m.group(1).decode(), m.group(2).decode())
+    finally:
+        # Close the master before reaping: a killed zsh with unread output otherwise waits in
+        # its tty close for the output to drain, and waitpid with it.
+        os.kill(pid, 9)
+        os.close(fd)
+        os.waitpid(pid, 0)
+
+print(run("xterm-ghostty", {}))
+print(run("xterm-no-such-terminal", {}))
+print(run("xterm-ghostty", {"TERMINFO": ghostty}))
+PY
+)"
+case "$terms" in
+  ''|error*|*$'\n'error*) _fail "the TERM pty runs completed" "${terms:-$(tail -3 "$T/py-term.err")}" ;;
+  *)
+    { IFS='|' read -r s1 t1 _; IFS='|' read -r s2 t2 _; IFS='|' read -r _ t3 d3; } <<<"$terms"
+    is "an ssh login's xterm-ghostty, unknown here, edits the line in place" "$s1" "P> exit"
+    is "and keeps xterm-ghostty, through Ghostty.app's entry" "$t1" xterm-ghostty
+    is "a TERM nothing here ships edits the line in place" "$s2" "P> exit"
+    is "through xterm-256color" "$t2" xterm-256color
+    is "a local Ghostty tab's TERM, found through its TERMINFO, is left alone" "$t3:$d3" xterm-ghostty:unset ;;
 esac
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"

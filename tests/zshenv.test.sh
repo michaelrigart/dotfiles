@@ -125,5 +125,15 @@ got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK" SSH_CO
 [ "$got" = "$HERDR_SOCK" ] && _pass "an SSH login keeps its forwarded SSH_AUTH_SOCK" \
   || _fail "an SSH login keeps its forwarded SSH_AUTH_SOCK" "${got:-unset}"
 
+# Regression: an ssh login from Ghostty brings TERM=xterm-ghostty without Ghostty's terminfo,
+# and the line editor repeated every redraw (typing exit showed eexexiexit). This pins the
+# choice; tests/zshrc.test.sh drives the line editor itself on a pseudo-terminal.
+got=$(probe '/usr/bin/printenv TERM' TERM=xterm-no-such-terminal)
+[ "$got" = xterm-256color ] && _pass "an unknown TERM falls back to xterm-256color" \
+  || _fail "an unknown TERM falls back to xterm-256color" "${got:-unset}"
+got=$(probe 'print -r -- $TERM ${TERMINFO_DIRS-unset}' TERM=xterm-256color)
+[ "$got" = "xterm-256color unset" ] && _pass "a known TERM is left alone" \
+  || _fail "a known TERM is left alone" "$got"
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

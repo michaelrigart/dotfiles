@@ -100,10 +100,10 @@ op-edit() {
   fi
 }
 
-# tsh — Teleport SSH with a portable TERM. Ghostty's ssh-env/ssh-terminfo cover
-# the plain `ssh` binary, but not `tsh`, and edge nodes lack xterm-ghostty
-# terminfo. Only the `ssh` subcommand needs the downgrade; other subcommands
-# (tsh login, kube, db, …) run untouched.
+# tsh — Teleport SSH with a portable TERM. Edge nodes lack xterm-ghostty terminfo
+# and do not run these dotfiles, so zshenv's TERM fallback never reaches them.
+# Only the `ssh` subcommand needs the downgrade; other subcommands (tsh login,
+# kube, db, …) run untouched.
 tsh() {
   if [[ "$1" == "ssh" ]]; then
     TERM=xterm-256color command tsh "$@"
