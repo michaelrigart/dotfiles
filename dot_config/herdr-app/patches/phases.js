@@ -7,7 +7,8 @@
 // app's own close, which asks first. Nothing closes by itself.
 //
 // Source of truth: ~/.config/herdr-app/patches/phases.js. bin/respaces copies it into the
-// michael-spaces clone of Herdr's `spaces` mod; edit it here, then run respaces.
+// michael-spaces clone of Herdr's `spaces` mod; edit it here, then run respaces. How the rows
+// are drawn from this data (labels, folding, the tail) is rows.js.
 //
 // When it looks:
 //   - at once when a repository's .git changes (a commit, a checkout, a push, a fetch);
@@ -25,6 +26,7 @@ const FORGE = 60000; // a forge answer stands this long
 const HOT = 15000; // ...or this long while a pipeline runs or just after a push
 const AFTER_PUSH = 120000; // how long a moved remote ref keeps its repository hot
 const CALL = 20000; // one git, glab or gh call
+const DEFAULT = 600000; // a repository's default branch is read again after this long
 
 const GH_FAIL = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
 const GH_PEND = ["QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"];
@@ -68,6 +70,13 @@ function glCi(status) {
   return s === "success" ? "ok" : s === "failed" ? "fail" : GL_RUN.includes(s) ? "run" : "";
 }
 
+// How a badge reads, on a row and in a folded repository's summary of the rows it hides.
+// The colour says whether you have to act: red needs you (CI failed; "not wt", made outside
+// wt), blue waits on others (review), yellow is in progress (CI running), green is passed;
+// draft and merged are quiet. No other badge uses red, blue or yellow.
+export const tones = (t) => ({ draft: t.muted, review: t.ansi4, merged: t.dim, "not wt": t.blocked });
+export const marks = (t) => ({ ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["◐", t.ansi3] });
+
 export class Phases {
   // `cx`: the view's, for its timer; every later callback gets its own.
   constructor(cx) {
@@ -80,6 +89,7 @@ export class Phases {
     this.dirty = false;
     this.seen = "";
     this.at = 0;
+    this.defaults = {}; // git common dir -> { at, branch }: origin's default branch, null when unknown
     cx.timer.every(TICK, (cx) => this.tick(cx));
     this.tick(cx);
     // "michael-spaces.refresh" in keys.json: look everything up now, whatever the TTL. For
@@ -145,6 +155,17 @@ export class Phases {
     try { return (await exec(`${appHome()}/bin/folder-gone`, [folder], { timeout: CALL })).code === 0; } catch { return false; }
   }
 
+  // Origin's default branch (refs/remotes/origin/HEAD), read from refs only, at most once per
+  // repository per DEFAULT however many of its spaces ask. A failed read keeps what was known.
+  async defaultOf(dir, git) {
+    const known = this.defaults[dir];
+    const now = Date.now();
+    if (known && now - known.at < DEFAULT) return;
+    this.defaults[dir] = { at: now, branch: known?.branch ?? null };
+    const b = out(await git("symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"));
+    if (b) this.defaults[dir].branch = b.replace(/^origin\//, "");
+  }
+
   // One watch per repository (every worktree's refs and HEAD live under the common dir).
   watch(dir, cx) {
     if (this.watching.has(dir)) return;
@@ -177,6 +198,7 @@ export class Phases {
     ]);
     if (top.code !== 0 || common.code !== 0) return null;
     const dir = out(common);
+    await this.defaultOf(dir, git);
     if (dir === `${out(top)}/.git`) return null;
     this.used.dirs.add(dir);
     this.watch(dir, cx);
@@ -251,8 +273,7 @@ export class Phases {
     return mrs;
   }
 
-  // What a space's row ends on: nothing, or one element. Active is a dot: nearly every
-  // worktree is, and the row has little room.
+  // What a space's row ends on: nothing, or one element.
   badge(id, t) {
     const r = this.by[id];
     if (!r) return [];
@@ -264,9 +285,11 @@ export class Phases {
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .child("gone")];
     }
-    const tone = { active: t.ansi2, draft: t.ansi11, review: t.ansi3, merged: t.dim, "not wt": t.blocked };
-    const ci = { ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["●", t.ansi3] }[r.ci];
-    const text = r.phase === "active" ? "●" : r.ref ? `${r.phase} ${r.ref}` : r.phase;
+    // Active (no MR yet) says nothing: nearly every worktree is, and ● is the machine status's.
+    if (r.phase === "active") return [];
+    const tone = tones(t);
+    const ci = marks(t)[r.ci];
+    const text = r.ref ? `${r.phase} ${r.ref}` : r.phase;
     return [h_flex().flex_none().gap(5).items_center().text_size(11.5)
       .child(div().text_color(tone[r.phase]).child(text))
       .when(Boolean(ci), (el) => el.child(div().text_color(ci[1]).child(ci[0])))];

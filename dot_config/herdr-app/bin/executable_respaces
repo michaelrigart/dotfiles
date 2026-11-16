@@ -4,7 +4,7 @@
 #                   Open worktree a tab running open-space; Retire worktree replaces Remove)
 #   michael-spaces  the `spaces` mod, with the phase badge in each row, and a right-click
 #                   that opens michael-menu
-# Run it after a Herdr update, or after editing patches/phases.js or patches/worktree-actions.js.
+# Run it after a Herdr update, or after editing patches/phases.js, patches/rows.js or patches/worktree-actions.js.
 #
 # Herdr's shipped mods are read-only and a clone is never updated, so each clone is made
 # again from the current mod and the same small edits are applied to it. Each edit must match
@@ -45,6 +45,6 @@ cp "$home/patches/worktree-actions.js" "$home/mods/michael-menu/worktree-actions
 command herdr-app check "$home/mods/michael-menu"
 
 clone spaces michael-spaces
-cp "$home/patches/phases.js" "$home/mods/michael-spaces/phases.js"
+cp "$home/patches/phases.js" "$home/patches/rows.js" "$home/mods/michael-spaces/"
 "${0:A:h}/patch-mod" spaces "$home/mods/michael-spaces"
 command herdr-app check "$home/mods/michael-spaces"

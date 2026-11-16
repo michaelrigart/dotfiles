@@ -109,6 +109,7 @@ dot_config/herdr-app/mods/resume/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/usage/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/usage/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/patches/phases.js	data	-	herdr-app,herdr-app-xreview
+dot_config/herdr-app/patches/rows.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/patches/worktree-actions.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/programs.json.tmpl	data	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/themes/tokyo-night.json	data	-	herdr-app,herdr-app-xreview
@@ -157,6 +158,8 @@ dot_local/bin/executable_xreview-rpc	py	xreview-rpc	xreview-rpc,xreview,xreview-
 dot_zshrc	zsh	zshrc-reload	zshrc-reload,zshrc
 tests/AGENTS.md	prose	agent-instructions	agent-instructions
 tests/fixtures/herdr-app/render.zsh	zsh	-	herdr-app,herdr-app-xreview
+tests/fixtures/herdr-app/rows-stubs.js	data	-	herdr-app
+tests/fixtures/herdr-app/rows.test.js	data	-	herdr-app
 tests/fixtures/herdr-app/stubs/claude	sh	-	herdr-app
 tests/fixtures/herdr-app/stubs/fzf	sh	-	herdr-app
 tests/fixtures/herdr-app/stubs/hc	sh	-	herdr-app,xreview-app-pane

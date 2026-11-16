@@ -1,7 +1,9 @@
 #!/usr/bin/python3 -I
 # patch-mod <menu|spaces> <mod folder> — apply bin/respaces' edits to the main.js of a clone
 # of Herdr's `menu` or `spaces` mod. Each edit must match exactly once: if Herdr changed one
-# of those lines this stops with a message and the clone stays unpatched.
+# of those lines this stops with a message and the clone stays unpatched. The spaces mod's
+# gitTail method is also checked against a digest (below).
+import hashlib
 import sys
 
 if len(sys.argv) != 3 or sys.argv[1] not in ("menu", "spaces"):
@@ -11,19 +13,30 @@ text = open(path, encoding="utf-8").read()
 
 EDITS = {
     "spaces": [
-        # 1. Load the badge logic.
+        # 1. Load the phase data (phases.js) and the row drawing built on it (rows.js).
         ('} from "herdr";\n',
-         '} from "herdr";\nimport { Phases } from "./phases.js";\n'),
-        # 2. Start it with the view.
+         '} from "herdr";\nimport { Phases } from "./phases.js";\nimport { Rows } from "./rows.js";\n'),
+        # 2. Start them with the view.
         ('    cx.timer.every(250, (cx) => this.checkNew(cx));\n',
-         '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n'),
-        # 3. End each row on its badge.
-        ('          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),\n',
-         '          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1())\n'
-         '          .children(this.phases.badge(w.id, t)),\n'),
+         '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n    this.rows = new Rows(this.phases);\n'),
+        # 3. A worktree under its repository is labelled by its branch, and each row ends on its
+        #    badge. The tail is rows.tail: the mod's gitTail for a nested worktree, its own
+        #    drawing (type prefix dimmed, the repository's default branch hidden) for other rows.
+        ('.text_color(t.foreground).child(w.name))\n'
+         '          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),\n',
+         '.text_color(t.foreground).child(this.rows.label(w, g, tree, t)))\n'
+         '          .child(g ? this.rows.tail(this, w, g, tree, t) : div().flex_1())\n'
+         '          .children(this.rows.end(w, t)),\n'),
         # 4. A right-click opens the menu with the worktree items.
         ('openOverlay({ mod: "menu", kind: "popup"',
          'openOverlay({ mod: "michael-menu", kind: "popup"'),
+        # 5. A repository's worktree rows fold away (the toggle is in the row's end, above).
+        ('    const rows = this.ordered();\n',
+         '    const rows = this.rows.fold(this.ordered(), collapsed);\n'),
+        # 6. A nested worktree row has no branch glyph: sitting under its repository says it, and
+        #    the label gets the room. The indent stays, a little past the repository's own name.
+        ('el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).flex_none().text_color(t.dim))',
+         'el.pl(36)'),
     ],
     "menu": [
         # 1. Load the worktree actions.
@@ -59,5 +72,26 @@ for number, (old, new) in enumerate(EDITS, 1):
         sys.exit(f"respaces: {shipped} edit {number} matches {found} times in Herdr's {shipped} mod, not once; "
                  "the clone is left unpatched.")
     text = text.replace(old, new)
+
+# A guard, not an edit: patches/rows.js's `tail` draws the rows that are not nested worktrees with
+# its own version of the spaces mod's `gitTail`, which a Herdr update would otherwise leave behind
+# unnoticed. The method runs from its signature line to the next line that is just its closing
+# brace; any change to it changes the digest and stops the run. After bringing rows.tail up to
+# date, put the digest the message prints here.
+GITTAIL_START, GITTAIL_END = "  gitTail(g, tree, name, t) {\n", "\n  }\n"
+GITTAIL_SHA256 = "96c007d1737b3054eb5e4c784f31fd42f7ffd9138ddbe62638b2982cf6e32216"
+if shipped == "spaces":
+    start = text.find(GITTAIL_START)
+    end = text.find(GITTAIL_END, start) if start >= 0 else -1
+    if end < 0 or text.count(GITTAIL_START) != 1:
+        sys.exit(f"respaces: spaces gitTail: its signature line is found {text.count(GITTAIL_START)} times in "
+                 "Herdr's spaces mod, not once, or no closing brace follows it; the clone is left unpatched. "
+                 "rows.tail in patches/rows.js mirrors that method: bring rows.tail up to date with Herdr's "
+                 "new gitTail, then update the boundaries and digest in patch-mod.")
+    digest = hashlib.sha256(text[start:end + len(GITTAIL_END)].encode("utf-8")).hexdigest()
+    if digest != GITTAIL_SHA256:
+        sys.exit(f"respaces: spaces gitTail changed in Herdr's spaces mod (sha256 {digest}); the clone is left "
+                 "unpatched. rows.tail in patches/rows.js mirrors that method: bring rows.tail up to date with "
+                 f"Herdr's new gitTail, then set GITTAIL_SHA256 in patch-mod to {digest}.")
 
 open(path, "w", encoding="utf-8").write(text)

@@ -652,7 +652,7 @@ check "folder-gone: an unreadable parent is unknown, not gone" test $rc_unknown 
 
 # --- respaces ------------------------------------------------------------------------------
 # The edits, against copies of the shipped mods' main.js (Herdr's own, read-only here). They need
-# the installed app's mods; on a machine without them the 10 checks are skipped, not failed.
+# the installed app's mods; on a machine without them the 21 checks are skipped, not failed.
 if [[ -f $shipped/menu/main.js && -f $shipped/spaces/main.js ]]; then
 for mod in menu spaces; do
   newworld patch-$mod; d=$world/$mod; mkdir -p $d; cp $shipped/$mod/main.js $d/main.js
@@ -671,8 +671,57 @@ $bin/patch-mod spaces $d >$world/out 2>&1; rc=$?
 check "patch-mod stops when an anchor matches twice" test $rc -ne 0
 check "a duplicated anchor leaves the clone unpatched" cmp -s $d/main.js <({ cat $shipped/spaces/main.js; print -r -- "$anchor"; })
 check "a duplicated anchor is reported as matching 2 times" grep -q 'matches 2 times' $world/out
+# rows.tail copies the mod's gitTail; a change of one character there must stop respaces.
+newworld patch-gittail; d=$world/spaces; mkdir -p $d
+sed 's/\.min_w(where ? SIDE_MIN : 0)/.min_w(where ? SIDE_MIN : 1)/' $shipped/spaces/main.js > $d/main.js
+check "the gitTail case differs from the shipped mod by that one line" test "$(diff $shipped/spaces/main.js $d/main.js | grep -c '^>')" -eq 1
+cp $d/main.js $world/changed.js
+$bin/patch-mod spaces $d >$world/out 2>&1; rc=$?
+check "patch-mod stops when Herdr's gitTail changed" test $rc -ne 0
+check "a changed gitTail leaves the clone unpatched" cmp -s $d/main.js $world/changed.js
+check "a changed gitTail is reported as a digest mismatch, naming rows.tail and the new digest" grep -q 'gitTail changed.*sha256 [0-9a-f]\{64\}.*rows\.tail.*set GITTAIL_SHA256' $world/out
+# The method must also be found exactly once for its digest to mean anything.
+sig='  gitTail(g, tree, name, t) {'
+newworld patch-nogittail; d=$world/spaces; mkdir -p $d; grep -v -F "$sig" $shipped/spaces/main.js > $d/main.js
+$bin/patch-mod spaces $d >$world/out 2>&1; rc=$?
+check "patch-mod stops when gitTail is missing" test $rc -ne 0
+check "a missing gitTail leaves the clone unpatched" cmp -s $d/main.js <(grep -v -F "$sig" $shipped/spaces/main.js)
+check "a missing gitTail is reported as found 0 times, naming rows.tail" grep -q 'gitTail: its signature line is found 0 times.*rows\.tail' $world/out
+newworld patch-twogittail; d=$world/spaces; mkdir -p $d
+{ cat $shipped/spaces/main.js; awk -v s="$sig" '$0 == s { on = 1 } on { print } on && $0 == "  }" { exit }' $shipped/spaces/main.js; } > $d/main.js
+cp $d/main.js $world/twice.js
+check "the two-gitTail case holds the signature twice" test "$(grep -c -F "$sig" $d/main.js)" -eq 2
+$bin/patch-mod spaces $d >$world/out 2>&1; rc=$?
+check "patch-mod stops when gitTail is present twice" test $rc -ne 0
+check "a duplicated gitTail leaves the clone unpatched" cmp -s $d/main.js $world/twice.js
+check "a duplicated gitTail is reported as found 2 times, naming rows.tail" grep -q 'gitTail: its signature line is found 2 times.*rows\.tail' $world/out
 else
-  skipped+=10; print -u2 -- "SKIP: no installed Herdr app mods in $shipped; the 10 patch-mod checks did not run"
+  skipped+=21; print -u2 -- "SKIP: no installed Herdr app mods in $shipped; the 21 patch-mod checks did not run"
+fi
+
+# --- rows.js and phases.js: what the spaces pane draws -------------------------------------------
+# Run headless under JavaScriptCore (the runtime herdr-app-resume uses): the modules' imports are
+# pointed at fixtures/herdr-app/rows-stubs.js in a scratch copy, so the sources stay as they ship.
+# The test prints PASS/FAIL lines, counted here.
+jsc=/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc
+for f in $SRC/dot_config/herdr-app/patches/{phases,rows}.js $here/fixtures/herdr-app/{rows.test,rows-stubs}.js; do
+  [[ -f $f ]] || { print -u2 -- "missing ${f#$SRC/}"; exit 2 }
+done
+if [[ -x $jsc ]]; then
+  d=$root/rows-js; mkdir -p $d
+  for f in phases rows; do
+    sed -e 's|from "gpui-kit"|from "./rows-stubs.js"|' -e 's|from "gpui-base"|from "./rows-stubs.js"|' -e 's|from "herdr"|from "./rows-stubs.js"|' \
+      $SRC/dot_config/herdr-app/patches/$f.js > $d/$f.js
+  done
+  cp $here/fixtures/herdr-app/rows.test.js $here/fixtures/herdr-app/rows-stubs.js $d/
+  check "rows.js and phases.js import only what the stubs stand in for" test -z "$(grep -h '^import .* from "[^.]' $d/phases.js $d/rows.js)"
+  js_out=$($jsc -m $d/rows.test.js 2>&1); js_rc=$?
+  print -r -- $js_out
+  js_pass=$(print -r -- $js_out | grep -c '^  PASS:'); js_fail=$(print -r -- $js_out | grep -c '^  FAIL:')
+  (( passed += js_pass, total += js_pass + js_fail ))
+  check "the rows test ran cleanly (jsc exit $js_rc, $((js_pass + js_fail)) assertions)" test $js_rc -eq 0 -a $((js_pass + js_fail)) -gt 0
+else
+  skipped+=1; print -u2 -- "SKIP: no jsc here; the rows and phases checks did not run"
 fi
 
 # With the window closed nothing may be moved: the old clone would be gone and the new one
