@@ -1,7 +1,9 @@
 #!/usr/bin/python3 -I
 # patch-mod <menu|spaces> <mod folder> — apply bin/respaces' edits to the main.js of a clone
 # of Herdr's `menu` or `spaces` mod. Each edit must match exactly once: if Herdr changed one
-# of those lines this stops with a message and the clone stays unpatched.
+# of those lines this stops with a message and the clone stays unpatched. The spaces mod's
+# gitTail method is also checked against a digest (below).
+import hashlib
 import sys
 
 if len(sys.argv) != 3 or sys.argv[1] not in ("menu", "spaces"):
@@ -70,5 +72,26 @@ for number, (old, new) in enumerate(EDITS, 1):
         sys.exit(f"respaces: {shipped} edit {number} matches {found} times in Herdr's {shipped} mod, not once; "
                  "the clone is left unpatched.")
     text = text.replace(old, new)
+
+# A guard, not an edit: patches/rows.js's `tail` draws the rows that are not nested worktrees with
+# its own version of the spaces mod's `gitTail`, which a Herdr update would otherwise leave behind
+# unnoticed. The method runs from its signature line to the next line that is just its closing
+# brace; any change to it changes the digest and stops the run. After bringing rows.tail up to
+# date, put the digest the message prints here.
+GITTAIL_START, GITTAIL_END = "  gitTail(g, tree, name, t) {\n", "\n  }\n"
+GITTAIL_SHA256 = "96c007d1737b3054eb5e4c784f31fd42f7ffd9138ddbe62638b2982cf6e32216"
+if shipped == "spaces":
+    start = text.find(GITTAIL_START)
+    end = text.find(GITTAIL_END, start) if start >= 0 else -1
+    if end < 0 or text.count(GITTAIL_START) != 1:
+        sys.exit(f"respaces: spaces gitTail: its signature line is found {text.count(GITTAIL_START)} times in "
+                 "Herdr's spaces mod, not once, or no closing brace follows it; the clone is left unpatched. "
+                 "rows.tail in patches/rows.js mirrors that method: bring rows.tail up to date with Herdr's "
+                 "new gitTail, then update the boundaries and digest in patch-mod.")
+    digest = hashlib.sha256(text[start:end + len(GITTAIL_END)].encode("utf-8")).hexdigest()
+    if digest != GITTAIL_SHA256:
+        sys.exit(f"respaces: spaces gitTail changed in Herdr's spaces mod (sha256 {digest}); the clone is left "
+                 "unpatched. rows.tail in patches/rows.js mirrors that method: bring rows.tail up to date with "
+                 f"Herdr's new gitTail, then set GITTAIL_SHA256 in patch-mod to {digest}.")
 
 open(path, "w", encoding="utf-8").write(text)

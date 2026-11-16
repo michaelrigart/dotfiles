@@ -50,7 +50,9 @@ export class Rows {
   // The tail after a row's name. A nested worktree: the mod's own gitTail, given the branch as
   // its name when the label already shows it. Any other row: the same thing drawn here, with the
   // branch's type (feature/, fix/, ...) dimmed, and the repository's own default branch hidden
-  // (main and master only while it is unknown). Keep in step with the spaces mod's gitTail.
+  // (main and master only while it is unknown). Keep in step with the spaces mod's gitTail:
+  // the gitTail digest check in bin/patch-mod stops respaces when Herdr changes that method, so
+  // this copy is brought up to date (and the digest with it) instead of drifting.
   tail(host, w, g, tree, t) {
     if (tree) return host.gitTail(g, tree, this.asBranch(w, g, tree) ?? w.name, t);
     const raw = g.branch ?? "detached";
