@@ -92,6 +92,7 @@ missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
 missing run                   .scripts/test-audit/subjects.tsv
 missing worktree-guard        dot_claude/executable_worktree-guard.sh
 missing xreview-skill         .chezmoitemplates/agents/global.md
+missing zshrc                 dot_config/zsh/zshenv
 
 # A missing tool is the same case: the suite cannot decide. /usr/bin and /bin hold bash but
 # no chezmoi.

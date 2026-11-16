@@ -24,9 +24,26 @@ export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 typeset -U path PATH
 export PATH=$XDG_BIN_HOME:$PATH
 
-# NOTE: TERM is intentionally NOT forced here — Ghostty sets xterm-ghostty
-# locally (full features). Terminfo-poor remotes are handled per-tool: ssh via
-# Ghostty's ssh-env/ssh-terminfo, Teleport via the tsh() wrapper in zsh/functions.
+# A TERM with no terminfo entry here leaves the line editor unable to move the cursor, so each
+# redraw repeats the line: ssh from Ghostty passes TERM=xterm-ghostty but not its TERMINFO, and
+# Ghostty's ssh-env/ssh-terminfo are off (ghostty/config). Use Ghostty.app's entry when it has
+# one, otherwise xterm-256color; a known TERM is left alone (echoti fails only for a TERM zsh
+# cannot find). An interactive zsh needs the entry for its own line editor: assigning
+# TERMINFO_DIRS reinitialises the terminal (zsh reports a failure itself), but /bin/zsh keeps its
+# first failed lookup, so it falls back. A non-interactive zsh keeps that failure too, but has no
+# line editor; its children read the entry. Teleport nodes: the tsh() wrapper in zsh/functions.
+if [[ -n $TERM ]] && ! echoti am >/dev/null 2>&1; then
+  ghostty_entry=(/Applications/Ghostty.app/Contents/Resources/terminfo/*/$TERM(N))
+  if (( ! $#ghostty_entry )); then
+    export TERM=xterm-256color
+  else
+    export TERMINFO_DIRS=${ghostty_entry[1]:h:h}:$TERMINFO_DIRS 2>/dev/null
+    if [[ -o interactive ]] && ! echoti am >/dev/null 2>&1; then
+      export TERM=xterm-256color
+    fi
+  fi
+  unset ghostty_entry
+fi
 
 # Set ZSH compdump file. No ${HOST}: it varies (this cache holds dumps named 0.0.0.0 and
 # fenrir), and every new name costs a full compinit.
