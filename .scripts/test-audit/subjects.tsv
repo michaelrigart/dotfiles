@@ -158,6 +158,8 @@ dot_local/bin/executable_xreview-rpc	py	xreview-rpc	xreview-rpc,xreview,xreview-
 dot_zshrc	zsh	zshrc-reload	zshrc-reload,zshrc
 tests/AGENTS.md	prose	agent-instructions	agent-instructions
 tests/fixtures/herdr-app/render.zsh	zsh	-	herdr-app,herdr-app-xreview
+tests/fixtures/herdr-app/rows-stubs.js	data	-	herdr-app
+tests/fixtures/herdr-app/rows.test.js	data	-	herdr-app
 tests/fixtures/herdr-app/stubs/claude	sh	-	herdr-app
 tests/fixtures/herdr-app/stubs/fzf	sh	-	herdr-app
 tests/fixtures/herdr-app/stubs/hc	sh	-	herdr-app,xreview-app-pane

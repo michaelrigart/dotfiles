@@ -675,6 +675,31 @@ else
   skipped+=10; print -u2 -- "SKIP: no installed Herdr app mods in $shipped; the 10 patch-mod checks did not run"
 fi
 
+# --- rows.js and phases.js: what the spaces pane draws -------------------------------------------
+# Run headless under JavaScriptCore (the runtime herdr-app-resume uses): the modules' imports are
+# pointed at fixtures/herdr-app/rows-stubs.js in a scratch copy, so the sources stay as they ship.
+# The test prints PASS/FAIL lines, counted here.
+jsc=/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc
+for f in $SRC/dot_config/herdr-app/patches/{phases,rows}.js $here/fixtures/herdr-app/{rows.test,rows-stubs}.js; do
+  [[ -f $f ]] || { print -u2 -- "missing ${f#$SRC/}"; exit 2 }
+done
+if [[ -x $jsc ]]; then
+  d=$root/rows-js; mkdir -p $d
+  for f in phases rows; do
+    sed -e 's|from "gpui-kit"|from "./rows-stubs.js"|' -e 's|from "gpui-base"|from "./rows-stubs.js"|' -e 's|from "herdr"|from "./rows-stubs.js"|' \
+      $SRC/dot_config/herdr-app/patches/$f.js > $d/$f.js
+  done
+  cp $here/fixtures/herdr-app/rows.test.js $here/fixtures/herdr-app/rows-stubs.js $d/
+  check "rows.js and phases.js import only what the stubs stand in for" test -z "$(grep -h '^import .* from "[^.]' $d/phases.js $d/rows.js)"
+  js_out=$($jsc -m $d/rows.test.js 2>&1); js_rc=$?
+  print -r -- $js_out
+  js_pass=$(print -r -- $js_out | grep -c '^  PASS:'); js_fail=$(print -r -- $js_out | grep -c '^  FAIL:')
+  (( passed += js_pass, total += js_pass + js_fail ))
+  check "the rows test ran cleanly (jsc exit $js_rc, $((js_pass + js_fail)) assertions)" test $js_rc -eq 0 -a $((js_pass + js_fail)) -gt 0
+else
+  skipped+=1; print -u2 -- "SKIP: no jsc here; the rows and phases checks did not run"
+fi
+
 # With the window closed nothing may be moved: the old clone would be gone and the new one
 # never made.
 newworld respaces-down; mkdir -p $HERDR_APP_HOME/mods/michael-spaces; : > $HERDR_APP_HOME/mods/michael-spaces/marker
