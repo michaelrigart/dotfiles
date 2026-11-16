@@ -17,6 +17,10 @@ ZSHENV="$SRC/dot_config/zsh/zshenv"
 [ -f "$ZSHENV" ] || { echo "missing script under test: $ZSHENV" >&2; exit 2; }
 [ -x /bin/zsh ] || { echo "no /bin/zsh" >&2; exit 2; }
 [ -x /opt/homebrew/bin/brew ] || { echo "Homebrew is not at /opt/homebrew; this suite needs it" >&2; exit 2; }
+[ -x /opt/homebrew/bin/zsh ] || { echo "no Homebrew zsh at /opt/homebrew/bin/zsh" >&2; exit 2; }
+GHOSTTY_TI=/Applications/Ghostty.app/Contents/Resources/terminfo
+ls "$GHOSTTY_TI"/*/xterm-ghostty >/dev/null 2>&1 ||
+  { echo "INCONCLUSIVE: no xterm-ghostty entry under $GHOSTTY_TI (the Brewfile installs Ghostty)" >&2; exit 2; }
 target=$(find /var/run -maxdepth 1 -type s 2>/dev/null | head -1)
 [ -n "$target" ] || { echo "INCONCLUSIVE: no system unix socket under /var/run to symlink" >&2; exit 2; }
 pass=0; fail=0
@@ -126,14 +130,23 @@ got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK" SSH_CO
   || _fail "an SSH login keeps its forwarded SSH_AUTH_SOCK" "${got:-unset}"
 
 # Regression: an ssh login from Ghostty brings TERM=xterm-ghostty without Ghostty's terminfo,
-# and the line editor repeated every redraw (typing exit showed eexexiexit). This pins the
+# and the line editor repeated every redraw (typing exit showed eexexiexit). These pin the
 # choice; tests/zshrc.test.sh drives the line editor itself on a pseudo-terminal.
 got=$(probe '/usr/bin/printenv TERM' TERM=xterm-no-such-terminal)
 [ "$got" = xterm-256color ] && _pass "an unknown TERM falls back to xterm-256color" \
   || _fail "an unknown TERM falls back to xterm-256color" "${got:-unset}"
-got=$(probe 'print -r -- $TERM ${TERMINFO_DIRS-unset}' TERM=xterm-256color)
-[ "$got" = "xterm-256color unset" ] && _pass "a known TERM is left alone" \
+got=$(probe 'print -r -- $TERM ${TERMINFO_DIRS-unset}' TERM=xterm)
+[ "$got" = "xterm unset" ] && _pass "a known TERM is left alone" \
   || _fail "a known TERM is left alone" "$got"
+got=$(probe 'print -r -- $TERM ${TERMINFO_DIRS-unset}' TERM=xterm-ghostty TERMINFO="$GHOSTTY_TI")
+[ "$got" = "xterm-ghostty unset" ] && _pass "a local Ghostty tab's TERM, found through its TERMINFO, is left alone" \
+  || _fail "a local Ghostty tab's TERM, found through its TERMINFO, is left alone" "$got"
+# A script that sources zshenv (wt-prepare, wt-rm) runs a non-interactive zsh, which keeps its
+# first failed lookup; its children must still get xterm-ghostty and find Ghostty.app's entry.
+got=$(env -i HOME="$FAKE" TERM=xterm-ghostty PATH=/usr/bin:/bin /opt/homebrew/bin/zsh -f -c \
+  'source "$1"; /usr/bin/tput longname >/dev/null && /usr/bin/printenv TERM' zsh "$ZSHENV" 2>&1)
+[ "$got" = xterm-ghostty ] && _pass "a script's children keep xterm-ghostty, through Ghostty.app's entry" \
+  || _fail "a script's children keep xterm-ghostty, through Ghostty.app's entry" "${got:-nothing}"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

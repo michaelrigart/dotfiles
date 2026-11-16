@@ -16,8 +16,7 @@
 # (xterm-ghostty without Ghostty's TERMINFO). The login shell (Homebrew zsh) starts with a
 # startup file that sources the SOURCE zshenv, as dot_zshrc does first, and recolours the line
 # on every key, as zsh-syntax-highlighting does. Typed text must read back once on the line as
-# a terminal shows it; the line editor without a terminfo entry repeats it ("eexxiit"). A local
-# Ghostty tab's TERM, found through its TERMINFO, must be left alone.
+# a terminal shows it; the line editor without a terminfo entry repeats it ("eexxiit").
 #
 # Needs a pseudo-terminal, which the sandbox does not provide; there it exits 2.
 #   ./tests/zshrc.test.sh
@@ -141,9 +140,9 @@ esac
 
 # One line per TERM: "<the prompt line as shown after typing exit>|<TERM>|<TERMINFO_DIRS>",
 # or a diagnostic starting with "error".
-terms="$("$PY" -I - "$LOGIN_ZSH" "$ZSHENV" "$T" "$GHOSTTY_TI" <<'PY' 2>"$T/py-term.err"
+terms="$("$PY" -I - "$LOGIN_ZSH" "$ZSHENV" "$T" <<'PY' 2>"$T/py-term.err"
 import os, pty, re, select, sys, time
-zsh, zshenv, tmp, ghostty = sys.argv[1:5]
+zsh, zshenv, tmp = sys.argv[1:4]
 rc = tmp + "/term-rc"
 os.makedirs(rc, exist_ok=True)
 with open(rc + "/.zshrc", "w") as fh:
@@ -219,18 +218,16 @@ def run(term, extra):
 
 print(run("xterm-ghostty", {}))
 print(run("xterm-no-such-terminal", {}))
-print(run("xterm-ghostty", {"TERMINFO": ghostty}))
 PY
 )"
 case "$terms" in
   ''|error*|*$'\n'error*) _fail "the TERM pty runs completed" "${terms:-$(tail -3 "$T/py-term.err")}" ;;
   *)
-    { IFS='|' read -r s1 t1 _; IFS='|' read -r s2 t2 _; IFS='|' read -r _ t3 d3; } <<<"$terms"
+    { IFS='|' read -r s1 t1 _; IFS='|' read -r s2 t2 _; } <<<"$terms"
     is "an ssh login's xterm-ghostty, unknown here, edits the line in place" "$s1" "P> exit"
     is "and keeps xterm-ghostty, through Ghostty.app's entry" "$t1" xterm-ghostty
     is "a TERM nothing here ships edits the line in place" "$s2" "P> exit"
-    is "through xterm-256color" "$t2" xterm-256color
-    is "a local Ghostty tab's TERM, found through its TERMINFO, is left alone" "$t3:$d3" xterm-ghostty:unset ;;
+    is "through xterm-256color" "$t2" xterm-256color ;;
 esac
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
