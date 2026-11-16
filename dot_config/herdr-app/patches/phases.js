@@ -25,6 +25,8 @@ const FORGE = 60000; // a forge answer stands this long
 const HOT = 15000; // ...or this long while a pipeline runs or just after a push
 const AFTER_PUSH = 120000; // how long a moved remote ref keeps its repository hot
 const CALL = 20000; // one git, glab or gh call
+const DEFAULT = 600000; // a repository's default branch is read again after this long
+const SIDE_MIN = 48; // the spaces mod's own minimum for a row's tail
 
 const GH_FAIL = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
 const GH_PEND = ["QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"];
@@ -84,6 +86,7 @@ export class Phases {
     this.dirty = false;
     this.seen = "";
     this.at = 0;
+    this.defaults = {}; // git common dir -> { at, branch }: origin's default branch, null when unknown
     this.kids = {}; // repo -> how many worktree spaces sit under it, folded or not
     this.owner = {}; // repo -> the space whose row they follow (and which carries the fold toggle)
     try { this.hidden = new Set(JSON.parse(localStorage.getItem("repos.folded") ?? "[]")); } catch { this.hidden = new Set(); }
@@ -152,6 +155,17 @@ export class Phases {
     try { return (await exec(`${appHome()}/bin/folder-gone`, [folder], { timeout: CALL })).code === 0; } catch { return false; }
   }
 
+  // Origin's default branch (refs/remotes/origin/HEAD), read from refs only, at most once per
+  // repository per DEFAULT however many of its spaces ask. A failed read keeps what was known.
+  async defaultOf(dir, git) {
+    const known = this.defaults[dir];
+    const now = Date.now();
+    if (known && now - known.at < DEFAULT) return;
+    this.defaults[dir] = { at: now, branch: known?.branch ?? null };
+    const b = out(await git("symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"));
+    if (b) this.defaults[dir].branch = b.replace(/^origin\//, "");
+  }
+
   // One watch per repository (every worktree's refs and HEAD live under the common dir).
   watch(dir, cx) {
     if (this.watching.has(dir)) return;
@@ -184,6 +198,7 @@ export class Phases {
     ]);
     if (top.code !== 0 || common.code !== 0) return null;
     const dir = out(common);
+    await this.defaultOf(dir, git);
     if (dir === `${out(top)}/.git`) return null;
     this.used.dirs.add(dir);
     this.watch(dir, cx);
@@ -281,6 +296,30 @@ export class Phases {
     return h_flex().min_w(0)
       .child(div().flex_none().text_color(t.dim).child(branch.slice(0, cut)))
       .child(name(branch.slice(cut)));
+  }
+
+  // The tail after a row's name. A nested worktree: the mod's own gitTail, given the branch as
+  // its name when the label already shows it. Any other row: the same thing drawn here, with the
+  // branch's type (feature/, fix/, ...) dimmed, and the repository's own default branch hidden
+  // (main and master only while it is unknown). Keep in step with the spaces mod's gitTail.
+  tail(host, w, g, tree, t) {
+    if (tree) return host.gitTail(g, tree, this.asBranch(w, g, tree) ?? w.name, t);
+    const raw = g.branch ?? "detached";
+    const [on, dir] = JSON.parse(g.repo);
+    const known = on ? null : this.defaults[dir]?.branch;
+    const same = (a) => a.toLowerCase() === w.name.toLowerCase();
+    const hide = same(raw) || (known ? raw === known : raw === "main" || raw === "master");
+    const repo = same(g.name) ? "" : g.name;
+    const cut = raw.indexOf("/") + 1;
+    const text = (s, c) => div().min_w(0).truncate().text_color(c).child(s);
+    return h_flex().flex_auto().min_w(repo || !hide ? SIDE_MIN : 0).gap(5).justify_end().items_center().text_size(11.5).text_color(t.dim)
+      .when(Boolean(repo), (el) => el.child(text(hide ? repo : `${repo} ·`, t.dim)))
+      .when(!hide && Boolean(cut), (el) => el.child(h_flex().min_w(0).gap(0)
+        .child(div().flex_none().text_color(t.dim).child(raw.slice(0, cut)))
+        .child(text(raw.slice(cut), t.muted))))
+      .when(!hide && !cut, (el) => el.child(text(raw, t.muted)))
+      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`↑${g.ahead}`)))
+      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`↓${g.behind}`)));
   }
 
   // The rows the list draws: a folded repository's worktree spaces are left out. The narrow
