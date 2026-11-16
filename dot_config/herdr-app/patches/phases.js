@@ -71,7 +71,10 @@ function glCi(status) {
 }
 
 // How a badge reads, on a row and in a folded repository's summary of the rows it hides.
-const tones = (t) => ({ draft: t.ansi11, review: t.ansi3, merged: t.dim, "not wt": t.blocked });
+// The colour says whether you have to act: red needs you (CI failed; "not wt", made outside
+// wt), blue waits on others (review), yellow is in progress (CI running), green is passed;
+// draft and merged are quiet. No other badge uses red, blue or yellow.
+const tones = (t) => ({ draft: t.muted, review: t.ansi4, merged: t.dim, "not wt": t.blocked });
 const marks = (t) => ({ ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["◐", t.ansi3] });
 
 export class Phases {
@@ -346,7 +349,7 @@ export class Phases {
     const by = hidden.map((w) => this.by[w.id]).filter(Boolean);
     if (by.some((r) => r.ci === "fail")) return [...marks(t).fail.slice(0, 2), "A hidden worktree's CI failed"];
     if (by.some((r) => r.phase === "review")) return ["review", tones(t).review, "A hidden worktree waits for review"];
-    if (hidden.some((w) => w.active)) return ["◆", t.accent, "The space you are in is hidden"];
+    if (hidden.some((w) => w.active)) return ["◆", t.foreground,"The space you are in is hidden"];
     return null;
   }
 
