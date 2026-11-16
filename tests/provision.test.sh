@@ -214,6 +214,8 @@ render hercules hercules
 rc_is 0 "the other machine renders"
 hasnt 'cask "elgato-control-center"' "hercules does not get the peripheral casks"
 has 'cask "herdr-app"' "hercules gets the Herdr app"
+has 'cask "azure-cli"' "azure-cli is a cask (homebrew-core dropped the formula)"
+hasnt 'brew "azure-cli"' "azure-cli is not declared as a formula"
 render "MacBook Pro" "MacBook Pro"
 rc_is 1 "an unlisted machine fails the render"
 has "unknown machine" "unlisted machine is named"
