@@ -5,7 +5,7 @@
 **Spec:** `docs/superpowers/specs/2026-11-12-forge-push-protection-design.md` (sections 1.1, 2, 3, 6 and 7, and "Revision 2", which you signed on 2026-11-14).
 **Plan:** `docs/superpowers/plans/2026-11-12-forge-push-protection-merge-1.md` (Task 9, "Michael's steps"), rewritten here for revision 2.
 
-**Where things stand (2026-11-15, evening).** Merges 1 and 2 are merged and applied (2026-11-13 and 2026-11-14). GitHub is done: the rulesets are on every repository in scope, `main-merge-owner` included (all 43 repositories, since 2026-11-14). GitLab and Azure DevOps are done (steps 2 to 6, 2026-11-15): 34 GitLab projects protected, the rest and one Azure repository in your exceptions file; the spec's Implementation notes hold the counts. Step 17 passed (exit 0), so the line opens merge 3's pull request; steps 18 to 20 follow. Still open: step 14's loop (the `update` rulesets and the Actions secrets) and step 15 (a new agent session after a plain `chezmoi apply`, which also brings it the GitLab token).
+**Where things stand (2026-11-16).** Merges 1 to 3 are merged and applied (2026-11-13, 2026-11-14 and 2026-11-15; merge 3 is pull request #25). GitHub is done: the rulesets are on every repository in scope, `main-merge-owner` included (all 43 repositories, since 2026-11-14). GitLab and Azure DevOps are done (steps 2 to 6, 2026-11-15): 34 GitLab projects protected, the rest and one Azure repository in your exceptions file. Steps 14 to 19 are done; the spec's Implementation notes hold the counts and results. Only step 20 is left, once the pull request that records steps 14 to 19 is merged.
 
 **Steps 7 to 13 are done.** They stay below as the reference and the rollback. The check on `main` now prints the GitHub target of revision 2; do not run a printed GitHub POST again unless a row reads `drift`.
 
@@ -907,7 +907,7 @@ for r in <repo-a> <repo-b>; do gh api repos/<owner>/$r/rules/branches/<branch> -
 
 Expected, for each in-scope GitHub repository: `["deletion","non_fast_forward","pull_request","update"]`. The `update` rule is `main-merge-owner` (spec revision 3); a list without it means that repository lacks the ruleset.
 
-The check of merge 2 does not read the bypass list of an `update` ruleset, and the list above shows only that the rule exists. The next loop shows, for each of your repositories, every ruleset that carries `update`, with its bypass list, and every Actions secret name, for the condition of spec section 2.1: no secret may hold a credential of yours with Contents write, since a workflow using it would merge as you. It prints names only, never a secret's value, and the names of repositories, so it stays on your screen. Any request that fails prints a `FAILED` line instead of passing silently:
+The check of merge 2 does not read the bypass list of an `update` ruleset, and the list above shows only that the rule exists. The next loop shows, for each of your repositories, every branch ruleset that carries `update`, with its bypass list (a tag ruleset is left out), and every Actions secret name, for the condition of spec section 2.1: no secret may hold a credential of yours with Contents write on a repository in scope, since a workflow using it would merge as you. It prints names only, never a secret's value, and the names of repositories, so it stays on your screen. Any request that fails prints a `FAILED` line instead of passing silently:
 
 ```
 repos=$(gh repo list <owner> --no-archived --limit 200 --json nameWithOwner --jq '.[].nameWithOwner') || echo "FAILED: the repository list"
@@ -916,7 +916,7 @@ printf '%s\n' "$repos" | while read -r r; do
   ids=$(gh api --paginate "repos/$r/rulesets" --jq '.[].id') || { echo "FAILED: $r rulesets"; continue; }
   printf '%s\n' "$ids" | while read -r id; do
     [ -n "$id" ] || continue
-    u=$(gh api "repos/$r/rulesets/$id" --jq 'select(any(.rules[]?; .type == "update")) | "\(.name) \(.enforcement) \(.bypass_actors | tojson)"') || { echo "FAILED: $r ruleset $id"; continue; }
+    u=$(gh api "repos/$r/rulesets/$id" --jq 'select(.target == "branch" and any(.rules[]?; .type == "update")) | "\(.name) \(.enforcement) \(.bypass_actors | tojson)"') || { echo "FAILED: $r ruleset $id"; continue; }
     [ -z "$u" ] || echo "ruleset $r: $u"
   done
   s=$(gh api --paginate "repos/$r/actions/secrets" --jq '.secrets[].name') || { echo "FAILED: $r secrets"; continue; }
@@ -933,9 +933,9 @@ done
 Expected:
 - no `FAILED` line;
 - exactly one `ruleset` line for each in-scope repository, reading `main-merge-owner active` and a bypass list of one actor with `"actor_id":5`, `"actor_type":"RepositoryRole"` and `"bypass_mode":"pull_request"` (in any key order);
-- every `secret` line names a secret you know, and none is a token, key or app credential of yours that can write contents.
+- every `secret` line names a secret you know, and none is a token, key or app credential of yours that can write contents of a repository in scope. A fine-grained token limited to a repository outside the scope (one with no rulesets and no checkout under `~/Code`, such as a package tap a release writes to) cannot merge into one.
 
-A second `update` ruleset, another actor or mode, `null` for the list, or an enforcement other than `active` is drift: stop and tell the line. A credential that can write contents: delete it in the repository's Settings > Secrets and variables > Actions, or replace it with one without Contents write. Tell the line the number of `ruleset` lines and how many secrets it printed and you removed. Merge 3's check judges the `update` rulesets itself; its pull request opens only after that check, run by you, exits 0 (spec section 6).
+A second `update` ruleset, another actor or mode, `null` for the list, or an enforcement other than `active` is drift: stop and tell the line. A credential that can write contents of a repository in scope: delete it in the repository's Settings > Secrets and variables > Actions, or replace it with one without Contents write. Tell the line the number of `ruleset` lines and how many secrets it printed and you removed. Merge 3's check judges the `update` rulesets itself; its pull request opens only after that check, run by you, exits 0 (spec section 6).
 
 If it fails: the first command's remaining rows say which step to repeat.
 
@@ -947,7 +947,7 @@ Start a **new** Claude Code session after step 10's apply (the tokens are read f
 ./tests/run.sh live-agent-auth
 ```
 
-Expected: `AUTH=READY`, `GITLAB_SSH=READY`, exit 0, and no `GITHUB_SSH` key: merge 2 removes that probe. **UNVERIFIED:** the suite's exact keys after merge 2; the line's report lists them. `KEY_REJECTED` for GitLab means the sandbox key was refused.
+Expected: `AUTH=READY`, `GITLAB_SSH=READY`, exit 0, and no `GITHUB_SSH` key: merge 2 removes that probe. Measured on 2026-11-16: those two keys, 2/2. `KEY_REJECTED` for GitLab means the sandbox key was refused.
 
 The session's own transport (the wrapper and configuration git uses, not a bare `ssh`):
 
@@ -997,7 +997,7 @@ The check as the agent:
 ~/.local/share/chezmoi/.scripts/forge-protection.sh check; echo "exit $?"
 ```
 
-Expected: the GitLab rows `ok`, and every GitHub row `unreadable` with "ruleset <id> does not show its bypass list to this login": GitHub shows a ruleset's bypass list only to an admin, and the agent token has no Administration, so the check cannot prove the list empty from a session. That is not a defect of the protection: step 14's run from your own terminal is the proof; tell the line what the rows read. The Azure rows will probably read `unreadable` (the first "no answer within 20s", the rest "az did not answer earlier in this run") while `az` still hangs from a session: that is the known hang, and it is why the exit-0 proof of step 14 comes from your own terminal. If the session shows `excepted 0` while the file has lines, the sandbox may not read it (UNVERIFIED); that is not a defect of the protection.
+Expected (measured on 2026-11-16): the GitLab and GitHub rows `ok` or `excepted`. GitHub shows a ruleset's bypass list to a token of an admin's account even without the Administration permission, so the session's check judges `main-merge-owner` in full. The Azure rows read `unreadable`, because `az` fails from a session (a traceback on 2026-11-16, a hang before), so the exit status is 1 and the exit-0 proof of step 14 comes from your own terminal. The session reads your exceptions file: its `excepted` count equals the number of URL lines in the file.
 
 If it fails: a GitHub row `unreadable` with `HTTP 403` or `404` for the agent means the token cannot read that repository's rules, or the repository is outside the token's selection (step 10).
 
@@ -1122,7 +1122,7 @@ Recorded so you can overrule any of them; none is a code change in merge 2.
 
 ## What stays owed after these steps
 
-- **Merge 3** (group E): deleting the hidden-spelling machinery, the default-branch push going from ask to deny, the check's `main-merge-owner` and the `global.md` wording (section 4). Step 17 passed on 2026-11-15 and its pull request opens; steps 18 to 20 remain. Until it is applied, the full local guard stays live.
+- **Merge 3** (group E): deleting the hidden-spelling machinery, the default-branch push going from ask to deny, the check's `main-merge-owner` and the `global.md` wording (section 4). Merged on 2026-11-15 (pull request #25) and applied; steps 14 to 19 are done, step 20 remains.
 - **A private in-scope repository on Free** (step 8) is made public, covered by Pro or taken out of agent work before merge 3.
-- **The line's checkout** stays until merge 3 is merged; the final report gives the `wt-rm <branch>` command to run then, and nothing before.
+- **The line's checkout** stays until the pull request recording steps 14 to 19 is merged; then step 20, `wt-rm feat/forge-push-protection`.
 - If your steps have not happened when merge 2 is done, the line stops there and is reported as waiting on you.

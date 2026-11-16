@@ -4,7 +4,7 @@
 
 **Status:** Implemented (merge 3, branch feat/forge-push-protection)
 
-> **Completed on 2026-11-15. Do not run this plan again.** The pull request is held until the verification of spec section 6.
+> **Completed on 2026-11-15. Do not run this plan again.** Merged on 2026-11-15 in pull request #25 (`7aacfd0`).
 
 **Goal:** Retire the guard's spelling hunt, make every push of a default branch a silent deny, make
 `forge-protection check` judge `main-merge-owner`, and bring the instructions and Michael's steps
