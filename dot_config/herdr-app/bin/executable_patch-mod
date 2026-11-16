@@ -11,26 +11,26 @@ text = open(path, encoding="utf-8").read()
 
 EDITS = {
     "spaces": [
-        # 1. Load the badge logic.
+        # 1. Load the phase data (phases.js) and the row drawing built on it (rows.js).
         ('} from "herdr";\n',
-         '} from "herdr";\nimport { Phases } from "./phases.js";\n'),
-        # 2. Start it with the view.
+         '} from "herdr";\nimport { Phases } from "./phases.js";\nimport { Rows } from "./rows.js";\n'),
+        # 2. Start them with the view.
         ('    cx.timer.every(250, (cx) => this.checkNew(cx));\n',
-         '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n'),
+         '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n    this.rows = new Rows(this.phases);\n'),
         # 3. A worktree under its repository is labelled by its branch, and each row ends on its
-        #    badge. The tail is phases.tail: the mod's gitTail for a nested worktree, its own
+        #    badge. The tail is rows.tail: the mod's gitTail for a nested worktree, its own
         #    drawing (type prefix dimmed, the repository's default branch hidden) for other rows.
         ('.text_color(t.foreground).child(w.name))\n'
          '          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),\n',
-         '.text_color(t.foreground).child(this.phases.label(w, g, tree, t)))\n'
-         '          .child(g ? this.phases.tail(this, w, g, tree, t) : div().flex_1())\n'
-         '          .children(this.phases.end(w.id, t)),\n'),
+         '.text_color(t.foreground).child(this.rows.label(w, g, tree, t)))\n'
+         '          .child(g ? this.rows.tail(this, w, g, tree, t) : div().flex_1())\n'
+         '          .children(this.rows.end(w.id, t)),\n'),
         # 4. A right-click opens the menu with the worktree items.
         ('openOverlay({ mod: "menu", kind: "popup"',
          'openOverlay({ mod: "michael-menu", kind: "popup"'),
         # 5. A repository's worktree rows fold away (the toggle is in the row's end, above).
         ('    const rows = this.ordered();\n',
-         '    const rows = this.phases.fold(this.ordered(), collapsed);\n'),
+         '    const rows = this.rows.fold(this.ordered(), collapsed);\n'),
         # 6. A nested worktree row has no branch glyph: sitting under its repository says it, and
         #    the label gets the room. The indent stays, a little past the repository's own name.
         ('el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).flex_none().text_color(t.dim))',

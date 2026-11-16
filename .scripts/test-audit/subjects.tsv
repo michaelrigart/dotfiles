@@ -109,6 +109,7 @@ dot_config/herdr-app/mods/resume/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/usage/main.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/mods/usage/mod.json	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/patches/phases.js	data	-	herdr-app,herdr-app-xreview
+dot_config/herdr-app/patches/rows.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/patches/worktree-actions.js	data	-	herdr-app,herdr-app-xreview
 dot_config/herdr-app/programs.json.tmpl	data	herdr-app	herdr-app,herdr-app-xreview
 dot_config/herdr-app/themes/tokyo-night.json	data	-	herdr-app,herdr-app-xreview

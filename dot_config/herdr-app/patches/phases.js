@@ -7,7 +7,8 @@
 // app's own close, which asks first. Nothing closes by itself.
 //
 // Source of truth: ~/.config/herdr-app/patches/phases.js. bin/respaces copies it into the
-// michael-spaces clone of Herdr's `spaces` mod; edit it here, then run respaces.
+// michael-spaces clone of Herdr's `spaces` mod; edit it here, then run respaces. How the rows
+// are drawn from this data (labels, folding, the tail) is rows.js.
 //
 // When it looks:
 //   - at once when a repository's .git changes (a commit, a checkout, a push, a fetch);
@@ -15,7 +16,7 @@
 //     or for two minutes after a push, otherwise every 60 s;
 //   - local state at least every 60 s, for edits that touch nothing under .git.
 
-import { div, svg } from "gpui-kit";
+import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, exec, home, appHome, notify, nextCommand, watchFolder } from "herdr";
 
@@ -26,7 +27,6 @@ const HOT = 15000; // ...or this long while a pipeline runs or just after a push
 const AFTER_PUSH = 120000; // how long a moved remote ref keeps its repository hot
 const CALL = 20000; // one git, glab or gh call
 const DEFAULT = 600000; // a repository's default branch is read again after this long
-const SIDE_MIN = 48; // the spaces mod's own minimum for a row's tail
 
 const GH_FAIL = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
 const GH_PEND = ["QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED", "REQUESTED", "WAITING"];
@@ -74,8 +74,8 @@ function glCi(status) {
 // The colour says whether you have to act: red needs you (CI failed; "not wt", made outside
 // wt), blue waits on others (review), yellow is in progress (CI running), green is passed;
 // draft and merged are quiet. No other badge uses red, blue or yellow.
-const tones = (t) => ({ draft: t.muted, review: t.ansi4, merged: t.dim, "not wt": t.blocked });
-const marks = (t) => ({ ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["◐", t.ansi3] });
+export const tones = (t) => ({ draft: t.muted, review: t.ansi4, merged: t.dim, "not wt": t.blocked });
+export const marks = (t) => ({ ok: ["✓", t.ansi2], fail: ["✕", t.ansi1], run: ["◐", t.ansi3] });
 
 export class Phases {
   // `cx`: the view's, for its timer; every later callback gets its own.
@@ -90,9 +90,6 @@ export class Phases {
     this.seen = "";
     this.at = 0;
     this.defaults = {}; // git common dir -> { at, branch }: origin's default branch, null when unknown
-    this.kids = {}; // repo -> how many worktree spaces sit under it, folded or not
-    this.owner = {}; // repo -> the space whose row they follow (and which carries the fold toggle)
-    try { this.hidden = new Set(JSON.parse(localStorage.getItem("repos.folded") ?? "[]")); } catch { this.hidden = new Set(); }
     cx.timer.every(TICK, (cx) => this.tick(cx));
     this.tick(cx);
     // "michael-spaces.refresh" in keys.json: look everything up now, whatever the TTL. For
@@ -274,129 +271,6 @@ export class Phases {
       mrs[m.sourceBranch] = { state: "open", ref: `!${m.iid}`, draft: m.draft === true, ci: glCi(m.pipelines?.nodes?.[0]?.status) };
     }
     return mrs;
-  }
-
-  // A worktree row under its repository: the branch is the label when the space still has the
-  // name wt gave it (bin/open-space names it after the checkout folder, `<repo>-<branch with /
-  // as ->`), so the name and the branch are not both shown. A renamed space keeps its name.
-  // Returns the branch, or null to leave the row as it is.
-  asBranch(w, g, tree) {
-    if (!tree || !g?.branch || g.branch === "(detached)") return null;
-    const name = w.name.toLowerCase();
-    const automatic = [g.branch, `${g.name}-${g.branch.replaceAll("/", "-")}`];
-    return automatic.some((a) => a.toLowerCase() === name) ? g.branch : null;
-  }
-
-  // The row's name: the branch with its type (fix/, feat/, ...) dimmed, or the space's name.
-  // A merged worktree is finished and only waits for wt-rm, so its name is muted as well.
-  label(w, g, tree, t) {
-    const branch = this.asBranch(w, g, tree);
-    const merged = this.by[w.id]?.phase === "merged";
-    const cut = branch ? branch.indexOf("/") + 1 : 0;
-    if (!merged && !cut) return branch ?? w.name;
-    const name = (text) => (merged ? div().min_w(0).truncate().text_color(t.muted).child(text) : div().min_w(0).truncate().child(text));
-    if (!cut) return name(branch ?? w.name);
-    return h_flex().min_w(0)
-      .child(div().flex_none().text_color(t.dim).child(branch.slice(0, cut)))
-      .child(name(branch.slice(cut)));
-  }
-
-  // The tail after a row's name. A nested worktree: the mod's own gitTail, given the branch as
-  // its name when the label already shows it. Any other row: the same thing drawn here, with the
-  // branch's type (feature/, fix/, ...) dimmed, and the repository's own default branch hidden
-  // (main and master only while it is unknown). Keep in step with the spaces mod's gitTail.
-  tail(host, w, g, tree, t) {
-    if (tree) return host.gitTail(g, tree, this.asBranch(w, g, tree) ?? w.name, t);
-    const raw = g.branch ?? "detached";
-    const [on, dir] = JSON.parse(g.repo);
-    const known = on ? null : this.defaults[dir]?.branch;
-    const same = (a) => a.toLowerCase() === w.name.toLowerCase();
-    const hide = same(raw) || (known ? raw === known : raw === "main" || raw === "master");
-    const repo = same(g.name) ? "" : g.name;
-    const cut = raw.indexOf("/") + 1;
-    const text = (s, c) => div().min_w(0).truncate().text_color(c).child(s);
-    return h_flex().flex_auto().min_w(repo || !hide ? SIDE_MIN : 0).gap(5).justify_end().items_center().text_size(11.5).text_color(t.dim)
-      .when(Boolean(repo), (el) => el.child(text(hide ? repo : `${repo} ·`, t.dim)))
-      .when(!hide && Boolean(cut), (el) => el.child(h_flex().min_w(0).gap(0)
-        .child(div().flex_none().text_color(t.dim).child(raw.slice(0, cut)))
-        .child(text(raw.slice(cut), t.muted))))
-      .when(!hide && !cut, (el) => el.child(text(raw, t.muted)))
-      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`↑${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`↓${g.behind}`)));
-  }
-
-  // The rows the list draws: a folded repository's worktree spaces are left out. The narrow
-  // rail has no toggle, so it keeps them. Also notes, per repository, how many worktrees
-  // follow which row.
-  fold(rows, rail) {
-    this.kids = {};
-    this.owner = {};
-    this.under = {};
-    let last = null;
-    for (const r of rows) {
-      if (!r.tree) { last = r; continue; }
-      this.kids[r.g.repo] = (this.kids[r.g.repo] ?? 0) + 1;
-      (this.under[r.g.repo] ??= []).push(r.w);
-      if (last) this.owner[r.g.repo] = last.w.id;
-    }
-    if (rail) return rows;
-    return this.mergedLast(rows).filter((r) => !r.tree || !this.hidden.has(r.g.repo));
-  }
-
-  // Under each repository the merged worktrees come last (they only wait for wt-rm), the rest
-  // and the merged ones each in their stored order. Only what is drawn: the order Herdr keeps,
-  // and space.move works from, is not touched.
-  mergedLast(rows) {
-    const merged = (r) => this.by[r.w.id]?.phase === "merged";
-    const out = [];
-    for (let i = 0; i < rows.length;) {
-      if (!rows[i].tree) { out.push(rows[i++]); continue; }
-      let end = i;
-      while (end < rows.length && rows[end].tree) end++;
-      const run = rows.slice(i, end);
-      out.push(...run.filter((r) => !merged(r)), ...run.filter(merged));
-      i = end;
-    }
-    return out;
-  }
-
-  // The most urgent thing among a folded repository's hidden worktrees, as [glyph, colour,
-  // what it says], or null: CI failed, then a review waiting, then the space you are in.
-  urgent(repo, t) {
-    const hidden = this.under[repo] ?? [];
-    const by = hidden.map((w) => this.by[w.id]).filter(Boolean);
-    if (by.some((r) => r.ci === "fail")) return [...marks(t).fail.slice(0, 2), "A hidden worktree's CI failed"];
-    if (by.some((r) => r.phase === "review")) return ["review", tones(t).review, "A hidden worktree waits for review"];
-    if (hidden.some((w) => w.active)) return ["◆", t.foreground,"The space you are in is hidden"];
-    return null;
-  }
-
-  // The fold toggle on the row a repository's worktrees follow: a chevron, and how many are
-  // hidden while folded, with the most urgent state among them.
-  toggle(id, t) {
-    const repo = Object.keys(this.owner).find((k) => this.owner[k] === id);
-    const n = this.kids[repo];
-    if (!n) return [];
-    const folded = this.hidden.has(repo);
-    const flag = folded ? this.urgent(repo, t) : null;
-    return [h_flex().id(`fold-${id}`).flex_none().gap(4).px(4).items_center().rounded(4).text_size(11.5).text_color(t.dim)
-      .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .tooltip(folded ? `Show ${n} worktree${n === 1 ? "" : "s"}${flag ? `. ${flag[2]}` : ""}` : "Hide worktrees")
-      .when(Boolean(flag), (el) => el.child(div().text_color(flag[1]).child(flag[0])))
-      .on_click((_e, cx) => {
-        cx.stop_propagation();
-        folded ? this.hidden.delete(repo) : this.hidden.add(repo);
-        try { localStorage.setItem("repos.folded", JSON.stringify([...this.hidden])); } catch {}
-        cx.notify();
-      })
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .when(folded, (el) => el.child(String(n)))
-      .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none())];
-  }
-
-  // Everything a space's row ends on.
-  end(id, t) {
-    return [...this.badge(id, t), ...this.toggle(id, t)];
   }
 
   // What a space's row ends on: nothing, or one element.
