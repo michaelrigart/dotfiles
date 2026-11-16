@@ -339,7 +339,25 @@ export class Phases {
       (this.under[r.g.repo] ??= []).push(r.w);
       if (last) this.owner[r.g.repo] = last.w.id;
     }
-    return rail ? rows : rows.filter((r) => !r.tree || !this.hidden.has(r.g.repo));
+    if (rail) return rows;
+    return this.mergedLast(rows).filter((r) => !r.tree || !this.hidden.has(r.g.repo));
+  }
+
+  // Under each repository the merged worktrees come last (they only wait for wt-rm), the rest
+  // and the merged ones each in their stored order. Only what is drawn: the order Herdr keeps,
+  // and space.move works from, is not touched.
+  mergedLast(rows) {
+    const merged = (r) => this.by[r.w.id]?.phase === "merged";
+    const out = [];
+    for (let i = 0; i < rows.length;) {
+      if (!rows[i].tree) { out.push(rows[i++]); continue; }
+      let end = i;
+      while (end < rows.length && rows[end].tree) end++;
+      const run = rows.slice(i, end);
+      out.push(...run.filter((r) => !merged(r)), ...run.filter(merged));
+      i = end;
+    }
+    return out;
   }
 
   // The most urgent thing among a folded repository's hidden worktrees, as [glyph, colour,
