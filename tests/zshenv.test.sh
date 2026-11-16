@@ -138,6 +138,11 @@ got=$(probe '/usr/bin/printenv TERM' TERM=xterm-no-such-terminal)
 got=$(probe 'print -r -- $TERM ${TERMINFO_DIRS-unset}' TERM=xterm)
 [ "$got" = "xterm unset" ] && _pass "a known TERM is left alone" \
   || _fail "a known TERM is left alone" "$got"
+# probe runs /bin/zsh, whose ncurses keeps its first failed lookup: its line editor cannot use
+# Ghostty's entry once started (Homebrew zsh can; tests/zshrc.test.sh drives that one).
+got=$(probe 'print -r -- $TERM' TERM=xterm-ghostty)
+[ "$got" = xterm-256color ] && _pass "an interactive /bin/zsh falls back from xterm-ghostty to xterm-256color" \
+  || _fail "an interactive /bin/zsh falls back from xterm-ghostty to xterm-256color" "${got:-unset}"
 got=$(probe 'print -r -- $TERM ${TERMINFO_DIRS-unset}' TERM=xterm-ghostty TERMINFO="$GHOSTTY_TI")
 [ "$got" = "xterm-ghostty unset" ] && _pass "a local Ghostty tab's TERM, found through its TERMINFO, is left alone" \
   || _fail "a local Ghostty tab's TERM, found through its TERMINFO, is left alone" "$got"
