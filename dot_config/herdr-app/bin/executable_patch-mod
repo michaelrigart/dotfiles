@@ -30,6 +30,10 @@ EDITS = {
         # 5. A repository's worktree rows fold away (the toggle is in the row's end, above).
         ('    const rows = this.ordered();\n',
          '    const rows = this.phases.fold(this.ordered(), collapsed);\n'),
+        # 6. A nested worktree row has no branch glyph: sitting under its repository says it, and
+        #    the label gets the room. The indent stays, a little past the repository's own name.
+        ('el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).flex_none().text_color(t.dim))',
+         'el.pl(36)'),
     ],
     "menu": [
         # 1. Load the worktree actions.
