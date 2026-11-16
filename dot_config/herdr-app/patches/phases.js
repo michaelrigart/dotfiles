@@ -270,14 +270,17 @@ export class Phases {
   }
 
   // The row's name: the branch with its type (fix/, feat/, ...) dimmed, or the space's name.
+  // A merged worktree is finished and only waits for wt-rm, so its name is muted as well.
   label(w, g, tree, t) {
     const branch = this.asBranch(w, g, tree);
-    if (!branch) return w.name;
-    const cut = branch.indexOf("/") + 1;
-    if (!cut) return branch;
+    const merged = this.by[w.id]?.phase === "merged";
+    const cut = branch ? branch.indexOf("/") + 1 : 0;
+    if (!merged && !cut) return branch ?? w.name;
+    const name = (text) => (merged ? div().min_w(0).truncate().text_color(t.muted).child(text) : div().min_w(0).truncate().child(text));
+    if (!cut) return name(branch ?? w.name);
     return h_flex().min_w(0)
       .child(div().flex_none().text_color(t.dim).child(branch.slice(0, cut)))
-      .child(div().min_w(0).truncate().child(branch.slice(cut)));
+      .child(name(branch.slice(cut)));
   }
 
   // The rows the list draws: a folded repository's worktree spaces are left out. The narrow
