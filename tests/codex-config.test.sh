@@ -71,6 +71,7 @@ prevent_idle_sleep = false
 '
 hasnt '^\s*js_repl'                 "js_repl deleted even when the live file sets it"
 has '^\s*memories = true'           "memories forced on even when the live file says false"
+tq "d['memories']['version']" "'v1'" "the Codex memory pipeline is pinned to v1 (spec 2026-11-15-hercules-agent-machine)"
 has '^\s*prevent_idle_sleep = true' "prevent_idle_sleep forced on"
 has '^\s*hooks = true'              "agent hooks forced on for the Herdr integration"
 

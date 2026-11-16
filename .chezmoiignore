@@ -110,6 +110,9 @@ tests/
 !.claude/skills/clarity
 !.claude/skills/merge-request
 !.claude/skills/second-brain
+!.claude/projects/
+.claude/projects/*
+!.claude/projects/.stignore
 
 .codex/*
 !.codex/AGENTS.md

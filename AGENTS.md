@@ -20,8 +20,7 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   Alfred: ignore the directory contents, then re-include one file at a time, one level at a
   time — a re-include cannot reach inside an ignored directory. A new managed file under
   those trees needs its own `!` entry, or `chezmoi add` silently drops it.
-- `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `tests/`, `.scripts/` are ignored so
-  they never land in `$HOME`.
+- `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `tests/`, `.scripts/` are ignored, never in `$HOME`.
 - Edit the source in a `wt` checkout (never in the main one); it deploys once merged, when
   Michael runs `chezmoi apply`. Never hand-edit a deployed file. Agents preview with
   `command chezmoi cat <target>` and `command chezmoi apply --dry-run --verbose`:
@@ -84,8 +83,8 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 - The global pre-push hook and its secret scan live in `dot_config/git/hooks/` and deploy to
   `~/.config/git/hooks` (`core.hooksPath`, which replaces each repository's `.git/hooks`; the hook
   runs the repository's own one after its scan). Edit the source; never the deployed copy.
-- `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
-  mode `755`, and the shebang is load-bearing — see Testing.
+- `tests/` holds every test suite, one `<subject>.test.sh` per script, mode `755`; the shebang is
+  load-bearing (see Testing).
 - `layout.sh`, `tab-goto.sh` and `phase.sh` thread `--session` into every herdr call and never
   call `command herdr` bare: inside a Herdr pane `HERDR_SOCKET_PATH` outranks `HERDR_SESSION`,
   so a bare call targets the pane's own session. `layout.sh` starts a server whenever
@@ -96,9 +95,10 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   as `skill-update` issues. Closing one without a bump declines that release; it is never filed
   again. To bump one, follow the procedure at the top of `.chezmoiexternal.toml`.
 - Permissions: `~/.ssh` 700, private keys 600, public keys 644, sensitive configs 600.
-- Brewfile: only tools actually in use. Add packages by editing
-  `dot_config/homebrew/Brewfile.tmpl` in a `wt` checkout; once merged, Michael runs
-  `chezmoi apply` and `brew bundle install --file ~/.config/homebrew/Brewfile`.
+- Brewfile: only tools actually in use. Edit `dot_config/homebrew/Brewfile.tmpl` in a `wt` checkout;
+  once merged, Michael runs `chezmoi apply` and `brew bundle install --file ~/.config/homebrew/Brewfile`.
+- `~/.claude/projects/.stignore` is Syncthing's scope for Claude memory, and `codex-memory-share` is
+  the only writer into `~/.codex/memories` besides Codex (spec 2026-11-15-hercules-agent-machine).
 - `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`, because `zshenv`
   puts `~/.local/bin` in front of Homebrew after `brew shellenv` (which prepends);
   `tests/zshenv.test.sh` pins the order. Interactive starts attach to the

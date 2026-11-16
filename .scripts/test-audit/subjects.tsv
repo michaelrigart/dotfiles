@@ -35,6 +35,7 @@ Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/From 
 Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/info.plist	data	alfred-relay	alfred-relay
 Library/Application Support/Claude/modify_private_claude_desktop_config.json	bash	claude-desktop-config	claude-desktop-config
 Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl	data	codex-daemon	codex-daemon
+Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	codex-memory-share	codex-memory-share
 Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	herdr-phase	herdr-phase
 dot_agents/skills/merge-request/SKILL.md	prose	agent-skills	agent-skills
 dot_agents/skills/second-brain/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills
@@ -141,6 +142,7 @@ dot_local/bin/executable_agent-text-scan	py	agent-text-scan	agent-text-scan,xrev
 dot_local/bin/executable_codex	sh	codex-launcher	codex-launcher,codex-code-mode-host,hook-path
 dot_local/bin/executable_codex-code-mode-host	sh	codex-code-mode-host	codex-code-mode-host,hook-path
 dot_local/bin/executable_codex-daemon	sh	codex-daemon	codex-daemon,codex-code-mode-host,hook-path
+dot_local/bin/executable_codex-memory-share	bash	codex-memory-share	codex-memory-share
 dot_local/bin/executable_ha-mcp	sh	ha-mcp	ha-mcp,hook-path
 dot_local/bin/executable_review	bash	review	review,hook-path
 dot_local/bin/executable_sdd-clean	bash	sdd-clean	sdd-clean,hook-path
