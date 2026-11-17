@@ -63,15 +63,17 @@ brew "git"
 brew "git-delta"
 brew "gitleaks"                        # secret scan in ~/.config/git/hooks/pre-push, and before a push guard ask
 brew "glab"                            # GitLab CLI; dot_config/bundler/private_config.tmpl templates GitLab tokens
+brew "gmp"                             # the mise-built Ruby links it (libruby, so no ruby starts without it)
 brew "herdr"                           # agent multiplexer; the dev() function in zsh/functions + ~/.config/herdr
 brew "iperf3"                          # edge-node bandwidth testing
-brew "jemalloc"                        # Rails
+brew "jemalloc"                        # the mise-built Ruby links it (libruby; RUBY_CONFIGURE_OPTS in zsh/zshenv)
 brew "jpegoptim"                       # michaelrigart Rakefile:82 image optimization
 brew "jq"
 brew "k9s"
 brew "lazygit"
 brew "lazysql"
 brew "libpq"                           # Rails / pg
+brew "libyaml"                         # the mise-built Ruby links it (psych: every YAML load, so every Rails boot)
 brew "michaelrigart/tap/tagteam"       # multi-account switcher for the agent CLIs (~/Code/tagteam)
 brew "mise"
 brew "mono-libgdiplus"                 # Iris.WeInspect Reporting Service — System.Drawing.Common on macOS
@@ -80,6 +82,7 @@ brew "neovim"
 brew "netbird"                         # NetBird client (homebrew-core): reach hercules away from home;
                                        # daemon: sudo netbird service install
 brew "nmap"                            # supplies `ncat`, which dot_local/bin/executable_ssh-sandbox-proxy uses
+brew "openssl@4"                       # the mise-built Ruby links it (the openssl extension, and puma's)
 brew "oxipng"                          # michaelrigart Rakefile:88 PNG optimization
 brew "ripgrep"                         # `rg`; also a hard dependency of the codex cask
 brew "s3cmd"
