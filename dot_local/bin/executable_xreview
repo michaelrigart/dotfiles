@@ -823,8 +823,9 @@ record_pending() {
 # Returns 1 when a receipt could not be written. Each entry it built is left in entries_built,
 # one per line, for the caller to judge.
 record_receipts() {
-  local tier verdict count repos repo entry err failed=0
+  local tier verdict count repos repo entry err at failed=0
   entries_built=""
+  at="$(ledger now)" || at=""
   tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
   verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
   count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
@@ -836,8 +837,8 @@ record_receipts() {
     [ -n "$repo" ] || continue
     err=""
     if ! entry="$(jq -c --arg r "$repo" --arg thread "$1" --arg turn "$3" --arg tier "$tier" \
-                     --arg verdict "$verdict" --argjson findings "${count:-0}" --argjson x "${6:-null}" \
-           '{v:2,kind:"receipt",nonce,dispatched_at,checkpoint,verdict:$verdict,findings:$findings,
+                     --arg verdict "$verdict" --arg at "$at" --argjson findings "${count:-0}" --argjson x "${6:-null}" \
+           '{v:2,kind:"receipt",nonce,dispatched_at,collected_at:$at,checkpoint,verdict:$verdict,findings:$findings,
              thread:$thread,turn:$turn,tier:$tier,
              targets:[.targets | to_entries[] | select(.value.repo == $r) | .key as $i | .value
                       + (if $x then {missing:$x.missing[$i]} else {} end)

@@ -512,6 +512,11 @@ put r1 pending >/dev/null
 is "F3 a pending review alone denies" "$(gate)" "$(latest 'pending r1')"
 put r1 receipt approve >/dev/null
 is "F4 an approved full change allows" "$(gate)" allow
+# F4 is the receipt shape from before collected_at existed: keep it, so that shape keeps opening the gate.
+put r1c pending >/dev/null
+L append "$GC" "$(jq -nc --arg at "$(cat "$ROOT/at.r1c")" --argjson t "$GT" \
+  '{v:2,kind:"receipt",nonce:"r1c",dispatched_at:$at,collected_at:"2026-11-20T10:00:00.000000Z",checkpoint:"pre-merge",targets:[$t],verdict:"approve",findings:0,thread:"t",turn:"u",tier:""}')" >/dev/null
+is "F4 a receipt that records collected_at allows as one without it does" "$(gate)" allow
 L decide "$G" main main feature >/dev/null; rc=$?
 is "F5 decide exits 0 on allow" "$rc" 0
 git -C "$G" branch release main
