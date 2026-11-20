@@ -64,7 +64,9 @@ Where each change lands, increment 1; Safety, "The ledger change is in merge too
 - [ ] **Step 5: Preview the target, filtered.**
   `command chezmoi --source ~/.local/share/chezmoi-feat-workflow-v2 cat ~/.claude/settings.json | jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN) | .cleanupPeriodDays'`;
   expected: `90`.
-- [ ] **Step 6: Commit.** `Keep Claude Code transcripts for 90 days`
+- [ ] **Step 6: Revert check.** Set the value back to 30, see the Step 1 case fail, restore 90,
+  see it pass.
+- [ ] **Step 7: Commit.** `Keep Claude Code transcripts for 90 days`
 
 ### Task 2: A v2 receipt records when it was collected
 
@@ -81,8 +83,11 @@ Where each change lands, increment 1; Safety, "The ledger change is in merge too
 
 - [ ] **Step 1: Write the failing `xreview` cases.** After "F1 the receipt records the
   checkpoint named at dispatch": the receipt's `collected_at` matches
-  `^[0-9-]+T[0-9:]+\.[0-9]{6}Z$`, and it is not earlier than its `dispatched_at` (string
-  comparison). After the re-collect of the same nonce: the ledger still holds one receipt for
+  `^[0-9-]+T[0-9:]+\.[0-9]{6}Z$`, and it is the time of collection, not of dispatch. Pin that
+  with two clock readings in the ledger's format, one taken after the dispatch and just before
+  the `collect` call (after a `sleep 1`, so it is later than `dispatched_at`) and one just after
+  it: `before <= collected_at <= after` by string comparison, and `collected_at > dispatched_at`.
+  A receipt that copies `dispatched_at` fails both. After the re-collect of the same nonce: the ledger still holds one receipt for
   the nonce, with the same `collected_at`. In the sliced-collect case: the receipt has exactly
   one `collected_at`.
 - [ ] **Step 2: Write the ledger cases.** With `put`'s receipt shape plus
