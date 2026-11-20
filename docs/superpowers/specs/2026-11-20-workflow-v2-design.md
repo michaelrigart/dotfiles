@@ -1,6 +1,6 @@
 # Workflow v2: smaller increments, shorter fix chains, a merge state, an input rule
 
-**Status:** Approved
+**Status:** In progress (increment 1 of 3, on branch `feat/workflow-v2`)
 **Sign-off:** Michael, 2026-11-20, in the line's own pane, with the eight decisions under Decisions.
 Codex approved the spec in round 3 (xr-1795214348-4c57c9f3).
 **Date:** 2026-11-20
@@ -389,7 +389,7 @@ Each repository's `AGENTS.md` gets one line:
 
 - **What it is.** One list of work items, independent of any client, plus what waits on Michael.
   An item has a title, a `Why`, a `Done when` (for client work, the acceptance criteria agreed
-  with the client), and `Links` to the client's own tool (a Basecamp card for Viu More).
+  with the client), and `Links` to the client's own tool (a Basecamp card, for example).
 - **Where it lives.** A `Queue` folder in Michael's Obsidian vault, one note per item (his
   choice, 2026-11-20). Agents already write notes there, he reads it on his phone, and it needs
   no forge, token or new tool. One note per item keeps two lines from editing the same file. The
@@ -414,7 +414,9 @@ Each repository's `AGENTS.md` gets one line:
 - **Keep the data (solid).** `cleanupPeriodDays` goes from 30 to 90, so the trial's transcripts
   outlive the trial. Michael accepted the cost: more client code on disk for longer (I4). The
   `xreview` ledger records when a verdict was collected, so the time a review round takes can be
-  measured; today it cannot.
+  measured; today it cannot. The time is when the verdict was collected, which is at or after
+  the moment the reviewer finished, so a round time is an upper bound; where one review has
+  receipts in several repositories, the comparison takes the earliest.
 - **Versions.** Transcripts and Codex rollouts already record the tool and model version of every
   entry. The comparison reads them from there. Nothing new is logged.
 - **The trial.** It starts on the day Michael applies the switch, and runs four weeks. Two weeks

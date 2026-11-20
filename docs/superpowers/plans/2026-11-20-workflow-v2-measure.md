@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. In this repository the `plan-run` skill overrides it.
 
-**Status:** In progress
+**Status:** Implemented (completed 2026-11-21 on branch `feat/workflow-v2`; do not run again)
 
 **Goal:** Claude Code keeps transcripts for 90 days, and every v2 `xreview` receipt records when
 its verdict was collected.
