@@ -39,7 +39,8 @@ a dedicated Linux VM, because hercules also holds agent sessions, synced agent m
   Maintainer in one project and gets a `glrt-` token shown once; "Lock to current projects" stops
   any other project enabling it; project runners are not enabled for forks. By default a member
   of the parent project may run a fork's merge-request pipeline in the parent. A job with no
-  matching runner stays pending and is dropped after an hour.
+  matching runner stays pending and is dropped after an hour; a runner counts as online for about
+  two hours after its last contact, so a stopped runner's jobs wait longer.
 - **OrbStack's rules** (docs.orbstack.dev): Docker and every machine share one VM and kernel,
   which "isn't a substitute for a full VM against actively malicious code"; the Mac's files are
   shared into that VM and any container can bind-mount `/Users`; containers reach the Mac's
@@ -343,7 +344,8 @@ fallback applies.
 
 ## Turning it off
 
-- For a while: `limactl stop ci`. Jobs tagged `hercules` then wait and are dropped after an hour;
+- For a while: `limactl stop ci`. Jobs tagged `hercules` then wait, and are dropped about an hour
+  after GitLab stops counting the runner as online (roughly two to three hours in all);
   `limactl start ci` brings it back.
 - With CI still running: set the project variable `RUNNER_TAG` to `saas-linux-small-amd64`,
   created **unprotected** (a protected variable reaches only pipelines on protected branches
