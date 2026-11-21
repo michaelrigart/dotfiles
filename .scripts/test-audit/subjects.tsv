@@ -63,6 +63,7 @@ dot_claude/skills/api-review/SKILL.md	prose	claude-settings	claude-settings
 dot_claude/skills/cross-review/SKILL.md	prose	xreview-skill	xreview-skill,agent-instructions,claude-settings,review
 dot_claude/skills/live-feedback/SKILL.md	prose	live-feedback-skill	live-feedback-skill,claude-settings
 dot_claude/skills/plan-run/SKILL.md	prose	agent-instructions	agent-instructions,claude-settings
+dot_claude/skills/queue/SKILL.md	prose	agent-instructions	agent-instructions,claude-settings
 dot_claude/skills/symlink_clarity	data	agent-skills	agent-skills
 dot_claude/skills/symlink_design-records	data	agent-skills	agent-skills
 dot_claude/skills/symlink_merge-request	data	agent-skills	agent-skills
