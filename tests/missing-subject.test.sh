@@ -73,6 +73,7 @@ missing codex-code-mode-host  dot_local/bin/executable_codex-daemon
 missing codex-config          dot_codex/modify_private_config.toml
 missing codex-config          dot_codex/modify_private_hooks.json
 missing codex-memory-share    dot_local/bin/executable_codex-memory-share
+missing ci-runner    dot_config/ci-runner/lima.yaml
 missing dev                   dot_config/zsh/functions
 missing dev                   dot_config/herdr/executable_layout.sh
 missing dev                   dot_config/herdr/executable_tab-goto.sh
