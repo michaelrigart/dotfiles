@@ -1,6 +1,6 @@
 ---
 name: merge-request
-description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding a dependency, or committing a fix for a bug that already merged to the default branch. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, the dependency rule, the merge state, the bug trailer and the Checks line.
+description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding or bumping a dependency, or committing a fix for a bug that already merged to the default branch. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, the dependency rule, the merge state, the bug trailer and the Checks line.
 ---
 
 # Merge requests
@@ -46,7 +46,7 @@ description: Use before opening any merge request, pull request or issue, with g
   lists are `glab issue list --author <login>` and `glab mr list --author <login>`; one item is
   `glab api "projects/:id/issues/<n>" | jq 'select(.author.username == "<login>") | .description'`,
   and its notes are
-  `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>"))'`
+  `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>" and (.system | not)) | .body)'`
   (`merge_requests` in place of `issues` for an MR). Azure DevOps: take `<name>` from
   `az account show --query user.name -o tsv` and list with
   `az repos pr list --creator <name> --query "[].{id:pullRequestId,title:title,description:description}"`;
@@ -66,8 +66,9 @@ description: Use before opening any merge request, pull request or issue, with g
   least seven days old, unless the bump fixes a vulnerability; the spec then says so. A tool
   added to the Brewfile or to mise is not a dependency for Sizing: it stays a small change, but
   its PR is always `check first`. In the merge state's `new dependencies` field, list every line
-  `change-facts <base>...<head>` prints under `dependency lines`, or write `none`; any line
-  there forces `check first`.
+  `change-facts <base>...<head>` prints under `dependency lines`, and any other line the change
+  adds to a dependency manifest the command does not know; or write `none`. Any line there
+  forces `check first`.
 
 ## The merge state
 
