@@ -87,6 +87,7 @@ D=$(cd "$(dirname "$0")/.." && pwd)
 if [ -s "$D/mvhook" ] && [[ $1 == */lock ]]; then
   rm -f "$1"; ln -s "$(cat "$D/mvhook")" "$1"; rm -f "$D/mvhook"
 fi
+if [[ $1 == */state.tsv.tmp ]]; then { cat "$(dirname "$1")/last-run" 2>/dev/null; echo END; } > "$D/claude.lastrun"; fi
 exec /bin/mv "$@"
 EOF
 cat > "$SD/bin/ps" <<'EOF'
@@ -761,6 +762,16 @@ ok "five undated fetched rows of ten pass" is "$(lr result)" ok
 fresh; { for i in 1 2 3 4 5 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-10 1
 failed "no row fetched"
 ok "a failed first run writes no state file" absent "$ST/state.tsv"
+for v in '`fetch failed`' 'Fetch failed' '**fetch failed**' 'fetch failed (403)' ' FETCH FAILED.' '`Fetch Failed`: timeout'; do
+  fresh; { fill 1 4 2026-12-06; for i in 5 6 7 8 9 10; do printf 'r%s - %s\n' "$i" "$v"; done; } | mkrows; srun 2026-12-10 1
+  failed "four rows fetched and six marked '$v'"
+  ok "the floor counts '$v' as a failed fetch" has "$ST/failures/$TODAY.txt" "only 4 of 10"
+  ok "no state file for '$v'" absent "$ST/state.tsv"
+done
+fresh; { fill 1 5 2026-12-06; printf 'r6 - `fetch failed`\nr7 - Fetch failed (403)\nr8 - **fetch failed**\nr9 - FETCH FAILED\nr10 - - fetch failed\n'; } | mkrows; srun 2026-12-10 1
+ok "five rows fetched pass when the rest are marked in other spellings" is "$(lr result)" ok
+ok "marked rows count a failure and store no item" is "$(strow r6)$(strow r7)$(strow r8)$(strow r9)" "$(printf 'r6\t-\t-\t-\t1\t-\t-r7\t-\t-\t-\t1\t-\t-r8\t-\t-\t-\t1\t-\t-r9\t-\t-\t-\t1\t-\t-')"
+ok "a title that merely contains the words later is a title" is "$(strow r10 | cut -f5)" 0
 
 fresh
 { fill 1 1 2026-05-24; fill 2 2 2026-05-25; printf 'r3 - Undated\n'; fill 4 10 2026-11-20; } | mkrows; srun 2026-11-23 0
@@ -792,6 +803,15 @@ ok "the source stays under Quiet sources, with the newer date" has "$(note)" "- 
 ok "an item 183 days old is still quiet: the mark stays" is "$(stf r1 6)" 2026-11-23
 { fill 1 1 2026-05-27; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-25 0
 ok "an item 182 days old is recent: the mark is cleared" is "$(stf r1 6)" -
+
+fresh
+{ fill 1 1 2026-04-01; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 0
+{ printf 'r1 - Undated now\n'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-30 0
+ok "an undated fetch leaves the quiet mark as it is" is "$(stf r1 6)" 2026-11-23
+ok "an undated fetch is not quiet" lacks "$(note)" "- r1 —"
+{ fill 1 1 2026-04-01; fill 2 10 2026-11-20; } | mkrows; srun 2026-12-07 0
+ok "old-dated again: not raised a second time" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+ok "and the mark is the first one" is "$(stf r1 6)" 2026-11-23
 
 fresh
 for d in 02 03 04; do
@@ -868,6 +888,21 @@ ok "and the state note no longer holds the first" lacks "$(note)" FIRSTRUN
 ok "the vault copy of the first run stays as it was" has "$INBOX/2026-11-23-weekly-research.md" FIRSTRUN
 ok "and holds nothing of the second" lacks "$INBOX/2026-11-23-weekly-research.md" SECONDRUN
 fresh
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
+{ fill 1 1 2025-01-01; printf 'r2 - fetch failed\n'; fill 3 10 2026-11-20; } | mkrows; srun 2026-11-23 0
+ok "a rerun the same day still shows the entry in its own note" is "$(upkeep_line)" "r1 (quiet)"
+ok "the day's vault copy is the first run's, with no entry" lacks "$INBOX/2026-11-23-weekly-research.md" "Source list upkeep"
+ok "an entry the vault never got is not marked reported" is "$(stf r1 6)" -
+ok "while the rest of the state still moves" is "$(stf r2 5)" 1
+{ fill 1 1 2025-01-01; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-24 0
+ok "the next day's run raises it" is "$(upkeep_line)" "r1 (quiet)"
+ok "and delivers it to that day's copy" has "$INBOX/2026-11-24-weekly-research.md" "r1 (quiet)"
+ok "and marks it" is "$(stf r1 6)" 2026-11-24
+fresh
+fresh; stub_reset; printf '%s\n' noinit > "$SD/mode"; go
+stub_reset; fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 0
+ok "last-run already says ok, with no failures, when the state is moved into place" is "$(grep -E '^(result=ok|failures_in_row=0)$' "$SD/claude.lastrun" | tr '\n' ' ')" "result=ok failures_in_row=0 "
+fresh
 fill 1 10 2026-11-20 | mkrows; srun 2026-11-22 0
 cp "$ST/state.tsv" "$T/state-before"; ls "$ST/notes" > "$T/notes-before"
 SMODE=roinbox; fill 1 10 2026-11-21 | mkrows; srun 2026-11-23 1
@@ -929,6 +964,8 @@ ok "a failure after the probe, the first: no notification" absent "$SD/osascript
 go; chmod 755 "$INBOX"
 ok "the second, when the inbox stopped taking the note: osascript is called" test -s "$SD/osascript.args"
 ok "and no note was written" absent "$FAILNOTE"
+ok "last-run says the vault is not writable" is "$(lr vault)" "not writable"
+ok "and so does the status" is "$(wra --status | sed -n 's/^vault inbox: //p')" "not writable"
 stub_reset
 
 echo "O. --status"

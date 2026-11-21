@@ -22,7 +22,7 @@ Safety is a fixed limit, not a goal to trade: never propose anything that weaken
 1. For each row under "Sources", list the items dated after that row's own "last checked" date. A
    page without dates is compared with the "newest item" recorded for the row. A row that has never
    been checked has no limit: take its newest item. A row you could not fetch is reported as
-   `fetch failed` in "Seen" and keeps its place in the list.
+   fetch failed in "Seen" (those two words alone, no quotes, no formatting) and keeps its place in the list.
 2. Follow an item's links one or two hops when it cites the thing that matters.
 3. A claim that carries a proposal is checked at its primary source: the paper, the changelog
    entry, the documentation page. If that check fails, label the claim unverified; an unverified
@@ -86,5 +86,5 @@ once each, in this order. Do not write any other level-two heading, and never wr
 - Each proposal is a level-three heading, `### `, numbered from 1. With none, write `None this week.`
   under "Proposals". An empty section says `None.`
 - "Seen" has one row for every id under "Sources", in that order, whether or not anything was new:
-  the newest item of the row, with its date and its title. Use `fetch failed` as the title of a row
-  you could not fetch. Keep a title on one line and replace any `|` in it with `/`.
+  the newest item of the row, with its date and its title. Use the two words fetch failed, alone, as the
+  title of a row you could not fetch. Keep a title on one line and replace any `|` in it with `/`.
