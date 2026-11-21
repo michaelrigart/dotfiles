@@ -21,6 +21,16 @@ from urllib.parse import urlsplit
 
 PORTS = (80, 443)
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
+# IPv6 transition prefixes: (network, name, the IPv4 address it embeds, or None). All are
+# refused; where an IPv4 address is embedded, the reason names why that one is off limits.
+TRANSITION = (
+    (ipaddress.ip_network("64:ff9b::/96"), "NAT64",
+     lambda ip: ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)),
+    (ipaddress.ip_network("64:ff9b:1::/48"), "local-use NAT64", None),
+    (ipaddress.ip_network("2002::/16"), "6to4",
+     lambda ip: ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)),
+    (ipaddress.ip_network("2001::/32"), "Teredo", None),
+)
 HEADER_LIMIT = 65536
 READ_TIMEOUT = 15
 CONNECT_TIMEOUT = 10
@@ -33,6 +43,11 @@ def bad_address(text):
     ip = ipaddress.ip_address(text.split("%", 1)[0])
     if ip.version == 6 and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
+    if ip.version == 6:
+        for network, name, embedded in TRANSITION:
+            if ip in network:
+                inner = bad_address(str(embedded(ip))) if embedded else None
+                return "%s address %s%s" % (name, ip, " embedding a " + inner if inner else "")
     for name in ("loopback", "private", "link_local", "multicast", "unspecified", "reserved"):
         if getattr(ip, "is_" + name):
             return "%s address %s" % (name.replace("_", "-"), ip)
@@ -132,7 +147,7 @@ class Handler(socketserver.BaseRequestHandler):
             upstream.settimeout(CONNECT_TIMEOUT)
             upstream.connect((detail, port))
         except OSError as err:
-            self.log("deny", host, port, "connect failed: %s" % err)
+            self.log("error", host, port, "connect failed: %s" % err)
             return self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n"
                                         b"Content-Length: 0\r\n\r\n")
         self.log("allow", host, port, detail)

@@ -25,7 +25,9 @@ verdict() { local out rc; out=$("$PROXY" --check "$1" "$2" 2>&1); rc=$?; printf 
 for row in "127.0.0.1 443" "10.0.0.1 443" "172.16.0.1 443" "192.168.1.1 443" \
   "169.254.169.254 80" "100.64.0.1 443" "0.0.0.0 443" "224.0.0.1 443" "::1 443" \
   "fe80::1 443" "fc00::1 443" "::ffff:127.0.0.1 443" "localhost 443" \
-  "93.184.216.34 8080" "no-such-host.invalid 443"; do
+  "93.184.216.34 8080" "no-such-host.invalid 443" \
+  "64:ff9b::c0a8:101 443" "64:ff9b::7f00:1 443" "64:ff9b::5db8:d822 443" "64:ff9b:1::1 443" \
+  "2002:c0a8:0101::1 443" "2002:5db8:d822::1 443" "2001:0:4136:e378:8000:63bf:3fff:fdd2 443"; do
   # shellcheck disable=SC2086
   is "denies $row" "$(verdict $row)" "deny 1"
 done
@@ -146,6 +148,10 @@ seen = buf.split(b"\r\n\r\n", 1)[1].decode()
 print("plain", buf.split(b"\r\n")[0].decode())
 print("plain-line", seen.split("\r\n")[0])
 print("plain-close", "Connection: close" in seen, "Proxy-Connection" in seen)
+dead = socket.socket(); dead.bind(("127.0.0.1", 0)); dport = dead.getsockname()[1]; dead.close()
+s = socket.create_connection(("127.0.0.1", pport), timeout=5)
+s.sendall(b"CONNECT x.example:%d HTTP/1.1\r\n\r\n" % dport)
+print("dead", s.recv(65536).split(b"\r\n")[0].decode(), dport)
 srv.shutdown()
 EOF
 )
@@ -155,6 +161,10 @@ is "it is forwarded in origin form" "$(printf '%s\n' "$out" | sed -n 3p)" "plain
 is "it carries Connection: close and no Proxy-Connection" "$(printf '%s\n' "$out" | sed -n 4p)" "plain-close True False"
 is "each allowed request logs an allow line with the address" \
   "$(grep -c "	allow	x.example:[0-9]*	127.0.0.1$" "$T/relay.log" 2>/dev/null)" 2
+DEAD=$(printf '%s\n' "$out" | sed -n 's/^dead HTTP\/1.1 502 Bad Gateway //p')
+is "an upstream connect failure answers 502" "$(printf '%s\n' "$out" | sed -n 5p | cut -d' ' -f1-4)" "dead HTTP/1.1 502 Bad"
+is "and logs one error line, not deny" "$(grep -c "	error	x.example:$DEAD	connect failed" "$T/relay.log" 2>/dev/null)" 1
+is "and no deny line" "$(grep -c "	deny	" "$T/relay.log" 2>/dev/null)" 0
 
 echo
 echo "RESULT: $pass passed, $fail failed"
