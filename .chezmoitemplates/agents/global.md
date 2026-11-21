@@ -20,16 +20,11 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
 - **`wt` worktrees.** `wt <branch>` makes a sibling checkout `<repo>-<branch>` beside the main one
   with its own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis
-  and storage. Every new branch in `~/Code` or the dotfiles is one, small changes included: never a
-  plain branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt`
-  as declared, without asking. The driver runs `wt --no-focus <branch> <local-branch>` (a remote
-  start point sets an upstream) before the line's first file and names the checkout in its report;
-  if `wt` fails, it stops and tells Michael. In the same turn it briefs the checkout's session,
-  which does the recon, writes the spec, asks Michael for sign-off in its own pane and runs the
-  line, taking spec changes to him; the driver keeps only briefing and collecting the report,
-  never the line's work. Never run `wt-rm` or `git worktree remove`: the line's final report
-  (the driver's, if dropped before hand-off) gives Michael the `wt-rm <branch>` command to run once
-  it is merged or abandoned. Harness worktrees follow their tool's lifecycle.
+  and storage. Every new branch in `~/Code` or the dotfiles is one, small changes and increments
+  included: never a plain branch (`git switch -c`) or a harness worktree there, and
+  `using-git-worktrees` takes `wt` as declared, without asking. Load the `wt-line` skill before
+  opening, briefing, stacking or finishing a line, and when asking for sign-off. Never run `wt-rm`
+  or `git worktree remove`. Harness worktrees follow their tool's lifecycle.
 - **Backups:** Borg skips uncommitted `wt` work (the vault's Backups note); commit at checkpoints.
 
 ## Design records
@@ -117,9 +112,6 @@ specs and merges; in between, the driver proceeds on its own.
 - **Finishing.** Push the feature branch and open a Draft MR where the repository uses MRs. For the
   dotfiles, open the PR ready for review; Michael merges. Show no finishing menus, and never merge.
 - **Reporting.** Final reports end on one state line: pushed, review receipt, open items, next step.
-- **Fresh sessions.** When asking for spec sign-off and in a final report, end with one line
-  suggesting `/clear` plus a paste-ready prompt (checkout, branch, artifact paths, next step).
-  Persist anything not yet on disk first; never stop only to suggest it.
 - **Momentum.** Don't stop while the next step is already authorised. For a run expected to take
   over about 15 minutes, give its size and ETA at the start and one line per milestone, without
   stopping. Send one notification when an unattended stretch ends or is blocked, not one per step.

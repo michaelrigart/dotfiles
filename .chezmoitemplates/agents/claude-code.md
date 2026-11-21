@@ -32,9 +32,6 @@
   code only when it names an Engineering judgement cost or a real caller reaching its failure (a
   code path, an input the system accepts, an attacker its threat model names; unsure counts as
   real). Any other finding gets one line under Rulings. Codex findings: the `cross-review` skill.
-- **Dispatching a `wt` line.** In the turn that ran `wt`, find the checkout's session in
-  `ListAgents` (named after it) and `SendMessage` it the brief: goal, sources, constraints, branch,
-  what to report back. If `ListAgents` does not list it, tell Michael; never run the line yourself.
 - **Pushing.** Push in its own Bash call as one plain command: `git push [options] <remote>
   <branch>` (other repo: `git -C <path> push …`), optionally piped to `tail`/`head`. The push
   guard denies a push chained after a commit, with a comment, or in a shell or substitution, and

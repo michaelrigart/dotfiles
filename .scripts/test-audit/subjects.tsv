@@ -67,6 +67,7 @@ dot_claude/skills/symlink_clarity	data	agent-skills	agent-skills
 dot_claude/skills/symlink_design-records	data	agent-skills	agent-skills
 dot_claude/skills/symlink_merge-request	data	agent-skills	agent-skills
 dot_claude/skills/symlink_second-brain	data	agent-skills	agent-skills
+dot_claude/skills/wt-line/SKILL.md	prose	agent-instructions	agent-instructions,claude-settings
 dot_claude/xreview-guard.py	py	xreview-guard	xreview-guard,xreview-skill,hook-path
 dot_claude/xreview-ledger.py	py	xreview-ledger	xreview-ledger,xreview,xreview-guard,xreview-packet,xreview-skill,hook-path
 dot_claude/xreview-packet.py	py	xreview-packet	xreview-packet,xreview,hook-path
