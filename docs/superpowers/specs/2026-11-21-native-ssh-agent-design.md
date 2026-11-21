@@ -1,6 +1,7 @@
 # Native SSH agent for agents and shells
 
-**Status:** Approved (signed off by Michael 2026-11-21, key list as proposed)
+**Status:** In progress
+**Signed off:** Michael, 2026-11-21, with the key list as proposed.
 **Size:** about 120 lines of non-test code: one LaunchAgent plist (mostly its header comment), one
 loader script of about 40 lines, about 10 lines in `dot_claude/modify_private_settings.json`,
 about 6 in `dot_config/zsh/zshenv`, 3 in `.scripts/preflight-ssh-agent.sh`, a subject-map row and a
