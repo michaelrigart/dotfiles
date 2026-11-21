@@ -136,6 +136,9 @@ dot_config/private_ha-mcp/private_env-remote.tmpl	data	ha-mcp	ha-mcp
 dot_config/private_ha-mcp/private_env.tmpl	data	ha-mcp	ha-mcp
 dot_config/private_tagteam/private_config.toml	data	tagteam-config	tagteam-config
 dot_config/private_unifi-network/private_env.tmpl	data	unifi-network-mcp	unifi-network-mcp
+dot_config/weekly-research/network.sb	data	weekly-research	weekly-research
+dot_config/weekly-research/prompt.md	prose	weekly-research	weekly-research
+dot_config/weekly-research/sources.tsv	data	weekly-research	weekly-research
 dot_config/xreview/findings.framed.schema.json	data	xreview-packet	xreview-packet,xreview
 dot_config/xreview/findings.schema.json	data	xreview-rpc	xreview-rpc,xreview,xreview-packet,live-codex-daemon
 dot_config/xreview/packets.conf	data	xreview-packet	xreview-packet,xreview
@@ -156,7 +159,8 @@ dot_local/bin/executable_review	bash	review	review,hook-path
 dot_local/bin/executable_sdd-clean	bash	sdd-clean	sdd-clean,hook-path
 dot_local/bin/executable_ssh-sandbox-proxy	bash	ssh-sandbox-proxy	ssh-sandbox-proxy,hook-path
 dot_local/bin/executable_unifi-network-mcp	sh	unifi-network-mcp	unifi-network-mcp,hook-path
-dot_local/bin/executable_weekly-research-proxy	py	weekly-research-proxy	weekly-research-proxy
+dot_local/bin/executable_weekly-research	bash	weekly-research	weekly-research
+dot_local/bin/executable_weekly-research-proxy	py	weekly-research-proxy	weekly-research-proxy,weekly-research
 dot_local/bin/executable_wt-prepare	zsh	wt-functions	wt-functions,hook-path
 dot_local/bin/executable_wt-rm	zsh	wt-functions	wt-functions,dev-topology,hook-path
 dot_local/bin/executable_wt-teardown	zsh	wt-teardown	wt-teardown,wt-functions,dev-topology,hook-path
@@ -191,6 +195,7 @@ tests/fixtures/test-audit/tests/pins.test.sh	bash	-	test-audit
 tests/fixtures/test-audit/tests/red.test.sh	bash	-	test-audit
 tests/fixtures/test-audit/tests/s.test.sh	bash	-	test-audit
 tests/fixtures/test-audit/tests/s2.test.sh	bash	-	test-audit
+tests/fixtures/weekly-research/init.json	data	-	weekly-research
 tests/live-deny-modes.test.sh	bash	deny-modes-probe	deny-modes-probe
 tests/live-write-boundary.test.sh	bash	write-boundary-probe	write-boundary-probe
 tests/run.sh	bash	run	run,test-audit
