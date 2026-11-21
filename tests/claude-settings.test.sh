@@ -547,7 +547,8 @@ GITWTMOD='[".git/worktrees/*/modules/**/config*",".git/worktrees/*/modules/**/co
 TOOLCONF='[".lazygit.yml",".git/**/lazygit.yml",".git/glab-cli/config.yml",".git/worktrees/*/glab-cli/config.yml"]'
 AGENTFILES='[".claude/settings.json",".claude/settings.local.json",".mcp.json",".codex",".codex/**"]'
 ROOTS='["~/Code","~/.local/share/chezmoi","~/.local/share/chezmoi-*","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
-EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson w "$GITWTMOD" --argjson t "$TOOLCONF" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
+SOCKDIR_DENY='["~/.local/state/ssh-agent","~/.local/state/ssh-agent/**"]'
+EXP_DENY_WRITE=$(jq -cn --argjson sd "$SOCKDIR_DENY" --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson w "$GITWTMOD" --argjson t "$TOOLCONF" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
   [$r[] as $root | $g[] | "\($root)/**/\(.)"]
   + [$g[] | "~/.local/share/chezmoi/\(.)"]
   + [$r[] as $root | $c[] | "\($root)/**/\(.)"]
@@ -561,16 +562,16 @@ EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson
   + [$r[] as $root | $t[] | "\($root)/**/\(.)"]
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]
-  + ["~/.local/state/ssh-agent", "~/.local/state/ssh-agent/**"]')
+  + $sd')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
-      "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, and .obsidian"
+      "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, .obsidian, and the agent socket directory"
 jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
         | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)
-        | select(startswith(\"~/.local/state/ssh-agent\") | not)] | length" 0 \
+        | select(. as \$e | $SOCKDIR_DENY | index(\$e) | not)] | length" 0 \
       "every deny glob starts with a work root and a slash, bar the agent socket directory, so git init in TMPDIR still works"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))] | length' 0 \
       "no deny glob reaches refs, objects or the index"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(startswith("~/.local/state/ssh-agent") | not) | select((test("/\\.git/") or test("/\\.obsidian(/|$)")
+jq_is '[.sandbox.filesystem.denyWrite[] | select(. as $e | '"$SOCKDIR_DENY"' | index($e) | not) | select((test("/\\.git/") or test("/\\.obsidian(/|$)")
         or test("/\\.git$") or test("/HEAD$") or test("/\\.lazygit\\.yml$")
         or test("/\\.claude/settings(\\.local)?\\.json$") or test("/\\.mcp\\.json$") or test("/\\.codex(/\\*\\*)?$")) | not)] | length' 0 \
       "every deny glob, bar the agent socket directory, names a git path, a fake-repository HEAD, a lazygit file, .obsidian or an agent configuration file"

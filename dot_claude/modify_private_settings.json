@@ -614,6 +614,8 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
               + [$roots[] as $root | $toolconf[] | "\($root)/**/\(.)"]
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
                  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]
+              # The native agent socket directory, outside the work roots: a session rooted in ~
+              # could otherwise replace the socket (spec 2026-11-21-native-ssh-agent-design, section 2).
               + ["~/.local/state/ssh-agent", "~/.local/state/ssh-agent/**"])
         },
         # strictAllowlist is what makes this list DO anything: without it non-listed
