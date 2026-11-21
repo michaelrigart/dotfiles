@@ -262,7 +262,8 @@ After both merge requests are open; this repository's merges first.
    `limactl create --name=ci ~/.config/ci-runner/lima.yaml`, `limactl start ci`,
    `limactl autostart enable ci`; `plutil -p ~/Library/LaunchAgents/io.lima-vm.autostart.ci.plist`
    shows `LIMA_HOME` as `~/.local/share/lima`; if it does not, stop and tell the line. Approve
-   Lima in Little Snitch (again after each `brew upgrade lima`). Exclude Lima's instance directory from Borg and Time Machine.
+   Lima in Little Snitch (again after each `brew upgrade lima`). Exclude Lima's instance
+   directory from Borg and Time Machine.
 3. Run the VM-boundary checks below.
 4. GitLab: check the three conditions of section 1. Members of the project, of each ancestor
    group and of groups shared into them; trigger tokens and schedules; visibility Private.
