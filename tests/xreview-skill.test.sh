@@ -555,7 +555,11 @@ expected_esc="$(cat <<'EXPECTED_ESC'
 - you cannot verify a claim
 - the loop stops converging: two rounds in a row that mostly find problems in the last
   round's fixes, or a goal that can never be finished. Bring Michael the round count, what
-  recurs and a structural option. A loop that converges runs as long as it needs.
+  recurs and a structural option. A loop that converges runs as long as it needs. The structural
+  option may be a restart: a fresh line from the same spec, with what the failed branch taught
+  written into its brief. Signs: edits outside the plan's declared paths, a plan that keeps being
+  rewritten, a fix with no failing test, a diff far over its estimate. The line proposes; Michael
+  decides, because a restart discards work.
 - `xreview` refuses with `Michael's call: report this and stop.`, or a `codex-daemon ensure` that
   a refusal told you to run does not start the daemon
 EXPECTED_ESC
