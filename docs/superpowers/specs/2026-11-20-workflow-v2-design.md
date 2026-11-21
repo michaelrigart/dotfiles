@@ -778,7 +778,8 @@ Made on 2026-11-21 while building increment 3, after two cold reviews. Michael w
 ### The `merge-state` tool
 
 **Sign-off:** Michael, 2026-11-21, in this line's own pane, with the four decisions below
-taken as recommended. It replaces
+taken as recommended. Codex approved it in round 2 (xr-1795260418-37b640d0). Plan:
+`docs/superpowers/plans/2026-11-21-workflow-v2-merge-state-tool.md`. It replaces
 the second bullet above ("The merge state") and the `safe to merge` and `check first` bullets
 under "The merge state" in Design. Nothing else in the spec changes.
 
