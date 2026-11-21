@@ -2,8 +2,8 @@
 
 **Status:** Implemented (the pull request of branch `fix/xreview-guard-cli-pin`)
 **Date:** 2026-11-21
-**Sign-off:** Michael, 2026-11-21, with the recommendation of §4. Codex spec review: approve in
-round 1, no findings (`xr-1795221938-6e3797c7`).
+**Sign-off:** Michael, 2026-11-21, with the recommendation of §4. Spec review: approve in round 1,
+no findings (`xr-1795221938-6e3797c7`).
 **Branch:** `fix/xreview-guard-cli-pin`, in the `wt` checkout
 `~/.local/share/chezmoi-fix-xreview-guard-cli-pin`, from `main` at `430fd6d`
 **Related:** `2026-11-12-xreview-trust-design.md` §5.5 (the canary and its procedure), §5.2 (the
