@@ -105,13 +105,15 @@ In `dot_claude/modify_private_settings.json`:
 - `$agent_socket` becomes `$HOME/.local/state/ssh-agent/agent.sock`, so `env.SSH_AUTH_SOCK` points
   at the native agent.
 - `sandbox.network.allowUnixSockets` becomes `[native, 1Password]`, in that order. The 1Password
-  entry stays so sessions started before the apply keep signing until restarted, and so turning
-  the 1Password agent back on is a rollback that needs no apply. Once that agent is off its socket
-  does not exist and the entry admits nothing.
+  entry keeps sessions started before the apply working until they restart, and is the fallback
+  once the native job is booted out (see Rollback). Settings and `zshenv` prefer the native socket
+  whenever it exists, so turning the 1Password agent back on is not a rollback while the job runs.
+  Once that agent is off its socket does not exist and the entry admits nothing.
 - `sandbox.filesystem.denyWrite` gains `~/.local/state/ssh-agent` and
   `~/.local/state/ssh-agent/**`, and `permissions.deny` gains the matching `Edit(...)` pair. A
-  session started in `~` has `~` as a write root; without these it could delete the socket and bind
-  its own agent in its place.
+  session started in `~` has `~` as a write root; without these it could delete the socket (denial
+  of service) or plant a symlink at `agent.sock` pointing elsewhere. The sandbox forbids `bind()`, so
+  binding its own agent there is not the risk.
 
 ### 3. Shells
 
@@ -167,15 +169,19 @@ On each machine (fenrir, then hercules):
    the same for `git@gitlab.com` and `git@ssh.dev.azure.com`, and a `git ls-remote` against the
    remaining host. Each must authenticate without a 1Password prompt; one that prompts or fails
    names a missing key, or an `IdentityAgent` line in the ssh config (the 1Password note "SSH
-   config") that pins a host to the 1Password socket and must go. The 1Password agent stays on
-   until every host passes.
+   config") that pins hosts to the 1Password socket. Delete a per-host pin; if it is a catch-all
+   (`Host *`, as 1Password's stock snippet is), set its value to
+   `~/.local/state/ssh-agent/agent.sock` instead, so processes that never source `zshenv` (GUI git
+   clients, launchd jobs) still reach an agent with keys. The 1Password agent stays on until every
+   host passes.
 6. Restart Claude Code sessions as convenient; in a fresh one (sandboxed, so git goes through
    `ssh-sandbox-proxy`), run `./tests/run.sh live-agent-signing live-credential-boundary
    live-agent-auth`, which signs with `michael`, authenticates this repository's GitHub remote and
    checks that the native agent holds only `michael`, `viumore_rsa` and `michael_rsa`, then `./tests/live-agent-auth.test.sh
    <repo>` once for a repository on each other forge.
-7. When no running session predates the apply: 1Password → Settings → Developer → turn off "Use
-   the SSH agent". From then on, no SSH or signing prompt should appear.
+7. When no running shell or Claude Code session predates step 1 (open new tabs and panes, restart
+   sessions; a shell keeps the `SSH_AUTH_SOCK` it started with): 1Password → Settings → Developer →
+   turn off "Use the SSH agent". From then on, no SSH or signing prompt should appear.
 
 An emptied or locked native agent is not a rollback: `launchctl kickstart -k
 gui/$(id -u)/be.netronix.ssh-agent` restarts it with its keys. Run it also after a key in `~/.ssh`
