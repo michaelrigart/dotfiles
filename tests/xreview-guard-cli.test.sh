@@ -25,9 +25,9 @@ set -uo pipefail
 
 PROCEDURE="read each new command's --help, then gate it, deny it or leave it, in the change that updates this pin"
 
-PIN_VERSIONS='glab 1.130.0
-gh 2.103.3
-az 2.90.0, azure-devops 1.0.8'
+PIN_VERSIONS='glab 1.131.0
+gh 2.105.0
+az 2.93.0, azure-devops 1.0.8'
 
 PIN_GLAB_MR='approve
 approvers
@@ -129,6 +129,7 @@ codespace
 config
 copilot
 discussion
+event
 extension
 gist
 gpg-key
