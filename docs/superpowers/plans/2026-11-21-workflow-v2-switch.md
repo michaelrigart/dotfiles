@@ -31,9 +31,10 @@ Testing.
   rule's row points at its new file and block with the same terms; a safety row keeps every
   clause.
 - Never compress a rule or cut a clause to reach a number. The measured budget for `global.md`
-  (149 lines today, wrapped at 100 columns): the `wt` bullet 12 to 8 with the Harness sentence
-  kept, Fresh sessions -3, Cross-repo -1, Backups -1 (to `wt-line`, with its pin), tie-break +2,
-  test bullet +2, Execution +1, Increments +3, Convergence +1, Finishing +1: 150. If the real
+  (149 lines today, wrapped at 100 columns): the `wt` bullet 12 to 7 with the Harness sentence
+  kept, Fresh sessions -3, Cross-repo -1, tie-break +2, test bullet +2, Execution +1,
+  Increments +3, Convergence +1, Finishing +1: 150. **Backups** stays in `global.md` with its
+  pin: it binds at every commit, and no skill trigger has a committing moment. If the real
   text comes out over 150, the implementer stops and reports the counts to the controller; it
   does not move, shorten or rewrap another rule on its own.
 - "Harness worktrees follow their tool's lifecycle." stays in `global.md`: a harness worktree
@@ -96,8 +97,8 @@ Testing.
 - [ ] **Step 1: Write the pins first.** In `rules.tsv`: `g-wt` keeps the clauses that stay in
   `global.md` and gains the trigger's words (`Load the `wt-line` skill`, `opening`, `briefing`,
   `stacking`, `finishing`, `asking for sign-off`, ``Never run `wt-rm` or `git worktree remove` ``,
-  `using-git-worktrees`, `Harness worktrees follow their tool's lifecycle.`). `g-backups` moves
-  to the skill with its terms.
+  `using-git-worktrees`, `Harness worktrees follow their tool's lifecycle.`). `g-backups` does
+  not change.
   New safety rows on `dot_claude/skills/wt-line/SKILL.md` for: the driver runs
   `wt --no-focus <branch> <local-branch>` before the line's first file and stops if `wt` fails;
   the driver briefs in the same turn and never does the line's work; the line's final report
@@ -111,15 +112,14 @@ Testing.
   opening, briefing, stacking or finishing a `wt` line, and when asking for sign-off." Body:
   `Opening a line` holds, word for word, everything the **`wt` worktrees** bullet says from "The
   driver runs" to the end; `Briefing` holds **Dispatching a `wt` line** word for word;
-  `Opening a line` ends before the sentence about the final report and `wt-rm`, and also holds
-  **Backups** word for word; `Finishing` holds that final-report sentence (once, only there) and
+  `Opening a line` ends before the sentence about the final report and `wt-rm`; `Finishing` holds that final-report sentence (once, only there) and
   **Fresh sessions** word for word. No placeholder sections: Task 3 adds the others.
 - [ ] **Step 4: Shrink the fragments.** `global.md`: the bullet becomes the spec's rule text for
   **`wt` worktrees** (it keeps the first sentence, "small changes and increments included",
   "never a plain branch (`git switch -c`) or a harness worktree there", the
   `using-git-worktrees` clause, the trigger, and "Never run `wt-rm` or `git worktree remove`").
-  It also keeps "Harness worktrees follow their tool's lifecycle." **Fresh sessions** and
-  **Backups** leave. `claude-code.md`: the Dispatching bullet leaves.
+  It also keeps "Harness worktrees follow their tool's lifecycle." **Fresh sessions** leaves.
+  **Backups** stays. `claude-code.md`: the Dispatching bullet leaves.
 - [ ] **Step 5: Add the `.chezmoiignore` re-includes** and check the skill renders:
   `command chezmoi --source <checkout> cat ~/.claude/skills/wt-line/SKILL.md`.
 - [ ] **Step 6: Run `./tests/agent-instructions.test.sh`, `./tests/agent-skills.test.sh` and
@@ -159,8 +159,8 @@ Testing.
 - [ ] **Step 4: Edit `global.md`.** Remove the **Cross-repo work** bullet; the trigger line ends
   "…deleting a spec or plan, setting its Status, or working across repositories."; add the
   **Increments** bullet in three lines: "**Increments.** A spec states its size and splits the
-  work into increments that each merge on their own: a few hundred lines of non-test code, about
-  2,000 at most. Each is a line of its own and may stack on the one before (the `design-records`
+  work into increments that each merge on their own: aim for a few hundred lines of non-test code,
+  about 2,000 at most. Each is a line of its own and may stack on the one before (the `design-records`
   and `wt-line` skills)."
 - [ ] **Step 5: Run both suites;** report passed/total and line counts.
 
@@ -210,7 +210,8 @@ Testing.
   invariant in the fix commit). In the escalation bullet about a loop that stops converging,
   add: "The structural option may be a restart: a fresh line from the same spec, with what the
   failed branch taught written into its brief. Signs: edits outside the plan's declared paths, a
-  plan that keeps being rewritten, a fix with no failing test, a diff far over its estimate."
+  plan that keeps being rewritten, a fix with no failing test, a diff far over its estimate. The
+  line proposes; Michael decides, because a restart discards work."
   After "A pre-merge review opens the gate only for the change it saw", add one sentence: a
   stacked increment is reviewed against its lower branch, an approval is bound to its
   destination, and the `wt-line` skill holds the steps. The stacking mechanics live only in
@@ -315,5 +316,13 @@ controller rebases first)
   (Codex is out of credits; Michael's instruction of 2026-11-21 to continue on Claude Code alone).
 - [ ] Push the branch. No pull request is opened by an agent: without a Codex approval on
   record the pre-merge gate stays closed, and it is not bypassed. The PR's title, body and the
-  exact `gh pr create` command are left in a file for Michael, and the body says that this
-  increment had no Codex review.
+  exact command (`gh pr create --head feat/workflow-v2-switch --base feat/workflow-v2-input-rule
+  --assignee @me …`) are left for Michael in the controller's scratchpad, outside the
+  repository, so the draft can never be committed. The body says that this increment had no
+  Codex review, and its merge state is `hold until the PRs of increments 1 and 2 merge`.
+- [ ] The cold reviews read the range `feat/workflow-v2-input-rule...feat/workflow-v2-switch`.
+
+**Ruling: a stack three deep.** The spec allows two. Increments 1 and 2 were both unmerged when
+this one started, Michael was away, and he asked on 2026-11-21 for increments 2 and 3 to
+continue without waiting. The rule this breaks is not in force until this increment merges; the
+cost it guards against, a rebase per merged layer, is accepted here and named in the PR.
