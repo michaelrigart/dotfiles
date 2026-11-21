@@ -74,9 +74,6 @@ brew "lazygit"
 brew "lazysql"
 brew "libpq"                           # Rails / pg
 brew "libyaml"                         # the mise-built Ruby links it (psych: every YAML load, so every Rails boot)
-{{ if eq $live "hercules" -}}
-brew "lima"                            # the CI runner's VM (spec 2026-11-21-personal-ci-runner); needs 2.3+ for hostLoopback
-{{ end -}}
 brew "michaelrigart/tap/tagteam"       # multi-account switcher for the agent CLIs (~/Code/tagteam)
 brew "mise"
 brew "mono-libgdiplus"                 # Iris.WeInspect Reporting Service — System.Drawing.Common on macOS

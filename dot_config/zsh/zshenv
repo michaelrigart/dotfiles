@@ -91,9 +91,6 @@ export OP_BIOMETRIC_UNLOCK_ENABLED=true
 # Starship config location
 export STARSHIP_CONFIG=$XDG_CONFIG_HOME/starship/config.toml
 
-# Lima keeps its instances (the CI runner's VM) out of $HOME; `limactl autostart` records it
-export LIMA_HOME="$XDG_DATA_HOME/lima"
-
 # Ruby jemalloc
 export LDFLAGS="-L$HOMEBREW_PREFIX/opt/jemalloc/lib"
 export CPPFLAGS="-I$HOMEBREW_PREFIX/opt/jemalloc/include"

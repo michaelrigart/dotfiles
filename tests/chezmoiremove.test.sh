@@ -23,10 +23,11 @@ trap 'rm -rf "$T"' EXIT
 ok()  { echo "  PASS: $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 
-mkdir -p "$T/src" "$T/home/.local/bin"
+mkdir -p "$T/src" "$T/home/.local/bin" "$T/home/.config/ci-runner"
 cp "$REMOVE" "$T/src/.chezmoiremove"
 : >"$T/config.toml"
 echo retired >"$T/home/.local/bin/app-cleaner"
+echo retired >"$T/home/.config/ci-runner/lima.yaml"
 echo kept >"$T/home/.local/bin/unrelated"
 
 if ! out=$(command chezmoi --config "$T/config.toml" --persistent-state "$T/state.boltdb" \
@@ -41,6 +42,12 @@ else
   bad "apply removes a deployed app-cleaner"
 fi
 
+if [ ! -e "$T/home/.config/ci-runner" ]; then
+  ok "apply removes the deployed CI runner config and its directory"
+else
+  bad "apply removes the deployed CI runner config and its directory"
+fi
+
 if [ -e "$T/home/.local/bin/unrelated" ]; then
   ok "apply leaves a file with no entry alone"
 else
@@ -51,6 +58,12 @@ if [ ! -e "$SRC/dot_local/bin/executable_app-cleaner" ]; then
   ok "app-cleaner is gone from the source"
 else
   bad "app-cleaner is gone from the source"
+fi
+
+if [ ! -e "$SRC/dot_config/ci-runner" ]; then
+  ok "the CI runner config is gone from the source"
+else
+  bad "the CI runner config is gone from the source"
 fi
 
 echo

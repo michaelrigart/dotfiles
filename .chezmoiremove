@@ -40,3 +40,7 @@
 
 # app-cleaner, retired 2026-11-12: an unused third-party uninstall helper.
 .local/bin/app-cleaner
+
+# The hercules CI runner's Lima VM config, dropped 2026-11-21 for a runner on Viu More's k1
+# cluster before any VM was created.
+.config/ci-runner

@@ -96,8 +96,6 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   once merged, Michael runs `chezmoi apply` and `brew bundle install --file ~/.config/homebrew/Brewfile`.
 - `~/.claude/projects/.stignore` is Syncthing's scope for Claude memory, and `codex-memory-share` is
   the only writer into `~/.codex/memories` besides Codex (spec 2026-11-15-hercules-agent-machine).
-- The CI runner VM (spec 2026-11-21-personal-ci-runner) serves only private projects that meet its
-  conditions, never privileged; creating it and registering or assigning the runner are Michael's.
 - `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`, because `zshenv` puts
   `~/.local/bin` in front of Homebrew after `brew shellenv` (which prepends); `tests/zshenv.test.sh`
   pins the order. Interactive starts attach to the launchd-started daemon or refuse (`--no-daemon`
