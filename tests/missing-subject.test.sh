@@ -67,7 +67,7 @@ guards=0
 for subjects in "$COPY"/tests/subjects/*.tsv; do
   [ -f "$subjects" ] || continue
   suite=$(basename "$subjects" .tsv)
-  while IFS=$'\t' read -r file lang role <&3; do
+  while IFS=$'\t' read -r file lang role <&3 || [ -n "$file" ]; do
     case "$file" in ''|'#'*) continue ;; esac
     case "$role" in *guard*) guards=$((guards + 1)); missing "$suite" "$file" ;; esac
   done 3<"$subjects"

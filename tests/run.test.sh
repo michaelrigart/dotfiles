@@ -1152,13 +1152,15 @@ if [ "$rc" = 0 ] && [ -z "$got" ]; then _pass "the subject map covers every file
 # which drift_check (heavy suites only) never sees; or two suite files disagreeing about a file.
 # map_lint <repo root> prints one line per problem: a subject file not named after an existing
 # suite; a row whose file is not a regular file; a row without three fields; a role other than
-# -, own, guard or own,guard; a file listed with two langs; a file two suites mark own.
+# -, own, guard or own,guard; a file listed with two langs; a file two suites mark own; a file
+# whose last byte is not a newline (a reader that needs one skips that row).
 map_lint() {
   local root=$1 f s tag a b out files
   for f in "$root"/tests/subjects/*.tsv; do
     [ -e "$f" ] || continue
     s=$(basename "$f" .tsv)
     [ -f "$root/tests/$s.test.sh" ] || printf 'tests/subjects/%s.tsv: no suite tests/%s.test.sh\n' "$s" "$s"
+    [ ! -s "$f" ] || [ -z "$(tail -c1 "$f")" ] || printf 'tests/subjects/%s.tsv: no final newline\n' "$s"
   done
   files=()
   for f in "$root"/tests/subjects/*.tsv; do [ -e "$f" ] && files+=("$f"); done
@@ -1207,6 +1209,10 @@ lint_fixture; printf 'lib/b.sh\tsh\t-\n' >> "$T/lint/tests/subjects/x.tsv"
 lints "a file listed with two langs is reported" "tests/subjects/y.tsv:1: lib/b.sh is bash here and sh in x.tsv"
 lint_fixture; printf 'lib/a.sh\tsh\town,guard\n' >> "$T/lint/tests/subjects/y.tsv"
 lints "a file two suites mark own is reported" "tests/subjects/y.tsv:2: lib/a.sh is owned by x and y"
+lint_fixture; printf 'lib/b.sh\tbash\t-' > "$T/lint/tests/subjects/y.tsv"
+lints "a subject file with no final newline is reported" "tests/subjects/y.tsv: no final newline"
+lint_fixture; : > "$T/lint/tests/subjects/y.tsv"
+lints "an empty subject file is not reported" ""
 # Bug caught: an awk that fails at run time read as "no problems", so a broken lint passes the real tree.
 mkdir -p "$T/awkfail"; printf '#!/bin/sh\necho "awk: stub failure" >&2\nexit 2\n' > "$T/awkfail/awk"; chmod 755 "$T/awkfail/awk"
 lint_fixture

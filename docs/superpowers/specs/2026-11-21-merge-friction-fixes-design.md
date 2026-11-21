@@ -18,7 +18,8 @@ guard rows into 75 per-suite files. One increment.
 estimate: the plan added the once-per-run decision and a review round its header and lint fixes.
 `change-facts` counts 255, of which 201 are the deleted old map (data). Michael kept it as one
 increment on 2026-11-21, in the line's own pane. After the rebase on #40 and #44 the data move is
-191 rows and 51 guard rows in 77 files.
+the 194 map rows (the map's own row dropped, the fixture-map row split into four) and 51 guard rows
+moved into 77 files.
 
 ## Why
 
@@ -52,7 +53,10 @@ dot_local/bin/executable_change-facts	py	guard
 - A file's `loaded_by` is the set of suites whose subject file lists it; its `own_suite` is the one
   suite that marks it `own`, or `-` when none does (which still means "never mutate", as today).
 - A new suite adds one new file; a suite reading an existing file lists it in its own file. Two PRs
-  collide only when both add rows at the same sorted place in the same existing suite's file.
+  collide only when both add rows at the same sorted place in the same existing suite's file. Two
+  PRs that give one file two `own` roles, or two langs, in different suite files now merge without
+  a textual conflict; `run.test.sh`'s `map_lint` (and `audit.py`'s loader) report it on main after
+  the second merge, where the old one-row-per-file map made it a conflict.
 - A file appears only through a suite that lists it, as the real map already requires ("Files no
   suite loads are absent"). The one loader-free row anywhere, `bin/loop.sh bash - -` in the
   `test-audit` fixture map, is dropped: `audit.py mutants bin/loop.sh` infers `bash` from its
@@ -145,7 +149,7 @@ on it: its rows go into the new files. If #40 merges later instead, it moves its
    expands to nothing when the error is shorter than 900 characters. The cause: `build_copy` piped
    `git archive` into `tar -x`; tar stops reading two records past the end-of-archive marker, and
    when it outran git (under load), git's padding write met a closed pipe and git exited 141
-   silently, so the harness died with "cannot archive". Fixed in `4baad2c`: the archive goes
+   silently, so the harness died with "cannot archive". Fixed in `250332f`: the archive goes
    through a temporary file, Q30 reproduces the late padding with a stub git, and `rc_is` prints
    the error's tail.
 3. **A stack's driver outlives the stack.** One sentence in the `wt-line` skill under Increments

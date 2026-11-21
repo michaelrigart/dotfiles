@@ -70,9 +70,9 @@
 # <first changed subject>(, +N more)]. Whatever the runner cannot read or decide runs every
 # heavy suite and says why in the same bracket: not a git work tree, an unresolvable base, no
 # merge base, a failing git command while computing the selection, or a missing tests/subjects
-# directory. A missing, empty, unreadable or malformed suite file (working tree or merge base),
-# or a failing git read of it at the merge base, runs that suite only. An exact name or --all
-# still runs a heavy suite whatever the diff; every other gate stays.
+# directory. A missing or empty suite file in the working tree, or an unreadable or malformed one
+# in either, or a failing git read of it at the merge base, runs that suite only. An exact name
+# or --all still runs a heavy suite whatever the diff; every other gate stays.
 set -uo pipefail
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")

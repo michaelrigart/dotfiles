@@ -17,7 +17,7 @@ rows it uses today; `missing-subject` runs a case per `guard` row; `run.test.sh`
 **Tech Stack:** bash (runner and suites), Python 3 (`audit.py`), awk.
 
 **Spec:** `docs/superpowers/specs/2026-11-21-merge-friction-fixes-design.md` (signed 2026-11-21,
-the three recommended decisions). Fixes 2 and 3 are already committed (`4baad2c`, `5dcac5b`).
+the three recommended decisions). Fixes 2 and 3 are already committed (`250332f`, `e8b6862`).
 
 ## Global Constraints
 
