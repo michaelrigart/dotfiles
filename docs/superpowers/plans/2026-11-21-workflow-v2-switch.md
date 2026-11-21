@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. In this repository the `plan-run` skill overrides it.
 
-**Status:** In progress
+**Status:** Implemented (completed 2026-11-21 on branch `feat/workflow-v2-switch`; do not run
+again)
 
 **Goal:** Every workflow rule of v2 lands in one merge: increments, who writes, the fix-round
 rules, the test rule, the merge state, the bug trailer, scouts, the `Checks` line and the queue.
