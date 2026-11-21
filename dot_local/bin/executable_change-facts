@@ -75,9 +75,11 @@ def classify(path):
     if name in LOCK_NAMES or name.endswith(b".lock"):
         return "lock"
     pl, base = path.lower(), name.lower()
+    if pl.startswith(b"docs/"):
+        return "docs"
     if TEST_DIR.search(pl) or TEST_NAME.search(base) or base.endswith(b"tests.cs"):
         return "test"
-    if pl.startswith(b"docs/") or pl.endswith((b".md", b".txt", b".rst", b".adoc")):
+    if pl.endswith((b".md", b".txt", b".rst", b".adoc")):
         return "docs"
     return "code"
 

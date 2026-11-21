@@ -83,7 +83,11 @@ one() {
 }
 for p in test/a.rb tests/a.py features/a.feature e2e/a.ts a_test.go a_spec.rb a.test.sh a.spec.ts a-test.js test_a.py WidgetTests.cs tests/README.md; do one "$p" test; done
 for p in latest/a.rb contest.rb test_a.rb; do one "$p" code; done
-for p in README.md notes.txt a.rst a.adoc docs/x.py; do one "$p" docs; done
+for p in README.md notes.txt a.rst a.adoc docs/x.py docs/superpowers/specs/2026-01-01-x-design.md docs/spec/a.rb docs/tests/b.py; do one "$p" docs; done
+for p in spec/a_spec.rb; do one "$p" test; done
+fx c3b; wn docs/superpowers/specs/2026-01-01-x-design.md 5; base
+wn docs/superpowers/specs/2026-01-01-x-design.md 2; commit; rep
+lines_ok "deleting spec lines under docs/ is not a test deletion" "test lines deleted: 0" "docs: 3 lines (+0 -3)"
 
 # 4. deletions
 fx c4; wn spec/a_spec.rb 10; wn lib/a.rb 5; base
@@ -290,7 +294,7 @@ test lines deleted: 0
 ci workflow files: none
 dependency lines: none"
 
-# 16. moves are paired by content alone, with the setting that turns git's renames off
+# 16. moves are paired by content, mode and class (never a manifest), with the setting that turns git's renames off
 fx c16; git -C "$R" config diff.renames false
 wn lib/old.rb 20; wn sub/package.json 6 p; wn Gemfile 4 g; base
 git -C "$R" mv lib/old.rb lib/new.rb; sed -i.bak '5s/.*/changed/' "$R/lib/new.rb"; rm "$R/lib/new.rb.bak"

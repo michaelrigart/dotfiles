@@ -53,7 +53,9 @@ The spec leaves these open; each stays inside it.
 2. **Path rules are the baseline's `classify_path`, ported exactly,** so the trial's numbers
    compare with the baseline's. The spec's parenthesis summarises it. A consequence is kept, not
    fixed: `requirements.txt` counts as docs for size (it ends in `.txt`), and is still listed as
-   a dependency manifest.
+   a dependency manifest. One departure from the baseline's order: a path under `docs/` is docs
+   before the test rule is tried, because the baseline's pattern reads `docs/superpowers/specs/`
+   as a test directory.
 3. **Lockfiles left out:** the baseline's list (`Gemfile.lock`, `package-lock.json`, `yarn.lock`,
    `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `Cargo.lock`, any `*.lock`), plus `go.sum` and
    `Package.resolved`, the lockfiles of two manifests the spec lists.
@@ -487,9 +489,12 @@ The task reviews found more than the plan held. What `change-facts` does beyond 
   manifest with a head side. A broken pipe on the report ends in exit 0.
 - A blob the repository does not hold ends in exit 2, `change-facts: git cat-file failed`.
 - A move is an added and a deleted path with the same blob id, mode and class, neither a
-  dependency manifest (a moved manifest always lists its lines), paired one to one in path order; it counts zero lines and lists nothing. A file moved out of
-  its class (`pkg/foo_test.go` to `pkg/foo_test.go.disabled`) or into a manifest name is a
-  delete plus an add, so a test renamed out of its class shows as test lines deleted.
+  dependency manifest (a moved manifest always lists its lines), paired one to one in path
+  order; it counts zero lines and lists nothing. A file moved out of its class
+  (`pkg/foo_test.go` to `pkg/foo_test.go.disabled`) or into a manifest name is a delete plus an
+  add, so a test renamed out of its class shows as test lines deleted.
+- A path under `docs/` is docs before the test rule is tried (lockfile, `docs/`, test, docs
+  extensions, code), so an edit to a design spec is not a test deletion.
 
 Task 3's two forge bullets were rewritten after their review; Step 4 above holds the final
 text. The lesson: the skill gives the filter as a program, and every command it names prints
