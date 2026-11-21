@@ -90,7 +90,11 @@ cat > "$SD/bin/ps" <<'EOF'
 #!/usr/bin/env bash
 # The sandbox cannot run the real ps; a case that needs a holder's start time writes it to psout (ps's lstart format).
 D=$(cd "$(dirname "$0")/.." && pwd)
-if [ -e "$D/psout" ]; then cat "$D/psout"; exit 0; fi
+if [ -e "$D/psout" ]; then
+  # Only the call the wrapper must make: C locale (the format is parsed in it) and exactly -o lstart= -p <pid>.
+  [ "${LC_ALL:-}" = C ] && [ "$#" = 4 ] && [ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ] && [[ $4 =~ ^[0-9]+$ ]] || exit 1
+  cat "$D/psout"; exit 0
+fi
 exec /bin/ps "$@"
 EOF
 chmod 755 "$SD/bin/"*
