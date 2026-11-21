@@ -105,14 +105,10 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `command -v codex`. The daemon would update itself outside Homebrew, so it is pinned to the CLI's
   package with `codex app-server daemon update --from-cli`; Michael re-runs that after every
   `brew upgrade codex`, when no review is active, then runs the `live-codex-daemon` canary.
-- `weekly-research` (`~/.local/bin`, with `weekly-research-proxy`) is the weekly research job: a
-  sandboxed Claude Code run that reads `~/.config/weekly-research/sources.tsv` and
-  `prompt.md` and writes one note to the vault inbox (spec 2026-11-21-weekly-research). The list
-  and the prompt change only by commit. Its LaunchAgent deploys only on the machine named
-  `research_host` in `.chezmoidata/machines.toml` (the `.chezmoiignore` rule); loading it
-  (`launchctl bootstrap`, `kickstart`) is Michael's, and no agent loads it or runs the job for
-  real. Moving `research_host` also needs a `launchctl bootout` and the old plist deleted on the
-  old machine, because chezmoi never removes a target it starts to ignore.
+- `weekly-research` is the weekly research job (spec 2026-11-21-weekly-research). Its source
+  list, prompt and network profile (`dot_config/weekly-research/`) change only by commit. Its
+  LaunchAgent deploys only on `research_host` (`.chezmoidata/machines.toml`); loading it and
+  running the job for real are Michael's, never an agent's.
 
 ## Layout
 
@@ -124,7 +120,6 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 .scripts/                 # provisioning helpers (ignored)
 tests/                    # test suites, `./tests/run.sh` runs them; tests/AGENTS.md (ignored)
 dot_config/               # → ~/.config (git, homebrew/Brewfile, mise, zsh, agents, …)
-dot_config/weekly-research/ # the weekly research job's sources list, prompt and network profile
 dot_claude/  dot_codex/   # agent harness config: settings/config templates, hooks, guards, agents, skills
 private_dot_ssh/          # SSH key templates (1Password)
 Library/…/Alfred/         # only the Relay snippet collection
