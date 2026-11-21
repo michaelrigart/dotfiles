@@ -20,6 +20,7 @@
 .scripts/forge-protection.sh	bash	forge-protection	forge-protection
 .scripts/install-claude-managed-settings.sh	bash	install-claude-managed-settings	install-claude-managed-settings,provision
 .scripts/measure-interventions.py	py	measure-interventions	measure-interventions
+.scripts/preflight-ssh-agent.sh	bash	preflight-ssh-agent	preflight-ssh-agent
 .scripts/provision.sh	zsh	provision	provision
 .scripts/reconcile-agents.sh	bash	reconcile-agents	reconcile-agents
 .scripts/skill-updates.sh	bash	skill-updates	skill-updates

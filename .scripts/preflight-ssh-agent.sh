@@ -28,7 +28,8 @@ validate() {  # validate <path> -> 0 only if the agent answers AND holds >=1 ide
   esac
 }
 
-for c in "$HOME/.1password/agent.sock" \
+for c in "$HOME/.local/state/ssh-agent/agent.sock" \
+         "$HOME/.1password/agent.sock" \
          "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"; do
   if validate "$c"; then
     log "RESULT: allowlist $c"
