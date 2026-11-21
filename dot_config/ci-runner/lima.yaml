@@ -140,3 +140,104 @@ provision:
         --docker-dns 1.1.1.1 --docker-dns 9.9.9.9
       if command -v systemctl > /dev/null 2>&1; then systemctl restart gitlab-runner; fi
       EOF
+
+      put 644 /etc/ci-runner/firewall.nft <<'EOF'
+      table inet ci_runner {}
+      delete table inet ci_runner
+      table inet ci_runner {
+        chain forward {
+          type filter hook forward priority -10; policy accept;
+          oifname $uplink ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
+        }
+      }
+      EOF
+
+      put 755 /usr/local/sbin/ci-runner-firewall <<'EOF'
+      #!/bin/sh
+      set -eu
+      uplink=$(ip -o route show default | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+      if [ -z "$uplink" ]; then
+        echo "ci-runner-firewall: no default route, so no uplink to protect" >&2
+        exit 1
+      fi
+      exec nft -D uplink="$uplink" -f /etc/ci-runner/firewall.nft
+      EOF
+
+      put 644 /etc/systemd/system/ci-runner-firewall.service <<'EOF'
+      [Unit]
+      Description=Keep the CI runner's containers off the local network
+      After=network-online.target
+      Wants=network-online.target
+      Before=docker.service gitlab-runner.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/ci-runner-firewall
+      ExecStop=/usr/sbin/nft delete table inet ci_runner
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      dropin_before=$(cksum 2> /dev/null < /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf || true)
+      put 644 /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf <<'EOF'
+      [Unit]
+      Requires=docker.service ci-runner-firewall.service
+      After=docker.service ci-runner-firewall.service
+      EOF
+      dropin_after=$(cksum < /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf)
+
+      put 755 /usr/local/sbin/ci-runner-cleanup <<'EOF'
+      #!/bin/sh
+      boot=${CI_RUNNER_BOOT:-/boot}
+      status=0
+      systemctl stop gitlab-runner || status=1
+      ids=$(docker ps -aq) || status=1
+      if [ -n "$ids" ]; then
+        # shellcheck disable=SC2086
+        docker rm --force $ids || status=1
+      fi
+      docker system prune --all --force || status=1
+      docker volume prune --all --force || status=1
+      left=$(docker volume ls -q) || status=1
+      if [ -n "$left" ]; then
+        echo "ci-runner-cleanup: volumes still present after pruning:" >&2
+        echo "$left" >&2
+        status=1
+      fi
+      newest=$(for f in "$boot"/vmlinuz-*; do [ -e "$f" ] && printf '%s\n' "${f##*/vmlinuz-}"; done | sort -V | tail -n 1)
+      if [ -n "$newest" ] && [ "$newest" != "$(uname -r)" ]; then
+        if reboot; then exit "$status"; fi
+        status=1
+      fi
+      systemctl start gitlab-runner || status=1
+      exit "$status"
+      EOF
+
+      put 644 /etc/systemd/system/ci-runner-cleanup.service <<'EOF'
+      [Unit]
+      Description=Clean the CI runner's Docker state
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/ci-runner-cleanup
+      EOF
+
+      put 644 /etc/systemd/system/ci-runner-cleanup.timer <<'EOF'
+      [Unit]
+      Description=Weekly CI runner cleanup
+
+      [Timer]
+      OnCalendar=Sun *-*-* 04:00
+      Persistent=false
+
+      [Install]
+      WantedBy=timers.target
+      EOF
+
+      systemctl daemon-reload
+      systemctl enable ci-runner-firewall.service
+      systemctl enable --now ci-runner-cleanup.timer
+      systemctl start ci-runner-firewall.service
+      if [ "$dropin_before" != "$dropin_after" ]; then systemctl restart gitlab-runner; fi

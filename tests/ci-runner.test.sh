@@ -122,5 +122,97 @@ u="$(guest_file /etc/apt/apt.conf.d/52unattended-upgrades-local)"
 ok "docker upgrades unattended" grep -qF 'origin=Docker' <<<"$u"
 ok "runner upgrades unattended" grep -qF 'origin=packages.gitlab.com/runner/gitlab-runner' <<<"$u"
 
+echo "E. firewall and cleanup"
+cat > "$STUB/ip" <<'EOF'
+#!/bin/sh
+if [ "$*" = '-o route show default' ]; then printf '%s\n' "${IP_DEFAULT:-}"; fi
+exit 0
+EOF
+cat > "$STUB/nft" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$ROOT/nft.argv"
+EOF
+cat > "$STUB/systemctl" <<'EOF'
+#!/bin/sh
+echo "systemctl $*" >> "$ROOT/calls"
+EOF
+cat > "$STUB/docker" <<'EOF'
+#!/bin/sh
+case "$*" in
+  'ps -aq') echo c1; exit 0 ;;
+  'volume ls -q') if [ -n "${DOCKER_VOLUMES:-}" ]; then echo "$DOCKER_VOLUMES"; fi; exit 0 ;;
+esac
+echo "docker $*" >> "$ROOT/calls"
+if [ -n "${DOCKER_FAIL:-}" ]; then
+  case "$*" in "$DOCKER_FAIL"*) exit 1 ;; esac
+fi
+exit 0
+EOF
+cat > "$STUB/reboot" <<'EOF'
+#!/bin/sh
+echo reboot >> "$ROOT/calls"
+[ "${REBOOT_FAIL:-}" = 1 ] && exit 1
+exit 0
+EOF
+cat > "$STUB/uname" <<'EOF'
+#!/bin/sh
+if [ "${KERNEL_PENDING:-}" = 1 ]; then echo 6.12.3-arm64; else echo 6.12.5-arm64; fi
+EOF
+chmod +x "$STUB/ip" "$STUB/nft" "$STUB/systemctl" "$STUB/docker" "$STUB/reboot" "$STUB/uname"
+mkdir -p "$ROOT/boot"; touch "$ROOT/boot/vmlinuz-6.12.3-arm64" "$ROOT/boot/vmlinuz-6.12.5-arm64" "$ROOT/boot/config-6.12.9-arm64"
+export CI_RUNNER_BOOT="$ROOT/boot"
+
+FW="$ROOT/ci-runner-firewall"; CLEAN="$ROOT/ci-runner-cleanup"
+guest_file /usr/local/sbin/ci-runner-firewall > "$FW"; chmod +x "$FW"
+guest_file /usr/local/sbin/ci-runner-cleanup > "$CLEAN"; chmod +x "$CLEAN"
+
+nft_rules="$(guest_file /etc/ci-runner/firewall.nft)"
+for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
+  ok "blocks $r" grep -qF "$r" <<<"$nft_rules"
+done
+ok "a forward-hook chain of its own"    grep -Eq 'type filter hook forward priority' <<<"$nft_rules"
+ok "only out through the uplink"        grep -Eq 'oifname \$uplink ip daddr .* drop' <<<"$nft_rules"
+# a predicate, not a pipeline on the helper: a pipeline would run `no` in a subshell and lose its count
+unqualified_drop() { grep -E 'drop' <<<"$nft_rules" | grep -vq 'oifname \$uplink'; }
+no "a rule without the uplink qualifier" unqualified_drop
+no "flushes the whole ruleset"          grep -q 'flush ruleset' <<<"$nft_rules"
+
+PATH="$STUB:$PATH" IP_DEFAULT='default via 192.168.5.2 dev eth0 proto dhcp' "$FW"
+is "the loader passes the uplink to nft" "$(cat "$ROOT/nft.argv")" '-D uplink=eth0 -f /etc/ci-runner/firewall.nft'
+PATH="$STUB:$PATH" IP_DEFAULT='' "$FW" 2> /dev/null
+is "no default route: the loader fails" "$?" 1
+
+unit="$(guest_file /etc/systemd/system/ci-runner-firewall.service)"
+ok "the firewall unit is a kept oneshot" grep -q '^RemainAfterExit=yes$' <<<"$unit"
+ok "it loads before docker"              grep -Eq '^Before=.*docker\.service' <<<"$unit"
+dropin="$(guest_file /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf)"
+ok "the runner requires the firewall"    grep -Eq '^Requires=.*ci-runner-firewall\.service' <<<"$dropin"
+ok "and starts after it"                 grep -Eq '^After=.*ci-runner-firewall\.service' <<<"$dropin"
+ok "the firewall unit is enabled"        grep -q 'systemctl enable ci-runner-firewall.service' "$PROVISION"
+
+: > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' "$CLEAN" 2> /dev/null
+is "cleanup succeeds" "$?" 0
+is "cleanup order" "$(cat "$ROOT/calls")" "$(printf '%s\n' 'systemctl stop gitlab-runner' \
+  'docker rm --force c1' 'docker system prune --all --force' 'docker volume prune --all --force' \
+  'systemctl start gitlab-runner')"
+: > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='runner-cache-1' "$CLEAN" 2> /dev/null
+is "a leftover volume fails the unit"   "$?" 1
+ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+: > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' KERNEL_PENDING=1 "$CLEAN" 2> /dev/null
+ok "a pending kernel reboots"           grep -qx 'reboot' "$ROOT/calls"
+no "instead of starting the runner"     grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+# every failure keeps its status and still brings the runner back
+for failing in 'rm' 'system prune' 'volume prune'; do
+  : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' DOCKER_FAIL="$failing" "$CLEAN" 2> /dev/null
+  is "a failed docker $failing fails the unit"  "$?" 1
+  ok "and the runner is started again ($failing)" grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+  ok "and the later steps still ran ($failing)"   grep -qx 'docker volume prune --all --force' "$ROOT/calls"
+done
+: > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' KERNEL_PENDING=1 REBOOT_FAIL=1 "$CLEAN" 2> /dev/null
+is "a failed reboot fails the unit"     "$?" 1
+ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+timer="$(guest_file /etc/systemd/system/ci-runner-cleanup.timer)"
+ok "weekly, at night" grep -Eq '^OnCalendar=Sun \*-\*-\* 04:00' <<<"$timer"
+
 printf '\n%d/%d passed\n' "$pass" "$((pass + fail))"
 [ "$fail" -eq 0 ]
