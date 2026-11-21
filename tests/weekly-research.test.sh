@@ -552,6 +552,51 @@ failed "a stub that ignores TERM"
 ok "KILL follows TERM after ten seconds" test "$elapsed" -ge 10 -a "$elapsed" -lt 35
 ok "the TERM-proof stub is gone" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/claude.pid"
 
+echo "H2. The timers and the stream"
+# The timer subshells wait in one-second steps (nap), because bash 3.2 holds a TERM that arrives between a
+# background sleep and its wait until that wait ends. The race window is microseconds, so this cannot fail
+# deterministically: it kills 40 timers right after their start and fails when one outlives 2 s, which a return to
+# one long sleep does in most iterations. The same function text the wrapper holds is run under /bin/bash.
+{ awk '/^nap\(\) \{/,/^\}/' "$WR"; cat <<'EOS'
+max=0
+for i in $(seq 40); do
+  ( s=""; trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM; nap 30 ) >/dev/null 2>&1 </dev/null &
+  tp=$!; t0=$SECONDS; kill "$tp" 2>/dev/null; wait "$tp" 2>/dev/null
+  d=$((SECONDS - t0)); [ "$d" -le "$max" ] || max=$d
+done
+echo "$max"
+EOS
+} > "$T/nap-loop.sh"
+ok "a timer killed right after its start is gone within 2 s, 40 times" test "$("$WRBASH" "$T/nap-loop.sh")" -le 1
+# The race itself is rarely reachable, so the step size is pinned too: nap 3 sleeps three times, one second each,
+# and the wrapper's long waits (the clock, the grace) all go through nap.
+{ awk '/^nap\(\) \{/,/^\}/' "$WR"; cat <<'EOS'
+sleep() { echo "$1" >> "$STEPS"; command sleep "$1"; }
+STEPS=$2
+nap 3
+EOS
+} > "$T/nap-steps.sh"
+rm -f "$T/steps"; "$WRBASH" "$T/nap-steps.sh" x "$T/steps" >/dev/null 2>&1
+ok "nap waits in one-second steps" is "$(tr '\n' ' ' < "$T/steps")" "1 1 1 "
+ok "no long wait of the clock or the grace bypasses nap" bash -c '! grep -qE "sleep \"[\$](timeout|kill_grace)\"" "$0"' "$WR"
+# A reader blocked in the fifo's open is released by release_reader, as when the writer died before its open.
+{ awk '/^release_reader\(\)/' "$WR"; cat <<'EOS'
+fifo=$1
+mkfifo "$fifo"
+( read -r x < "$fifo"; echo released > "$2" ) &
+rp=$!
+sleep 0.5
+release_reader
+i=0; while [ "$i" -lt 30 ] && [ ! -s "$2" ]; do sleep 0.1; i=$((i + 1)); done
+[ -s "$2" ] || { : 1<>"$fifo"; kill "$rp" 2>/dev/null; }
+wait "$rp" 2>/dev/null
+cat "$2" 2>/dev/null
+EOS
+} > "$T/release.sh"
+ok "a reader blocked opening the fifo is released by release_reader" is "$("$WRBASH" "$T/release.sh" "$T/rfifo" "$T/rdone")" released
+{ awk '/^release_reader\(\)/' "$WR"; printf 'fifo=$1; release_reader; [ ! -e "$1" ]\n'; } > "$T/release2.sh"
+ok "release_reader does not create a file where there is no fifo" "$WRBASH" "$T/release2.sh" "$T/nofifo"
+
 echo "I. The lock"
 stub_reset; printf '%s\n' hang > "$SD/mode"
 fresh; clear_records
@@ -762,7 +807,7 @@ ok "five undated fetched rows of ten pass" is "$(lr result)" ok
 fresh; { for i in 1 2 3 4 5 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-10 1
 failed "no row fetched"
 ok "a failed first run writes no state file" absent "$ST/state.tsv"
-for v in '`fetch failed`' 'Fetch failed' '**fetch failed**' 'fetch failed (403)' ' FETCH FAILED.' '`Fetch Failed`: timeout'; do
+for v in '`fetch failed`' 'Fetch failed' '**fetch failed**' 'fetch failed (403)' ' FETCH FAILED.' '`Fetch Failed`: timeout' '**Fetch failed:**'; do
   fresh; { fill 1 4 2026-12-06; for i in 5 6 7 8 9 10; do printf 'r%s - %s\n' "$i" "$v"; done; } | mkrows; srun 2026-12-10 1
   failed "four rows fetched and six marked '$v'"
   ok "the floor counts '$v' as a failed fetch" has "$ST/failures/$TODAY.txt" "only 4 of 10"
@@ -772,6 +817,12 @@ fresh; { fill 1 5 2026-12-06; printf 'r6 - `fetch failed`\nr7 - Fetch failed (40
 ok "five rows fetched pass when the rest are marked in other spellings" is "$(lr result)" ok
 ok "marked rows count a failure and store no item" is "$(strow r6)$(strow r7)$(strow r8)$(strow r9)" "$(printf 'r6\t-\t-\t-\t1\t-\t-r7\t-\t-\t-\t1\t-\t-r8\t-\t-\t-\t1\t-\t-r9\t-\t-\t-\t1\t-\t-')"
 ok "a title that merely contains the words later is a title" is "$(strow r10 | cut -f5)" 0
+fresh; { printf 'r1 2026-12-06 Fetch failed: debugging undici\nr2 2026-12-06 fetch failed (403)\n'; fill 3 5 2026-12-06; for i in 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-10 1
+ok "a dated item titled 'Fetch failed: ...' is an item, so five rows are fetched" is "$(lr result)" ok
+ok "it is stored as the row's item" is "$(strow r1)" "$(printf 'r1\t2026-12-10\t2026-12-06\tFetch failed: debugging undici\t0\t-\t-')"
+ok "so is a dated 'fetch failed (403)': only an undated row may add detail" is "$(stf r2 3)$(stf r2 5)" "2026-12-060"
+fresh; { fill 1 4 2026-12-06; printf 'r5 2026-12-06 Fetch failed: lessons\n'; for i in 6 7 8 9 10; do printf 'r%s - fetch failed (403)\n' "$i"; done; } | mkrows; srun 2026-12-10 1
+ok "five items and five undated 'fetch failed (403)' rows pass, the five counted as failures" is "$(awk -F'\t' '$5 == 1' "$ST/state.tsv" | wc -l | tr -d ' ')" 5
 
 fresh
 { fill 1 1 2026-05-24; fill 2 2 2026-05-25; printf 'r3 - Undated\n'; fill 4 10 2026-11-20; } | mkrows; srun 2026-11-23 0

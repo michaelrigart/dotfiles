@@ -167,16 +167,31 @@ finish_run() {
   exit 0
 }
 
+# nap <seconds>: for the timer subshells, which end on TERM. A TERM that arrives between a background
+# sleep starting and the wait on it is held by bash 3.2 until that wait returns, so the wait is one
+# second at a time (never a foreground sleep, which defers the trap until it ends).
+nap() {
+  local end=$((SECONDS + $1))
+  while [ "$SECONDS" -lt "$end" ]; do sleep 1 & s=$!; wait "$s"; done
+}
+
+# release_reader: the read loop opens the stream fifo and blocks there until a writer opens it. A writer
+# that died before its open would leave it blocked; a read-write open does not block and counts as a
+# writer, so the reader gets its end of file.
+release_reader() { if [ -p "$fifo" ]; then : 1<>"$fifo"; fi; }
+
 # TERM first; a watchdog (started once) sends KILL after the grace if claude ignores it.
 stop_claude() {
   [ -n "$cpid" ] || return 0
   kill "$cpid" 2>/dev/null
+  release_reader
   if [ -z "$wdog" ]; then
     (
       s=""
       trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM
-      sleep "$kill_grace" & s=$!
-      wait "$s"; kill -KILL "$cpid" 2>/dev/null
+      nap "$kill_grace"
+      kill -KILL "$cpid" 2>/dev/null
+      release_reader
     ) >/dev/null 2>&1 </dev/null &
     wdog=$!
   fi
@@ -429,47 +444,52 @@ trap 'status="interrupted by a signal"; stop_claude' INT TERM HUP
 (
   s=""
   trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM
-  sleep "$timeout" & s=$!; wait "$s"
+  nap "$timeout"
   : > "$run/timedout"
   kill -TERM "$cpid" 2>/dev/null
-  sleep "$kill_grace" & s=$!; wait "$s"
+  release_reader
+  nap "$kill_grace"
   kill -KILL "$cpid" 2>/dev/null
+  release_reader
 ) >/dev/null 2>&1 </dev/null &
 timer=$!
 
-while [ -z "$status" ] && { IFS= read -r line || [ -n "$line" ]; }; do
-  printf '%s\n' "$line" >> "$jsonl"
-  kind=$(printf '%s\n' "$line" | jq -r 'if type == "object" then "\(.type // "")/\(.subtype // "")" else "" end' 2>/dev/null) || continue
-  case $kind in
-    system/init)
-      got_init=1
-      if ! problems=$(printf '%s\n' "$line" | jq -r --argjson known "$known_agents" "$init_filter" 2>/dev/null); then
-        status="the init event could not be read, so the run cannot be checked"
-        stop_claude; break
-      fi
-      if [ -n "$problems" ]; then
-        status="the init check refused the run: $problems"
-        stop_claude; break
-      fi
-      init_ok=1 ;;
-    assistant/*|result/*)
-      if [ "$init_ok" != 1 ]; then
-        status="claude sent output before a passing init event"
-        stop_claude; break
-      fi
-      case $kind in
-        result/*)
-          have_result=1
-          r_err=$(printf '%s\n' "$line" | jq -r 'if .is_error == false then "false" else "true" end')
-          r_sub=$(printf '%s\n' "$line" | jq -r '.subtype // ""')
-          [[ $r_sub =~ ^[a-z_]+$ ]] || r_sub=unknown
-          r_text=$(printf '%s\n' "$line" | jq -r '.result // ""')
-          r_denied=$(printf '%s\n' "$line" | jq -r 'if (.permission_denials | type) == "array" then (.permission_denials | length) else -1 end')
-          r_cost=$(printf '%s\n' "$line" | jq -r '.total_cost_usd // ""')
-          if [[ $r_cost =~ ^[0-9]+(\.[0-9]+)?$ ]]; then cost_txt=$(printf '$%.2f' "$r_cost"); else cost_txt=unknown; fi ;;
-      esac ;;
-  esac
-done <"$fifo"
+# A stop that already happened skips the read, and its open of the fifo.
+if [ -z "$status" ]; then
+  while [ -z "$status" ] && { IFS= read -r line || [ -n "$line" ]; }; do
+    printf '%s\n' "$line" >> "$jsonl"
+    kind=$(printf '%s\n' "$line" | jq -r 'if type == "object" then "\(.type // "")/\(.subtype // "")" else "" end' 2>/dev/null) || continue
+    case $kind in
+      system/init)
+        got_init=1
+        if ! problems=$(printf '%s\n' "$line" | jq -r --argjson known "$known_agents" "$init_filter" 2>/dev/null); then
+          status="the init event could not be read, so the run cannot be checked"
+          stop_claude; break
+        fi
+        if [ -n "$problems" ]; then
+          status="the init check refused the run: $problems"
+          stop_claude; break
+        fi
+        init_ok=1 ;;
+      assistant/*|result/*)
+        if [ "$init_ok" != 1 ]; then
+          status="claude sent output before a passing init event"
+          stop_claude; break
+        fi
+        case $kind in
+          result/*)
+            have_result=1
+            r_err=$(printf '%s\n' "$line" | jq -r 'if .is_error == false then "false" else "true" end')
+            r_sub=$(printf '%s\n' "$line" | jq -r '.subtype // ""')
+            [[ $r_sub =~ ^[a-z_]+$ ]] || r_sub=unknown
+            r_text=$(printf '%s\n' "$line" | jq -r '.result // ""')
+            r_denied=$(printf '%s\n' "$line" | jq -r 'if (.permission_denials | type) == "array" then (.permission_denials | length) else -1 end')
+            r_cost=$(printf '%s\n' "$line" | jq -r '.total_cost_usd // ""')
+            if [[ $r_cost =~ ^[0-9]+(\.[0-9]+)?$ ]]; then cost_txt=$(printf '$%.2f' "$r_cost"); else cost_txt=unknown; fi ;;
+        esac ;;
+    esac
+  done <"$fifo"
+fi
 
 # A trapped signal may end wait early; keep waiting until claude is really gone.
 while :; do
@@ -524,8 +544,12 @@ parse_seen() {
       if (id in seen) { msg = "row " n " repeats the id of an earlier row"; exit 1 }
       gsub(/[\001-\037\177|]/, " ", title); sub(/^ +/, "", title); sub(/ +$/, "", title)
       if (title == "") title = "-"
-      low = tolower(title); gsub(/[`*]/, "", low); sub(/^ +/, "", low); sub(/ +$/, "", low)
-      if (low ~ /^fetch failed/) title = "fetch failed"
+      # A failed fetch is spelled many ways: the whole title, once formatting and a closing . or : are
+      # stripped, is "fetch failed"; an undated row may add detail after it ("fetch failed (403)"). A dated
+      # row titled "Fetch failed: ..." is an item (an error message that is also a plausible headline).
+      low = tolower(title); gsub(/[`*]/, "", low); sub(/^ +/, "", low)
+      while (low ~ /[ .:]$/) sub(/[ .:]$/, "", low)
+      if (low == "fetch failed" || (d == "-" && low ~ /^fetch failed/)) title = "fetch failed"
       seen[id] = 1; rows++; out[rows] = id "\t" d "\t" title
     }
     END {
