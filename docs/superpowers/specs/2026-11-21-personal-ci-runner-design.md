@@ -139,10 +139,10 @@ Michael creates the instance `ci` from it.
     and `169.254.0.0/16`, and drops forwarded IPv6 out through the uplink too. A job reaches
     the internet but not the home LAN, NetBird peers, the Mac or Lima's resolver; traffic between
     a job and its services stays on Docker's bridge and is untouched. The table is loaded by its
-    own enabled systemd unit at boot, not by the provision script, which only reloads the unit in
-    place when its files change, and a drop-in makes `gitlab-runner.service` require that unit
-    and start after it: with the firewall missing or failing to load, the runner does not start
-    and takes no job;
+    own enabled systemd unit at boot; the provision script starts that unit before the runner is
+    installed and on every boot, and reloads it in place when its files change. A drop-in makes
+    `gitlab-runner.service` require that unit and start after it: with the firewall missing or
+    failing to load, the runner does not start and takes no job;
   - installs a weekly timer, at a quiet hour, that stops the `gitlab-runner` service, removes
     every remaining container, runs `docker system prune --all --force` and
     `docker volume prune --all --force`, fails loudly (non-zero unit) if any volume is left,
@@ -315,7 +315,9 @@ A later change to the template does not reach the running VM by itself: `limactl
 it into the instance as `$LIMA_HOME/ci/lima.yaml`, and each start provisions from that copy.
 After `chezmoi apply`, `limactl stop ci`, copy `~/.config/ci-runner/lima.yaml` over that file,
 `limactl start ci`, then rerun the VM-boundary checks above; the disk, and so the registration,
-survive. `plain` is fixed when the instance is created and cannot change this way.
+survive. `plain`, `vmType`, `images` and the architecture are fixed when the instance is
+created, so they cannot change this way (a bumped image digest does not reach the existing disk);
+a rebuilt VM picks them up.
 
 Then one full pipeline: `lint`, `test`, `cli`, `seed_smoke` and `a11y` pass on the runner, with
 `test` and `seed_smoke` running at the same time (which also shows `concurrent = 2` took), and

@@ -118,6 +118,8 @@ ok "the firewall gate is in place before the runner package is installed" gate_b
 ok "nftables comes with the first install" grep -Eq 'apt-get .*install .*ca-certificates curl gnupg nftables$' "$PROVISION"
 upgrade_after_install() { [ "$(first_line 'apt-get .*full-upgrade')" -gt "$(first_line 'apt-get .*install .*gitlab-runner')" ]; }
 ok "a fresh VM is upgraded after the install" upgrade_after_install
+ok "and the upgrade keeps existing conffiles without asking" grep -Eq 'apt-get .*--force-confdef .*--force-confold .*full-upgrade|apt-get .*--force-confold .*--force-confdef .*full-upgrade' "$PROVISION"
+ok "nftables.service is disabled on every boot" grep -qx 'systemctl disable nftables.service || true' "$PROVISION"
 docker_source() {
   src="$(guest_file /etc/apt/sources.list.d/docker.sources)" || return 1
   grep -qxF 'URIs: https://download.docker.com/linux/debian' <<<"$src" &&
