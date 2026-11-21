@@ -10,7 +10,7 @@
 set -eu
 unset HOMEASSISTANT_URL HOMEASSISTANT_TOKEN
 
-version=9.1.2
+version=9.2.0
 
 env_file="$HOME/.config/ha-mcp/env"
 if [ ! -r "$env_file" ]; then
