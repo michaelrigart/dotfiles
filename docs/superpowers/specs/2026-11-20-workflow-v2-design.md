@@ -930,7 +930,8 @@ after the task review's fix round): the chezmoi path rules and the `--help` tabl
 script to 389 lines. That passes the 250 estimate by more than half again. A split was not
 proposed: the code is one script that the skill text names, so either half alone leaves the
 branch inconsistent. Michael accepted the real size on 2026-11-21, in this line's pane, when
-asked to choose between accepting it, trimming the script and splitting it.
+asked to choose between accepting it, trimming the script and splitting it. His two rulings on
+the final review (row 14 and the hooks) brought it to 410.
 
 **Safety.** The tool reads only: git objects of the two commits, the ledger through its own
 script, `AGENTS.md` from origin's default branch. It writes nothing and calls no forge. A wrong
