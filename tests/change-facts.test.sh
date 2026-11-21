@@ -199,7 +199,23 @@ usage_err "a side that names no commit" "$R" nope...HEAD
 ls_after="$(find "$R" -path "$R/.git" -prune -o -print | sort)"
 if [ "$ls_before" = "$ls_after" ]; then _pass "the refused arguments wrote no file"; else _fail "the refused arguments wrote no file" "$ls_after"; fi
 mkdir "$T/norepo"
-GIT_CEILING_DIRECTORIES="$T" usage_err "a directory that is not a repository" "$T/norepo" main...HEAD
+if git -C "$T/norepo" rev-parse --git-dir >/dev/null 2>&1; then _fail "control: the not-a-repository directory has no repository above it" "$T"
+else _pass "control: the not-a-repository directory has no repository above it"; fi
+usage_err "a directory that is not a repository" "$T/norepo" main...HEAD
+
+# 11b. the dependency lines of a workflow: `uses` as a key in block, flow or quoted style
+fx c11b; wt seed.txt s; base
+printf '%s\n' 'jobs:' '  a:' '    steps:' '      - uses: owner/block@v1' '      - {uses: owner/flow@v1}' \
+  '      - { name: x, uses: owner/flowname@v1 }' '      - "uses": owner/quoted@v1' "      - 'uses' : owner/single@v1" \
+  '      - run: echo owner/prose@v1' '      - name: usesnot' | wf .github/workflows/ci.yml
+commit; rep
+from_is "uses is listed as a key in block, flow and quoted style, and a line without the key is not" "dependency lines:" "dependency lines:
+  .github/workflows/ci.yml
+    +       - uses: owner/block@v1
+    +       - {uses: owner/flow@v1}
+    +       - { name: x, uses: owner/flowname@v1 }
+    +       - \"uses\": owner/quoted@v1
+    +       - 'uses' : owner/single@v1"
 
 # 12. a repository's configuration names no command that runs
 fx c12; wn app/a.rb 2; wt .gitattributes '* diff=mark'; base; wn app/a.rb 5; commit
@@ -485,6 +501,35 @@ else _fail "control: git honours .git/info/grafts" "$(git -C "$R" diff --numstat
 rep "$one...HEAD"
 if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "a graft re-parenting the head does not change the report"
 else _fail "a graft re-parenting the head does not change the report" "rc=$rc $(head -c 300 "$T/out")"; fi
+
+# 26. nothing the caller exports reaches git: it is pinned and its environment is built
+fx c26b; wn app/other.rb 50; wn Gemfile 1 z; base; wn app/other.rb 60; commit
+fx c26; wn app/a.rb 5; wn Gemfile 3; base; wn app/a.rb 9; wn Gemfile 4; commit
+rep; cp "$T/out" "$T/first"
+lines_ok "environment: the plain report" "code: 5 lines (+5 -0)" "    + l4"
+unchanged() {
+  if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "$1"
+  else _fail "$1" "rc=$rc $(head -c 400 "$T/out") | $(head -c 200 "$T/err")"; fi
+}
+mkdir "$T/fakebin"
+printf '#!/bin/sh\nprintf "code: 999 lines (+999 -0)\\n"\nexit 0\n' > "$T/fakebin/git"; chmod 755 "$T/fakebin/git"
+PATH="$T/fakebin:$PATH" rep
+unchanged "a git first on PATH is never run"
+GIT_DIR="$T/c26b/.git" rep
+unchanged "GIT_DIR naming another repository does not redirect it"
+GIT_DIR="$T/c26b/.git" runin "$T/norepo" base...HEAD
+if [ "$rc" = 2 ] && grep -q '^change-facts: not a git repository' "$T/err"; then _pass "GIT_DIR does not make a directory that is no repository one"
+else _fail "GIT_DIR does not make a directory that is no repository one" "rc=$rc $(cat "$T/err")"; fi
+git clone -q --bare "$R" "$T/bare26"
+runin "$T/bare26" base...HEAD
+unchanged "a bare repository gives the same report"
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=explicit
+git -C "$T/bare26" rev-parse --git-dir >/dev/null 2>&1; ctl=$?
+runin "$T/bare26" base...HEAD
+unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+if [ "$ctl" != 0 ]; then _pass "control: safe.bareRepository=explicit through GIT_CONFIG_COUNT makes git refuse the bare repository"
+else _fail "control: safe.bareRepository=explicit through GIT_CONFIG_COUNT makes git refuse the bare repository" "git accepted it"; fi
+unchanged "configuration injected through GIT_CONFIG_COUNT changes nothing"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

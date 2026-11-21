@@ -12,7 +12,10 @@ from outside the two commits: an added and a deleted file with the same content,
 class, neither a dependency manifest, are one move that counts nothing; an edited move or a
 moved manifest is a delete plus an add.
 Pinned to the system Python 3.9 (`/usr/bin/python3`): an untrusted mise config in the repository
-cannot stop or steer it, and nothing newer than 3.9 is used.
+cannot stop or steer it, and nothing newer than 3.9 is used. Git is pinned too (`/usr/bin/git`,
+never found through PATH) and runs in an environment built from scratch, so nothing the caller
+exports (GIT_DIR, GIT_CONFIG_*, GIT_EXTERNAL_DIFF, another git first on PATH) can change the
+report.
 """
 import fnmatch
 import os
@@ -21,8 +24,13 @@ import subprocess
 import sys
 import unicodedata
 
-ENV = dict(os.environ, GIT_GRAFT_FILE=os.devnull)
-GIT = ["git", "--no-pager", "--no-replace-objects", "--no-lazy-fetch", "-c", "core.fsmonitor=false"]
+ENV = {
+    "PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_GRAFT_FILE": os.devnull,
+    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+}
+if "HOME" in os.environ:
+    ENV["HOME"] = os.environ["HOME"]
+GIT = ["/usr/bin/git", "--no-pager", "--no-replace-objects", "--no-lazy-fetch", "-c", "core.fsmonitor=false"]
 DIFF = [
     "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-relative",
     "--diff-algorithm=myers", "--ignore-submodules=none", "-O/dev/null", "--no-renames",
@@ -43,7 +51,7 @@ MANIFEST_NAMES = (
 )
 MANIFEST_GLOBS = (b"*.gemspec", b"requirements*.txt", b"mise.*.toml", b".mise.*.toml")
 CI_DIRS = (b".github/workflows/", b".gitlab/ci/", b".azure-pipelines/")
-USES = re.compile(rb"^\s*(-\s*)?uses:")
+USES = re.compile(rb"""uses["']?\s*:""")
 
 
 class Fail(Exception):
@@ -203,7 +211,7 @@ def report(base, head):
         totals[cls][1] += deleted
         if is_manifest(path):
             if is_workflow(path):
-                added = [line for line in added if USES.match(line)]
+                added = [line for line in added if USES.search(line)]
             lines = [b"    + " + printable(line, True) for line in added if line.strip()]
             if binary and new:
                 lines = [b"    (binary)"]
