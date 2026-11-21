@@ -28,8 +28,11 @@ trap 'rm -rf "$T"' EXIT
 BIN="$T/bin"; CFG="$T/config"; HOME_D="$T/home"; INBOX="$T/inbox"; SD="$T/stub"
 mkdir -p "$BIN" "$CFG" "$SD/bin" "$SD/nobin" "$T/jqonly" "$INBOX" \
   "$HOME_D/.config/agents" "$HOME_D/.local/share/chezmoi/docs/superpowers/specs"
-cp "$WR" "$BIN/weekly-research"; cp "$PROXY" "$BIN/weekly-research-proxy"
-chmod 755 "$BIN/weekly-research" "$BIN/weekly-research-proxy"
+cp "$WR" "$BIN/weekly-research"; cp "$PROXY" "$BIN/proxy.real"
+# The proxy the wrapper starts is a stub that records its pid (one line per run) and execs the real one, so the
+# suite can check at the end that none is left (pgrep does not work sandboxed).
+printf '#!/bin/bash\necho $$ >> "%s"\nexec "%s" "$@"\n' "$T/proxy.pids" "$BIN/proxy.real" > "$BIN/weekly-research-proxy"
+chmod 755 "$BIN/weekly-research" "$BIN/weekly-research-proxy" "$BIN/proxy.real"
 cp "$CFGSRC/prompt.md" "$CFGSRC/sources.tsv" "$CFGSRC/network.sb" "$CFG/"
 ln -s "$(command -v jq)" "$T/jqonly/jq"
 PATHV="$SD/bin:$T/jqonly:/usr/bin:/bin"
@@ -510,6 +513,11 @@ fresh; go
 ok "one failure counts one" is "$(lr failures_in_row)" 1
 go
 ok "a second in a row counts two" is "$(lr failures_in_row)" 2
+for junk in junk 1234567 ''; do
+  fresh; mkdir -p "$ST"; printf 'failures_in_row=%s\n' "$junk" > "$ST/last-run"
+  go
+  ok "an unreadable failure count ('$junk') restarts at one" is "$(lr failures_in_row)" 1
+done
 stub_reset; go
 ok "a good run clears the count" is "$(lr failures_in_row)" 0
 
@@ -640,16 +648,13 @@ fresh; mkdir -p "$ST"; printf '99999999\n' > "$ST/lock"
 go
 ok "a lock file left behind by a dead run does not block the next run" is "$(lr result)" ok
 # A wrapper killed without a chance to clean up leaves its children running; none of them may keep the lock.
-# The proxy records its pid (the real one is run by a stub that execs it), a timer subshell's pid is the parent
-# of its sleeps (pgrep is not available sandboxed), and claude's pid is in claude.pid.
-mv "$BIN/weekly-research-proxy" "$BIN/proxy.real"
-printf '#!/bin/bash\necho $$ > "%s"\nexec "%s" "$@"\n' "$T/proxy.pid" "$BIN/proxy.real" > "$BIN/weekly-research-proxy"
-chmod 755 "$BIN/weekly-research-proxy"
+# The proxy's pid is the last line of proxy.pids, a timer subshell's pid is the parent of its sleeps (pgrep is
+# not available sandboxed), and claude's pid is in claude.pid.
 orphans() {  # orphans <label> <stub mode> <subshells to find>: kill the wrapper mid-run, look at its survivors
   local label=$1 want=$3 kids k alive_all=1
   stub_reset; [ "$2" != stubinit ] || stub_init '.tools += ["Bash"]'
   printf '%s\n' "$2" > "$SD/mode"
-  fresh; clear_records; rm -f "$T/sleep-ppids" "$T/proxy.pid"
+  fresh; clear_records; rm -f "$T/sleep-ppids"
   ( wrenv; exec env "${WRE[@]}" WEEKLY_RESEARCH_TIMEOUT=60 SLEEP_PPID_LOG="$T/sleep-ppids" "$WRBASH" "$BIN/weekly-research" ) >"$T/out-a" 2>"$T/err-a" </dev/null &
   apid=$!
   for _ in $(seq 100); do [ -s "$SD/claude.proxyup" ] && break; sleep 0.1; done
@@ -658,23 +663,22 @@ orphans() {  # orphans <label> <stub mode> <subshells to find>: kill the wrapper
   ok "$label: the instance to be killed holds the lock" is "$(lock_state "$ST/lock")" held
   kill -KILL "$apid"; { wait "$apid"; } 2>/dev/null
   ok "$label: claude outlives the killed wrapper" alive "$(cat "$SD/claude.pid")"
-  ok "$label: so does the proxy" alive "$(cat "$T/proxy.pid")"
+  ok "$label: so does the proxy" alive "$(tail -n 1 "$T/proxy.pids")"
   for k in $kids; do alive "$k" || alive_all=0; done
   ok "$label: and its $want timer subshell(s)" test "$alive_all" = 1 -a "$(printf '%s\n' "$kids" | grep -c .)" = "$want"
   ok "$label: yet the lock is free: no child inherited it" is "$(lock_state "$ST/lock")" free
-  kill -KILL "$(cat "$SD/claude.pid")" "$(cat "$T/proxy.pid")" $kids 2>/dev/null
-  for _ in $(seq 50); do alive "$(cat "$SD/claude.pid")" || alive "$(cat "$T/proxy.pid")" || break; sleep 0.1; done
+  kill -KILL "$(cat "$SD/claude.pid")" "$(tail -n 1 "$T/proxy.pids")" $kids 2>/dev/null
+  for _ in $(seq 50); do alive "$(cat "$SD/claude.pid")" || alive "$(tail -n 1 "$T/proxy.pids")" || break; sleep 0.1; done
   stub_reset; go
   ok "$label: and the next run goes ahead" is "$(lr result)" ok
 }
 orphans "a wrapper killed while claude runs" hang 1
 orphans "a wrapper killed while the watchdog counts the grace" stubinit 2
-mv "$BIN/proxy.real" "$BIN/weekly-research-proxy"
 # A lock that cannot be opened is a run that cannot start.
 fresh; mkdir -p "$ST/lock"
 go
 ok "a lock path that cannot be opened: exit 1" rc_is 1
-ok "it notifies through osascript" test -s "$SD/osascript.args"
+ok "it notifies through osascript, naming the lock file" has "$SD/osascript.args" "its lock file"
 ok "and claude never starts" absent "$SD/claude.argv"
 
 echo "I2. A state folder that cannot be created"
@@ -682,7 +686,7 @@ stub_reset; : > "$T/not-a-folder"
 n=$((n + 1)); ST="$T/not-a-folder/state"
 go
 ok "an uncreatable state folder exits 1" rc_is 1
-ok "it notifies through osascript" test -s "$SD/osascript.args"
+ok "it notifies through osascript, naming the state folder" has "$SD/osascript.args" "its state folder"
 ok "claude never starts" absent "$SD/claude.argv"
 
 echo "J. The vault probe"
@@ -1102,7 +1106,8 @@ ok "and neither starts a run" absent "$SD/claude.argv"
 
 TODAY=2026-11-23
 echo "K. No stray process"
-ok "no proxy of this suite is left running" bash -c '! pgrep -f "$0/weekly-research-proxy" >/dev/null 2>&1' "$BIN"
+left=""; for p in $(cat "$T/proxy.pids"); do alive "$p" && left="$left $p"; done
+ok "the suite started proxies, and none of them is left running" test -s "$T/proxy.pids" -a -z "$left"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

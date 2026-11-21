@@ -94,7 +94,7 @@ while the machine sleeps, with nothing the launchd job lacks.
 
 1. launchd starts the wrapper on Monday at 07:30. A run missed while the machine slept starts
    on wake (launchd's own behaviour for calendar jobs). A second instance exits at once (an exclusive `flock` on the state folder's lock file, held on
-   a descriptor no child inherits, so a killed run never blocks the next one).
+   a descriptor no child that could outlive the run inherits, so a killed run never blocks the next one).
 2. The wrapper builds one prompt from: `prompt.md`; every row, each with its own watermark
    from the state file (the date it was last checked successfully and its newest item then); and
    the current workflow, read from the
