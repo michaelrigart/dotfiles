@@ -92,6 +92,9 @@ missing herdr-phase           dot_config/herdr/executable_phase.sh
 missing merge-state           dot_local/bin/executable_merge-state
 missing merge-state           dot_local/bin/executable_change-facts
 missing live-rm-denies        dot_claude/modify_private_settings.json
+missing live-weekly-research   dot_local/bin/executable_weekly-research
+missing live-weekly-research   dot_local/bin/executable_weekly-research-proxy
+missing live-weekly-research   dot_config/weekly-research/network.sb
 missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
 missing run                   .scripts/test-audit/subjects.tsv
 missing weekly-research       dot_local/bin/executable_weekly-research
