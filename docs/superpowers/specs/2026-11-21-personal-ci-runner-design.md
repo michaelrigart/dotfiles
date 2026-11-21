@@ -142,7 +142,9 @@ Michael creates the instance `ci` from it.
     a job and its services stays on Docker's bridge and is untouched. The table is loaded by its
     own enabled systemd unit at boot; the provision script starts that unit before the runner is
     installed and on every boot, and reloads it in place when its files change; a changed
-    firewall that fails to reload stops the runner and fails provisioning. A drop-in makes
+    firewall that fails to reload stops the runner, removes its containers and stops the firewall
+    unit, so no later start of the runner succeeds until the rules load, and provisioning fails.
+    A drop-in makes
     `gitlab-runner.service` require that unit and start after it: with the firewall missing or
     failing to load, the runner does not start and takes no job;
   - installs a weekly timer, at a quiet hour, that stops the `gitlab-runner` service, removes

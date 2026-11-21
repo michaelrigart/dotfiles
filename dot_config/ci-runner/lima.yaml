@@ -87,6 +87,19 @@ provision:
 
       fw_after=$(fw_sum)
 
+      put 755 /usr/local/sbin/ci-runner-fail-closed <<'EOF'
+      #!/bin/sh
+      systemctl stop gitlab-runner.service || true
+      if command -v docker > /dev/null 2>&1; then
+        ids=$(docker ps -aq) || true
+        if [ -n "$ids" ]; then
+          # shellcheck disable=SC2086
+          docker rm --force $ids || true
+        fi
+      fi
+      systemctl stop ci-runner-firewall.service || true
+      EOF
+
       dropin_before=$(cksum 2> /dev/null < /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf || true)
       put 644 /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf <<'EOF'
       [Unit]
@@ -99,7 +112,7 @@ provision:
       systemctl enable ci-runner-firewall.service
       if [ "$fw_before" != "$fw_after" ]; then
         if ! systemctl reload-or-restart ci-runner-firewall.service; then
-          systemctl stop gitlab-runner.service || true
+          /usr/local/sbin/ci-runner-fail-closed
           exit 1
         fi
       else

@@ -179,6 +179,8 @@ export CI_RUNNER_BOOT="$ROOT/boot"
 FW="$ROOT/ci-runner-firewall"; CLEAN="$ROOT/ci-runner-cleanup"
 guest_file /usr/local/sbin/ci-runner-firewall > "$FW"; chmod +x "$FW"
 guest_file /usr/local/sbin/ci-runner-cleanup > "$CLEAN"; chmod +x "$CLEAN"
+CLOSED="$ROOT/ci-runner-fail-closed"
+guest_file /usr/local/sbin/ci-runner-fail-closed > "$CLOSED"; chmod +x "$CLOSED"
 
 nft_rules="$(guest_file /etc/ci-runner/firewall.nft)"
 for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
@@ -205,11 +207,11 @@ ok "the runner requires the firewall"    grep -Eq '^Requires=.*ci-runner-firewal
 ok "and starts after it"                 grep -Eq '^After=.*ci-runner-firewall\.service' <<<"$dropin"
 ok "the firewall unit is enabled"        grep -q 'systemctl enable ci-runner-firewall.service' "$PROVISION"
 ok "a changed firewall is reloaded in place" grep -q 'systemctl reload-or-restart ci-runner-firewall.service' "$PROVISION"
-stops_on_failed_reload() {
+fails_closed_on_reload() {
   block="$(grep -A3 -F 'if ! systemctl reload-or-restart ci-runner-firewall.service; then' "$PROVISION" | sed 's/^[[:space:]]*//')"
-  grep -qx 'systemctl stop gitlab-runner.service || true' <<<"$block" && grep -qx 'exit 1' <<<"$block"
+  grep -qx '/usr/local/sbin/ci-runner-fail-closed' <<<"$block" && grep -qx 'exit 1' <<<"$block"
 }
-ok "a changed firewall that fails to reload stops the runner and fails provisioning" stops_on_failed_reload
+ok "a changed firewall that fails to reload runs the fail-closed script and fails provisioning" fails_closed_on_reload
 ok "the unit can reload"                 grep -qx 'ExecReload=/usr/local/sbin/ci-runner-firewall' <<<"$unit"
 writes_config() { grep -Eq '(put [0-9]+|>) */etc/gitlab-runner/config\.toml' "$PROVISION"; }
 no "the provision script never rewrites config.toml" writes_config
@@ -242,6 +244,14 @@ done
 : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' KERNEL_PENDING=1 REBOOT_FAIL=1 "$CLEAN" 2> /dev/null
 is "a failed reboot fails the unit"     "$?" 1
 ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+: > "$ROOT/calls"; PATH="$STUB:$PATH" "$CLOSED" 2> /dev/null
+is "fail-closed succeeds" "$?" 0
+is "fail-closed stops the runner, removes containers, then stops the firewall" "$(cat "$ROOT/calls")" \
+  "$(printf '%s\n' 'systemctl stop gitlab-runner.service' 'docker rm --force c1' 'systemctl stop ci-runner-firewall.service')"
+NODOCKER="$ROOT/nodocker"; mkdir -p "$NODOCKER"; cp "$STUB/systemctl" "$NODOCKER/systemctl"
+: > "$ROOT/calls"; PATH="$NODOCKER:/usr/bin:/bin" "$CLOSED" 2> /dev/null
+is "without docker it still stops both units" "$(cat "$ROOT/calls")" \
+  "$(printf '%s\n' 'systemctl stop gitlab-runner.service' 'systemctl stop ci-runner-firewall.service')"
 clean_unit="$(guest_file /etc/systemd/system/ci-runner-cleanup.service)"
 ok "the cleanup waits for provisioning" grep -qx 'After=cloud-final.service' <<<"$clean_unit"
 timer="$(guest_file /etc/systemd/system/ci-runner-cleanup.timer)"
