@@ -119,6 +119,7 @@ specs and merges; in between, the driver proceeds on its own.
   option may be a restart from the spec in a fresh line.
 - **Finishing.** Push the feature branch and open a Draft MR where the repository uses MRs. For the
   dotfiles, open the PR ready for review; Michael merges. Show no finishing menus, and never merge.
+  Every MR and PR opens with its merge state (the `merge-request` skill).
 - **Reporting.** Final reports end on one state line: pushed, review receipt, open items, next step.
 - **Momentum.** Don't stop while the next step is already authorised. For a run expected to take
   over about 15 minutes, give its size and ETA at the start and one line per milestone, without

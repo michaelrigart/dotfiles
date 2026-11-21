@@ -1,6 +1,6 @@
 ---
 name: merge-request
-description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding or bumping a dependency. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, and the dependency rule.
+description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding a dependency, or committing a fix for a bug that already merged to the default branch. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, the dependency rule, the merge state, the bug trailer and the Checks line.
 ---
 
 # Merge requests
@@ -46,7 +46,7 @@ description: Use before opening any merge request, pull request or issue, with g
   lists are `glab issue list --author <login>` and `glab mr list --author <login>`; one item is
   `glab api "projects/:id/issues/<n>" | jq 'select(.author.username == "<login>") | .description'`,
   and its notes are
-  `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>" and (.system | not)) | .body)'`
+  `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>"))'`
   (`merge_requests` in place of `issues` for an MR). Azure DevOps: take `<name>` from
   `az account show --query user.name -o tsv` and list with
   `az repos pr list --creator <name> --query "[].{id:pullRequestId,title:title,description:description}"`;
@@ -65,6 +65,76 @@ description: Use before opening any merge request, pull request or issue, with g
   one. Where the manifest pins a version, a new or bumped dependency pins a release that is at
   least seven days old, unless the bump fixes a vulnerability; the spec then says so. A tool
   added to the Brewfile or to mise is not a dependency for Sizing: it stays a small change. In
-  the PR or MR body, list under "New dependencies" every line `change-facts <base>...<head>`
-  prints under `dependency lines`, and any other line the change adds to a dependency manifest
-  the command does not know; or write `New dependencies: none`.
+  the merge state's `new dependencies` field, list every line `change-facts <base>...<head>`
+  prints under `dependency lines`, or write `none`.
+
+## The merge state
+
+Every PR and MR an agent opens starts with this block, above the repository's own template:
+
+```
+**Merge:** safe to merge | check first | hold
+**Checked:** Codex pre-merge approve <nonce> on <40-character head>; Claude review <done>;
+  suite <passed/total>; CI <green | pending | none>; size <code> / <test> lines;
+  new dependencies <none | list>
+**Check by hand:** nothing | a numbered list: what to look at, how, and what he should see
+**After merge:** nothing | the commands to run
+**What and why:** at most five plain lines: what changes for a user, and why it was needed
+**Evidence:** the command that ran the change the way its user will, and what it showed; for a
+  bug fix, the test, failing before and passing after
+```
+
+- **`safe to merge`** needs all of these: Codex's pre-merge review approved exactly this head;
+  the repository's pre-merge suite and linters passed on it; the repository's `Checks` line says
+  `strong` (below); the change touches no safety boundary as Sizing lists them; it adds no
+  dependency; it is within the size ceiling; nothing needs Michael's eyes or hands before the
+  merge; no ruling is waiting for him. With CI still running, the line says `safe to merge once
+  CI is green`.
+- **`check first`** is everything else that is ready, and `Check by hand` is then never empty.
+  A change that touches a safety boundary, adds a dependency or lives in a `weak` repository is
+  always `check first`.
+- **`hold`** means do not merge yet, with the reason: stacked on an open PR, waiting for his
+  manual test, waiting for another repository's MR.
+- **What it is.** The state is the author's summary of recorded facts. It is not a gate and not
+  an approval: it gates nothing, nothing merges because of it and it grants no merge right. Who
+  merges is unchanged: Michael does, and an agent only where he asks for it in that
+  conversation, through the pinned pre-merge gate, as the `cross-review` skill already says.
+- **Where each `Checked` fact comes from.** The facts come from tools, not from the agent's
+  memory: the nonce from
+  `xreview receipts`, the size and dependency lines from `change-facts`, the totals from the
+  suite's own output. Leave no fact out of the block: a missing one is never `safe to merge`.
+
+## Bugs that escaped
+
+A fix for a defect in behaviour that had already merged to the default branch carries a commit
+trailer on the commit that holds its test, as below. A finding fixed before the merge is not a
+bug in this sense and gets no trailer.
+
+```
+Bug-introduced-by: <full commit id, or PR/MR reference, or unknown>
+```
+
+The trailer works on every forge and needs no labels. Where the reference is known, it shows
+which change let the bug through, including whether its PR said `safe to merge`.
+
+## Checks
+
+Each repository's `AGENTS.md` carries one line:
+
+```
+**Checks:** strong | weak — <the pre-merge suite command>; CI required to merge: yes | no
+```
+
+- **`strong`** means the line can run the pre-merge suite itself, that suite covers the
+  behaviour the repository exists for, and the forge refuses a merge without green CI (for a
+  repository whose checks only run on macOS: the local pre-merge run on the final commit
+  instead).
+- **No line means `weak`.** Then a `weak` repository's changes are always `check first`, and the
+  PR names the missing check. Until a repository is declared `strong`, `safe to merge` does not
+  appear there.
+- **Michael sets it.** An agent may propose a change to the line in a PR, which is then `check
+  first` and says so. An agent never raises a tier as part of another change. Declaring
+  `strong`, the first time as much as any later time, raises the tier, so it is a
+  safety-boundary change and never a small one: it gets a short spec in that repository that
+  states the evidence (what the suite covers, that the forge requires CI), and Michael signs it.
+  Declaring `weak` in writing is a small change.

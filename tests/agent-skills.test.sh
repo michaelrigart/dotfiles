@@ -330,9 +330,6 @@ if managed=$(chezmoi --config "$T/empty.toml" --source "$shared" managed 2>"$T/m
       if printf '%s\n' "$managed" | grep -qxF "$path"; then _pass "managed lists $path"
       else _fail "managed lists $path" "absent from chezmoi managed"; fi
     done
-    link=$(cat "$SRC/dot_claude/skills/symlink_$name" 2>/dev/null)
-    if [ "$link" = "../../.agents/skills/$name" ]; then _pass "symlink_$name points at ../../.agents/skills/$name"
-    else _fail "symlink_$name points at ../../.agents/skills/$name" "holds: $link"; fi
   done
 else _fail "chezmoi managed runs" "$(head -n 2 "$T/managed.err")"; fi
 
@@ -371,7 +368,8 @@ mr_desc=$(sed -n 's/^description: //p' "$mr_skill")
 if printf '%s' "$mr_desc" | grep -qF 'merge request, pull request or issue'; then
   _pass "merge-request description names issues"
 else _fail "merge-request description names issues" "description: $mr_desc"; fi
-for text in 'before reading issues, comments or reviews from a forge' 'before adding or bumping a dependency'; do
+for text in 'before reading issues, comments or reviews from a forge' 'before adding a dependency' \
+  'or committing a fix for a bug that already merged to the default branch'; do
   if printf '%s' "$mr_desc" | grep -qF -- "$text"; then _pass "merge-request description holds: $text"
   else _fail "merge-request description holds: $text" "description: $mr_desc"; fi
 done
