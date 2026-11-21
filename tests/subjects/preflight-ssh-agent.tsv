@@ -1,0 +1,1 @@
+.scripts/preflight-ssh-agent.sh	bash	own,guard
