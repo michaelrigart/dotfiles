@@ -1,7 +1,8 @@
 # Workflow v2: smaller increments, shorter fix chains, a merge state, an input rule
 
-**Status:** Implemented (increment 1 on branch `feat/workflow-v2`, PR #33 for increment 1, increment 2 on
-`feat/workflow-v2-input-rule`, increment 3 with the queue on `feat/workflow-v2-switch`)
+**Status:** In progress (increment 1 merged as PR #33 and #36, increment 2 as PR #35; increment 3
+with the queue on `feat/workflow-v2-switch`, reopened for the `merge-state` tool under
+Amendments)
 **Sign-off:** Michael, 2026-11-20, in the line's own pane, with the eight decisions under Decisions.
 Codex approved the spec in round 3 (xr-1795214348-4c57c9f3).
 **Date:** 2026-11-20
@@ -773,6 +774,166 @@ Made on 2026-11-21 while building increment 3, after two cold reviews. Michael w
 - **The bug trailer.** `unknown` needs one line on what was searched.
 - **Scouts** use a `scout/<topic>` branch that is never pushed.
 - **Not done:** the bug trailer's moment is named only in the `merge-request` skill's description, because `global.md` is at its cap.
+
+### The `merge-state` tool
+
+**Sign-off:** Michael, 2026-11-21, in this line's own pane, with the four decisions below
+taken as recommended. It replaces
+the second bullet above ("The merge state") and the `safe to merge` and `check first` bullets
+under "The merge state" in Design. Nothing else in the spec changes.
+
+**Why.** Increment 3's pre-merge reviews stopped on the convergence rule: three rounds, and the
+last two mostly found gaps in the previous round's fixes to the prose conditions of `safe to
+merge`. Each fix to that sentence opened another reading of it. Michael chose the structural
+option on 2026-11-21 ("use tool"): the conditions become code with tests, and the skill only
+says to run the tool and paste its output.
+
+**What it is.** `merge-state`, a script beside `change-facts` in `dot_local/bin`
+(`~/.local/bin/merge-state`), pinned the same way: `/usr/bin/python3 -I`, `/usr/bin/git`, an
+environment built from scratch. It prints the first three fields of the block (`Merge`,
+`Checked`, `Check by hand`). The author adds `After merge`, `What and why` and `Evidence`.
+The skill tells the author to paste the three fields unchanged, never to write or edit them by
+hand, and to run the tool again after every new commit.
+
+**What it is not.** It gates nothing, exactly as the block it prints: no guard, hook or script
+reads its output, it grants no merge right, and the pre-merge gate, `xreview` and forge
+protection are unchanged. Its exit status is 0 whenever it printed a block, whatever the state,
+and 2 for a usage error, a directory that is not a git repository, or a side that names no
+commit. An agent can still type a block by hand; the second line of defence stays Codex's
+pre-merge review and Michael's merge, as Safety already says for the dependency lines.
+
+**The command.**
+
+```
+merge-state <destination> <head> --claude-review <type>:<commit> | none
+    --suite <passed>/<total> | none  --lint pass | fail | not-run | none
+    --ci green | pending | failed | none
+    --spec <path> | none  --boundary <what> | none  --check <what> | none
+    [--hold <reason>]
+```
+
+`<destination>` is the branch the PR or MR targets; the tool reads it as `origin/<destination>`
+and never fetches. Every option except `--hold` is required and has no default, so a fact
+cannot be left out: a missing one is a usage error, never a quieter state. `--boundary` and
+`--check` repeat.
+
+**Facts the tool measures itself.**
+
+| Fact | From |
+|---|---|
+| Codex's pre-merge approval of exactly this change into this destination, and its nonce | the review ledger's own gate decision (`xreview-ledger.py decide`), so the block and the gate cannot disagree. The gate binds an approval to the change's content (its fingerprint from the merge base to the head), not to the commit id: a head amended without changing its content is the same change to the gate, and so to the tool |
+| code and test lines, test lines deleted, dependency lines | `change-facts origin/<destination>...<head>` |
+| the repository's `Checks` tier and whether CI is required | the `**Checks:**` line of `AGENTS.md` on the default branch as origin has it; no line, or a line it cannot parse, is `weak` |
+| whether the change adds, removes or edits a `**Checks:**` line | the change's own diff |
+| whether the change touches agent instruction text | the paths of the change: an `AGENTS.md` or `CLAUDE.md` anywhere, the instruction fragments (`.chezmoitemplates/agents/`), an agent definition (a file in an `agents` directory under `.claude`, `dot_claude`, `.codex` or `dot_codex`), any `SKILL.md` |
+
+**Facts the author declares**, because no tool on this machine records them. Each is printed in
+`Checked` as given, so Michael sees what was claimed:
+
+- `--claude-review`: the reviewer type (`sp-reviewer` or `sp-architect`) and the commit its
+  whole-range approving review read. The tool resolves that commit and prints it; a review of
+  any commit but the head does not count. This replaces the fixed text "on this head".
+- `--suite`: the totals of the repository's pre-merge suite on this head, from the suite's own
+  output.
+- `--lint`: the outcome of the repository's linters on this head: `pass`, `fail`, `not-run`, or
+  `none` for a repository that has no linter outside its suite.
+- `--ci`: the forge's CI state for this head, read from the forge's own tool (`gh pr checks`,
+  `glab ci status`, `az pipelines runs list`), never from memory. The tool does not call the
+  forge itself: that needs credentials and the network in a tool built to need neither, and
+  when the block is first written the PR does not exist, so its CI has not started
+  (decision 4 below).
+- `--spec`: the signed spec the change belongs to, which sets the size limit. The tool checks
+  that the path exists at the head under `docs/superpowers/specs/`.
+- `--boundary`: each safety boundary the change touches, as Sizing lists them, or `none`.
+- `--check`: each thing that needs Michael's eyes or hands before the merge, and each ruling
+  waiting for him, or `none`.
+- `--hold`: the reason not to merge yet (stacked on an open PR, waiting for his manual test,
+  waiting for another repository's MR).
+
+**The state.** `hold` when `--hold` is given. Otherwise `check first` when any line of this
+table holds, and each one that holds becomes a numbered item under `Check by hand`, in this
+order, before the declared `--check` items. Otherwise `safe to merge`.
+
+| Condition | The item it prints |
+|---|---|
+| the ledger's gate decision is not "approved" for this change and destination | the ledger's own reason |
+| no `--claude-review`, or it names another commit than the head | which commit was reviewed, or that none was |
+| `--suite none`, or passed is less than total, or total is 0 | the totals |
+| `--lint fail` or `--lint not-run` | the outcome |
+| `--ci failed`; or `--ci none` where the `Checks` line requires CI | the CI state |
+| the `Checks` tier is `weak` | that the default branch has no `Checks: strong` line: the missing check |
+| the change touches a `Checks` line | the file |
+| the change touches agent instruction text | the files |
+| `--boundary` names one | each as given |
+| `change-facts` prints any dependency line, a Brewfile or mise tool included | the lines |
+| code lines over the limit: 2,000 with `--spec`, 150 without | the figure and the limit |
+| test lines deleted is not 0 | the count, and that each deleted line is to be looked at |
+| any `--check` | each as given |
+
+With `--ci pending` and nothing else in the table, the line reads `safe to merge once CI is
+green`. A tool the state depends on that cannot run (no ledger script, no `change-facts`, no
+`origin/<destination>`) is a `check first` item naming it, never a guess.
+
+**Four decisions, each confirmed by Michael at sign-off.** The first three are stricter than
+the prose they replace, because code cannot make the judgement the prose asked for:
+
+1. **Deleted test lines always mean `check first`** (open finding 1). The figure over-triggers:
+   an edited test line counts as deleted. The other reading, the author's judgement of "removes
+   or weakens an assertion", makes a safety condition an opinion.
+2. **Any change to agent instruction text means `check first`,** not only a skill "that states
+   a safety rule". Which sentence states a safety rule is a judgement; the path is a fact. The
+   cost: in this repository most workflow changes are `check first`.
+3. **A suite total below its count means `check first`,** an inconclusive suite included. In
+   this repository that is every change made while a CLI upgrade waits for its
+   `xreview-guard-cli` pin.
+4. **CI is declared, not read from the forge.** The forge records it, so a tool could read it;
+   Codex's spec review asked for that, and Michael ruled for the declaration. The cost of reading it: forge credentials and network
+   in the tool, three CLIs' spellings, and no answer at the moment the block is first written.
+   Declared, a stale `green` can print `safe to merge`; the forge's own required-CI setting,
+   where `Checks` says CI is required, still refuses that merge.
+
+**What stays the author's word.** `--boundary none`, `--check none`, the suite totals, the
+linter outcome, the CI state and the Claude review are claims the tool cannot verify. The tool makes each one an
+explicit argument and prints it; it does not make it true. Recording them where a tool can read
+them (a Claude review receipt, the suite's totals in a file) is a later line.
+
+**The skill.** The `merge-request` section "The merge state" keeps the block, the meaning of
+`hold`, "What it is", and how to choose each declared argument. Its two condition bullets
+(`safe to merge`, `check first`) and "Where each `Checked` fact comes from" go: `merge-state
+--help` prints the table above, and the suite pins it. The `Claude review` field of the block
+becomes `Claude review approve (<type>, on <40-character head>, whole range)`, and `Checked`
+gains `lint <outcome>` after the suite totals. The `rules.tsv`
+pins on the removed sentences are replaced by cases in the tool's suite, one per row of the
+table, never dropped.
+
+**Open finding 3** (an increment over the ceiling that Michael signed as an exception still
+stops the run) is fixed in prose, in `design-records` and `plan-run`: where the signed spec
+records that the increment cannot be split, passing the ceiling does not stop the run; passing
+the estimate by half still does. The tool does not read exceptions: such a change is over
+2,000 lines and `check first`, which is right for it.
+
+**Not changed, and known.** `run.sh --changed` never runs the unsandboxed suites, so a
+shell-config change can still show a full suite total without its only covering suite having
+run. That is a gap in this repository's `Checks: strong` evidence, not in the tool.
+
+**Size.** Increment 3 grows from 310 lines of text to about 250 lines of code and 350 of tests
+beside it (the script and `tests/merge-state.test.sh`, on the pattern of `change-facts` and its
+suite). That passes its estimate by more than half, which is the "Outgrown" case; this
+amendment is the spec change it calls for. The tool stays in increment 3 instead of a fourth
+increment because the skill text of the switch names it: merged alone, increment 3 would carry
+the prose conditions with their open findings.
+
+**Safety.** The tool reads only: git objects of the two commits, the ledger through its own
+script, `AGENTS.md` from origin's default branch. It writes nothing and calls no forge. A wrong
+`safe to merge` is still the failure guard rail 3 measures; the tool narrows it to a wrong
+declared argument or a bug its suite missed.
+
+**Testing.** `tests/merge-state.test.sh`: one case per row of the state table, each in a
+fixture repository with a stub ledger; `safe to merge` reached only with every row clear;
+`safe to merge once CI is green`; `hold`; every required option missing in turn is exit 2; a
+missing ledger or `change-facts` is `check first`; the `Checks` line is read from origin's
+default branch and never from the head; control characters in a declared argument are shown as
+`?`. `tests/agent-instructions.test.sh` and `rules.tsv`: the skill's remaining sentences.
 
 ## Decisions
 
