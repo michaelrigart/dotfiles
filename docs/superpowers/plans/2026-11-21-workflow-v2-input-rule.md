@@ -78,7 +78,7 @@ The spec leaves these open; each stays inside it.
     the rules would sit in a file that never loads at that moment, which the spec names as an
     anti-goal.
 
-11. **Lines are counted from each file's patch, not from `--numstat`,** and binary files are
+11. **Lines are counted from each file's two blobs, not from `--numstat`,** and binary files are
     told by content. No flag keeps an attribute in `info/attributes` from turning a text file's
     `--numstat` into `-`, and the spec has the tool read only the repository's history.
 
@@ -152,13 +152,18 @@ A path is printed with any control character replaced by `?`.
   `core.attributesFile`, and a `binary` or `-diff` attribute makes `--numstat` print `-` for a
   text file whatever flags it is given (measured on git 2.56). So `--numstat` is not used.
   The files of the change come from `git diff --raw -z --no-abbrev` (status, modes, blob ids,
-  and both paths of a rename). Each file's added and deleted lines come from its own patch,
-  `git diff -U0 … -- <old path> <new path>` with `GIT_LITERAL_PATHSPECS=1` (one path when it is
-  not a rename), read from the first `@@` line on: a line starting with `+` is added, one
-  starting with `-` is deleted. `--text` makes that patch ignore every attribute.
-- Binary files add zero lines, decided from content and not from attributes: a file is binary
-  when its head-side blob (its base-side blob when deleted) has a NUL byte in its first 8000
-  bytes, read with `git cat-file blob <id>`. A submodule entry (mode `160000`) is not read.
+  and both paths of a rename), one record per file. Each record's lines come from its two
+  blobs alone, never from a path-limited diff, which can hold several file sections (a symlink
+  that becomes a file) or reach other files (an old name that becomes a directory):
+  - both sides present (modified, renamed, type changed): `git diff -U0 … <old id> <new id>`,
+    one section by construction, read from the first `@@` line on: a line starting with `+` is
+    added, one starting with `-` is deleted. `--text` makes the patch ignore every attribute;
+  - one side absent (added, deleted): the lines of the present blob, read with
+    `git cat-file blob <id>`, all added or all deleted. A last line without a newline is a
+    line; an empty blob has none;
+  - a submodule side (mode `160000`) is one line and is never read.
+- Binary files add zero lines, decided from content and not from attributes: a record is
+  binary when either of its blobs has a NUL byte in its first 8000 bytes.
 - Class of a path (a rename's new path), first match wins. Lockfile, left out of every figure:
   the last component is `Gemfile.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
   `poetry.lock`, `uv.lock`, `Cargo.lock`, `go.sum` or `Package.resolved`, or ends in `.lock`.
@@ -180,8 +185,8 @@ A path is printed with any control character replaced by `?`.
   `.mise.*.toml`, `.tool-versions`, or `config.toml` directly inside a directory named `mise`;
   and any `.yml` or `.yaml` file under `.github/workflows/`, of which only added lines matching
   `^\s*(-\s*)?uses:` count.
-- Dependency lines of a manifest: its added lines, from the same per-file patch as its counts,
-  so a manifest that only moved lists nothing and a header is never taken for a line. Blank
+- Dependency lines of a manifest: its added lines, from the same record as its counts, so a
+  manifest that only moved lists nothing and a header is never taken for a line. Blank
   added lines are skipped. A manifest with no added line is not listed. A binary manifest is
   listed with the one line `(binary)`.
 
@@ -239,6 +244,11 @@ A path is printed with any control character replaced by `?`.
       code file with one changed line counts 2, in its new path's class; `sub/package.json`
       moved unchanged to `package.json` lists no dependency line; a `Gemfile` moved to
       `sub/Gemfile` with one added line lists exactly that line;
+  16a. one record, one file: a symlink `Gemfile` replaced by a regular 3-line `Gemfile` lists
+      exactly those 3 lines and none starting `+ ++` or `+ --`, with `code: 4 lines (+3 -1)`; a
+      20-line `lib/tool` renamed to `lib/tool/main.rb` beside a new 5-line `lib/tool/extra.rb`
+      gives `code: 5 lines (+5 -0)`; an added file whose last line has no newline counts that
+      line, and an added empty file counts zero;
   17. the three-dot form: with a base branch that moved on after the fork, the base branch's
       own later lines are not counted;
   18. it reads history only: an uncommitted edit in the work tree does not change the report,
@@ -259,8 +269,9 @@ A path is printed with any control character replaced by `?`.
   pass; report passed/total per suite.
 - [ ] **Step 7: Revert check.** For each of: the lockfile rule (case 5), `-M` (case 16),
   `--no-ext-diff --no-textconv` (case 12), `--text` (case 13), `--no-relative` (case 18), the
-  `@@` header skip (case 10), the NUL check (case 15), the old path in a rename's pathspec
-  (case 16), the `rev-parse` verification (case 11): remove it, see the named case fail,
+  `@@` header skip (case 10), the NUL check (case 15), the blob-pair diff (replace it with a
+  diff limited to the record's paths; case 16a), the `rev-parse` verification (case 11): remove
+  it, see the named case fail,
   restore it. A mutation whose case still passes is a finding: report it, do not drop it.
 - [ ] **Step 8: Commit.** `Add change-facts, which prints the measured facts of a change`
 
