@@ -72,6 +72,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(~/.local/share/tagteam/displaced/**)","Edit(~/.local/share/tagteam/displaced/**)",
  "Read(~/.local/share/tagteam/sessions/*/.credentials.json)","Edit(~/.local/share/tagteam/sessions/*/.credentials.json)",
  "Edit(~/.config/forge-protection/**)","Edit(~/.config/git/hooks/**)",
+ "Edit(~/.local/state/ssh-agent)","Edit(~/.local/state/ssh-agent/**)",
  "Bash(tagteam *export*)",
  "Bash(gh gist create*)","Bash(gh gist edit*)","Bash(gh repo create*)","Bash(glab repo create*)",
  "Bash(glab snippet create*)","Bash(gh api *gists*)","Bash(glab api *snippets*)",
@@ -442,7 +443,8 @@ fi
 
 echo "F. layer 2 — agent-backed credential isolation"
 emit '{}'
-AGENT_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+AGENT_SOCKET="$HOME/.local/state/ssh-agent/agent.sock"
+OP_AGENT_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 EXP_CREDENTIALS='[
   "~/.ssh/borg",
   "~/.ssh/borg-append-only",
@@ -477,7 +479,7 @@ EXP_ALLOW_READ='[
   "~/.ssh/michael_rsa.pub",
   "~/.ssh/viumore_rsa.pub"
 ]'
-jq_is '.env.SSH_AUTH_SOCK' "$AGENT_SOCKET" "Claude uses the stable 1Password agent socket"
+jq_is '.env.SSH_AUTH_SOCK' "$AGENT_SOCKET" "Claude uses the native agent socket"
 jq_is '.env.PATH | split(":")[0]' "$HOME/.local/bin" "Claude resolves XDG executables first"
 jq_is ".env.PATH | split(\":\") | index(\"$HOME/.local/share/mise/shims\") != null" true \
       "Claude PATH includes mise shims"
@@ -558,18 +560,20 @@ EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson
   + ["~/Code/HEAD", "~/Documents/HEAD", "~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD", "~/Code/*/HEAD"]
   + [$r[] as $root | $t[] | "\($root)/**/\(.)"]
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
-     "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
+     "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]
+  + ["~/.local/state/ssh-agent", "~/.local/state/ssh-agent/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
       "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, and .obsidian"
 jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
-        | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)] | length" 0 \
-      "every deny glob starts with a work root and a slash, so git init in TMPDIR still works"
+        | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)
+        | select(startswith(\"~/.local/state/ssh-agent\") | not)] | length" 0 \
+      "every deny glob starts with a work root and a slash, bar the agent socket directory, so git init in TMPDIR still works"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))] | length' 0 \
       "no deny glob reaches refs, objects or the index"
-jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")
+jq_is '[.sandbox.filesystem.denyWrite[] | select(startswith("~/.local/state/ssh-agent") | not) | select((test("/\\.git/") or test("/\\.obsidian(/|$)")
         or test("/\\.git$") or test("/HEAD$") or test("/\\.lazygit\\.yml$")
         or test("/\\.claude/settings(\\.local)?\\.json$") or test("/\\.mcp\\.json$") or test("/\\.codex(/\\*\\*)?$")) | not)] | length' 0 \
-      "every deny glob names a git path, a fake-repository HEAD, a lazygit file, .obsidian or an agent configuration file"
+      "every deny glob, bar the agent socket directory, names a git path, a fake-repository HEAD, a lazygit file, .obsidian or an agent configuration file"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/(skills|commands|agents)"))] | length' 0 \
       "no deny glob reaches .claude skills, commands or agents"
 jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] as \$p
@@ -776,8 +780,8 @@ done
 x_is 'command wt-rm feat/x' 0 "no exclusion matches the command-builtin spelling: command wt-rm feat/x"
 m_is 'wt --no-focus feat/x main' 0 "no allow rule lets an unsandboxed wt skip the classifier"
 m_is 'wt feat/x' 0 "no allow rule matches plain wt"
-jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
-      "allowUnixSockets contains only the stable agent socket"
+jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\", \"$OP_AGENT_SOCKET\"]" true \
+      "allowUnixSockets is exactly the native socket, then the 1Password socket"
 
 echo "H. layer 3 stays off until domains are known"
 # Pinned exactly, not by containment: the point of an egress allowlist is that additions are
@@ -851,8 +855,8 @@ jq_is '[.hooks.SessionStart[].hooks[].command
         | select(contains("CLAUDE_ENV_FILE") and contains("GIT_SSH_COMMAND") and contains("ssh-sandbox-proxy"))]
        | length' 1 \
       "SessionStart hook exports GIT_SSH_COMMAND to CLAUDE_ENV_FILE via the proxy helper"
-jq_is '.env.SSH_AUTH_SOCK | endswith("/t/agent.sock")' true \
-      "SSH_AUTH_SOCK points at the 1Password agent socket"
+jq_is '.env.SSH_AUTH_SOCK | endswith("/.local/state/ssh-agent/agent.sock")' true \
+      "SSH_AUTH_SOCK points at the native agent socket"
 jq_is '.env.PATH | split(":") | index("\($ENV.HOME)/.local/bin") == 0' true \
       "~/.local/bin is first — so any executable there shadows system tools in-session"
 
