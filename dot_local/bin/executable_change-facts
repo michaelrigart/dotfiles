@@ -105,7 +105,7 @@ def printable(data, keep_tab=False):
     """The bytes with every control character and every byte that is not UTF-8 shown as ?."""
     text = data.decode("utf-8", "surrogateescape")
     text = "".join(
-        "?" if unicodedata.category(ch) in ("Cc", "Cs") and not (keep_tab and ch == "\t") else ch
+        "?" if unicodedata.category(ch) in ("Cc", "Cf", "Cs") and not (keep_tab and ch == "\t") else ch
         for ch in text
     )
     return text.encode("utf-8")

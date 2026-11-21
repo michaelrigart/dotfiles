@@ -371,12 +371,14 @@ lines_ok "a binary Gemfile moved unchanged and a deleted binary gemspec list not
 
 # 23. control characters in a dependency line
 fx c23; wt seed.txt s; base
-printf 'gem "a"\r\033[2Kgem "b"\ngem "c" \x9b x\ngem\t"d"\n' | wf Gemfile; commit; rep
-from_is "control characters and a stray byte in an added line show as ?, a tab stays" "dependency lines:" "dependency lines:
+printf 'gem "a"\r\033[2Kgem "b"\ngem "c" \x9b x\ngem\t"d"\ngem "e"\xe2\x80\xaex\ngem "f"\xe2\x80\x8bg\n' | wf Gemfile; commit; rep
+from_is "control, format and stray bytes in an added line show as ?, a tab stays" "dependency lines:" "dependency lines:
   Gemfile
     + gem \"a\"??[2Kgem \"b\"
     + gem \"c\" ? x
-    + gem"$'\t'"\"d\""
+    + gem"$'\t'"\"d\"
+    + gem \"e\"?x
+    + gem \"f\"?g"
 
 # 24. a reader that exits at once
 fx c24; wt seed.txt s; base; wn Gemfile 30000; commit
