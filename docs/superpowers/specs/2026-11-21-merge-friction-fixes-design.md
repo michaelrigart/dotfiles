@@ -1,6 +1,6 @@
 # Merge friction fixes: a test registry that parallel PRs do not collide in
 
-**Status:** In progress
+**Status:** Implemented (branch `chore/merge-friction-fixes`, its PR against `main`)
 **Date:** 2026-11-21
 **Branch:** `chore/merge-friction-fixes`, in the `wt` checkout
 `~/.local/share/chezmoi-chore-merge-friction-fixes`
@@ -14,6 +14,11 @@ ride in the same line and are summarised at the end.
 (`tests/run.test.sh`'s `--changed` fixture and map checks, `tests/missing-subject.test.sh`,
 `tests/test-audit.test.sh`), and a mechanical data move of the 191 map rows and 48 of the 49
 guard rows into 75 per-suite files. One increment.
+**Real size:** 141 lines of non-test code (`tests/run.sh` 99, `audit.py` 42), 1.57 times the
+estimate: the plan added the once-per-run decision and a review round its header and lint fixes.
+`change-facts` counts 255, of which 201 are the deleted old map (data). Michael kept it as one
+increment on 2026-11-21, in the line's own pane. After the rebase on #40 and #44 the data move is
+191 rows and 51 guard rows in 77 files.
 
 ## Why
 

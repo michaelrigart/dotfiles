@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: the `plan-run` skill (it overrides
 > superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `chore/merge-friction-fixes`)
+**Status:** Implemented (the pull request of branch `chore/merge-friction-fixes`). Completed 2026-11-21: do not run this plan again.
 
 **Goal:** Replace `.scripts/test-audit/subjects.tsv` and `tests/missing-subject.test.sh`'s row list
 with one subject file per suite, `tests/subjects/<suite>.tsv`, so two PRs that each add a suite
@@ -67,7 +67,7 @@ at either end of a field.
 - Create: `tests/subjects/<suite>.tsv` (75 files)
 - Scratch only, never committed: the converter and the equivalence check
 
-- [ ] **Step 1: Write a converter** (Python, in the session scratchpad) that reads
+- [x] **Step 1: Write a converter** (Python, in the session scratchpad) that reads
   `.scripts/test-audit/subjects.tsv` and the `missing <suite> <path>` rows of
   `tests/missing-subject.test.sh` (expand `"$RELAY/…"` with the `RELAY=` line). For each map row and
   each suite in `loaded_by`, emit `file<TAB>lang<TAB>role` into `tests/subjects/<suite>.tsv`, role
@@ -77,7 +77,7 @@ at either end of a field.
   Abort if a `missing` row names a pair the map does not have, or an `own_suite` is not in its
   `loaded_by`. Sort each file's rows by file, `LC_ALL=C` byte order; end each file with a newline.
 
-- [ ] **Step 2: Check equivalence.** Load the old map with today's `audit.load_subjects` and the new
+- [x] **Step 2: Check equivalence.** Load the old map with today's `audit.load_subjects` and the new
   directory with a throwaway merge (per file: the one `lang`, the `own` suite or `-`, the sorted set
   of listing suites). Expect the same 190 files (191 minus the map's own row) with the same `lang`,
   `own_suite` and `loaded_by` set, and 48 `guard` pairs equal to the `missing` rows minus `run`'s.
@@ -85,7 +85,7 @@ at either end of a field.
   `lang`, `own_suite`, sorted `loaded_by`), before any later task deletes the old map; Task 3
   compares against it. Record the command and its output for the ledger.
 
-- [ ] **Step 3: Check the old suites still pass:** `./tests/run.test.sh` and
+- [x] **Step 3: Check the old suites still pass:** `./tests/run.test.sh` and
   `./tests/missing-subject.test.sh` (nothing reads the new files yet).
 
 ### Task 2: `run.sh --changed` reads the suite's file; `run.test.sh` follows
@@ -100,7 +100,7 @@ at either end of a field.
 - Modify: `tests/missing-subject.test.sh` (only `missing()` and the `run` row)
 - Delete: `.scripts/test-audit/subjects.tsv`
 
-- [ ] **Step 1: Port the tests first** (`run.test.sh`), so they fail against today's `run.sh`:
+- [x] **Step 1: Port the tests first** (`run.test.sh`), so they fail against today's `run.sh`:
   - Guard: `SUBJECTS="$SRC/tests/subjects"`, `[ -d "$SUBJECTS" ] || { echo "missing subject map
     the drift checks read: $SUBJECTS" >&2; exit 2; }`.
   - Fixture: `SUBJ=tests/subjects` replaces `MAP`. `row <file> <suite>` prints
@@ -145,7 +145,7 @@ at either end of a field.
     `subject map unreadable` and every one of those suites is skipped as unchanged.
   Run `./tests/run.test.sh` against today's `run.sh`: the ported `--changed` cases must fail.
 
-- [ ] **Step 2: Change `run.sh`:**
+- [x] **Step 2: Change `run.sh`:**
   - `map_check <file>`: 0 when every row (skipping `#` and blank lines) has exactly three
     tab-separated fields, no CR and no field with whitespace at either end; 1 otherwise; 2 when awk
     cannot read it.
@@ -170,11 +170,11 @@ at either end of a field.
     directory runs every heavy suite while a missing, empty, unreadable or malformed suite file
     runs that suite.
 
-- [ ] **Step 3: `missing-subject.test.sh`:** `missing()` accepts a directory (`[ -e ]` for the
+- [x] **Step 3: `missing-subject.test.sh`:** `missing()` accepts a directory (`[ -e ]` for the
   hidden path); the `run` row becomes `missing run tests/subjects`. Delete
   `.scripts/test-audit/subjects.tsv`.
 
-- [ ] **Step 4: Verify:** `./tests/run.test.sh`, `./tests/missing-subject.test.sh`; then revert-check
+- [x] **Step 4: Verify:** `./tests/run.test.sh`, `./tests/missing-subject.test.sh`; then revert-check
   three cases by hand and record the result: let `map_check` accept two fields; drop the lang
   comparison from `map_lint`; skip the per-suite decision file so the report loop decides again
   (the mid-run case must fail).
@@ -191,7 +191,7 @@ at either end of a field.
 - Create: `tests/fixtures/test-audit/subjects/{s,s2,pins,gated}.tsv`
 - Modify: `tests/subjects/test-audit.tsv` (the fixture file rows)
 
-- [ ] **Step 1: Tests first.** The fixture directory holds `s.tsv` (`bin/s.sh bash own`), `s2.tsv`
+- [x] **Step 1: Tests first.** The fixture directory holds `s.tsv` (`bin/s.sh bash own`), `s2.tsv`
   (`bin/p.py py own`, `bin/s.sh bash -`), `pins.tsv` (`docs/rules.md prose own`), `gated.tsv`
   (`docs/gated.md prose own`); `bin/loop.sh` is in none (spec: a file appears only through a suite
   that lists it). `aud` and `audb` pass `--subjects "$T/repo/subjects"`. Line 869 writes
@@ -205,7 +205,7 @@ at either end of a field.
   In `tests/subjects/test-audit.tsv`, replace the `tests/fixtures/test-audit/subjects.tsv` row with
   one `data -` row per new fixture file.
 
-- [ ] **Step 2: `load_subjects(path, explicit)`** reads `path` as a directory: missing and explicit →
+- [x] **Step 2: `load_subjects(path, explicit)`** reads `path` as a directory: missing and explicit →
   `die(f"missing subjects directory: {path}")`, missing and not explicit → `[]`. For each `*.tsv` in
   name order (suite = file stem), each row not blank and not `#`: three columns, `lang` in `LANGS`,
   `role` in `ROLES`, else `die(f"{sub}:{n}: want file, lang, role")`; a second `lang` for a file →
@@ -214,7 +214,7 @@ at either end of a field.
   `{"file", "lang", "own_suite", "loaded_by"}`, sorted by file, `own_suite` `-` when none,
   `loaded_by` in suite-name order. The default becomes `Path(args.repo) / "tests" / "subjects"`.
 
-- [ ] **Step 3: Verify:** `./tests/test-audit.test.sh` (about 100 s); compare the new
+- [x] **Step 3: Verify:** `./tests/test-audit.test.sh` (about 100 s); compare the new
   `load_subjects` on the real `tests/subjects` with Task 1's baseline after exactly these changes to
   the baseline: drop `.scripts/test-audit/subjects.tsv` and `tests/fixtures/test-audit/subjects.tsv`;
   add `tests/fixtures/test-audit/subjects/{gated,pins,s,s2}.tsv`, each `data`, `own_suite` `-`,
@@ -227,7 +227,7 @@ at either end of a field.
 **Files:**
 - Modify: `tests/missing-subject.test.sh` (the `missing` rows, lines 62-112)
 
-- [ ] **Step 1:** Replace the literal rows (all but the `run` directory case from Task 2) with a loop
+- [x] **Step 1:** Replace the literal rows (all but the `run` directory case from Task 2) with a loop
   over `$COPY/tests/subjects/*.tsv` in name order: for each row whose role contains `guard`, run
   `missing <suite> <file>` (suite = file stem; read with `IFS=$'\t' read -r file lang role`, skipping
   `#` and blank lines; file names may contain spaces). If the loop finds no `guard` row, print
@@ -235,7 +235,7 @@ at either end of a field.
   `codex-config` missing-tool case and the `run` directory case. Update the header comment: each
   case comes from a `guard` role.
 
-- [ ] **Step 2: Verify:** `./tests/missing-subject.test.sh` runs 50 cases (48 guard rows, `run`'s
+- [x] **Step 2: Verify:** `./tests/missing-subject.test.sh` runs 50 cases (48 guard rows, `run`'s
   directory, `codex-config`'s tool), all passing; revert check: drop `guard` from one row, see its
   case disappear and the count fall to 49, restore; and blank all roles, see exit 2.
 
@@ -251,5 +251,5 @@ at either end of a field.
   `guard` mean, that a file no suite loads is absent, and that `missing-subject` hides every `guard`
   row's file; keep the `t-missing-subject` pin's terms "exits 2 if not" and "Exit 2, never 1").
 
-- [ ] **Step 1:** Edit both; `./tests/agent-instructions.test.sh` passes (the AGENTS.md cap and the
+- [x] **Step 1:** Edit both; `./tests/agent-instructions.test.sh` passes (the AGENTS.md cap and the
   pins).
