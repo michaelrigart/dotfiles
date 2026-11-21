@@ -422,6 +422,9 @@ check_body() {
   if LC_ALL=C tr -d '\t\n' < "$f" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     echo "the body holds a control character"; return 1
   fi
+  if [ "$(jq -Rs 'test("[\u0080-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")' "$f" 2>/dev/null)" != false ]; then
+    echo "the body holds a C1 control or a bidirectional formatting character"; return 1
+  fi
   if awk 'prev && /^ ? ? ?(===+|---+)[ \t]*$/ { found = 1 } { prev = ($0 ~ /[^ \t]/) } END { exit !found }' "$f"; then
     echo "the body holds an underlined heading"; return 1
   fi

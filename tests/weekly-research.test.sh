@@ -353,6 +353,13 @@ for c in '\033]0;MODELMARKER\007' '\033[2J MODELMARKER' 'bell \007 MODELMARKER' 
   { cat "$T/body.md"; printf 'x %b\n' "$c"; } > "$T/b-ctrl.md"
   check_result "a body with a control character ($c)" "$T/b-ctrl.md"
 done
+for c in 'C1 NEL \xc2\x85' 'C1 CSI \xc2\x9b' 'bidi override \xe2\x80\xae' 'bidi isolate \xe2\x81\xa6' 'RLM \xe2\x80\x8f' 'ALM \xd8\x9c'; do
+  { cat "$T/body.md"; printf 'x MODELMARKER %b\n' "$c"; } > "$T/b-uni.md"
+  check_result "a body with a Unicode control ($c)" "$T/b-uni.md"
+done
+{ cat "$T/body.md"; printf 'caf\xc3\xa9 \xe2\x80\x94 \xc3\xbc \xc2\xa0 \xe2\x80\xa6\n'; } > "$T/b-plain.md"
+stub_body "$T/b-plain.md"; run
+ok "ordinary non-ASCII text (accents, em dash, nbsp, ellipsis) is allowed" is "$(lr result)" ok
 { cat "$T/body.md"; printf 'Run\n===\n'; } > "$T/b-setext1.md"
 check_result "a body with an = underlined heading" "$T/b-setext1.md"
 { cat "$T/body.md"; printf 'Quiet sources MODELMARKER\n---\n'; } > "$T/b-setext2.md"
