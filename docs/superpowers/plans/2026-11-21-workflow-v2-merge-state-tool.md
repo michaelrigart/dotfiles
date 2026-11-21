@@ -162,7 +162,9 @@ items of the rows that hold are still listed.
 - [ ] **Step 3: The script**, until the suite passes. Then the revert check on three cases of
   your choice from rows 1, 8 and 12: break the row in the script, see its case fail, restore.
 - [ ] **Step 4: The map row and the guard row.** Add the `subjects.tsv` row and the
-  `missing-subject` row; run `./tests/missing-subject.test.sh` and
+  `missing-subject` row. `missing-subject` copies only tracked files, so stage the two new
+  files first (`git add dot_local/bin/executable_merge-state tests/merge-state.test.sh`,
+  staging only, no commit); then run `./tests/missing-subject.test.sh` and
   `./tests/merge-state.test.sh`.
 - [ ] **Step 5: Run it the way its user will**, in this checkout:
   `./dot_local/bin/executable_merge-state main HEAD --claude-review none --suite none --lint
@@ -247,12 +249,15 @@ items of the rows that hold are still listed.
 
 ### Task 4: The records
 
-**Depends on:** Tasks 1 to 3, the final review and Codex's pre-merge approval
+**Depends on:** Tasks 1 to 3. It comes before the final whole-branch review and Codex's
+pre-merge review, so both read the commit that merges; a fix round after them needs no further
+record change.
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-11-20-workflow-v2-design.md` (Status)
 - Modify: this plan (Status)
 
-- [ ] In the final pre-merge commit: the spec's status `Implemented` with the PR reference;
-  this plan `Implemented (completed <date> on branch feat/workflow-v2-switch; do not run
-  again)`. The controller does this itself.
+- [ ] In one commit after Task 3 and the full suite run, before the final review: the spec's
+  status `Implemented`, citing branch `feat/workflow-v2-switch` (the PR number is added by a
+  later change, as the design-record rules allow); this plan `Implemented (completed <date> on
+  branch feat/workflow-v2-switch; do not run again)`. The controller does this itself.
