@@ -19,7 +19,7 @@ Work that needs several pieces before anything works is still split: the early i
 
 The spec covers the whole change; a plan covers one increment and lists its tasks. Later increments may be planned after earlier ones have merged, because the earlier ones show the real shape. A plan is still committed before its execution starts, and Codex still reviews every plan.
 
-If an increment's real size passes its estimate by half, or passes the ceiling, the line stops and reports it with a proposed split. That is a spec change, so it goes to Michael.
+If an increment's real size passes its estimate by half, or passes the ceiling, the line stops and reports it with a proposed split. That is a spec change, so it goes to Michael. Where the signed spec records that the increment cannot be split, passing the ceiling does not stop the line; passing its estimate by half still does.
 
 The spec, and the first increment's plan, merge with the first increment. The spec's status stays `In progress` until the last increment's final commit sets `Implemented`. An increment that is dropped is recorded in the spec as dropped, with the reason, by the increment that turns out to be the last.
 

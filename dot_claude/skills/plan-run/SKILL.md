@@ -69,8 +69,9 @@ unsandboxed or live suite) goes in the final report as his step.
 
 Run `change-facts <base>...<head>` and record its output in the ledger. For a spec with a
 `**Size:**` line, a code figure over the ceiling, or half again over the increment's estimate in
-the spec, stops the run: the proposed split goes to Michael, because it changes the spec. A spec
-without one predates v2 and is never split retroactively.
+the spec, stops the run: the proposed split goes to Michael, because it changes the spec. An
+increment whose signed spec records that it cannot be split is not stopped by the ceiling, only by
+its estimate. A spec without one predates v2 and is never split retroactively.
 
 ## After the run
 
