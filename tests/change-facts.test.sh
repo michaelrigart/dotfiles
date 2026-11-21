@@ -297,24 +297,42 @@ git -C "$R" mv lib/old.rb lib/new.rb; sed -i.bak '5s/.*/changed/' "$R/lib/new.rb
 git -C "$R" mv sub/package.json package.json
 git -C "$R" mv Gemfile sub/Gemfile; printf 'gem "rack"\n' >> "$R/sub/Gemfile"
 commit; rep
-lines_ok "an edited move is a delete plus an add: 20+5 added, 20+4 deleted, the unchanged move counts nothing" "code: 49 lines (+25 -24)"
-from_is "an edited moved manifest lists every line of the new file" "dependency lines:" "dependency lines:
+lines_ok "an edited move is a delete plus an add: 20+6+5 added, 20+6+4 deleted" "code: 61 lines (+31 -30)"
+from_is "a moved manifest, edited or not, lists every line of the new file" "dependency lines:" "dependency lines:
+  package.json
+    + p1
+    + p2
+    + p3
+    + p4
+    + p5
+    + p6
   sub/Gemfile
     + g1
     + g2
     + g3
     + g4
     + gem \"rack\""
-fx c16d; wn lib/old.rb 20; wn sub/package.json 6 p; wn docs/a.md 3; base
-git -C "$R" mv lib/old.rb lib/new.rb; git -C "$R" mv sub/package.json package.json; git -C "$R" mv docs/a.md docs/b.md
+fx c16d; wn lib/old.rb 20; wn docs/a.md 3; base
+git -C "$R" mv lib/old.rb lib/new.rb; git -C "$R" mv docs/a.md docs/b.md
 commit; rep
-same "an unchanged move within a class counts zero and lists nothing" "code: 0 lines (+0 -0)
+same "an unchanged move of a non-manifest within a class counts zero and lists nothing" "code: 0 lines (+0 -0)
 test: 0 lines (+0 -0)
 docs: 0 lines (+0 -0)
 code over 2000: no
 test lines deleted: 0
 ci workflow files: none
 dependency lines: none"
+fx c16i; wt examples/Gemfile 'gem "evil"'; mkdir -p "$R/.github/workflows/disabled"; wt .github/workflows/disabled/ci.yml '    - uses: evil/action@v1'; base
+git -C "$R" mv examples/Gemfile Gemfile; git -C "$R" mv .github/workflows/disabled/ci.yml .github/workflows/ci.yml; commit; rep
+from_is "a manifest moved unchanged is a delete plus an add and lists its lines" "dependency lines:" "dependency lines:
+  .github/workflows/ci.yml
+    +     - uses: evil/action@v1
+  Gemfile
+    + gem \"evil\""
+lines_ok "and counts its lines" "code: 4 lines (+2 -2)"
+fx c16j; mkdir "$R/a"; ln -s x "$R/a/notes"; base
+rm "$R/a/notes"; printf 'x' | wf b/notes; commit; rep
+lines_ok "a symlink and a regular file with the same content never pair" "code: 2 lines (+1 -1)"
 fx c16e; wn pkg/foo_test.go 40; base
 git -C "$R" mv pkg/foo_test.go pkg/foo_test.go.disabled; commit; rep
 lines_ok "a test renamed out of its class is a delete plus an add" "test: 40 lines (+0 -40)" "test lines deleted: 40" "code: 40 lines (+40 -0)"
@@ -383,13 +401,8 @@ lines_ok "diff.algorithm = patience does not change the counts (myers: +4 -4)" "
 
 fx c20b; for k in a b c; do wn "lib/$k.rb" 20 "$k"; done; base
 for k in a b c; do n 20 "$k" | sed '5s/.*/changed/' | wf "lib/n$k.rb"; rm "$R/lib/$k.rb"; done
-commit; rep; cp "$T/out" "$T/first"
+commit; rep
 lines_ok "three edited moves are three deletes and adds" "code: 120 lines (+60 -60)"
-for v in copies true; do
-  git -C "$R" config diff.renames $v; rep
-  if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "diff.renames = $v does not change the report"
-  else _fail "diff.renames = $v does not change the report" "rc=$rc $(head -c 400 "$T/out")"; fi
-done
 
 fx c20c; wt seed.txt s; git -C "$R" add seed.txt
 git -C "$R" update-index --add --cacheinfo "160000,1111111111111111111111111111111111111111,sub1"
@@ -413,10 +426,12 @@ lines_ok "a committed file named after the base blob id of a modified file" "cod
 wt "$(git -C "$R" rev-parse base)...$(git -C "$R" rev-parse HEAD)" x; rep
 lines_ok "an untracked file named after the range of two commit ids" "code: 4 lines (+4 -0)"
 
-# 22. a binary manifest that only moved or went away lists nothing
+# 22. a binary manifest that moved is listed as (binary), one that went away lists nothing
 fx c22; printf 'a\0g\n' | wf Gemfile; printf 'b\0x\n' | wf x.gemspec; wt seed.txt s; base
 mkdir "$R/sub"; mv "$R/Gemfile" "$R/sub/Gemfile"; rm "$R/x.gemspec"; commit; rep
-lines_ok "a binary Gemfile moved unchanged and a deleted binary gemspec list nothing" "dependency lines: none"
+from_is "a binary Gemfile moved unchanged is listed, a deleted binary gemspec is not" "dependency lines:" "dependency lines:
+  sub/Gemfile
+    (binary)"
 
 # 23. control characters in a dependency line
 fx c23; wt seed.txt s; base

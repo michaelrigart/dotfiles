@@ -58,9 +58,10 @@ The spec leaves these open; each stays inside it.
    `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `Cargo.lock`, any `*.lock`), plus `go.sum` and
    `Package.resolved`, the lockfiles of two manifests the spec lists.
 4. **Renames** are not taken from git: its rename detection reads attributes from outside the two
-   commits. The tool pairs an added and a deleted file with the same content, class and manifest
-   status as a move that counts nothing; an edited move counts as a delete plus an add, so the
-   figure may be higher than a rename-aware diff's and a line is never hidden.
+   commits. The tool pairs an added and a deleted file with the same content, mode and class,
+   neither being a dependency manifest, as a move that counts nothing; a moved manifest always
+   lists its lines, and an edited move counts as a delete plus an add, so the figure may be
+   higher than a rename-aware diff's and a line is never hidden.
 5. **CI workflow files** are `.github/workflows/**`, `.gitlab-ci.yml`, `.gitlab/ci/**`,
    `azure-pipelines*.yml|yaml` and `.azure-pipelines/**`. Only GitHub workflows have `uses:`
    lines.
@@ -485,8 +486,8 @@ The task reviews found more than the plan held. What `change-facts` does beyond 
 - Equal blob ids are tested before any blob is read, and `(binary)` is listed only for a
   manifest with a head side. A broken pipe on the report ends in exit 0.
 - A blob the repository does not hold ends in exit 2, `change-facts: git cat-file failed`.
-- A move is an added and a deleted path with the same blob id, class and manifest status,
-  paired one to one in path order; it counts zero lines and lists nothing. A file moved out of
+- A move is an added and a deleted path with the same blob id, mode and class, neither a
+  dependency manifest (a moved manifest always lists its lines), paired one to one in path order; it counts zero lines and lists nothing. A file moved out of
   its class (`pkg/foo_test.go` to `pkg/foo_test.go.disabled`) or into a manifest name is a
   delete plus an add, so a test renamed out of its class shows as test lines deleted.
 

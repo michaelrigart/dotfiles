@@ -8,8 +8,9 @@ nothing: the exit status is 0 whatever the change holds, and 2 only for a usage 
 directory that is not a git repository or a side that names no commit. It reads only the two
 commits' history, never the work tree, the index or the network, and runs no command that a
 repository's configuration names. Git's rename detection is not used, since it reads attributes
-from outside the two commits: an added and a deleted file with the same content, class and
-manifest status are one move that counts nothing, and an edited move is a delete plus an add.
+from outside the two commits: an added and a deleted file with the same content, mode and
+class, neither a dependency manifest, are one move that counts nothing; an edited move or a
+moved manifest is a delete plus an add.
 Pinned to the system Python 3.9 (`/usr/bin/python3`): an untrusted mise config in the repository
 cannot stop or steer it, and nothing newer than 3.9 is used.
 """
@@ -131,16 +132,17 @@ def raw_records(base, head):
 def records(base, head):
     """One (old, new, paths) per file of the change, a move as one record with both paths.
 
-    A move is an added and a deleted path with the same blob id, class and manifest status,
-    paired one to one in path order; everything else stays what git reported.
+    A move is an added and a deleted path with the same blob id, mode and class, neither a
+    dependency manifest, paired one to one in path order; everything else stays what git
+    reported, so a moved manifest lists its lines.
     """
     added, deleted, kept = {}, {}, []
     for old, new, paths in raw_records(base, head):
-        if old and new:
+        if (old and new) or is_manifest(paths[0]):
             kept.append((old, new, paths))
             continue
         side = new or old
-        key = (side[1], classify(paths[0]), is_manifest(paths[0]))
+        key = (side[1], side[0], classify(paths[0]))
         (added if new else deleted).setdefault(key, []).append((old, new, paths))
     for key in sorted(set(added) | set(deleted)):
         adds = sorted(added.get(key, []), key=lambda r: r[2][0])
