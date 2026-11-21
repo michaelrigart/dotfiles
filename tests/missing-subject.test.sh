@@ -50,7 +50,7 @@ verdict() {
 # missing <suite> <path>: the suite, run in the copy without that file.
 missing() {
   local suite="$COPY/tests/$1.test.sh" file="$COPY/$2"
-  if [ ! -f "$suite" ] || [ ! -f "$file" ]; then
+  if [ ! -f "$suite" ] || [ ! -e "$file" ]; then
     echo "missing file under test: tests/$1.test.sh or $2" >&2; exit 2
   fi
   mv "$file" "$file.hidden"
@@ -98,7 +98,7 @@ missing live-weekly-research   dot_local/bin/executable_weekly-research
 missing live-weekly-research   dot_local/bin/executable_weekly-research-proxy
 missing live-weekly-research   dot_config/weekly-research/network.sb
 missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
-missing run                   .scripts/test-audit/subjects.tsv
+missing run                   tests/subjects
 missing weekly-research       dot_local/bin/executable_weekly-research
 missing weekly-research       dot_local/bin/executable_weekly-research-proxy
 missing weekly-research       dot_config/weekly-research/prompt.md
