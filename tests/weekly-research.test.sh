@@ -71,6 +71,7 @@ case "$(cat "$D/mode")" in
   exit1) cat "$D/init.json"; echo "$asst"; cat "$D/result.json"; exit 1 ;;
   noinit) echo "stub: cannot start" >&2; exit 3 ;;
   early) echo "$asst"; cat "$D/init.json"; cat "$D/result.json" ;;
+  steal) rm -f "$(cat "$D/lockpath")"; ln -s 12345 "$(cat "$D/lockpath")"; cat "$D/init.json"; echo "$asst"; cat "$D/result.json" ;;
   hang) cat "$D/init.json"; echo "$asst"; exec sleep 30 ;;
   stubborn) trap '' TERM; cat "$D/init.json"; echo "$asst"; while [ "$SECONDS" -lt 40 ]; do sleep 0.2; done ;;
   badinit) cat "$D/init.json"; while [ "$SECONDS" -lt 10 ]; do sleep 0.2; done; : > "$D/survived"; cat "$D/result.json" ;;
@@ -128,6 +129,7 @@ note() { echo "$ST/notes/$TODAY.md"; }
 has() { grep -qF -- "$2" "$1"; }
 lacks() { ! grep -qF -- "$2" "$1"; }
 absent() { [ ! -e "$1" ]; }
+nolock() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 rc_is() { [ "$rc" = "$1" ]; }
 is() { [ "$1" = "$2" ]; }
 ok() {
@@ -366,6 +368,15 @@ check_result "a body with an = underlined heading" "$T/b-setext1.md"
 check_result "a body with a --- underlined heading" "$T/b-setext2.md"
 { cat "$T/body.md"; printf '\nRun MODELMARKER\n  ======\n'; } > "$T/b-setext3.md"
 check_result "a body with an indented underline" "$T/b-setext3.md"
+for u in '=' '==' '-' '--' '===  ' '-	'; do
+  { cat "$T/body.md"; printf 'Run MODELMARKER\n%s\n' "$u"; } > "$T/b-setext4.md"
+  check_result "a body with a short underline '$u'" "$T/b-setext4.md"
+done
+{ cat "$T/body.md"; printf 'Seen\n-\n'; } > "$T/b-setext5.md"
+check_result "a body with Seen underlined by -" "$T/b-setext5.md"
+{ cat "$T/body.md"; printf 'Some text\n- a list item\n- another\n'; } > "$T/b-list.md"
+stub_body "$T/b-list.md"; run
+ok "a list item right after a text line is allowed" is "$(lr result)" ok
 { cat "$T/body.md"; printf '\n---\n\nA closing note\n'; } > "$T/b-break.md"
 stub_body "$T/b-break.md"; run
 ok "a thematic break after a blank line is allowed" is "$(lr result)" ok
@@ -495,31 +506,36 @@ ok "TERM ends the first instance with exit 1" is "$arc" 1
 ok "an interrupted run is a failed run" is "$(lr result)" failed
 ok "its reason says it was interrupted" has "$ST/failures/$TODAY.txt" "interrupted"
 ok "claude is gone after the TERM" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/claude.pid"
-ok "the lock is released" absent "$ST/lock"
+ok "the lock is released" nolock "$ST/lock"
 ok "no proxy after the TERM" port_closed "$(port_of)"
-stub_reset; fresh; mkdir -p "$ST/lock"; echo 99999999 > "$ST/lock/pid"
+stub_reset; fresh; mkdir -p "$ST"; ln -s 99999999 "$ST/lock"
 go
 ok "a lock left by a dead run is taken over" is "$(lr result)" ok
-ok "the lock is released after the takeover" absent "$ST/lock"
+ok "the lock is released after the takeover" nolock "$ST/lock"
 ok "no stale copy of the lock is left" test "$(find "$ST" -maxdepth 1 -name 'lock*' | wc -l | tr -d ' ')" = 0
-stub_reset; fresh; mkdir -p "$ST/lock"
+fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"
 find "$ST" | sort > "$T/snap-before"
 go
-ok "a fresh lock without a pid file is a live lock: exit 0" rc_is 0
+ok "a lock held by a live process is respected: exit 0" rc_is 0
 find "$ST" | sort > "$T/snap-after"
 ok "and nothing changes" cmp -s "$T/snap-before" "$T/snap-after"
 ok "and claude never starts" absent "$SD/claude.argv"
-touch -t 202001010000 "$ST/lock"
+ok "and the lock still points at its holder" is "$(readlink "$ST/lock")" "$$"
+fresh; mkdir -p "$ST"; ln -s garbage "$ST/lock"
 go
-ok "a lock without a pid file over ten minutes old is taken over" is "$(lr result)" ok
-ok "the lock is released after that takeover" absent "$ST/lock"
-fresh; mkdir -p "$ST/lock"; touch -t 202001010000 "$ST/lock"; echo 99999999 > "$ST/lock/pid"; touch -t 202001010000 "$ST/lock"
+ok "a lock whose target is no live pid is taken over" is "$(lr result)" ok
+fresh; mkdir -p "$ST"
+printf '%s\n' "$ST/lock" > "$SD/lockpath"; printf '%s\n' steal > "$SD/mode"
 go
-ok "an old lock whose pid is dead is taken over" is "$(lr result)" ok
-fresh; mkdir -p "$ST/lock"; echo $$ > "$ST/lock/pid"; touch -t 202001010000 "$ST/lock"
+ok "a run whose lock was replaced still finishes" is "$(lr result)" ok
+ok "its cleanup leaves a lock that points elsewhere alone" is "$(readlink "$ST/lock")" 12345
+rm -f "$SD/lockpath"
+fresh; mkdir -p "$ST/lock"
 go
-ok "an old lock whose pid is alive is still a live lock: exit 0" rc_is 0
-ok "and it is left alone" test "$(cat "$ST/lock/pid")" = "$$"
+ok "a lock directory of the older format is a failed run: exit 1" rc_is 1
+ok "its reason names the path" has "$ST/failures/$TODAY.txt" "$ST/lock"
+ok "and the directory is left alone" test -d "$ST/lock"
+ok "and claude never starts" absent "$SD/claude.argv"
 
 echo "J. The vault probe"
 stub_reset

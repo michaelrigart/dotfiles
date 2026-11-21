@@ -144,46 +144,47 @@ cleanup() {
     rmdir "$run/work" "$run/tmp" "$run" 2>/dev/null
   fi
   [ ! -d "$state/logs" ] || rotate_logs
-  if [ "$have_lock" = 1 ]; then rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null; fi
+  if [ "$have_lock" = 1 ] && [ "$(readlink "$lock" 2>/dev/null)" = "$$" ]; then rm -f "$lock"; fi
   exit "$rc"
 }
 
 # --- the lock ---------------------------------------------------------------------------
-mkdir -p "$state" || refuse "cannot create $state"
-# A lock is stale when its run is dead, or when it names no run and is over ten minutes old. Taking
-# it over is a rename, so of two instances that both judge it stale only one wins.
-take_over_stale_lock() {
-  local holder=$1 stale=$lock.stale.$$
-  mv "$lock" "$stale" 2>/dev/null || return 1
-  if [ "$(cat "$stale/pid" 2>/dev/null)" != "$holder" ]; then
-    mv "$stale" "$lock" 2>/dev/null
+# The lock is one symlink whose target is its holder's pid, created in one step: `ln -s` fails
+# when the name exists, so a lock never exists without its holder. A lock whose holder is dead is
+# taken over by renaming the link, which only one racer can do.
+acquire_lock() { # returns 0 when this instance now holds the lock
+  local holder moved=$lock.stale.$$ seen
+  ln -s "$$" "$lock" 2>/dev/null && return 0
+  holder=$(readlink "$lock" 2>/dev/null)
+  [ -n "$holder" ] || return 1
+  kill -0 "$holder" 2>/dev/null && return 1
+  mv "$lock" "$moved" 2>/dev/null || return 1
+  seen=$(readlink "$moved" 2>/dev/null)
+  if [ "$seen" = "$holder" ]; then
+    rm -f "$moved"
+    ln -s "$$" "$lock" 2>/dev/null && return 0
     return 1
   fi
-  rm -f "$stale/pid"; rmdir "$stale" 2>/dev/null
-  return 0
+  # Raced a live holder: put its lock back.
+  [ -z "$seen" ] || ln -s "$seen" "$lock" 2>/dev/null
+  rm -f "$moved"
+  return 1
 }
-if ! mkdir "$lock" 2>/dev/null; then
-  holder=$(cat "$lock/pid" 2>/dev/null)
-  stale=0
-  if [ -n "$holder" ]; then
-    kill -0 "$holder" 2>/dev/null || stale=1
-  elif [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
-    stale=1
-  fi
-  if [ "$stale" = 1 ] && take_over_stale_lock "$holder"; then
-    mkdir "$lock" 2>/dev/null || exit 0
-  else
-    printf 'weekly-research: another run holds %s\n' "$lock" >&2
-    exit 0
-  fi
+mkdir -p "$state" || refuse "cannot create $state"
+prev_date=$(last_get date); prev_fails=$(last_get failures_in_row)
+[[ $prev_fails =~ ^[0-9]+$ ]] || prev_fails=0
+if [ -d "$lock" ] && [ ! -L "$lock" ]; then
+  mkdir -p "$state/failures" && fail_run "$lock is a lock directory of an older format; remove it"
+  exit 1
+fi
+if ! acquire_lock; then
+  printf 'weekly-research: another run holds %s\n' "$lock" >&2
+  exit 0
 fi
 have_lock=1
-printf '%s\n' "$$" > "$lock/pid"
 trap cleanup EXIT
 trap 'fail_run "interrupted by a signal"' INT TERM HUP
 mkdir -p "$state/notes" "$state/failures" "$state/logs" || fail_run "cannot create the folders under $state"
-prev_date=$(last_get date); prev_fails=$(last_get failures_in_row)
-[[ $prev_fails =~ ^[0-9]+$ ]] || prev_fails=0
 
 # --- the vault probe: the inbox must take a write before the model costs anything -------------
 if printf '%s\n' "$today" > "$inbox/.weekly-research-last-run" 2>/dev/null; then vault_state=writable
@@ -425,7 +426,7 @@ check_body() {
   if [ "$(jq -Rs 'test("[\u0080-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")' "$f" 2>/dev/null)" != false ]; then
     echo "the body holds a C1 control or a bidirectional formatting character"; return 1
   fi
-  if awk 'prev && /^ ? ? ?(===+|---+)[ \t]*$/ { found = 1 } { prev = ($0 ~ /[^ \t]/) } END { exit !found }' "$f"; then
+  if awk 'prev && /^ ? ? ?(=+|-+)[ \t]*$/ { found = 1 } { prev = ($0 ~ /[^ \t]/) } END { exit !found }' "$f"; then
     echo "the body holds an underlined heading"; return 1
   fi
   first=$(awk 'NF { print; exit }' "$f")
