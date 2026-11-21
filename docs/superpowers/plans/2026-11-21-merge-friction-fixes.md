@@ -81,7 +81,9 @@ at either end of a field.
   directory with a throwaway merge (per file: the one `lang`, the `own` suite or `-`, the sorted set
   of listing suites). Expect the same 190 files (191 minus the map's own row) with the same `lang`,
   `own_suite` and `loaded_by` set, and 48 `guard` pairs equal to the `missing` rows minus `run`'s.
-  Record the command and its output for the ledger.
+  Save the old loader's rows as the baseline, `<scratchpad>/subjects-baseline.json` (per file:
+  `lang`, `own_suite`, sorted `loaded_by`), before any later task deletes the old map; Task 3
+  compares against it. Record the command and its output for the ledger.
 
 - [ ] **Step 3: Check the old suites still pass:** `./tests/run.test.sh` and
   `./tests/missing-subject.test.sh` (nothing reads the new files yet).
@@ -212,8 +214,11 @@ at either end of a field.
   `{"file", "lang", "own_suite", "loaded_by"}`, sorted by file, `own_suite` `-` when none,
   `loaded_by` in suite-name order. The default becomes `Path(args.repo) / "tests" / "subjects"`.
 
-- [ ] **Step 3: Verify:** `./tests/test-audit.test.sh` (about 100 s); rerun Task 1's equivalence
-  check through the new `load_subjects` on the real directory; revert-check one refusal case.
+- [ ] **Step 3: Verify:** `./tests/test-audit.test.sh` (about 100 s); compare the new
+  `load_subjects` on the real `tests/subjects` with Task 1's baseline after exactly these changes to
+  the baseline: drop `.scripts/test-audit/subjects.tsv` and `tests/fixtures/test-audit/subjects.tsv`;
+  add `tests/fixtures/test-audit/subjects/{gated,pins,s,s2}.tsv`, each `data`, `own_suite` `-`,
+  `loaded_by` `[test-audit]`. Expect 193 files, all equal. Revert-check one refusal case.
 
 ### Task 4: `missing-subject` runs a case per `guard` row
 
