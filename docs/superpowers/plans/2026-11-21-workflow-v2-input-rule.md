@@ -78,12 +78,17 @@ The spec leaves these open; each stays inside it.
     the rules would sit in a file that never loads at that moment, which the spec names as an
     anti-goal.
 
+11. **Lines are counted from each file's patch, not from `--numstat`,** and binary files are
+    told by content. No flag keeps an attribute in `info/attributes` from turning a text file's
+    `--numstat` into `-`, and the spec has the tool read only the repository's history.
+
 ## Review Focus
 
 - A range that is not `<base>...<head>`, or whose side starts with `-`, is refused with exit 2
   and git never sees it as an option (Task 1).
 - A repository whose configuration names an external diff or textconv command: `change-facts`
-  never runs it (Task 1).
+  never runs it; and an attribute outside the two commits (work tree, index, `info/attributes`,
+  `core.attributesFile`) never hides a line (Task 1).
 - An added manifest line whose own text starts with `++` is listed, and a `+++ b/<file>` header
   is not (Task 1).
 - A path with a space, a non-ASCII character or a newline is counted once, in the right class
@@ -135,31 +140,50 @@ Files are listed in path order, and each added line is printed as git has it aft
 A path is printed with any control character replaced by `?`.
 
 **Rules:**
-- Argument: exactly one, of the form `<base>...<head>` with both sides non-empty and neither
-  starting with `-`. Each side must resolve with
-  `git rev-parse --verify --quiet --end-of-options <side>^{commit}`.
+- Argument: exactly one, of the form `<base>...<head>` with both sides non-empty. Each side is
+  resolved to a full commit id with
+  `git rev-parse --verify --quiet --end-of-options <side>^{commit}`; a side that does not
+  resolve is the exit 2. Every later git call gets the two ids, never the argument's text.
 - Every git call runs as `git --no-pager -c core.fsmonitor=false`, and every diff with
-  `--no-ext-diff --no-textconv --no-color -M`.
-- Counts come from `git diff --numstat -z <base>...<head>` (the three-dot form: the change since
-  the merge base). A binary file (`-` counts) adds zero lines.
-- Class of a path, first match wins: lockfile (left out of every figure; decision 3); then the
-  baseline's rules, on the lower-cased path `pl` and its last component `base`:
+  `--no-ext-diff --no-textconv --text --no-color --no-relative -M`, over `<base-id>...<head-id>`
+  (the three-dot form: the change since the merge base).
+- **Nothing outside the two commits changes the report.** Attributes are the trap: git reads
+  them from the work tree's `.gitattributes`, `$GIT_DIR/info/attributes` and
+  `core.attributesFile`, and a `binary` or `-diff` attribute makes `--numstat` print `-` for a
+  text file whatever flags it is given (measured on git 2.56). So `--numstat` is not used.
+  The files of the change come from `git diff --raw -z --no-abbrev` (status, modes, blob ids,
+  and both paths of a rename). Each file's added and deleted lines come from its own patch,
+  `git diff -U0 … -- <old path> <new path>` with `GIT_LITERAL_PATHSPECS=1` (one path when it is
+  not a rename), read from the first `@@` line on: a line starting with `+` is added, one
+  starting with `-` is deleted. `--text` makes that patch ignore every attribute.
+- Binary files add zero lines, decided from content and not from attributes: a file is binary
+  when its head-side blob (its base-side blob when deleted) has a NUL byte in its first 8000
+  bytes, read with `git cat-file blob <id>`. A submodule entry (mode `160000`) is not read.
+- Class of a path (a rename's new path), first match wins. Lockfile, left out of every figure:
+  the last component is `Gemfile.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
+  `poetry.lock`, `uv.lock`, `Cargo.lock`, `go.sum` or `Package.resolved`, or ends in `.lock`.
+  Then the baseline's rules, on the lower-cased path `pl` and its last component `base`:
   - test: `(^|/)(tests?|spec|specs|__tests__|e2e|cypress|features)/` in `pl`, or
     `(_test|_spec|\.test|\.spec|-test)\.[a-z0-9]+$` in `base`, or `^test_.*\.py$` matching
     `base`, or `\.tests?\.[a-z]+$` in `base`, or `base` ending in `tests.cs`;
   - docs: `pl` starts with `docs/`, or ends in `.md`, `.txt`, `.rst` or `.adoc`;
   - code: everything else.
 - `test lines deleted` is the deleted count of the test class.
-- CI workflow files: decision 5, every file of the change that matches, deleted ones included.
-- Dependency manifests, matched on the last path component after dropping a trailing `.tmpl`:
-  `Gemfile`, `*.gemspec`, `package.json`, `pyproject.toml`, `requirements*.txt`, `Cargo.toml`,
-  `Package.swift`, `go.mod`, `Brewfile`, the mise names of decision 6, `.chezmoiexternal.toml`;
+- CI workflow files, every file of the change that matches, deleted ones included (a rename:
+  either path): a path under `.github/workflows/`, `.gitlab/ci/` or `.azure-pipelines/` at the
+  repository root, or a root-level `.gitlab-ci.yml`, or a root-level file matching
+  `azure-pipelines*.yml` or `azure-pipelines*.yaml`.
+- Dependency manifests, matched on the last component of the path (a rename's new path) after
+  dropping a trailing `.tmpl`: `Gemfile`, `*.gemspec`, `package.json`, `pyproject.toml`,
+  `requirements*.txt`, `Cargo.toml`, `Package.swift`, `go.mod`, `Brewfile`,
+  `.chezmoiexternal.toml`; a mise config, which is `mise.toml`, `.mise.toml`, `mise.*.toml`,
+  `.mise.*.toml`, `.tool-versions`, or `config.toml` directly inside a directory named `mise`;
   and any `.yml` or `.yaml` file under `.github/workflows/`, of which only added lines matching
   `^\s*(-\s*)?uses:` count.
-- Dependency lines of a manifest: the added lines of
-  `git diff -U0 <base>...<head> -- <path>` with `GIT_LITERAL_PATHSPECS=1`, read from the first
-  `@@` line on, so a file header is never taken for a line. Blank added lines are skipped. A
-  manifest with no added line is not listed.
+- Dependency lines of a manifest: its added lines, from the same per-file patch as its counts,
+  so a manifest that only moved lists nothing and a header is never taken for a line. Blank
+  added lines are skipped. A manifest with no added line is not listed. A binary manifest is
+  listed with the one line `(binary)`.
 
 - [ ] **Step 1: Write the suite, failing.** `tests/change-facts.test.sh`, in the shape of
   `tests/sdd-clean.test.sh`: the subject guard (exit 2 when the script is missing, naming its
@@ -196,18 +220,30 @@ A path is printed with any control character replaced by `?`.
       and no listed line starts with `+ ++ b/`;
   11. Review Focus, arguments: no argument, two arguments, `main..HEAD`, `...HEAD`, `main...`,
       `--output=x...HEAD` and `main...--stat` each exit 2 with a `change-facts:` line and write
-      no file; `nope...HEAD` exits 2; a directory that is not a repository exits 2;
+      no file; `nope...HEAD` exits 2 with a `change-facts:` line and nothing from git on
+      stderr; a directory that is not a repository exits 2;
   12. Review Focus, configuration: a fixture whose `.git/config` sets `diff.external` to a
       script that writes a marker, and a `.gitattributes` `diff=mark` driver with a `textconv`
       that writes one: after the run no marker exists and the report is correct;
-  13. Review Focus, paths: `my dir/a b.rb`, `ünï.rb` and a file whose name holds a newline are
+  13. Review Focus, attributes: a head that adds one line to `Gemfile` and 10 to `app/a.rb`.
+      Take the report; then, one at a time, mark both files `binary` in an uncommitted
+      `.gitattributes`, in a staged one, in `.git/info/attributes` and in a file
+      `core.attributesFile` names, and `-diff` in `.git/info/attributes`: each report is
+      byte-identical to the first, with `code: 11 lines (+11 -0)` and the `Gemfile` line listed;
+  14. Review Focus, paths: `my dir/a b.rb`, `ünï.rb` and a file whose name holds a newline are
       each counted once as code; the report has exactly seven top-level items;
-  14. Review Focus, edges: a binary file adds zero lines; a renamed file with one changed line
-      counts 2, in its new path's class; `HEAD...HEAD` prints all zeros and `none`, exit 0;
-  15. the three-dot form: with a base branch that moved on after the fork, the base branch's
+  15. Review Focus, edges: a file holding a NUL byte adds zero lines, and a binary `Gemfile` is
+      listed as `(binary)`; a text file a committed `.gitattributes` marks `binary` is still
+      counted; `HEAD...HEAD` prints all zeros and `none`, exit 0;
+  16. renames, in a fixture whose `.git/config` sets `diff.renames = false`: a renamed 20-line
+      code file with one changed line counts 2, in its new path's class; `sub/package.json`
+      moved unchanged to `package.json` lists no dependency line; a `Gemfile` moved to
+      `sub/Gemfile` with one added line lists exactly that line;
+  17. the three-dot form: with a base branch that moved on after the fork, the base branch's
       own later lines are not counted;
-  16. it reads history only: an uncommitted edit in the work tree does not change the report,
-      and it gives the same report from a subdirectory.
+  18. it reads history only: an uncommitted edit in the work tree does not change the report,
+      and with `diff.relative = true` in `.git/config` it gives the same report from a
+      subdirectory.
 - [ ] **Step 2: Run it and see it fail.** `./tests/change-facts.test.sh`; expected: exit 2,
   `missing script under test`.
 - [ ] **Step 3: Write `dot_local/bin/executable_change-facts`** to the Interfaces, report and
@@ -221,9 +257,11 @@ A path is printed with any control character replaced by `?`.
   `missing change-facts dot_local/bin/executable_change-facts`, beside the other script rows.
 - [ ] **Step 6: Run** `./tests/run.sh change-facts hook-path missing-subject`. Expected: all
   pass; report passed/total per suite.
-- [ ] **Step 7: Revert check.** For each of: the lockfile rule, the `-M` flag,
-  `--no-ext-diff --no-textconv`, the `@@` header skip, the leading-`-` refusal: remove it, see
-  its case fail, restore it.
+- [ ] **Step 7: Revert check.** For each of: the lockfile rule (case 5), `-M` (case 16),
+  `--no-ext-diff --no-textconv` (case 12), `--text` (case 13), `--no-relative` (case 18), the
+  `@@` header skip (case 10), the NUL check (case 15), the old path in a rename's pathspec
+  (case 16), the `rev-parse` verification (case 11): remove it, see the named case fail,
+  restore it. A mutation whose case still passes is a finding: report it, do not drop it.
 - [ ] **Step 8: Commit.** `Add change-facts, which prints the measured facts of a change`
 
 ### Task 2: `design-records` becomes a shared skill and takes two record rules
