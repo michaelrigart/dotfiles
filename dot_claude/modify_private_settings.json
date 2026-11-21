@@ -132,8 +132,8 @@ printf '%s' "$input" | AGENT_GH_TOKEN="$agent_gh_token" AGENT_GITLAB_TOKEN="$age
      end) as $agent_tokens
   | $live + {
       "theme": "custom:tokyo-night",
-      # 30 days of transcripts: the safe-autonomy evaluation measures over them.
-      "cleanupPeriodDays": 30,
+      # 90 days of transcripts: the workflow trial measures over them (spec 2026-11-20).
+      "cleanupPeriodDays": 90,
       "env": {
         "EDITOR": "nvim",
         "SSH_AUTH_SOCK": $agent_socket,

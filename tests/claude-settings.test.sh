@@ -401,7 +401,7 @@ jq_is '.permissions.deny  | index("Bash(stale-deny *)")'  null "a stale deny rul
 jq_is '.hooks | has("Stop")'               false  "owned hooks replace the live hooks wholesale"
 jq_is '.sandbox | has("stale")'            false  "owned sandbox replaces the live sandbox wholesale"
 jq_is '.env | has("STALE")'                false  "owned env replaces the live env wholesale"
-jq_is '.cleanupPeriodDays'                 30     "cleanupPeriodDays is owned, and is 30"
+jq_is '.cleanupPeriodDays'                 90     "cleanupPeriodDays is owned, and is 90"
 jq_is 'has("includeCoAuthoredBy")'         false  "retired key includeCoAuthoredBy is deleted"
 jq_is 'has("voiceEnabled")'                false  "retired key voiceEnabled is deleted"
 jq_is '.disableAllHooks'                   false  "disableAllHooks is owned, and is false"

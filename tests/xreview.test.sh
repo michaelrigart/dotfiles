@@ -1247,7 +1247,10 @@ nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff HEAD~1..HEAD b.md 2>/
 ROLL1="$CODEX_HOME/sessions/2026/09/01"; mkdir -p "$ROLL1"
 printf '{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"xhigh"}}\n' \
   > "$ROLL1/rollout-2026-09-01T09-00-00-$U1.jsonl"
+sleep 1
+t0="$(/usr/bin/python3 "$LEDGER" now)"
 out="$(RPC_WAIT_OUT="$ANSWER" bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
+t1="$(/usr/bin/python3 "$LEDGER" now)"
 is "F1 a finished review exits 0" "$rc" 0
 is "F1 and prints the findings" "$(printf '%s' "$out" | jq -r .verdict)" changes
 is "F1 waiting with the findings schema" "$(called "turn-wait --thread $U1 --turn turn-$U1 --budget 2700 --schema $XDG_CONFIG_HOME/xreview/findings.schema.json")" 1
@@ -1259,6 +1262,15 @@ is "F1 and adds turn, verdict and finding count" "$(printf '%s' "$r" | jq -r '[.
 is "F1 the tier is a real value read from the thread's own rollout file" \
    "$(printf '%s' "$r" | jq -r .tier)" "gpt-5.6-sol/xhigh"
 is "F1 the receipt records the checkpoint named at dispatch" "$(printf '%s' "$r" | jq -r .checkpoint)" plan
+ca="$(printf '%s' "$r" | jq -r .collected_at)"; da="$(printf '%s' "$r" | jq -r .dispatched_at)"
+is "F1 the receipt records when it was collected, in the dispatch time's format" \
+   "$(printf '%s' "$ca" | grep -Ec '^[0-9-]+T[0-9:]+\.[0-9]{6}Z$')" 1
+is "F1 and that is the time of collection, not of dispatch" \
+   "$([[ ! "$ca" < "$t0" && ! "$ca" > "$t1" && "$ca" > "$da" ]] && echo yes || echo no)" yes
+sleep 1
+RPC_WAIT_OUT="$ANSWER" bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "F1 collecting the nonce again leaves one receipt, with the first collected_at" \
+   "$(jq -r --arg n "$nonce" 'select(.nonce == $n and .kind == "receipt") | .collected_at' "$MAIN_LEDGER" | tr '\n' ' ')" "$ca "
 out="$(RPC_WAIT_RC=3 bash "$XREVIEW" collect "$nonce" 60 2>&1)"; rc=$?
 is "F2 a running turn exits 3" "$rc" 3
 is "F2 says so and how to keep waiting" "$(printf '%s' "$out" | grep -c "xreview collect $nonce")" 1
@@ -3001,6 +3013,8 @@ r="$(receipt "$nonce")"
 is "SL1 the receipt names the last slice's thread and turn" "$(printf '%s' "$r" | jq -r '"\(.thread) \(.turn)"')" "$U4 turn-$U4"
 is "SL1 and every slice's turn" "$(printf '%s' "$r" | jq -c '[.slice_turns[] | [.thread, .turn, .compacted]]')" \
    "[[\"$U1\",\"turn-$U1\",false],[\"$U3\",\"turn-$U3\",false],[\"$U4\",\"turn-$U4\",false]]"
+is "SL1 the receipt carries one collected_at, not one per slice" \
+   "$(printf '%s' "$r" | jq -c '[([paths | select(.[-1] == "collected_at")] | length), (.collected_at | type)]')" '[1,"string"]'
 is "SL1 a slices receipt, clean, with the merged verdict and count" \
    "$(printf '%s' "$r" | jq -c '[.targets[0].packet, .clean, .compacted, .targets[0].missing, .verdict, .findings]')" \
    '["slices",true,false,[],"changes",1]'
