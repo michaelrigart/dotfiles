@@ -126,7 +126,8 @@ steps.
 **Interfaces:**
 - Produces: `network.sb`, used as `sandbox-exec -D PROXY_PORT=<port> -f network.sb <command>`:
   allow everything, deny `network-outbound`, then allow outbound to `localhost:<PROXY_PORT>`
-  and to local Unix sockets.
+  and to local Unix sockets. [Correction, Task 2: it measured that none is needed, and the profile allows no
+  Unix socket.]
 - Produces: the `claude` argument list, fixed here for Task 3:
   `claude -p --restricted --tools WebFetch,WebSearch --strict-mcp-config
   --disable-slash-commands --no-session-persistence --settings

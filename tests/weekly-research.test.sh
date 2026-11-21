@@ -991,14 +991,15 @@ fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
 ok "a dangling link in the way does not fail the run" is "$(lr result)" ok
 ok "and is not written through" absent "$T/nowhere/x"
 rm -f "$INBOX/2026-11-23-weekly-research.md"
-# The vault copy is one exclusive open: a file that replaces the placeholder after it is created (a sync process)
-# is never truncated. The cat shim renames THEIRS over the target as the note is written; the swap lands after the
-# open, which is where the old two-open version had its window (checked against that version with the swap
-# injected between its two opens).
+# The cat shim renames THEIRS over the vault path when the note is written. This catches a write that goes to the
+# path by name after stdin is read (e.g. `printf '%s' "$(cat)" > "$1"`), which would truncate THEIRS. It does not
+# catch a create-then-reopen `put_in_inbox`: no shim can run between that version's two builtin opens, so the
+# single-open property itself has no behavioural test (it was checked once with the swap injected between the
+# old version's two opens, in a scratch copy).
 fresh; printf 'THEIRS\n' > "$T/theirs"
 fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1 CAT_SWAP_FROM="$T/theirs" CAT_SWAP_TO="$INBOX/2026-11-23-weekly-research.md"
-ok "a file that replaces the placeholder mid-write does not fail the run" is "$(lr result)" ok
-ok "and is left byte-identical, not truncated" is "$(cat "$INBOX/2026-11-23-weekly-research.md")" THEIRS
+ok "a file that replaces the vault path as the note is written does not fail the run" is "$(lr result)" ok
+ok "and is left byte-identical: the note is not written to the path by name" is "$(cat "$INBOX/2026-11-23-weekly-research.md")" THEIRS
 ok "and the swap happened" absent "$T/theirs"
 rm -f "$INBOX/2026-11-23-weekly-research.md"
 # A write that fails after the exclusive create never unlinks the path: whatever is there stays.

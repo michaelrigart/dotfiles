@@ -139,8 +139,10 @@ note_sections() {
 
 # finish_run <body-file> <cost>: writes the note, the vault copy, the state and last-run, exits 0.
 # The run's facts are front matter and the wrapper's sections come first, so nothing in the model's
-# body can stand in for them. Nothing is replaced until the note and the vault copy are written, so a
-# run that fails on the way changes neither the notes nor the state.
+# body can stand in for them. The vault copy comes first and the state last: a run that fails before the
+# note is moved into place changes neither the notes nor the state; one that fails after it (writing
+# last-run, moving the state) leaves that day's note, and the vault copy if one was written, but never moves
+# the state, so the next run still checks what this one did not record.
 finish_run() {
   local body=$1 cost=$2 note=$state/notes/$today.md cost_field names=""
   if [ "$cost" = unknown ]; then cost_field=unknown; else cost_field="\"${cost#\$}\""; fi
