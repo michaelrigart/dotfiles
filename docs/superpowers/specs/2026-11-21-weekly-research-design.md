@@ -1,6 +1,6 @@
 # Weekly research: re-run the workflow research when sources change
 
-**Status:** In progress (branch `feat/weekly-research`)
+**Status:** Implemented (branch `feat/weekly-research`, its PR against `main`)
 **Date:** 2026-11-21
 **Branch:** `feat/weekly-research`, in the `wt` checkout `~/.local/share/chezmoi-feat-weekly-research`
 **Sign-off:** Michael, 2026-11-21, in the line's own pane, with the four decisions under
