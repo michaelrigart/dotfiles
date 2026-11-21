@@ -1,0 +1,2 @@
+dot_local/bin/executable_change-facts	py	guard
+dot_local/bin/executable_merge-state	py	own,guard

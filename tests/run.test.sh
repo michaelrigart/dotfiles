@@ -7,17 +7,17 @@
 #
 # Runs a COPY of run.sh in a temp directory holding fake suites, and in throwaway git
 # repositories for --changed, so nothing here executes a real suite (and nothing recurses into
-# this one). The final sections read the real repository: the subject map must cover what the
-# heavy suites name (drift_check), every row must name an existing file and existing suites,
-# every heavy tag must parse as `heavy`, and the runner must read the real map as well-formed.
+# this one). The final sections read the real repository: the subject files must cover what the
+# heavy suites name (drift_check), be well-formed and consistent (map_lint), every heavy tag must
+# parse as `heavy`, and the runner must read the real subject files as well-formed.
 #
 #   ./tests/run.test.sh   (sandboxed is fine)
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$SRC/tests/run.sh"
 [ -f "$RUN" ] || { echo "missing script under test: $RUN" >&2; exit 2; }
-SUBJECTS="$SRC/.scripts/test-audit/subjects.tsv"
-[ -f "$SUBJECTS" ] || { echo "missing subject map the drift checks read: $SUBJECTS" >&2; exit 2; }
+SUBJECTS="$SRC/tests/subjects"
+[ -d "$SUBJECTS" ] || { echo "missing subject map the drift checks read: $SUBJECTS" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -697,25 +697,36 @@ ran "and no suite runs unlocked" no 'ok +|suites' "$out"
 rm -f "$T/run-inject.sh"
 
 # Changed-subject selection (--changed). The fixture is a git repository holding a copy of
-# run.sh, two heavy suites, a live-gated one and a plain one, a subject map and the files it
-# names. Every case starts from the same state: HEAD on `work`, equal to `main`.
+# run.sh, two heavy suites, a live-gated one and a plain one, a subject file per heavy suite and
+# the files they name. Every case starts from the same state: HEAD on `work`, equal to `main`.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-R="$T/repo"; MAP=.scripts/test-audit/subjects.tsv; NAIVE='lib/naïve".sh'
+R="$T/repo"; SUBJ=tests/subjects; NAIVE='lib/naïve".sh'
 G() { git -C "$R" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 commit() { G add -A && G commit -q -m "$1"; }
 rr() { fresh RUN_SH_LOCK="$T/repolock" "$R/tests/run.sh" "$@" 2>&1; }
-row() { printf '%s\t%s\t%s\t%s' "$1" sh '' "$2"; }
-# The tab-less comment line is the real map's shape: a comment read as a row is malformed.
-write_map() { # write_map [extra row]...: the fixture map, then the rows given
-  mkdir -p "$R/.scripts/test-audit"
-  { printf '# Subject map\n# file\tlang\town_suite\tloaded_by\n\n'
-    row lib/a.sh heavya; echo; row lib/b.sh heavyb; echo; row "lib/has space.sh" heavya; echo; row "$NAIVE" heavyb; echo
-    [ $# -eq 0 ] || printf '%s\n' "$@"
-  } > "$R/$MAP"
+# row <file> <suite> prints a row of the suite's file, led by the suite: write_map files it there.
+row() { printf '%s\t%s\t%s\t%s' "$2" "$1" sh -; }
+file_row() { printf '%s\n' "${1#*$'\t'}" >> "$R/$SUBJ/${1%%$'\t'*}.tsv"; }
+# The comment and the blank line are the real files' shape: they must not read as malformed rows.
+write_map() { # write_map [row]...: the fixture subject files, then the rows given
+  rm -rf "$R/$SUBJ"; mkdir -p "$R/$SUBJ"
+  { printf '# Subjects of heavya\n\n'
+    printf 'lib/a.sh\tsh\t-\n'; printf 'lib/has space.sh\tsh\t-\n'
+  } > "$R/$SUBJ/heavya.tsv"
+  { printf 'lib/b.sh\tsh\t-\n'; printf '%s\tsh\t-\n' "$NAIVE"; } > "$R/$SUBJ/heavyb.tsv"
+  local r
+  for r in ${1+"$@"}; do file_row "$r"; done
 }
-drop_rows() { awk -F'\t' -v k="$1" -v v="$2" '$k != v' "$R/$MAP" > "$R/$MAP.new" && mv "$R/$MAP.new" "$R/$MAP"; }
+drop_row() { # drop_row <file>: the file's rows, from every suite file
+  local f
+  for f in "$R/$SUBJ"/*.tsv; do
+    [ -e "$f" ] || continue
+    awk -F'\t' -v k="$1" '$1 != k' "$f" > "$f.new" && mv "$f.new" "$f"
+  done
+}
+drop_suite() { rm -f "$R/$SUBJ/$1.tsv"; }
 edit() { printf '# edit\n' >> "$R/$1"; }
-rm -rf "$R"; mkdir -p "$R/tests" "$R/lib" "$R/.scripts/test-audit"
+rm -rf "$R"; mkdir -p "$R/tests" "$R/lib"
 cp "$RUN" "$R/tests/run.sh"
 for n in heavya heavyb; do
   printf '#!/usr/bin/env bash\n%s: heavy  # a fixture\necho "  ok  %s ran"\n' "$tag" "$n" > "$R/tests/$n.test.sh"
@@ -736,6 +747,14 @@ both() {
   local a=no b=no
   printf '%s\n' "$3" | grep -Eq "ok +heavya .*\[needs: heavy; $2\]" && a=yes
   printf '%s\n' "$3" | grep -Eq "ok +heavyb .*\[needs: heavy; $2\]" && b=yes
+  if [ "$a$b" = yesyes ]; then _pass "$1"; else _fail "$1" "$(printf '%s' "$3" | tr '\n' '|')"; fi
+}
+# only_a <label> <reason regex> <output>: heavya ran carrying the reason; heavyb, which has
+# nothing wrong, was left out for want of a changed subject.
+only_a() {
+  local a=no b=no
+  printf '%s\n' "$3" | grep -Eq "ok +heavya .*\[needs: heavy; $2\]" && a=yes
+  printf '%s\n' "$3" | grep -Eq 'skip +heavyb +needs: heavy \(no subject changed since [0-9a-f]+\)$' && b=yes
   if [ "$a$b" = yesyes ]; then _pass "$1"; else _fail "$1" "$(printf '%s' "$3" | tr '\n' '|')"; fi
 }
 # neither <label> <output>: both heavy suites were left out for want of a changed subject.
@@ -791,13 +810,13 @@ ran "and the other" yes 'ok +heavyb .*changed: tests/run.sh' "$out"
 
 # Bug caught: a failing per-suite read of a subject map (awk failing after compute_selection
 # validated the copy) read as "no rows", so a suite whose subjects are missing is skipped as
-# unchanged. The stub awk first on PATH fails the rows program (the one using ENVIRON) when it
-# reads the file named in STUB_AWK_FILE, printing nothing.
+# unchanged. The stub awk first on PATH fails the files program (the one printing the first
+# field) when it reads the file named in STUB_AWK_FILE, printing nothing.
 mkdir -p "$T/awkstub"; REAL_AWK="$(command -v awk)"
 cat > "$T/awkstub/awk" <<'STUB'
 #!/bin/sh
 case "$*" in
-  *'ENVIRON["SUITE"]'*)
+  *'{ print $1 }'*)
     for a in "$@"; do last=$a; done
     case "$last" in *"$STUB_AWK_FILE") echo "awk: stub failure" >&2; exit 2 ;; esac ;;
 esac
@@ -805,7 +824,7 @@ exec "$REAL_AWK" "$@"
 STUB
 chmod 755 "$T/awkstub/awk"
 awk_fails() { PATH="$T/awkstub:$PATH" REAL_AWK="$REAL_AWK" STUB_AWK_FILE=$1 rr --changed; }
-reset_repo; drop_rows 1 lib/a.sh; edit lib/a.sh; commit "drop the row and edit"
+reset_repo; drop_row lib/a.sh; edit lib/a.sh; commit "drop the row and edit"
 out="$(awk_fails map.base)"
 both "a failing read of the base map selects every heavy suite" 'subject map at [0-9a-f]+ unreadable' "$out"
 ran "and prints nothing of the failure" no 'awk:' "$out"
@@ -851,7 +870,7 @@ out="$(rr --changed)"
 ran "several changed subjects are counted" yes 'ok +heavya .*changed: lib/a.sh, \+1 more\]' "$out"
 
 # Bug caught: only the working-tree map read, so dropping a row unselects its suite.
-reset_repo; drop_rows 1 lib/a.sh; edit lib/a.sh; commit "drop the row and edit"
+reset_repo; drop_row lib/a.sh; edit lib/a.sh; commit "drop the row and edit"
 out="$(rr --changed)"
 ran "a row removed on the branch still selects" yes 'ok +heavya .*changed: lib/a.sh\]' "$out"
 
@@ -870,47 +889,46 @@ both "an unresolvable base selects every heavy suite" 'base nosuchref does not r
 reset_repo; G switch -q --orphan orphan && echo o > "$R/o" && commit orphan && G switch -q work
 out="$(rr --changed=orphan)"
 both "no merge base selects every heavy suite" 'no merge base with orphan' "$out"
-reset_repo; G rm -q "$MAP"; commit "no map"
+reset_repo; G rm -rq "$SUBJ"; commit "no map"
 out="$(rr --changed)"
 both "a missing map selects every heavy suite" 'subject map missing' "$out"
-reset_repo; printf 'lib/x.sh\tsh\theavya\n' >> "$R/$MAP"; commit "bad row"
+reset_repo; printf 'lib/x.sh\tsh\n' >> "$R/$SUBJ/heavya.tsv"; commit "bad row"
 out="$(rr --changed)"
-both "a malformed row selects every heavy suite" 'subject map malformed' "$out"
-# Bug caught: whitespace or an empty name in a row taken as part of a name that never matches,
-# so the suite the row names is skipped unseen. One shape per row; each case rewrites the whole
-# working-tree map, so no shape outlives its case. A space inside a file name stays valid ("a
-# name with a space selects" above).
-malformed() { # malformed <label> <row>
-  write_map "$2"
+only_a "a malformed row selects only its suite" 'subject map malformed' "$out"
+# Bug caught: whitespace or a CR in a row taken as part of a name that never matches, so the
+# suite the row names is skipped unseen. One shape per case; each case rewrites the suite files,
+# so no shape outlives its case. A space inside a file name stays valid ("a name with a space
+# selects" above). The suite is its file's name, so no row can name a suite wrongly.
+malformed() { # malformed <label> <raw line>
+  write_map
+  printf '%s\n' "$2" >> "$R/$SUBJ/heavya.tsv"
   out="$(rr --changed)"
-  both "$1" 'subject map malformed' "$out"
+  only_a "$1" 'subject map malformed' "$out"
 }
 reset_repo
-malformed "a file name with a leading space is malformed"      " $(row lib/x.sh heavya)"
-malformed "a file name with a trailing space is malformed"     "$(row 'lib/x.sh ' heavya)"
-malformed "another field with a trailing space is malformed"   "$(printf 'lib/x.sh\tsh \t\theavya')"
-malformed "whitespace inside loaded_by is malformed"           "$(row lib/x.sh 'heavya, heavyb')"
-malformed "an empty name inside loaded_by is malformed"        "$(row lib/x.sh heavya,,heavyb)"
-malformed "a leading comma in loaded_by is malformed"          "$(row lib/x.sh ,heavya)"
-malformed "a trailing comma in loaded_by is malformed"         "$(row lib/x.sh heavya,)"
-malformed "a CR inside a row is malformed"                     "$(row "lib/x"$'\r'".sh" heavya)"
-reset_repo; printf 'lib/x.sh\tsh\theavya\n' >> "$R/$MAP"; on_main "bad row on main"
+malformed "a file name with a leading space is malformed"      " lib/x.sh"$'\t'"sh"$'\t'"-"
+malformed "a file name with a trailing space is malformed"     "lib/x.sh "$'\t'"sh"$'\t'"-"
+malformed "another field with a trailing space is malformed"   "lib/x.sh"$'\t'"sh "$'\t'"-"
+malformed "a CR inside a file name is malformed"               "lib/x"$'\r'".sh"$'\t'"sh"$'\t'"-"
+malformed "a row of two fields is malformed"                   "lib/x.sh"$'\t'"sh"
+malformed "a row of four fields (the old format) is malformed" "lib/x.sh"$'\t'"sh"$'\t'$'\t'"heavya"
+reset_repo; printf 'lib/x.sh\tsh\n' >> "$R/$SUBJ/heavya.tsv"; on_main "bad row on main"
 write_map; commit "row fixed on the branch"
 out="$(rr --changed)"
-both "a malformed row at the base selects every heavy suite" 'subject map at [0-9a-f]+ malformed' "$out"
-reset_repo; chmod 000 "$R/$MAP"
-if [ -r "$R/$MAP" ]; then
-  echo "  SKIP: an unreadable map selects every heavy suite (this user reads a mode 000 file)"
+only_a "a malformed row at the base selects only its suite" 'subject map at [0-9a-f]+ malformed' "$out"
+reset_repo; chmod 000 "$R/$SUBJ/heavya.tsv"
+if [ -r "$R/$SUBJ/heavya.tsv" ]; then
+  echo "  SKIP: an unreadable map selects only its suite (this user reads a mode 000 file)"
 else
   out="$(rr --changed)"
-  both "an unreadable map selects every heavy suite" 'subject map unreadable' "$out"
+  only_a "an unreadable map selects only its suite" 'subject map unreadable' "$out"
 fi
-chmod 644 "$R/$MAP"
-reset_repo; blob="$(G rev-parse "main:$MAP")"; write_map "$(row lib/c.sh plainc)"; commit "map changed"
+chmod 644 "$R/$SUBJ/heavya.tsv"
+reset_repo; blob="$(G rev-parse "main:$SUBJ/heavya.tsv")"; write_map "$(row lib/c.sh heavya)"; commit "map changed"
 rm -f "$R/.git/objects/${blob:0:2}/${blob:2}"
 out="$(rr --changed)"
-both "a base map whose blob cannot be read selects every heavy suite" 'subject map at [0-9a-f]+ unreadable' "$out"
-reset_repo; G rm -q "$MAP"; on_main "no map on main"
+only_a "a base map whose blob cannot be read selects only its suite" 'subject map at [0-9a-f]+ unreadable' "$out"
+reset_repo; G rm -rq "$SUBJ"; on_main "no map on main"
 write_map; echo hi > "$R/README"; commit "map and readme on the branch"
 out="$(rr --changed)"
 neither "a base without a map reads only the working tree" "$out"
@@ -943,10 +961,24 @@ both "a base that starts with - selects every heavy suite" 'base -x does not res
 if grep -q '^-x' "$T/git.log" 2>/dev/null; then _fail "and never reaches git" "$(tr '\n' ' ' < "$T/git.log")"; else _pass "and never reaches git"; fi
 
 # Bug caught: a suite the map does not mention being skipped as "unchanged".
-reset_repo; drop_rows 4 heavyb; commit "heavyb has no rows on the branch"
+reset_repo; drop_suite heavyb; commit "heavyb has no file on the branch"
 out="$(rr --changed)"
 ran "a suite without a row is selected" yes 'ok +heavyb .*\[needs: heavy; no subject-map row\]' "$out"
 ran "and the suite with rows is not" yes 'skip +heavya' "$out"
+# Bug caught: a suite file with no row read as nothing to watch, so the suite is skipped unseen.
+reset_repo; : > "$R/$SUBJ/heavyb.tsv"; commit "heavyb's file is empty"
+out="$(rr --changed)"
+ran "an empty suite file is selected" yes 'ok +heavyb .*\[needs: heavy; no subject-map row\]' "$out"
+ran "and the other suite is not" yes 'skip +heavya' "$out"
+# Bug caught: the report loop deciding again, so a subject file a suite edits while it runs gives
+# the report another answer than the dispatch (here heavyb, which would be reported without a
+# result). heavya edits heavyb's file to list lib/a.sh, which this branch changed.
+reset_repo; edit lib/a.sh
+printf '#!/usr/bin/env bash\n%s: heavy  # a fixture\nprintf "lib/a.sh\\tsh\\t-\\n" >> "$(dirname "$0")/subjects/heavyb.tsv"\necho "  ok  heavya ran"\n' "$tag" > "$R/tests/heavya.test.sh"
+commit "edit a, and heavya edits heavyb's file"
+out="$(rr --changed)"
+ran "a subject file a suite edits mid-run does not change the report" yes 'skip +heavyb +needs: heavy \(no subject changed since [0-9a-f]+\)' "$out"
+ran "and no suite is reported without a result" no 'left no result' "$out"
 
 # Bug caught: nothing-changed read as an error.
 reset_repo; G switch -q main
@@ -1002,9 +1034,9 @@ ran "and gives no passing verdict" no 'suites passed' "$out"
 ran "and says the report stopped" yes '^run.sh: the report stopped partway; no verdict$' "$out"
 rm -f "$R/tests/run-inject.sh" "$R/tests/aplain.test.sh"
 
-# Subject-map drift. drift_check <repo root> prints one line per problem with the map and fails
-# when there is any: for each suite tagged heavy, a path it names with no row listing it, a row
-# listing it whose file is gone, or no row at all. A named path is a dot_…, .scripts/…, .chezmoi…
+# Subject-map drift. drift_check <repo root> prints one line per problem with the subject files and
+# fails when there is any: for each suite tagged heavy, a path it names with no row in its file, a
+# row whose file is gone, or no row at all. A named path is a dot_…, .scripts/…, .chezmoi…
 # or tests/… token, bare or after a $VAR/, ${VAR}/ or $(…)/ root, with {a,b} expanded: a file
 # counts, a directory counts as every file under it that is tracked or untracked and not ignored
 # (the files --changed reads), anything else not at all. A floor, not a proof: a file the suite
@@ -1048,8 +1080,7 @@ drift_check() {
     req=$(sed -n 's/^# test-requires: *//p' "$f" | head -1); req=${req%%  #*}
     [ "$req" = heavy ] || continue
     suite=$(basename "$f" .test.sh)
-    rows=$(SUITE=$suite awk -F'\t' '/^#/ || $0 == "" { next }
-      { n = split($4, l, ","); for (i = 1; i <= n; i++) if (l[i] == ENVIRON["SUITE"]) { print $1; break } }' "$1/$MAP")
+    rows=$(awk -F'\t' '/^#/ || $0 == "" { next } { print $1 }' "$1/$SUBJ/$suite.tsv" 2>/dev/null)
     loaded=$(drift_loaded "$1" "$suite" "$f")
     while IFS= read -r p; do
       [ -n "$p" ] || continue
@@ -1098,14 +1129,14 @@ write_map "$(row dot_d/f.sh heavya)" "$(row dot_d/g.sh heavya)"; commit "two fil
 rm "$R/dot_d/f.sh"
 names heavya 'cp -R "$SRC/dot_d" "$T/d"'
 drifts "a file deleted under a directory a heavy suite names is a stale row only" "heavya: subject-map row for dot_d/f.sh names a missing file"
-drop_rows 1 dot_d/f.sh
+drop_row dot_d/f.sh
 drifts "and with its row dropped too nothing is reported" ""
 # Bug caught: a row left behind for a file that was moved or deleted.
 reset_repo; rm "$R/lib/a.sh"
 drifts "a row naming a missing file is reported" "heavya: subject-map row for lib/a.sh names a missing file"
 # Bug caught: a heavy suite the map does not mention, which every --changed run then selects; a path
 # after a ${VAR}/ or $(…)/ root not read.
-reset_repo; drop_rows 4 heavyb; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"
+reset_repo; drop_suite heavyb; mkdir -p "$R/dot_x"; echo b > "$R/dot_x/b.sh"; echo c > "$R/dot_x/c.sh"
 names heavyb 'cat "${SRC}/dot_x/b.sh"'
 names heavyb 'cat "$(cd x && pwd)/dot_x/c.sh"'
 drifts "a heavy suite with no row is reported, with the files it names after any root" \
@@ -1117,19 +1148,78 @@ names plainc 'cat "$SRC/dot_x/c.sh"'
 drifts "a fixture whose heavy suites' files all have rows passes" ""
 got="$(drift_check "$SRC")"; rc=$?
 if [ "$rc" = 0 ] && [ -z "$got" ]; then _pass "the subject map covers every file the heavy suites name"; else _fail "the subject map covers every file the heavy suites name" "exit $rc: $(printf '%s' "$got" | tr '\n' '|')"; fi
-# Bug caught: a row left behind when a file or a non-heavy suite is deleted, which drift_check
-# (heavy suites only) never sees, so the map keeps naming a file or a suite that is gone.
-stale=$(awk -F'\t' '/^#/ || $0 == "" { next }
-  { print "f\t" $1 "\t"; if ($3 != "-") print "s\t" $1 "\t" $3
-    n = split($4, l, ","); for (i = 1; i <= n; i++) print "s\t" $1 "\t" l[i] }' "$SUBJECTS" | sort -u \
-  | while IFS=$'\t' read -r kind file suite; do
-      if [ "$kind" = f ]; then
-        [ -f "$SRC/$file" ] || printf 'subject-map row for %s names a missing file\n' "$file"
-      else
-        [ -f "$SRC/tests/$suite.test.sh" ] || printf 'subject-map row for %s names a missing suite %s\n' "$file" "$suite"
-      fi
-    done)
-if [ -z "$stale" ]; then _pass "every subject-map row names an existing file and existing suites"; else _fail "every subject-map row names an existing file and existing suites" "$(printf '%s' "$stale" | tr '\n' '|')"; fi
+# Bug caught: a subject file left behind when its suite is deleted, or a row when its file is,
+# which drift_check (heavy suites only) never sees; or two suite files disagreeing about a file.
+# map_lint <repo root> prints one line per problem: a subject file not named after an existing
+# suite; a row whose file is not a regular file; a row without three fields; a role other than
+# -, own, guard or own,guard; a file listed with two langs; a file two suites mark own; a file
+# whose last byte is not a newline (a reader that needs one skips that row).
+map_lint() {
+  local root=$1 f s tag a b out files
+  for f in "$root"/tests/subjects/*.tsv; do
+    [ -e "$f" ] || continue
+    s=$(basename "$f" .tsv)
+    [ -f "$root/tests/$s.test.sh" ] || printf 'tests/subjects/%s.tsv: no suite tests/%s.test.sh\n' "$s" "$s"
+    [ ! -s "$f" ] || [ -z "$(tail -c1 "$f")" ] || printf 'tests/subjects/%s.tsv: no final newline\n' "$s"
+  done
+  files=()
+  for f in "$root"/tests/subjects/*.tsv; do [ -e "$f" ] && files+=("$f"); done
+  [ ${#files[@]} -gt 0 ] || return 0
+  out=$(awk -F'\t' '
+    FNR == 1 { s = FILENAME; sub(/.*\//, "", s); sub(/\.tsv$/, "", s) }
+    /^#/ || $0 == "" { next }
+    NF != 3 { printf "P\ttests/subjects/%s.tsv:%d: want file, lang, role\n", s, FNR; next }
+    { printf "F\t%s\t%s\n", s, $1 }
+    $3 !~ /^(-|own|guard|own,guard)$/ { printf "P\ttests/subjects/%s.tsv:%d: role %s is not -, own, guard or own,guard\n", s, FNR, $3 }
+    ($1 in lang) && lang[$1] != $2 { printf "P\ttests/subjects/%s.tsv:%d: %s is %s here and %s in %s.tsv\n", s, FNR, $1, $2, lang[$1], langin[$1] }
+    !($1 in lang) { lang[$1] = $2; langin[$1] = s }
+    $3 ~ /^own/ { if (($1 in owner) && owner[$1] != s) printf "P\ttests/subjects/%s.tsv:%d: %s is owned by %s and %s\n", s, FNR, $1, owner[$1], s
+                  if (!($1 in owner)) owner[$1] = s }' "${files[@]}" 2>/dev/null) \
+    || { echo "map_lint: awk failed on tests/subjects"; return 0; }
+  while IFS=$'\t' read -r tag a b; do
+    case $tag in
+      P) printf '%s\n' "$a" ;;
+      F) [ -f "$root/$b" ] || printf 'tests/subjects/%s.tsv: %s is not a file\n' "$a" "$b" ;;
+    esac
+  done <<<"$out"
+}
+lint_fixture() { # a clean root: two suites, two files, one owner
+  local d="$T/lint"
+  rm -rf "$d"; mkdir -p "$d/tests/subjects" "$d/lib"
+  : > "$d/tests/x.test.sh"; : > "$d/tests/y.test.sh"; : > "$d/lib/a.sh"; : > "$d/lib/b.sh"
+  printf '# x\n\nlib/a.sh\tsh\town\n' > "$d/tests/subjects/x.tsv"
+  printf 'lib/b.sh\tbash\t-\n' > "$d/tests/subjects/y.tsv"
+}
+lints() { # lints <label> <want line, or empty for clean>
+  local got
+  got="$(map_lint "$T/lint")"
+  if [ "$got" = "$2" ]; then _pass "$1"; else _fail "$1" "$(printf '%s' "$got" | tr '\n' '|')"; fi
+}
+lint_fixture
+lints "a clean set of subject files prints nothing" ""
+lint_fixture; printf 'lib/a.sh\tsh\t-\n' > "$T/lint/tests/subjects/z.tsv"
+lints "a subject file with no suite is reported" "tests/subjects/z.tsv: no suite tests/z.test.sh"
+lint_fixture; printf 'lib/gone.sh\tsh\t-\n' >> "$T/lint/tests/subjects/x.tsv"
+lints "a row naming a missing file is reported" "tests/subjects/x.tsv: lib/gone.sh is not a file"
+lint_fixture; printf 'lib/b.sh\tsh\n' >> "$T/lint/tests/subjects/x.tsv"
+lints "a row without three fields is reported" "tests/subjects/x.tsv:4: want file, lang, role"
+lint_fixture; printf 'lib/b.sh\tbash\tmine\n' >> "$T/lint/tests/subjects/x.tsv"
+lints "a role outside the four is reported" "tests/subjects/x.tsv:4: role mine is not -, own, guard or own,guard"
+lint_fixture; printf 'lib/b.sh\tsh\t-\n' >> "$T/lint/tests/subjects/x.tsv"
+lints "a file listed with two langs is reported" "tests/subjects/y.tsv:1: lib/b.sh is bash here and sh in x.tsv"
+lint_fixture; printf 'lib/a.sh\tsh\town,guard\n' >> "$T/lint/tests/subjects/y.tsv"
+lints "a file two suites mark own is reported" "tests/subjects/y.tsv:2: lib/a.sh is owned by x and y"
+lint_fixture; printf 'lib/b.sh\tbash\t-' > "$T/lint/tests/subjects/y.tsv"
+lints "a subject file with no final newline is reported" "tests/subjects/y.tsv: no final newline"
+lint_fixture; : > "$T/lint/tests/subjects/y.tsv"
+lints "an empty subject file is not reported" ""
+# Bug caught: an awk that fails at run time read as "no problems", so a broken lint passes the real tree.
+mkdir -p "$T/awkfail"; printf '#!/bin/sh\necho "awk: stub failure" >&2\nexit 2\n' > "$T/awkfail/awk"; chmod 755 "$T/awkfail/awk"
+lint_fixture
+got="$(PATH="$T/awkfail:$PATH" map_lint "$T/lint")"
+if [ "$got" = "map_lint: awk failed on tests/subjects" ]; then _pass "an awk failure is reported, not read as no problems"; else _fail "an awk failure is reported, not read as no problems" "$(printf '%s' "$got" | tr '\n' '|')"; fi
+got="$(map_lint "$SRC")"
+if [ -z "$got" ]; then _pass "every subject file is well-formed and consistent"; else _fail "every subject file is well-formed and consistent" "$(printf '%s' "$got" | tr '\n' '|')"; fi
 # Bug caught: a heavy tag the runner's parse does not read as exactly `heavy` (one space before the
 # comment, say), which drops the suite from --changed and from the drift check. bad_heavy_tags
 # <repo root> prints each such line, parsed as the runner parses it.
@@ -1152,11 +1242,23 @@ got="$(bad_heavy_tags "$R")"
 if [ -z "$got" ]; then _pass "the fixture's heavy tags all parse as heavy"; else _fail "the fixture's heavy tags all parse as heavy" "$got"; fi
 got="$(bad_heavy_tags "$SRC")"
 if [ -z "$got" ]; then _pass "every heavy tag in the real suites parses as exactly heavy"; else _fail "every heavy tag in the real suites parses as exactly heavy" "$(printf '%s' "$got" | tr '\n' '|')"; fi
-# Bug caught: a hand-edited row the runner reads as malformed, so every --changed run runs every
-# heavy suite.
-reset_repo; cp "$SUBJECTS" "$R/$MAP"
+# Bug caught: a hand-edited row the runner reads as malformed, so every --changed run runs that
+# suite. Every real subject file, a heavy fixture suite for each, all on main: nothing changed.
+reset_repo; rm -rf "$R/$SUBJ"; mkdir -p "$R/$SUBJ"; cp "$SUBJECTS"/*.tsv "$R/$SUBJ/"
+real=()
+for f in "$SUBJECTS"/*.tsv; do
+  n=$(basename "$f" .tsv); real+=("$n")
+  printf '#!/usr/bin/env bash\n%s: heavy  # a fixture\necho "  ok  %s ran"\n' "$tag" "$n" > "$R/tests/$n.test.sh"
+  chmod 755 "$R/tests/$n.test.sh"
+done
+on_main "the real subject files"
 out="$(rr --changed)"
-both "the runner reads the real subject map as well-formed" 'no subject-map row' "$out"
+ran "the runner reads no real subject file as malformed or unreadable" no 'subject map (at [0-9a-f]+ )?(malformed|unreadable)' "$out"
+bad=
+for n in "${real[@]}"; do
+  printf '%s\n' "$out" | grep -Eq "skip +$n +needs: heavy \(no subject changed since [0-9a-f]+\)$" || bad="$bad $n"
+done
+if [ -z "$bad" ]; then _pass "and every real suite is skipped as unchanged"; else _fail "and every real suite is skipped as unchanged" "not skipped:$bad"; fi
 unset HOLDER_DONE
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

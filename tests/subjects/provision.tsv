@@ -1,0 +1,6 @@
+.chezmoidata/machines.toml	data	own
+.scripts/claude-managed-settings.json	data	-
+.scripts/configure.sh	zsh	own
+.scripts/install-claude-managed-settings.sh	bash	-
+.scripts/provision.sh	zsh	own
+dot_config/homebrew/Brewfile.tmpl	data	own

@@ -1,0 +1,4 @@
+dot_config/herdr/codex-pane-command	data	-
+dot_config/xreview/findings.schema.json	data	-
+dot_local/bin/executable_xreview	bash	-
+dot_local/bin/executable_xreview-rpc	py	-

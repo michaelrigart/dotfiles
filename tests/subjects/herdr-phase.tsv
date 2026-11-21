@@ -1,0 +1,5 @@
+.scripts/configure.sh	zsh	-
+Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	own
+dot_config/herdr/config.toml	data	-
+dot_config/herdr/executable_phase.sh	bash	own,guard
+dot_config/herdr/plugin-phase/herdr-plugin.toml	data	own

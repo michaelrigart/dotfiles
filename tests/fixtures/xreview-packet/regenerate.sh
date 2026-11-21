@@ -28,7 +28,9 @@ SPEC2='HEAD~2..HEAD'
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/xreview-golden.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 SRC="$WORK/src"; mkdir -p "$SRC"
-git -C "$REPO_ROOT" archive "$REF" dot_config dot_local dot_claude | tar -x -C "$SRC"
+# Through a file: tar stops at the end-of-archive marker, so a piped git archive can die on its padding.
+git -C "$REPO_ROOT" archive -o "$WORK/ref.tar" "$REF" dot_config dot_local dot_claude
+tar -x -C "$SRC" -f "$WORK/ref.tar"
 # The reference tree carries the old reviewer.md; the golden packets follow the shipped one. Overlay it
 # before the stub block copies it into place. The dispatcher, ledger and stubs stay the reference's.
 cp "$REPO_ROOT/dot_config/xreview/reviewer.md" "$SRC/dot_config/xreview/reviewer.md"

@@ -60,18 +60,19 @@
 #
 # --changed lifts the `heavy` gate, and only that gate (a suite is heavy when its requirement
 # is exactly `heavy`), for each heavy suite with a changed subject. A suite's subjects are the
-# files of .scripts/test-audit/subjects.tsv rows (file, lang, own_suite, loaded_by) whose
-# loaded_by lists it, its own file and tests/run.sh, under the map in the working tree or the
-# map at the merge base. The changed files are those of `git diff` against the merge base of
+# files of tests/subjects/<suite>.tsv (one `file<TAB>lang<TAB>role` row per file) in the working
+# tree or at the merge base, its own file and tests/run.sh.
+# The changed files are those of `git diff` against the merge base of
 # <ref> (default main) and HEAD, that is the working tree against the merge base (so a change
 # staged and then reverted in the working tree is not listed), plus untracked unignored files;
 # they are read NUL-delimited and compared byte for byte. A heavy suite left out prints
 # "(no subject changed since <merge base>)"; one that runs carries [needs: heavy; changed:
 # <first changed subject>(, +N more)]. Whatever the runner cannot read or decide runs every
-# heavy suite and says why in the same bracket: not a git work tree, an
-# unresolvable base, no merge base, a failing git command, a missing, unreadable or malformed
-# subject map (working tree or merge base), or a suite with no row. An exact name or --all
-# still runs a heavy suite whatever the diff; every other gate stays.
+# heavy suite and says why in the same bracket: not a git work tree, an unresolvable base, no
+# merge base, a failing git command while computing the selection, or a missing tests/subjects
+# directory. A missing or empty suite file in the working tree, or an unreadable or malformed one
+# in either, or a failing git read of it at the merge base, runs that suite only. An exact name
+# or --all still runs a heavy suite whatever the diff; every other gate stays.
 set -uo pipefail
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
@@ -205,29 +206,27 @@ show_inconclusive() {
     { keep = 0 }' | sed 's/^/          /'
 }
 
-# map_check <file>: 0 when every row has four tab-separated fields, none with whitespace at
-# either end, no CR, and a loaded_by of comma-separated names with no whitespace and no empty
-# name (comment and empty lines are skipped); 1 when one has not, 2 when awk cannot read the
-# file. Whitespace would otherwise become part of a name that never matches.
+# map_check <file>: 0 when every row (comment and empty lines are skipped) has exactly three
+# tab-separated fields, none with whitespace at either end, and no CR; 1 when one has not, 2 when
+# awk cannot read the file. Whitespace would otherwise become part of a name that never matches.
 map_check() {
   awk -F'\t' '/^#/ || $0 == "" { next }
-    NF != 4 || /\r/ || $4 ~ /[[:space:]]|^,|,,|,$/ { bad = 1; next }
-    { for (i = 1; i <= 4; i++) if ($i ~ /^[[:space:]]|[[:space:]]$/) bad = 1 }
+    NF != 3 || /\r/ { bad = 1; next }
+    { for (i = 1; i <= 3; i++) if ($i ~ /^[[:space:]]|[[:space:]]$/) bad = 1 }
     END { exit bad }' "$1"
 }
 
-# map_rows <suite> <file>: the files of the rows whose loaded_by lists the suite, one per line.
-map_rows() {
-  SUITE=$1 awk -F'\t' '/^#/ || $0 == "" { next }
-    { n = split($4, l, ","); for (i = 1; i <= n; i++) if (l[i] == ENVIRON["SUITE"]) { print $1; break } }' "$2" 2>/dev/null
+# map_files <file>: the first field of every row, one per line.
+map_files() {
+  awk -F'\t' '/^#/ || $0 == "" { next } { print $1 }' "$1" 2>/dev/null
 }
 
-# The files the branch changed and the two subject maps, read once for --changed. Any reason
-# left in sel_reason selects every heavy suite. The caller sets it before the call and only a
+# The files the branch changed and the merge base, read once for --changed. Any reason left in
+# sel_reason selects every heavy suite. The caller sets it before the call and only a
 # computation that ran to the end clears it, so a shell error that abandons this function
 # (bash drops the whole enclosing command) can only select, never skip.
 compute_selection() {
-  local map_rel=.scripts/test-audit/subjects.tsv inside sha b rc tree c
+  local inside sha b rc c
   case $base in -*) sel_reason="base $base does not resolve"; return ;; esac
   inside=$(git -C "$repo_root" rev-parse --is-inside-work-tree --show-prefix 2>/dev/null) || inside=
   [ "$inside" = true ] || { sel_reason="not a git work tree"; return; }
@@ -236,22 +235,9 @@ compute_selection() {
   if [ "$rc" -eq 1 ]; then sel_reason="no merge base with $base"; return; fi
   if [ "$rc" -ne 0 ] || [ -z "$b" ]; then sel_reason="git failed"; return; fi
   sel_short=$(git -C "$repo_root" rev-parse --short "$b" 2>/dev/null) || { sel_reason="git failed"; return; }
+  sel_base=$b
 
-  map_wt=$RUN_SH_WORK/map.wt map_base=$RUN_SH_WORK/map.base have_base=0
-  [ -e "$repo_root/$map_rel" ] || { sel_reason="subject map missing"; return; }
-  cat "$repo_root/$map_rel" >"$map_wt" 2>/dev/null || { sel_reason="subject map unreadable"; return; }
-  map_check "$map_wt"; rc=$?
-  if [ "$rc" -eq 1 ]; then sel_reason="subject map malformed"; return; fi
-  if [ "$rc" -ne 0 ]; then sel_reason="subject map unreadable"; return; fi
-  # Absence at the base is only a successful ls-tree that names nothing.
-  tree=$(git -C "$repo_root" ls-tree "$b" -- "$map_rel" 2>/dev/null) || { sel_reason="git failed"; return; }
-  if [ -n "$tree" ]; then
-    git -C "$repo_root" show "$b:$map_rel" >"$map_base" 2>/dev/null || { sel_reason="subject map at $sel_short unreadable"; return; }
-    map_check "$map_base"; rc=$?
-    if [ "$rc" -eq 1 ]; then sel_reason="subject map at $sel_short malformed"; return; fi
-    if [ "$rc" -ne 0 ]; then sel_reason="subject map at $sel_short unreadable"; return; fi
-    have_base=1
-  fi
+  [ -d "$repo_root/tests/subjects" ] || { sel_reason="subject map missing"; return; }
 
   git -C "$repo_root" diff --name-only --no-renames -z "$b" -- >"$RUN_SH_WORK/changed.z" 2>/dev/null || { sel_reason="git failed"; return; }
   git -C "$repo_root" ls-files --others --exclude-standard -z >>"$RUN_SH_WORK/changed.z" 2>/dev/null || { sel_reason="git failed"; return; }
@@ -260,14 +246,28 @@ compute_selection() {
   sel_reason=
 }
 
-# changed_subjects <suite> sets why; returns 0 to run the heavy suite, 2 to skip it.
-changed_subjects() {
-  local subjects base_subjects i c hits
+# decide_subjects <suite> sets why; returns 0 to run the heavy suite, 2 to skip it. The suite's
+# subjects are the files of tests/subjects/<suite>.tsv in the working tree and at the merge base,
+# its own file and tests/run.sh.
+decide_subjects() {
+  local rel=tests/subjects/$1.tsv wt=$RUN_SH_WORK/map.wt mb=$RUN_SH_WORK/map.base
+  local subjects base_subjects tree rc i c hits
   if [ -n "$sel_reason" ]; then why=$sel_reason; return 0; fi
-  subjects=$(map_rows "$1" "$map_wt") || { why="subject map unreadable"; return 0; }
+  if [ ! -e "$repo_root/$rel" ]; then why="no subject-map row"; return 0; fi
+  cat "$repo_root/$rel" >"$wt" 2>/dev/null || { why="subject map unreadable"; return 0; }
+  map_check "$wt"; rc=$?
+  if [ "$rc" -eq 1 ]; then why="subject map malformed"; return 0; fi
+  if [ "$rc" -ne 0 ]; then why="subject map unreadable"; return 0; fi
+  subjects=$(map_files "$wt") || { why="subject map unreadable"; return 0; }
   if [ -z "$subjects" ]; then why="no subject-map row"; return 0; fi
-  if [ "$have_base" -eq 1 ]; then
-    base_subjects=$(map_rows "$1" "$map_base") || { why="subject map at $sel_short unreadable"; return 0; }
+  # Absence at the base is only a successful ls-tree that names nothing.
+  tree=$(git -C "$repo_root" ls-tree "$sel_base" -- "$rel" 2>/dev/null) || { why="git failed"; return 0; }
+  if [ -n "$tree" ]; then
+    git -C "$repo_root" show "$sel_base:$rel" >"$mb" 2>/dev/null || { why="subject map at $sel_short unreadable"; return 0; }
+    map_check "$mb"; rc=$?
+    if [ "$rc" -eq 1 ]; then why="subject map at $sel_short malformed"; return 0; fi
+    if [ "$rc" -ne 0 ]; then why="subject map at $sel_short unreadable"; return 0; fi
+    base_subjects=$(map_files "$mb") || { why="subject map at $sel_short unreadable"; return 0; }
     subjects="$subjects"$'\n'"$base_subjects"
   fi
   subjects="$subjects"$'\n'"tests/$1.test.sh"$'\n'"tests/run.sh"
@@ -282,6 +282,25 @@ changed_subjects() {
   why="changed: ${hits[0]}"
   if [ "${#hits[@]}" -gt 1 ]; then why="$why, +$((${#hits[@]} - 1)) more"; fi
   return 0
+}
+
+# changed_subjects <suite> sets why; returns 0 to run the heavy suite, 2 to skip it. The decision
+# is made once per suite per run, by the first call, and kept in $RUN_SH_WORK/sel.<suite> (status,
+# then why), so the dispatch loop and the report loop agree even when a suite edits its own
+# subject file while it runs.
+changed_subjects() {
+  local cache=$RUN_SH_WORK/sel.$1 st=
+  if [ -f "$cache" ]; then
+    { IFS= read -r st; IFS= read -r why; } <"$cache"
+    case $st in
+      0) return 0 ;;
+      2) return 2 ;;
+    esac
+    why="subject map unreadable"; return 0
+  fi
+  decide_subjects "$1"; st=$?
+  printf '%s\n%s\n' "$st" "$why" >"$cache" 2>/dev/null
+  return "$st"
 }
 
 # select <file> sets name, req and why; returns 1 when the filters exclude the suite and 2 when

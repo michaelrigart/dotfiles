@@ -1,0 +1,3 @@
+dot_local/bin/executable_codex	sh	guard
+dot_local/bin/executable_codex-code-mode-host	sh	own,guard
+dot_local/bin/executable_codex-daemon	sh	guard

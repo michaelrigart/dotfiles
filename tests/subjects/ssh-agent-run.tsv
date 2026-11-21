@@ -1,0 +1,2 @@
+Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl	data	own,guard
+dot_local/bin/executable_ssh-agent-run	bash	own,guard

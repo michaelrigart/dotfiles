@@ -1,0 +1,3 @@
+.scripts/claude-managed-settings.json	data	own
+.scripts/configure.sh	zsh	-
+.scripts/install-claude-managed-settings.sh	bash	own

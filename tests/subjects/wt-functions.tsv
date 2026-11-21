@@ -1,0 +1,6 @@
+dot_config/mise/config.toml	data	-
+dot_config/zsh/functions	zsh	own
+dot_config/zsh/zshenv	zsh	-
+dot_local/bin/executable_wt-prepare	zsh	own
+dot_local/bin/executable_wt-rm	zsh	own
+dot_local/bin/executable_wt-teardown	zsh	-

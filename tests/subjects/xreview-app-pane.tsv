@@ -1,0 +1,6 @@
+dot_local/bin/executable_xreview	bash	guard
+dot_local/bin/executable_xreview-app-pane	zsh	own,guard
+tests/fixtures/herdr-app/stubs/hc	sh	-
+tests/fixtures/herdr-app/stubs/herdr-app	sh	-
+tests/fixtures/herdr-app/stubs/ps	sh	-
+tests/fixtures/herdr-app/tui-shapes.json	data	-

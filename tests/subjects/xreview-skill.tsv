@@ -1,0 +1,7 @@
+.chezmoitemplates/agents/global.md	prose	guard
+dot_claude/executable_xreview-apply-guard.sh	bash	-
+dot_claude/executable_xreview-guard.sh	bash	-
+dot_claude/skills/cross-review/SKILL.md	prose	own
+dot_claude/xreview-guard.py	py	-
+dot_claude/xreview-ledger.py	py	-
+dot_local/bin/executable_xreview	bash	-

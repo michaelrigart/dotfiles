@@ -14,7 +14,7 @@ FIX="$SRC/tests/fixtures/test-audit"
 pass=0; fail=0; OUT=""; ERR=""; RC=0
 _pass(){ echo "  PASS: $1"; pass=$((pass+1)); }
 _fail(){ echo "  FAIL: $1"; fail=$((fail+1)); }
-rc_is(){ [ "$RC" -eq "$1" ] && _pass "$2" || _fail "$2 (rc=$RC: ${ERR: -900})"; }
+rc_is(){ [ "$RC" -eq "$1" ] && _pass "$2" || _fail "$2 (rc=$RC: $(printf '%s' "$ERR" | tail -c 900))"; }
 has(){ case "$3" in *"$1"*) _pass "$2";; *) _fail "$2 (got: $3)";; esac; }
 lacks(){ case "$3" in *"$1"*) _fail "$2 (found: $1)";; *) _pass "$2";; esac; }
 eq(){ [ "$1" = "$2" ] && _pass "$3" || _fail "$3 (got: $1, want: $2)"; }
@@ -43,7 +43,7 @@ mk(){
 }
 aud(){
   "$AUDIT" --repo "$T/repo" --state "$T/state" --copy-root "$T/copies" --lock "$T/lock" \
-    --probe-dir "$T/ro" --subjects "$T/repo/subjects.tsv" "$@"
+    --probe-dir "$T/ro" --subjects "$T/repo/subjects" "$@"
 }
 run(){ OUT=$(aud "$@" 2>"$T/err"); RC=$?; ERR=$(<"$T/err"); }
 jget(){ python3 -c 'import json,sys
@@ -765,14 +765,42 @@ run plan
 rc_is 2 "Q4: a partial inventory is refused"
 has "inventory incomplete: s2" "Q4: naming the missing suite" "$ERR"
 [ ! -e "$T/state/sample.jsonl" ] && _pass "Q4: and nothing is frozen" || _fail "Q4: and nothing is frozen"
-printf 'bin/s.sh\tbash\ts\ts,s2\nbin/loop.sh\tbash\tgated\tgated\nbin/p.py\tpy\tred\tred\n' > "$T/subj.tsv"
+mkdir "$T/subj"
+printf 'bin/s.sh\tbash\town\n' > "$T/subj/s.tsv"
+printf 'bin/s.sh\tbash\t-\nbin/esc.py\tpy\t-\n' > "$T/subj/s2.tsv"
+printf 'bin/loop.sh\tbash\town\n' > "$T/subj/gated.tsv"
+printf 'bin/p.py\tpy\town\n' > "$T/subj/red.tsv"
 run inventory gated red
-run --subjects "$T/subj.tsv" plan
+run --subjects "$T/subj" plan
 rc_is 0 "Q4: a complete inventory plans"
 has "| bin/loop.sh | gated | - | 0 |" "Q4: a gated suite keeps its dash row" "$OUT"
+has "| bin/esc.py | - | - | 0 |" "Q4: a file no suite owns keeps its dash row" "$OUT"
 has "copy-red: bin/p.py" "Q4: a red suite's file is listed as copy-red" "$OUT"
 has "total: 13 mutants" "Q4: only the green suite's file is sampled" "$OUT"
 eq "$(grep -c 'bin/p.py' "$T/state/sample.jsonl")" 0 "Q4: the copy-red file has no sample rows"
+
+# Q4b: a subjects directory that contradicts itself, or is not there, is refused
+mk QS
+bad_subjects(){ # bad_subjects <name> <file>:<row>...  builds $T/<name> and reads it
+  local d="$T/$1"; shift; mkdir "$d"
+  local spec; for spec in "$@"; do printf "${spec#*:}\n" >> "$d/${spec%%:*}.tsv"; done
+  run --subjects "$d" mutants bin/s.sh
+}
+bad_subjects bad-lang 'a:bin/s.sh\tbash\town' 'b:bin/s.sh\tzsh\t-'
+rc_is 2 "Q4: two suite files giving one file two langs are refused"
+has "b.tsv:1: bin/s.sh is zsh here and bash in another subject file" "Q4: naming the file and both langs" "$ERR"
+bad_subjects bad-own 'a:bin/s.sh\tbash\town' 'b:bin/s.sh\tbash\town'
+rc_is 2 "Q4: two suite files both owning one file are refused"
+has "b.tsv:1: bin/s.sh is owned by a and b" "Q4: naming the file and both owners" "$ERR"
+bad_subjects bad-role 'a:bin/s.sh\tbash\tmine'
+rc_is 2 "Q4: a role outside the four is refused"
+has "a.tsv:1: want file, lang, role" "Q4: naming the row" "$ERR"
+bad_subjects bad-cols 'a:# a comment' 'a:bin/s.sh\tbash'
+rc_is 2 "Q4: a row without three fields is refused"
+has "a.tsv:2: want file, lang, role" "Q4: naming its line" "$ERR"
+run --subjects "$T/no-such-dir" mutants bin/s.sh
+rc_is 2 "Q4: an explicit subjects directory that does not exist is refused"
+has "missing subjects directory: $T/no-such-dir" "Q4: naming it" "$ERR"
 
 # Q7: targeted checks every candidate before the first run
 mk QT
@@ -866,7 +894,8 @@ for n in a b; do
   } > "$T/repo/tests/res-$n.test.sh"
   chmod 755 "$T/repo/tests/res-$n.test.sh"
 done
-printf 'bin/res.sh\tbash\tres-a\tres-a,res-b\n' >> "$T/repo/subjects.tsv"
+printf 'bin/res.sh\tbash\town\n' > "$T/repo/subjects/res-a.tsv"
+printf 'bin/res.sh\tbash\t-\n' > "$T/repo/subjects/res-b.tsv"
 "${GIT[@]}" -C "$T/repo" add -A
 "${GIT[@]}" -C "$T/repo" commit -q -m residue
 python3 - "$T/res.jsonl" <<'PY'
@@ -927,7 +956,7 @@ clean Q13
 # fails the case instead of hanging the suite.
 audb(){
   perl -e 'alarm 90; exec @ARGV' "$AUDIT" --repo "$T/repo" --state "$T/state" --copy-root "$T/copies" --lock "$T/lock" \
-    --probe-dir "$T/ro" --subjects "$T/repo/subjects.tsv" "$@"
+    --probe-dir "$T/ro" --subjects "$T/repo/subjects" "$@"
 }
 runb(){ OUT=$(audb "$@" 2>"$T/err"); RC=$?; ERR=$(<"$T/err"); }
 residue(){
@@ -1082,6 +1111,39 @@ chmod 755 "$T/copies"
 rc_is 2 "Q29: a copy root a mutant made unsearchable ends the run with the harness's exit 2"
 has "cannot replace the previous copy at" "Q29: and says so" "$ERR"
 lacks "Traceback" "Q29: instead of a traceback" "$ERR"
+
+# Q30: tar stops reading two records past the end-of-archive marker, before the padding git archive
+# writes after it. Piped, a git that tar outran (the machine under load) wrote that padding into a
+# closed pipe and exited 141 without a word, and the session died with "cannot archive". The stub
+# git writes through what tar reads, waits, then writes the rest; every other command is git's.
+mk Q30
+mkdir -p "$T/gitstub"
+cat > "$T/gitstub/git" <<'STUB'
+#!/usr/bin/env bash
+[ "${3:-}" = archive ] || exec "$REAL_GIT" "$@"
+"$REAL_GIT" "$@" | python3 -c '
+import os, sys, time
+data = sys.stdin.buffer.read()
+cut = -(-len(data.rstrip(b"\0")) // 512) * 512 + 1024
+out = sys.stdout.buffer
+out.write(data[:cut]); out.flush()
+time.sleep(1)
+if data[cut:]:
+    open(os.environ["AUDIT_MARKERS"] + "/split", "w").close()
+try:
+    out.write(data[cut:]); out.flush()
+except BrokenPipeError:
+    os._exit(141)
+'
+STUB
+chmod 755 "$T/gitstub/git"
+REAL_GIT=$(command -v git); export REAL_GIT
+oldpath=$PATH; PATH="$T/gitstub:$PATH"
+run inventory s
+PATH=$oldpath
+rc_is 0 "Q30: a git archive still writing its padding after tar has stopped reading builds the copy"
+[ -e "$T/markers/split" ] && _pass "Q30: the stub held back padding past what tar reads" || _fail "Q30: the stub held back padding past what tar reads"
+eq "$(suite_failed)" "{'s': (0, 0)}" "Q30: and the suite runs green in that copy"
 
 echo "R. rule mutants"
 mk R

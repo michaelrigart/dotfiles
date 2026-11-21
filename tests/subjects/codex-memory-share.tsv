@@ -1,0 +1,2 @@
+Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	own
+dot_local/bin/executable_codex-memory-share	bash	own,guard

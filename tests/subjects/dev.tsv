@@ -1,0 +1,6 @@
+dot_config/herdr/codex-pane-command	data	own
+dot_config/herdr/config.toml	data	guard
+dot_config/herdr/executable_layout.sh	zsh	own,guard
+dot_config/herdr/executable_tab-goto.sh	zsh	own,guard
+dot_config/nvim/lua/plugins/smart-splits.lua	data	own,guard
+dot_config/zsh/functions	zsh	guard

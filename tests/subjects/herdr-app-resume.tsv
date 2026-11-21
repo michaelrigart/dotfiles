@@ -1,0 +1,2 @@
+dot_config/herdr-app/bin/executable_session-running	sh	own,guard
+dot_config/herdr-app/mods/resume/decide.js	data	own,guard

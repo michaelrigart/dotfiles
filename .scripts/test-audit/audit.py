@@ -31,6 +31,7 @@ import rules  # noqa: E402
 DEFAULT_SEED = 20261111
 BASELINE_TIMEOUT = 1800
 LANGS = {"bash", "zsh", "sh", "py", "prose", "data", "deployed"}
+ROLES = {"-", "own", "guard", "own,guard"}
 HEAVY_SAMPLE = {"xreview": 3, "git-forge-guard": 6, "wt-functions": 8}
 KINDS = {"code": "sample", "targeted": "targeted", "rule": "rules"}
 CHECK_SUITE = "check"
@@ -241,11 +242,13 @@ def build_copy(repo, sha, root, command):
         die(f"cannot replace the previous copy at {copy}: {err}")
     if copy not in SESSION.copies:
         SESSION.copies.append(copy)
-    archive = subprocess.Popen(["git", "-C", str(repo), "archive", sha], stdout=subprocess.PIPE)
-    untar = subprocess.run(["tar", "-x", "-C", str(copy)], stdin=archive.stdout)
-    archive.stdout.close()
-    if archive.wait() != 0 or untar.returncode != 0:
-        die(f"cannot archive {sha} from {repo}")
+    # Not a pipe: tar stops reading at the end-of-archive marker, and git archive, writing its
+    # padding after it into a closed pipe, would exit 141 without a word.
+    with tempfile.TemporaryFile() as tarball:
+        archived = subprocess.run(["git", "-C", str(repo), "archive", sha], stdout=tarball).returncode == 0
+        tarball.seek(0)
+        if not archived or subprocess.run(["tar", "-x", "-C", str(copy)], stdin=tarball).returncode != 0:
+            die(f"cannot archive {sha} from {repo}")
     stamp = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%cI", sha], check=True,
                            capture_output=True, text=True).stdout.strip()
     env = {**os.environ, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
@@ -423,21 +426,36 @@ def suite_row(copy, suite):
 
 
 def load_subjects(path, explicit):
+    """Merge the per-suite subject files of a directory into one row per file.
+
+    Each tests/subjects/<suite>.tsv lists `file<TAB>lang<TAB>role` rows; a file's loaded_by is the
+    suites that list it, its own_suite the one that marks it `own`, else `-`."""
     path = Path(path)
-    if not path.exists():
+    if not path.is_dir():
         if explicit:
-            die(f"missing subjects file: {path}")
+            die(f"missing subjects directory: {path}")
         return []
-    rows = []
-    for n, line in enumerate(path.read_text().split("\n"), 1):
-        if not line.strip() or line.startswith("#"):
-            continue
-        cols = line.split("\t")
-        if len(cols) != 4 or cols[1] not in LANGS:
-            die(f"{path}:{n}: want file, lang, own_suite, loaded_by")
-        rows.append({"file": cols[0], "lang": cols[1], "own_suite": cols[2],
-                     "loaded_by": [s for s in cols[3].split(",") if s and s != "-"]})
-    return rows
+    files = {}
+    for sub in sorted(path.glob("*.tsv"), key=lambda p: p.stem):
+        suite = sub.stem
+        for n, line in enumerate(sub.read_text().split("\n"), 1):
+            if not line.strip() or line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            if len(cols) != 3 or cols[1] not in LANGS or cols[2] not in ROLES:
+                die(f"{sub}:{n}: want file, lang, role")
+            file, lang, role = cols
+            row = files.setdefault(file, {"file": file, "lang": lang, "own_suite": "-",
+                                          "loaded_by": []})
+            if row["lang"] != lang:
+                die(f"{sub}:{n}: {file} is {lang} here and {row['lang']} in another subject file")
+            if "own" in role.split(","):
+                if row["own_suite"] != "-":
+                    die(f"{sub}:{n}: {file} is owned by {row['own_suite']} and {suite}")
+                row["own_suite"] = suite
+            if suite not in row["loaded_by"]:
+                row["loaded_by"].append(suite)
+    return [files[file] for file in sorted(files)]
 
 
 def refuse_if_writable(probe_dir):
@@ -1448,7 +1466,7 @@ def main(argv=None):
         args.repo = top.stdout.strip()
     args.state = args.state or os.path.join(args.repo, ".superpowers", "test-audit")
     args.subjects_explicit = args.subjects is not None
-    args.subjects = args.subjects or str(args.harness_dir / "subjects.tsv")
+    args.subjects = args.subjects or str(Path(args.repo) / "tests" / "subjects")
     for sig in STOP_SIGNALS:
         signal.signal(sig, on_signal)
     try:

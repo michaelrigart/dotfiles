@@ -1,0 +1,3 @@
+.chezmoidata/machines.toml	data	guard
+.chezmoiignore	data	guard
+Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl	data	own,guard

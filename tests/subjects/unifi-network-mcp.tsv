@@ -1,0 +1,2 @@
+dot_config/private_unifi-network/private_env.tmpl	data	own
+dot_local/bin/executable_unifi-network-mcp	sh	own

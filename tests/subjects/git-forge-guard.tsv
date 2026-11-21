@@ -1,0 +1,5 @@
+.chezmoiexternal.toml	data	-
+.chezmoiignore	data	-
+dot_claude/executable_git-forge-guard.sh	bash	own,guard
+dot_claude/git-push-guard.py	py	own
+dot_config/git/hooks/executable_secret-scan	py	-
