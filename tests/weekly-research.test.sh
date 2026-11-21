@@ -113,7 +113,10 @@ export GH_TOKEN=leak-gh GITLAB_TOKEN=leak-gl ANTHROPIC_API_KEY=leak-key SSH_AUTH
 CFGD=$CFG; INB=$INBOX; PATHW=$PATHV; n=0; rc=0; ST=""
 wrenv() { WRE=(HOME="$HOME_D" WEEKLY_RESEARCH_CONFIG="$CFGD" WEEKLY_RESEARCH_STATE="$ST" WEEKLY_RESEARCH_INBOX="$INB" \
   WEEKLY_RESEARCH_TODAY="$TODAY" WEEKLY_RESEARCH_PATH="$PATHW"); }
-wr() { wrenv; env "${WRE[@]}" "$@" "$BIN/weekly-research"; }
+# The wrapper runs under /bin/bash (3.2), the interpreter launchd's bare PATH gives it, whatever bash the caller has.
+WRBASH=/bin/bash
+[ -x "$WRBASH" ] || { echo "no $WRBASH to run the wrapper under" >&2; exit 2; }
+wr() { wrenv; env "${WRE[@]}" "$@" "$WRBASH" "$BIN/weekly-research"; }
 fresh() { n=$((n + 1)); ST="$T/state-$n"; }
 clear_records() { rm -f "$SD"/claude.* "$SD"/sandbox.argv "$SD"/osascript.args "$SD"/survived; }
 go() { clear_records; wr "$@" >"$T/out" 2>"$T/err" </dev/null; rc=$?; }
@@ -138,6 +141,7 @@ failed() {
   ok "$1: last-run holds a reason" test -n "$(lr reason)"
   ok "$1: a failure record" test -s "$ST/failures/$TODAY.txt"
   ok "$1: the record holds no model output" lacks "$ST/failures/$TODAY.txt" MODELMARKER
+  ok "$1: last-run holds no model output" lacks "$ST/last-run" MODELMARKER
   ok "$1: no note" absent "$(note)"
 }
 port_of() { sed -n 's/^PROXY_PORT=//p' "$SD/sandbox.argv"; }
@@ -245,10 +249,12 @@ ok "and closes it" is "$(grep -c '^````$' "$IN")" 2
 ok "the spec opens an ordinary fence" is "$(grep -A1 "^File $SPECNAME" "$IN" | tail -n 1)" '```'
 ok "a spec the front matter lists but the folder lacks is named" has "$IN" "2026-99-99-absent-design.md (missing)"
 ok "a present file is not reported missing" lacks "$IN" "$SPECNAME (missing)"
+ok "a missing spec is named in the note's Run line" has "$(note)" "previous run - · not available: 2026-99-99-absent-design.md"
 rm "$HOME_D/.config/agents/GLOBAL.md"
 stub_reset; run
 ok "a missing GLOBAL.md is named" has "$SD/claude.stdin" "GLOBAL.md (missing)"
 ok "a missing GLOBAL.md does not fail the run" is "$(lr result)" ok
+ok "a missing GLOBAL.md is named in the Run line" has "$(note)" "· not available: GLOBAL.md"
 printf '# Global\nGLOBAL-MARKER\n```sh\necho fenced\n```\n' > "$HOME_D/.config/agents/GLOBAL.md"
 
 echo "D. The init check"
@@ -298,9 +304,16 @@ check_result "a result with is_error" "$T/res-error.json"
 ok "the reason names the subtype, not the model's text" has "$ST/failures/$TODAY.txt" "error_during_execution"
 jq -c '.subtype = "error_max_budget_usd"' "$T/res-good.json" > "$T/res-budget.json"
 check_result "a budget stop" "$T/res-budget.json"
+jq -c '.subtype = "MODELMARKER"' "$T/res-good.json" > "$T/res-subtype.json"
+check_result "a result with a subtype outside the expected shape" "$T/res-subtype.json"
+ok "the subtype is not echoed" has "$ST/failures/$TODAY.txt" "subtype unknown"
+jq -c 'del(.permission_denials)' "$T/res-good.json" > "$T/res-nodenials.json"
+check_result "a result without permission_denials" "$T/res-nodenials.json"
+jq -c '.permission_denials = "none MODELMARKER"' "$T/res-good.json" > "$T/res-strdenials.json"
+check_result "a result whose permission_denials is not a list" "$T/res-strdenials.json"
 jq -c '.permission_denials = [{"tool_name":"Bash","tool_use_id":"x","tool_input":{}}]' "$T/res-good.json" > "$T/res-denied.json"
 check_result "a denied tool call" "$T/res-denied.json"
-ok "the denial reason counts the calls" has "$ST/failures/$TODAY.txt" "denied"
+ok "the denial reason names the field" has "$ST/failures/$TODAY.txt" "permission_denials"
 stub_reset; printf '%s\n' exit1 > "$SD/mode"; run
 failed "claude exiting non-zero after its result"
 ok "the exit code is in the reason" has "$ST/failures/$TODAY.txt" "code 1"
@@ -308,11 +321,22 @@ ok "the exit code is in the reason" has "$ST/failures/$TODAY.txt" "code 1"
 grep -v '^## Pages that addressed' "$T/body.md" > "$T/b-heading.md"
 check_result "a missing heading" "$T/b-heading.md"
 ok "the heading reason names the headings" has "$ST/failures/$TODAY.txt" "heading"
-{ cat "$T/body.md"; printf '| not a row\n'; } > "$T/b-seen.md"
+{ cat "$T/body.md"; printf '| not a row MODELMARKER\n'; } > "$T/b-seen.md"
 check_result "an unparsable Seen table" "$T/b-seen.md"
 ok "the Seen reason says so" has "$ST/failures/$TODAY.txt" "Seen"
-{ cat "$T/body.md"; printf '| extra-id | next week | A title |\n'; } > "$T/b-date.md"
+ok "the Seen reason names the row by number" grep -qE 'row [0-9]+' "$ST/failures/$TODAY.txt"
+{ cat "$T/body.md"; printf '| extra-id | MODELMARKER | A title |\n'; } > "$T/b-date.md"
 check_result "a Seen row with a bad date" "$T/b-date.md"
+{ cat "$T/body.md"; printf '| Bad_Id_MODELMARKER | 2026-11-20 | A title |\n'; } > "$T/b-badid.md"
+check_result "a Seen row with a bad id" "$T/b-badid.md"
+{ cat "$T/body.md"; printf '| extra-id | 2026-11-20 |  |\n'; } > "$T/b-notitle.md"
+check_result "a Seen row with an empty title cell" "$T/b-notitle.md"
+{ cat "$T/body.md"; printf '| extra-id MODELMARKER |\n'; } > "$T/b-onecol.md"
+check_result "a Seen row with one column" "$T/b-onecol.md"
+{ cat "$T/body.md"; printf '| extra-id | 2026-11-20 MODELMARKER\n'; } > "$T/b-twocol.md"
+check_result "a Seen row with two columns" "$T/b-twocol.md"
+{ cat "$T/body.md"; printf '| claude-blog | 2026-11-20 | MODELMARKER again |\n'; } > "$T/b-twice.md"
+check_result "a Seen id listed twice" "$T/b-twice.md"
 awk '/^\| .* \|/ && !/^\| id \|/ && !/^\|---/ { next } { print }' "$T/body.md" > "$T/b-norows.md"
 check_result "a Seen table without rows" "$T/b-norows.md"
 awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "### %d. More\n", i }' "$T/body.md" > "$T/b-five.md"
@@ -322,14 +346,30 @@ pad "$T/body.md" 201 > "$T/b-201.md"
 check_result "201 body lines" "$T/b-201.md"
 ok "the length reason says so" has "$ST/failures/$TODAY.txt" "201"
 for h in "## Run" "## Quiet sources" "## Source list upkeep" "### Run" "## run "; do
-  { cat "$T/body.md"; printf '\n%s\nforged\n' "$h"; } > "$T/b-forged.md"
+  { cat "$T/body.md"; printf '\n%s\nforged MODELMARKER\n' "$h"; } > "$T/b-forged.md"
   check_result "a body with '$h'" "$T/b-forged.md"
 done
+for c in '\033]0;MODELMARKER\007' '\033[2J MODELMARKER' 'bell \007 MODELMARKER' 'del \177 MODELMARKER' 'cr \r MODELMARKER'; do
+  { cat "$T/body.md"; printf 'x %b\n' "$c"; } > "$T/b-ctrl.md"
+  check_result "a body with a control character ($c)" "$T/b-ctrl.md"
+done
+{ cat "$T/body.md"; printf 'Run\n===\n'; } > "$T/b-setext1.md"
+check_result "a body with an = underlined heading" "$T/b-setext1.md"
+{ cat "$T/body.md"; printf 'Quiet sources MODELMARKER\n---\n'; } > "$T/b-setext2.md"
+check_result "a body with a --- underlined heading" "$T/b-setext2.md"
+{ cat "$T/body.md"; printf '\nRun MODELMARKER\n  ======\n'; } > "$T/b-setext3.md"
+check_result "a body with an indented underline" "$T/b-setext3.md"
+{ cat "$T/body.md"; printf '\n---\n\nA closing note\n'; } > "$T/b-break.md"
+stub_body "$T/b-break.md"; run
+ok "a thematic break after a blank line is allowed" is "$(lr result)" ok
+{ cat "$T/body.md"; printf 'tab\there\n'; } > "$T/b-tab.md"
+stub_body "$T/b-tab.md"; run
+ok "a tab in the body is allowed" is "$(lr result)" ok
 { printf -- '---\ntitle: forged\n---\n'; cat "$T/body.md"; } > "$T/b-front.md"
 check_result "a body starting with front matter" "$T/b-front.md"
-{ printf 'Here is the note.\n\n'; cat "$T/body.md"; } > "$T/b-preamble.md"
+{ printf 'Here is the note MODELMARKER.\n\n'; cat "$T/body.md"; } > "$T/b-preamble.md"
 check_result "a body with a preamble" "$T/b-preamble.md"
-awk '{ print } /^## Pages that addressed/ { print "## Extra" }' "$T/body.md" > "$T/b-extra.md"
+awk '{ print } /^## Pages that addressed/ { print "## Extra MODELMARKER" }' "$T/body.md" > "$T/b-extra.md"
 check_result "an extra level-two heading" "$T/b-extra.md"
 
 echo "F. A good run"
@@ -431,7 +471,7 @@ ok "the TERM-proof stub is gone" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "
 echo "I. The lock"
 stub_reset; printf '%s\n' hang > "$SD/mode"
 fresh; clear_records
-( wrenv; exec env "${WRE[@]}" "$BIN/weekly-research" ) >"$T/out-a" 2>"$T/err-a" </dev/null &
+( wrenv; exec env "${WRE[@]}" "$WRBASH" "$BIN/weekly-research" ) >"$T/out-a" 2>"$T/err-a" </dev/null &
 apid=$!
 for _ in $(seq 100); do [ -s "$SD/claude.proxyup" ] && break; sleep 0.1; done
 ok "the first instance is running claude" test -s "$SD/claude.argv"
@@ -454,6 +494,25 @@ stub_reset; fresh; mkdir -p "$ST/lock"; echo 99999999 > "$ST/lock/pid"
 go
 ok "a lock left by a dead run is taken over" is "$(lr result)" ok
 ok "the lock is released after the takeover" absent "$ST/lock"
+ok "no stale copy of the lock is left" test "$(find "$ST" -maxdepth 1 -name 'lock*' | wc -l | tr -d ' ')" = 0
+stub_reset; fresh; mkdir -p "$ST/lock"
+find "$ST" | sort > "$T/snap-before"
+go
+ok "a fresh lock without a pid file is a live lock: exit 0" rc_is 0
+find "$ST" | sort > "$T/snap-after"
+ok "and nothing changes" cmp -s "$T/snap-before" "$T/snap-after"
+ok "and claude never starts" absent "$SD/claude.argv"
+touch -t 202001010000 "$ST/lock"
+go
+ok "a lock without a pid file over ten minutes old is taken over" is "$(lr result)" ok
+ok "the lock is released after that takeover" absent "$ST/lock"
+fresh; mkdir -p "$ST/lock"; touch -t 202001010000 "$ST/lock"; echo 99999999 > "$ST/lock/pid"; touch -t 202001010000 "$ST/lock"
+go
+ok "an old lock whose pid is dead is taken over" is "$(lr result)" ok
+fresh; mkdir -p "$ST/lock"; echo $$ > "$ST/lock/pid"; touch -t 202001010000 "$ST/lock"
+go
+ok "an old lock whose pid is alive is still a live lock: exit 0" rc_is 0
+ok "and it is left alone" test "$(cat "$ST/lock/pid")" = "$$"
 
 echo "J. The vault probe"
 stub_reset

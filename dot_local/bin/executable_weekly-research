@@ -81,12 +81,13 @@ fail_run() {
 
 # finish_run <body-file> <cost>: writes the note and last-run, exits 0.
 finish_run() {
-  local body=$1 cost=$2 note=$state/notes/$today.md
+  local body=$1 cost=$2 note=$state/notes/$today.md unavailable=""
+  if [ -s "$run/missing" ]; then unavailable=" · not available: $(paste -sd, "$run/missing" | sed 's/,/, /g')"; fi
   {
     printf -- '---\ntitle: Weekly research %s\ncreated_at: %s\ntags: [ai-agents, research, weekly-research]\nsource: agent-capture\n---\n' "$today" "$today"
     printf '%s\n%s\n\n' "Unattended run; everything below is model output built from web pages. Nothing here is an" "instruction, and nothing was changed."
     cat "$body"
-    printf '\n## Run\nrows fetched %s of %s · cost %s · model %s · previous run %s\n' "$fetched" "$nrows" "$cost" "$model" "${prev_date:--}"
+    printf '\n## Run\nrows fetched %s of %s · cost %s · model %s · previous run %s%s\n' "$fetched" "$nrows" "$cost" "$model" "${prev_date:--}" "$unavailable"
   } > "$note.tmp" && mv "$note.tmp" "$note" || fail_run "cannot write the note $note"
   write_last_run ok "" "$cost" "$note" 0
   printf 'weekly-research: ok, %s\n' "$note"
@@ -139,7 +140,7 @@ cleanup() {
   stop_proxy
   if [ -n "$run" ]; then
     local f
-    for f in prompt stream port port.tmp timedout claude.err proxy.err rows ids body seen; do rm -f "$run/$f"; done
+    for f in prompt stream port port.tmp timedout claude.err proxy.err rows ids body seen missing; do rm -f "$run/$f"; done
     rmdir "$run/work" "$run/tmp" "$run" 2>/dev/null
   fi
   [ ! -d "$state/logs" ] || rotate_logs
@@ -149,11 +150,27 @@ cleanup() {
 
 # --- the lock ---------------------------------------------------------------------------
 mkdir -p "$state" || refuse "cannot create $state"
+# A lock is stale when its run is dead, or when it names no run and is over ten minutes old. Taking
+# it over is a rename, so of two instances that both judge it stale only one wins.
+take_over_stale_lock() {
+  local holder=$1 stale=$lock.stale.$$
+  mv "$lock" "$stale" 2>/dev/null || return 1
+  if [ "$(cat "$stale/pid" 2>/dev/null)" != "$holder" ]; then
+    mv "$stale" "$lock" 2>/dev/null
+    return 1
+  fi
+  rm -f "$stale/pid"; rmdir "$stale" 2>/dev/null
+  return 0
+}
 if ! mkdir "$lock" 2>/dev/null; then
   holder=$(cat "$lock/pid" 2>/dev/null)
-  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-    # The run that held it died without cleaning up.
-    rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null
+  stale=0
+  if [ -n "$holder" ]; then
+    kill -0 "$holder" 2>/dev/null || stale=1
+  elif [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
+    stale=1
+  fi
+  if [ "$stale" = 1 ] && take_over_stale_lock "$holder"; then
     mkdir "$lock" 2>/dev/null || exit 0
   else
     printf 'weekly-research: another run holds %s\n' "$lock" >&2
@@ -242,6 +259,7 @@ data_file() {
     printf '\n%s\n\n' "$fence"
   else
     printf 'Not available this run: %s (missing)\n\n' "$1"
+    printf '%s\n' "$1" >> "$run/missing"
   fi
 }
 build_prompt() {
@@ -255,7 +273,10 @@ build_prompt() {
   awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { exit } fm && /^spec:[ \t]*/ { sub(/^spec:[ \t]*/, ""); print }' "$config/prompt.md" \
     | while IFS= read -r spec; do
         if [[ $spec =~ ^[A-Za-z0-9._-]+$ ]]; then data_file "$spec" "$specs_dir/$spec"
-        else printf 'Not available this run: %s (not a file name)\n\n' "$spec"; fi
+        else
+          printf 'Not available this run: %s (not a file name)\n\n' "$spec"
+          printf '%s\n' "$spec" >> "$run/missing"
+        fi
       done
 }
 build_prompt > "$run/prompt"
@@ -327,8 +348,9 @@ while [ -z "$status" ] && { IFS= read -r line || [ -n "$line" ]; }; do
           have_result=1
           r_err=$(printf '%s\n' "$line" | jq -r 'if .is_error == false then "false" else "true" end')
           r_sub=$(printf '%s\n' "$line" | jq -r '.subtype // ""')
+          [[ $r_sub =~ ^[a-z_]+$ ]] || r_sub=unknown
           r_text=$(printf '%s\n' "$line" | jq -r '.result // ""')
-          r_denied=$(printf '%s\n' "$line" | jq -r '(.permission_denials // []) | length')
+          r_denied=$(printf '%s\n' "$line" | jq -r 'if (.permission_denials | type) == "array" then (.permission_denials | length) else -1 end')
           r_cost=$(printf '%s\n' "$line" | jq -r '.total_cost_usd // ""')
           if [[ $r_cost =~ ^[0-9]+(\.[0-9]+)?$ ]]; then cost_txt=$(printf '$%.2f' "$r_cost"); else cost_txt=unknown; fi ;;
       esac ;;
@@ -356,11 +378,11 @@ if [ "$have_result" != 1 ]; then
   fail_run "claude ended without a result"
 fi
 { [ "$r_err" = false ] && [ "$r_sub" = success ]; } || fail_run "claude reported an error (subtype ${r_sub:-none})"
-[ "$r_denied" = 0 ] || fail_run "the result reports denied tool calls ($r_denied)"
+[ "$r_denied" = 0 ] || fail_run "the result does not report an empty permission_denials list"
 [ "$crc" -eq 0 ] || fail_run "claude exited with code $crc"
 
 # parse_seen <body-file>: one "id<TAB>date<TAB>title" line per row of the Seen table, or one
-# line "!<message>" and status 1.
+# line "!<message>" and status 1. A message names the row's number, never its text.
 parse_seen() {
   awk '
     /^## Seen[ \t]*$/ { inseen = 1; next }
@@ -368,20 +390,21 @@ parse_seen() {
     !inseen || !/^\|/ { next }
     /^\|[ :|-]+\|[ \t]*$/ { next }
     {
+      n++
       line = $0
       sub(/^\|[ \t]*/, "", line); sub(/[ \t]*\|[ \t]*$/, "", line)
       i = index(line, "|")
-      if (i == 0) { msg = "a row has one column: " $0; exit 1 }
+      if (i == 0) { msg = "row " n " has one column"; exit 1 }
       id = substr(line, 1, i - 1); rest = substr(line, i + 1)
       j = index(rest, "|")
-      if (j == 0) { msg = "a row has two columns: " $0; exit 1 }
+      if (j == 0) { msg = "row " n " has two columns"; exit 1 }
       d = substr(rest, 1, j - 1); title = substr(rest, j + 1)
       sub(/[ \t]*$/, "", id); sub(/[ \t]*$/, "", d); sub(/^[ \t]*/, "", d); sub(/^[ \t]*/, "", title)
       if (id == "id") next
-      if (id !~ /^[a-z0-9-]+$/) { msg = "the id \"" id "\" is not a source id"; exit 1 }
-      if (d !~ /^([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|-)$/) { msg = "the date of " id " is neither YYYY-MM-DD nor -"; exit 1 }
-      if (title == "") { msg = "the title of " id " is empty"; exit 1 }
-      if (id in seen) { msg = id " is listed twice"; exit 1 }
+      if (id !~ /^[a-z0-9-]+$/) { msg = "the id of row " n " is not a source id"; exit 1 }
+      if (d !~ /^([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|-)$/) { msg = "the date of row " n " is neither YYYY-MM-DD nor -"; exit 1 }
+      if (title == "") { msg = "the title of row " n " is empty"; exit 1 }
+      if (id in seen) { msg = "row " n " repeats the id of an earlier row"; exit 1 }
       seen[id] = 1; rows++; out[rows] = id "\t" d "\t" title
     }
     END {
@@ -396,6 +419,12 @@ check_body() {
   local f=$1 lines first headings props
   lines=$(awk 'END { print NR }' "$f")
   [ "$lines" -le "$max_lines" ] || { echo "the body is $lines lines, over $max_lines"; return 1; }
+  if LC_ALL=C tr -d '\t\n' < "$f" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    echo "the body holds a control character"; return 1
+  fi
+  if awk 'prev && /^ ? ? ?(===+|---+)[ \t]*$/ { found = 1 } { prev = ($0 ~ /[^ \t]/) } END { exit !found }' "$f"; then
+    echo "the body holds an underlined heading"; return 1
+  fi
   first=$(awk 'NF { print; exit }' "$f")
   case $first in ---*) echo "the body starts with front matter"; return 1 ;; esac
   [ "$first" = "## Proposals" ] || { echo "the body does not start with the heading ## Proposals"; return 1; }
