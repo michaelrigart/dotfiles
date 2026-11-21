@@ -85,10 +85,10 @@ check "loads exactly the listed keys, in order: never michael_rsa, a borg key or
 check "state directory is mode 700" "$(stat -f %Lp "$H/.local/state/ssh-agent")" "700"
 
 fresh_home
-rm "$H/.ssh/viumore_rsa"
+rm "$H/.ssh/michael"
 runit STUB_AGENT_LIFE=1 STUB_AGENT_RC=7
 check "exits with the agent's status" "$RC" "7"
-check "a listed key with no file is skipped" "$(adds | tr '\n' ' ')" "michael "
+check "a listed key with no file is skipped, and the keys after it still load" "$(adds | tr '\n' ' ')" "viumore_rsa "
 if [ -e "$SOCK" ] || [ -L "$SOCK" ]; then _fail "socket is removed after the agent exits" "still there"; else _pass "socket is removed after the agent exits"; fi
 if [ -e "$T/xdg" ]; then _fail "XDG_STATE_HOME is ignored" "$(ls -A "$T/xdg")"; else _pass "XDG_STATE_HOME is ignored"; fi
 

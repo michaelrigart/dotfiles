@@ -3,10 +3,11 @@
 **Status:** Implemented — PR #40 (https://github.com/michaelrigart/dotfiles/pull/40)
 **Signed off:** Michael, 2026-11-21, with the key list as proposed.
 **Amended:** 2026-11-21, after the final review: AddKeysToAgent step, the agent-contents probe, and the step corrections listed in the PR.
-**Amended again:** 2026-11-21, after merge (branch `fix/ssh-agent-drop-michael-rsa`): `michael_rsa`
-is dropped from the key list. On fenrir it did not load (`could not load key michael_rsa` in
-`error.log`), no host in the ssh config names it, and github.com, gitlab.com and
-ssh.dev.azure.com authenticated through the native agent with `michael` and `viumore_rsa` alone.
+**Amended again:** 2026-11-21, after merge (PR #44,
+https://github.com/michaelrigart/dotfiles/pull/44): `michael_rsa` is dropped from the key list. On
+fenrir it did not load (`could not load key michael_rsa` in `error.log`), no host in the ssh
+config names it, and github.com, gitlab.com and ssh.dev.azure.com authenticated through the native
+agent with `michael` and `viumore_rsa` alone.
 Loading it would only widen what agents can use without a prompt. The key file, its 1Password item
 and the ssh config are unchanged; removing the key is Michael's call.
 **Size:** about 120 lines of non-test code: one LaunchAgent plist (mostly its header comment), one
