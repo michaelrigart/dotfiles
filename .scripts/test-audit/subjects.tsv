@@ -37,6 +37,7 @@ Library/Application Support/Claude/modify_private_claude_desktop_config.json	bas
 Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl	data	codex-daemon	codex-daemon
 Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	codex-memory-share	codex-memory-share
 Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	herdr-phase	herdr-phase
+Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl	data	ssh-agent-run	ssh-agent-run
 Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl	data	weekly-research-schedule	weekly-research-schedule
 dot_agents/skills/design-records/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills
 dot_agents/skills/merge-request/SKILL.md	prose	agent-skills	agent-skills
@@ -158,6 +159,7 @@ dot_local/bin/executable_ha-mcp	sh	ha-mcp	ha-mcp,hook-path
 dot_local/bin/executable_merge-state	py	merge-state	merge-state,hook-path
 dot_local/bin/executable_review	bash	review	review,hook-path
 dot_local/bin/executable_sdd-clean	bash	sdd-clean	sdd-clean,hook-path
+dot_local/bin/executable_ssh-agent-run	bash	ssh-agent-run	ssh-agent-run
 dot_local/bin/executable_ssh-sandbox-proxy	bash	ssh-sandbox-proxy	ssh-sandbox-proxy,hook-path
 dot_local/bin/executable_unifi-network-mcp	sh	unifi-network-mcp	unifi-network-mcp,hook-path
 dot_local/bin/executable_weekly-research	bash	weekly-research	weekly-research,live-weekly-research,hook-path

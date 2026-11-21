@@ -74,6 +74,8 @@ missing codex-code-mode-host  dot_local/bin/executable_codex-daemon
 missing codex-config          dot_codex/modify_private_config.toml
 missing codex-config          dot_codex/modify_private_hooks.json
 missing codex-memory-share    dot_local/bin/executable_codex-memory-share
+missing ssh-agent-run          dot_local/bin/executable_ssh-agent-run
+missing ssh-agent-run          Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl
 missing dev                   dot_config/zsh/functions
 missing dev                   dot_config/herdr/executable_layout.sh
 missing dev                   dot_config/herdr/executable_tab-goto.sh
