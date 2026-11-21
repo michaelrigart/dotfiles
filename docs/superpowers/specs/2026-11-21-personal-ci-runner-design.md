@@ -125,7 +125,7 @@ Michael creates the instance `ci` from it.
   as what it guarantees.
 - `networkOpts.hostLoopback: false`.
 - A provision script (system mode). Lima runs it on every boot, so **every step is idempotent**
-  and nothing it writes replaces a file that exists. It:
+  and a file is replaced only when its content differs, `config.toml` never. It:
   - installs Docker Engine and `gitlab-runner` from their official apt repositories;
   - enables unattended upgrades with the Docker and GitLab Runner origins added to Debian's
     security origin (by default neither would ever update);
@@ -136,12 +136,13 @@ Michael creates the instance `ci` from it.
   - installs a native nftables table with its own forward-hook chain (independent of Docker's
     firewall backend and of Docker restarts) that drops packets forwarded **out through the
     VM's uplink interface** to `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`
-    and `169.254.0.0/16`. A job reaches the internet but not the home LAN, NetBird peers, the
-    Mac or Lima's resolver; traffic between a job and its services stays on Docker's bridge and
-    is untouched. The table is loaded by its own enabled systemd unit at boot, not by the
-    provision script, and a drop-in makes `gitlab-runner.service` require that unit and start
-    after it: with the firewall missing or failing to load, the runner does not start and takes
-    no job;
+    and `169.254.0.0/16`, and drops forwarded IPv6 out through the uplink too. A job reaches
+    the internet but not the home LAN, NetBird peers, the Mac or Lima's resolver; traffic between
+    a job and its services stays on Docker's bridge and is untouched. The table is loaded by its
+    own enabled systemd unit at boot, not by the provision script, which only reloads the unit in
+    place when its files change, and a drop-in makes `gitlab-runner.service` require that unit
+    and start after it: with the firewall missing or failing to load, the runner does not start
+    and takes no job;
   - installs a weekly timer, at a quiet hour, that stops the `gitlab-runner` service, removes
     every remaining container, runs `docker system prune --all --force` and
     `docker volume prune --all --force`, fails loudly (non-zero unit) if any volume is left,
@@ -149,7 +150,8 @@ Michael creates the instance `ci` from it.
     volume prune is what empties the runner's caches and build directories: they are **named**
     volumes, which `system prune --volumes` leaves alone, and stopping the runner first means
     no job holds one. A job running at that moment fails and is retried by hand; that is the
-    price of a real bound;
+    price of a real bound. The timer catches up a run missed while the VM was off at the next
+    boot (`Persistent`), after provisioning has finished;
   - installs `/usr/local/sbin/ci-runner-register`, which reads the token from the terminal
     without echo and runs `gitlab-runner register --non-interactive` with the pinned settings
     of section 3.
@@ -292,9 +294,15 @@ a hole in the VM boundary behind it.
     `hostLoopback`;
   - no port the VM listens on appears on the Mac (`lsof -iTCP -sTCP:LISTEN` on hercules shows
     none of Lima's forwards beyond its own ssh port);
+  - after each restart `sudo grep 'Exiting with code' /var/log/cloud-init-output.log | tail -1`
+    shows `code 0`, since Lima reports a failed provision nowhere else;
   - after each restart the firewall table is loaded and `gitlab-runner` is active; with the
-    firewall unit made to fail (its rules file moved aside) and the VM restarted,
-    `gitlab-runner` is not running; the file is then restored;
+    firewall unit made to fail by a drop-in provisioning does not repair,
+    `/etc/systemd/system/ci-runner-firewall.service.d/fail.conf` holding `[Service]` and
+    `ExecStartPre=/bin/false`, and the VM stopped and started (`limactl stop ci`, then
+    `limactl start ci`), `gitlab-runner` is not running (inactive), `nft list table inet ci_runner`
+    fails and the guest's `/var/log/cloud-init-output.log` shows `Exiting with code 1`; the
+    drop-in is then removed, the VM restarted and both are active again;
   - each listener kept in step 1 is probed on hercules' LAN address and the result noted: these
     are the services section 4 says an escape reaches, so each must be one Michael accepts.
 - *The container layer, as one temporary job on a branch of curato* (removed before merge):
@@ -302,6 +310,12 @@ a hole in the VM boundary behind it.
   `/sys/fs/cgroup/cpu.max` and `memory.max` show section 3's limits (`nproc` would not: it
   ignores a CPU quota in these images); a connection to hercules' LAN address on port 22 times
   out; `gitlab.com` resolves and a connection to port 443 succeeds.
+
+A later change to the template does not reach the running VM by itself: `limactl create` copies
+it into the instance as `$LIMA_HOME/ci/lima.yaml`, and each start provisions from that copy.
+After `chezmoi apply`, `limactl stop ci`, copy `~/.config/ci-runner/lima.yaml` over that file,
+`limactl start ci`, then rerun the VM-boundary checks above; the disk, and so the registration,
+survive. `plain` is fixed when the instance is created and cannot change this way.
 
 Then one full pipeline: `lint`, `test`, `cli`, `seed_smoke` and `a11y` pass on the runner, with
 `test` and `seed_smoke` running at the same time (which also shows `concurrent = 2` took), and
