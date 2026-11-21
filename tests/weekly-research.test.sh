@@ -74,6 +74,8 @@ case "$(cat "$D/mode")" in
   steal) rm -f "$(cat "$D/lockpath")"; ln -s 12345 "$(cat "$D/lockpath")"; cat "$D/init.json"; echo "$asst"; cat "$D/result.json" ;;
   hang) cat "$D/init.json"; echo "$asst"; exec sleep 30 ;;
   stubborn) trap '' TERM; cat "$D/init.json"; echo "$asst"; while [ "$SECONDS" -lt 40 ]; do sleep 0.2; done ;;
+  roinbox) chmod 555 "$(cat "$D/inbox-path")"; cat "$D/init.json"; echo "$asst"; cat "$D/result.json" ;;
+  lockfail) chmod 555 "$(cat "$D/inbox-path")"; echo "stub: cannot start" >&2; exit 3 ;;
   badinit) cat "$D/init.json"; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done; : > "$D/survived"; cat "$D/result.json" ;;
 esac
 EOF
@@ -138,7 +140,8 @@ wrenv() { WRE=(HOME="$HOME_D" WEEKLY_RESEARCH_CONFIG="$CFGD" WEEKLY_RESEARCH_STA
 WRBASH=/bin/bash
 [ -x "$WRBASH" ] || { echo "no $WRBASH to run the wrapper under" >&2; exit 2; }
 wr() { wrenv; env "${WRE[@]}" "$@" "$WRBASH" "$BIN/weekly-research"; }
-fresh() { n=$((n + 1)); ST="$T/state-$n"; }
+wra() { wrenv; env "${WRE[@]}" "$WRBASH" "$BIN/weekly-research" "$@"; }
+fresh() { n=$((n + 1)); ST="$T/state-$n"; rm -f "$INBOX"/*.md; }
 clear_records() { rm -f "$SD"/claude.* "$SD"/sandbox.argv "$SD"/osascript.args "$SD"/survived; }
 go() { clear_records; wr "$@" >"$T/out" 2>"$T/err" </dev/null; rc=$?; }
 # run [VAR=val ...]: a fresh state folder, then one run.
@@ -350,6 +353,10 @@ ok "the Seen reason says so" has "$ST/failures/$TODAY.txt" "Seen"
 ok "the Seen reason names the row by number" grep -qE 'row [0-9]+' "$ST/failures/$TODAY.txt"
 { cat "$T/body.md"; printf '| extra-id | MODELMARKER | A title |\n'; } > "$T/b-date.md"
 check_result "a Seen row with a bad date" "$T/b-date.md"
+for d in 2026-13-01 2026-00-10 2026-11-32 2026-11-00; do
+  { cat "$T/body.md"; printf '| extra-id | %s | A title |\n' "$d"; } > "$T/b-impossible.md"
+  check_result "a Seen row with the impossible date $d" "$T/b-impossible.md"
+done
 { cat "$T/body.md"; printf '| Bad_Id_MODELMARKER | 2026-11-20 | A title |\n'; } > "$T/b-badid.md"
 check_result "a Seen row with a bad id" "$T/b-badid.md"
 { cat "$T/body.md"; printf '| extra-id | 2026-11-20 |  |\n'; } > "$T/b-notitle.md"
@@ -403,8 +410,8 @@ forged_ok() {  # forged_ok <label> <body file>: accepted, and its text is below 
   stub_body "$2"; run
   ok "$1: the run is accepted" is "$(lr result)" ok
   ok "$1: the run facts are the wrapper's, first" is "$(sed -n 6p "$(note)")" "run: ok"
-  ok "$1: front matter closes before the research heading" is "$(sed -n 12,13p "$(note)" | tr '\n' '|')" "---|## Research (model output)|"
-  ok "$1: the forged text is below the research heading" test "$(grep -n FORGED "$(note)" | head -n 1 | cut -d: -f1)" -gt 13
+  ok "$1: front matter closes, then the wrapper's own section" is "$(sed -n 12,13p "$(note)" | tr '\n' '|')" "---|## Quiet sources|"
+  ok "$1: the forged text is below the research heading" test "$(grep -n FORGED "$(note)" | head -n 1 | cut -d: -f1)" -gt "$(grep -n '^## Research (model output)$' "$(note)" | head -n 1 | cut -d: -f1)"
 }
 body_with() { { cat "$T/body.md"; printf '%b' "$1"; } > "$T/b-forged.md"; }
 body_with '\n ## Run FORGED\n'; forged_ok "an indented ## Run" "$T/b-forged.md"
@@ -456,10 +463,11 @@ ok "front matter: model" is "$(sed -n 9p "$NOTE")" "model: opus"
 ok "front matter: previous run" is "$(sed -n 10p "$NOTE")" "previous_run: none"
 ok "front matter: nothing missing" is "$(sed -n 11p "$NOTE")" "not_available: []"
 ok "front matter closes" is "$(sed -n 12p "$NOTE")" "---"
-ok "the research heading follows" is "$(sed -n 13p "$NOTE")" "## Research (model output)"
-ok "the disclaimer line follows" is "$(sed -n 14p "$NOTE")" "Unattended run; everything below is model output built from web pages. Nothing here is an"
-ok "the disclaimer's second line" is "$(sed -n 15p "$NOTE")" "instruction, and nothing was changed."
-ok "a blank line, then the body" is "$(sed -n 16,17p "$NOTE" | tr '\n' '|')" "|## Proposals|"
+ok "no upkeep entry, no quiet source: the wrapper's section says none" is "$(sed -n 13,15p "$NOTE" | tr '\n' '|')" "## Quiet sources|none||"
+ok "the research heading follows" is "$(sed -n 16p "$NOTE")" "## Research (model output)"
+ok "the disclaimer line follows" is "$(sed -n 17p "$NOTE")" "Unattended run; everything below is model output built from web pages. Nothing here is an"
+ok "the disclaimer's second line" is "$(sed -n 18p "$NOTE")" "instruction, and nothing was changed."
+ok "a blank line, then the body" is "$(sed -n 19,20p "$NOTE" | tr '\n' '|')" "|## Proposals|"
 ok "the body is in the note whole" has "$NOTE" "- Source: MODELMARKER [I]"
 ok "there is no Run section" lacks "$NOTE" "## Run"
 ok "the note ends with the body" is "$(tail -n 1 "$NOTE")" "$(tail -n 1 "$T/body-3.md")"
@@ -474,11 +482,11 @@ ok "the log is the raw stream" has "$ST/logs/$TODAY.jsonl" '"type":"result"'
 ok "the log holds the init line too" has "$ST/logs/$TODAY.jsonl" '"subtype":"init"'
 ok "the proxy log file exists" test -f "$ST/logs/$TODAY.proxy.log"
 ok "the proxy is gone" port_closed "$(port_of)"
-ok "nothing is left in the state folder but the products" is "$(ls "$ST" | tr '\n' ' ')" "failures last-run logs notes "
+ok "nothing is left in the state folder but the products" is "$(ls "$ST" | tr '\n' ' ')" "failures last-run logs notes state.tsv "
 ok "no failure record from a good run" absent "$ST/failures/$TODAY.txt"
 ok "the vault probe file holds the date" is "$(cat "$INBOX/.weekly-research-last-run")" "$TODAY"
 ok "the probe ran before claude started" is "$(cat "$SD/claude.probe")" "$TODAY"
-ok "the vault inbox gets no note (Task 4's)" test "$(ls "$INBOX" | wc -l | tr -d ' ')" = 0
+ok "the body holds a proposal, so the inbox gets the note whole" cmp -s "$NOTE" "$INBOX/$TODAY-weekly-research.md"
 ok "the note is private" is "$(stat -f %Lp "$NOTE" 2>/dev/null || stat -c %a "$NOTE")" 600
 
 jq -c 'del(.total_cost_usd)' "$T/res-good.json" > "$T/res-nocost.json"
@@ -664,6 +672,297 @@ stub_reset; PATHW=$PATH_NOCLAUDE run
 ok "osascript is not called for a failure that is not the vault" absent "$SD/osascript.args"
 PATHW=$PATHV
 
+echo "L. State, quiet and broken sources, upkeep"
+mkrows() { cat > "$T/rows"; }
+mklist() { local i; for i in $(seq "$1"); do printf 'r%s\tvendor\thttps://example.com/%s\n' "$i" "$i"; done; }
+mklist 10 > "$T/list-10"; mkcfg cfg-10 "$T/list-10"
+mklist 12 > "$T/list-12"; mkcfg cfg-12 "$T/list-12"
+# sbody <proposals>: a valid body whose Seen rows are the stdin lines: "id date title", or a raw table row starting with |.
+sbody() {
+  local i line id d t
+  printf '## Proposals\n'
+  if [ "$1" = 0 ]; then printf 'None.\n\n'; else
+    for i in $(seq "$1"); do printf '### %s. Try a thing\n- Source: MODELMARKER [I]\n\n' "$i"; done
+  fi
+  printf '## Evidence on settled questions\nNone.\n\n## New this week, no change proposed\nNone.\n\n## Pages that addressed the agent\nNone.\n\n'
+  printf '## Seen\n| id | newest item date | newest item title, or fetch failed |\n|---|---|---|\n'
+  while IFS= read -r line; do
+    case $line in
+      '|'*) printf '%s\n' "$line" ;;
+      *) read -r id d t <<< "$line"; printf '| %s | %s | %s |\n' "$id" "$d" "$t" ;;
+    esac
+  done
+}
+# fill <from> <to> <date>: Seen rows r<from>..r<to>, all with that item date.
+fill() { local i; for i in $(seq "$1" "$2"); do printf 'r%s %s Item %s\n' "$i" "$3" "$i"; done; }
+# srun <today> <proposals> [VAR=val ...]: the rows on stdin are the Seen table of one run on that day, over cfg-10
+# (or $SCFG), in the current state folder. SMODE picks the stub's mode.
+SCFG=cfg-10; SMODE=ok
+srun() {
+  TODAY=$1; local p=$2; shift 2
+  sbody "$p" < "$T/rows" > "$T/sb.md"; stub_reset; stub_body "$T/sb.md"; printf '%s\n' "$SMODE" > "$SD/mode"
+  CFGD="$T/$SCFG" go "$@"
+}
+stf() { awk -F'\t' -v i="$1" -v f="$2" '$1 == i { print $f }' "$ST/state.tsv"; }
+strow() { grep "^$1$(printf '\t')" "$ST/state.tsv"; }
+inbox_notes() { ls "$INBOX" | wc -l | tr -d ' '; }
+upkeep_line() { sed -n 's/^Propose removing or repairing: //p' "$(note)"; }
+
+fresh; mkdir -p "$ST"
+printf 'r1\t2026-11-01\t2026-10-01\tOld one\t2\t-\t-\ngone\t2026-11-01\t2026-10-01\tGone row\t0\t-\t-\nr8\t2026-11-01\t2026-10-30\tx\033[2Jy\t0\t-\t-\n' > "$ST/state.tsv"
+LONG=$(printf 'é%.0s' $(seq 250))
+{ fill 1 1 2026-11-20 | sed 's/Item 1/Title one/'
+  printf 'r2 - Undated page\n'
+  printf '| r3 | 2026-11-19 | a | b\tc |\n'
+  fill 4 5 2026-11-18
+  printf 'r6 2026-11-17 %s\n' "$LONG"
+  printf 'r7 - fetch failed\nr10 - fetch failed\nzzz 2026-11-20 Unknown source\n'; } | mkrows; srun 2026-11-23 1
+ok "a run with six of ten rows fetched passes the floor" is "$(lr result)" ok
+ok "a fetched, dated row moves: checked, item, title, no failures" is "$(strow r1)" "$(printf 'r1\t2026-11-23\t2026-11-20\tTitle one\t0\t-\t-')"
+ok "a fetched, undated row moves too and stores the date -" is "$(strow r2)" "$(printf 'r2\t2026-11-23\t-\tUndated page\t0\t-\t-')"
+ok "a title's | and tab become spaces" is "$(strow r3)" "$(printf 'r3\t2026-11-23\t2026-11-19\ta   b c\t0\t-\t-')"
+ok "a title is cut at 200 characters (not bytes)" is "$(stf r6 4 | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')" 201
+ok "a fetch failed row keeps the rest and counts a failure" is "$(strow r7)" "$(printf 'r7\t-\t-\t-\t1\t-\t-')"
+ok "a row the table omits counts a failure and keeps its old item, its title cleaned of an escape character" is "$(strow r8)" "$(printf 'r8\t2026-11-01\t2026-10-30\tx [2Jy\t1\t-\t-')"
+ok "another omitted row counts a failure" is "$(strow r9)" "$(printf 'r9\t-\t-\t-\t1\t-\t-')"
+ok "an id the list does not hold is ignored" is "$(grep -c zzz "$ST/state.tsv")" 0
+ok "a row the list dropped is gone" is "$(grep -c '^gone	' "$ST/state.tsv")" 0
+ok "the state has one line per listed row" is "$(wc -l < "$ST/state.tsv" | tr -d ' ')" 10
+ok "every line has seven fields" is "$(awk -F'\t' 'NF != 7' "$ST/state.tsv" | wc -l | tr -d ' ')" 0
+ok "no escape character reaches the state" bash -c '! grep -q "$(printf "\033")" "$0"' "$ST/state.tsv"
+ok "the state file is private" is "$(stat -f %Lp "$ST/state.tsv" 2>/dev/null || stat -c %a "$ST/state.tsv")" 600
+ok "no temp file of the state is left" absent "$ST/state.tsv.tmp"
+ok "the first run of a source has no quiet mark" is "$(stf r1 6)$(stf r1 7)" "--"
+
+{ fill 1 1 2026-11-27 | sed 's/Item 1/New one/'
+  printf 'r2 - fetch failed\n'; fill 3 6 2026-11-26; fill 7 7 2026-11-25; printf 'r10 - fetch failed\n'; } | mkrows; srun 2026-11-30 1
+ok "the second run passes" is "$(lr result)" ok
+ok "a newer item replaces the old one" is "$(strow r1)" "$(printf 'r1\t2026-11-30\t2026-11-27\tNew one\t0\t-\t-')"
+ok "a fetch failed row keeps its watermark and counts" is "$(strow r2)" "$(printf 'r2\t2026-11-23\t-\tUndated page\t1\t-\t-')"
+ok "a fetched row resets its failures" is "$(stf r7 5)" 0
+ok "an omitted row counts again" is "$(stf r8 5)$(stf r9 5)" 22
+ok "a failed fetch counts on" is "$(stf r10 5)" 2
+cp "$ST/state.tsv" "$T/state-before"
+
+stub_reset; cp "$T/res-denied.json" "$SD/result.json"; TODAY=2026-12-07; CFGD="$T/cfg-10" go
+failed "a run with a denied tool call"
+ok "a failed run leaves the state byte-identical" cmp -s "$ST/state.tsv" "$T/state-before"
+{ fill 1 4 2026-12-06; for i in 5 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-08 1
+failed "four of ten rows fetched"
+ok "the floor reason says so" has "$ST/failures/$TODAY.txt" "only 4 of 10"
+ok "the floor leaves the state byte-identical" cmp -s "$ST/state.tsv" "$T/state-before"
+ok "the floor leaves no temp file" absent "$ST/state.tsv.tmp"
+{ fill 1 5 2026-12-06; for i in 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-09 1
+ok "five of ten rows fetched pass" is "$(lr result)" ok
+ok "and the state moved" is "$(stf r1 2)" 2026-12-09
+{ for i in 1 2 3 4 5; do printf 'r%s - Undated %s\n' "$i" "$i"; done; for i in 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-10 1
+ok "five undated fetched rows of ten pass" is "$(lr result)" ok
+fresh; { for i in 1 2 3 4 5 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-10 1
+failed "no row fetched"
+ok "a failed first run writes no state file" absent "$ST/state.tsv"
+
+fresh
+{ fill 1 1 2026-05-24; fill 2 2 2026-05-25; printf 'r3 - Undated\n'; fill 4 10 2026-11-20; } | mkrows; srun 2026-11-23 0
+ok "quiet at 183 days: the upkeep entry names it" is "$(upkeep_line)" "r1 (quiet)"
+ok "the upkeep section is above the quiet one and the research heading" is "$(grep -n '^## ' "$(note)" | sed -n 1,3p | cut -d: -f2 | tr '\n' '|')" "## Source list upkeep|## Quiet sources|## Research (model output)|"
+ok "the quiet section names it with its date" has "$(note)" "- r1 — newest item 2026-05-24"
+ok "not quiet at 182 days" lacks "$(note)" "- r2 —"
+ok "an undated row is never quiet" lacks "$(note)" "r3 ("
+ok "only the one quiet source is listed" is "$(grep -c '^- r[0-9]* — ' "$(note)")" 1
+ok "the section lines are only ids, dates and fixed words" is "$(sed -n '/^## Source list upkeep/,/^## Research/p' "$(note)" | grep -Evc '^(## |Propose removing or repairing: [a-z0-9() ,-]*$|- r[0-9]+ — newest item [0-9-]+$|$)')" 0
+ok "the quiet mark is today's date in quiet_reported" is "$(stf r1 6)" 2026-11-23
+ok "a row that is not quiet has no mark" is "$(stf r2 6)" -
+ok "the upkeep entry sends the note to the vault, though it holds no proposal" cmp -s "$(note)" "$INBOX/2026-11-23-weekly-research.md"
+{ fill 1 1 2026-05-24; fill 2 2 2026-05-25; printf 'r3 - Undated\n'; fill 4 10 2026-11-20; } | mkrows; srun 2026-11-24 0
+ok "a quiet source is raised once: only the newly quiet one is named" is "$(upkeep_line)" "r2 (quiet)"
+ok "the first one keeps its mark" is "$(stf r1 6)" 2026-11-23
+ok "both stay listed under Quiet sources" is "$(grep '^- r[0-9]* — ' "$(note)" | tr '\n' '|')" "- r1 — newest item 2026-05-24|- r2 — newest item 2026-05-25|"
+{ fill 1 1 2026-11-20; fill 2 2 2026-05-25; printf 'r3 - Undated\n'; fill 4 10 2026-11-20; } | mkrows; srun 2026-11-25 0
+ok "a new item clears the quiet mark" is "$(stf r1 6)" -
+ok "and the source leaves Quiet sources" is "$(grep '^- r[0-9]* — ' "$(note)" | tr '\n' '|')" "- r2 — newest item 2026-05-25|"
+ok "a run with nothing new to report has no upkeep section" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+fresh
+{ fill 1 1 2026-04-01; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 0
+{ fill 1 1 2026-04-15; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-24 0
+ok "a newer item clears the mark even when the source is still quiet, so it is raised again" is "$(upkeep_line)" "r1 (quiet)"
+ok "and the mark carries the new date" is "$(stf r1 6)" 2026-11-24
+
+fresh
+for d in 02 03 04; do
+  fill 1 4 2026-11-01 | { cat; printf 'r6 - Six\n'; fill 7 10 2026-11-01; } | mkrows; srun "2026-11-$d" 0
+  ok "failed fetch $d of three: nothing is raised" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+done
+ok "three failures in a row count three" is "$(stf r5 5)" 3
+ok "and the row is not broken yet" is "$(stf r5 7)" -
+fill 1 4 2026-11-01 | { cat; printf 'r6 - Six\n'; fill 7 10 2026-11-01; } | mkrows; srun 2026-11-05 0
+ok "the fourth raises it" is "$(upkeep_line)" "r5 (broken)"
+ok "the broken mark is the day's date" is "$(stf r5 7)" 2026-11-05
+ok "the broken source is not listed as quiet" lacks "$(note)" "- r5 —"
+fill 1 4 2026-11-01 | { cat; printf 'r6 - Six\n'; fill 7 10 2026-11-01; } | mkrows; srun 2026-11-06 0
+ok "a broken source is reported once" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+ok "its failures keep counting" is "$(stf r5 5)" 5
+fill 1 10 2026-11-01 | mkrows; srun 2026-11-07 0
+ok "a fetch resets the failures" is "$(stf r5 5)" 0
+ok "and clears the broken mark" is "$(stf r5 7)" -
+for d in 08 09 10; do
+  fill 1 4 2026-11-01 | { cat; printf 'r6 - Six\n'; fill 7 10 2026-11-01; } | mkrows; srun "2026-11-$d" 0
+done
+ok "three more failures raise nothing" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+fill 1 4 2026-11-01 | { cat; printf 'r6 - Six\n'; fill 7 10 2026-11-01; } | mkrows; srun 2026-11-11 0
+ok "the fourth failure after a reset raises it again" is "$(upkeep_line)" "r5 (broken)"
+
+fresh; mkdir -p "$ST"
+printf 'r1\t2026-10-01\t2025-01-01\tOld\t3\t-\t-\n' > "$ST/state.tsv"
+{ printf 'r1 - fetch failed\n'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 0
+ok "a row both quiet and broken is named once, as broken" is "$(upkeep_line)" "r1 (broken)"
+ok "and both marks are set" is "$(stf r1 6)$(stf r1 7)" "2026-11-232026-11-23"
+ok "it is still a quiet source" has "$(note)" "- r1 — newest item 2025-01-01"
+{ printf 'r1 - fetch failed\n'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-24 0
+ok "and is not raised again" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+
+fresh; SCFG=cfg-12
+fill 1 12 2025-01-01 | mkrows; srun 2026-11-23 0
+ok "twelve newly quiet rows give one entry of ten ids, in list order" is "$(upkeep_line)" "r1 (quiet), r2 (quiet), r3 (quiet), r4 (quiet), r5 (quiet), r6 (quiet), r7 (quiet), r8 (quiet), r9 (quiet), r10 (quiet)"
+ok "there is one upkeep section" is "$(grep -c '^## Source list upkeep' "$(note)")" 1
+ok "every quiet source is listed under Quiet sources" is "$(grep -c '^- r[0-9]* — newest item 2025-01-01$' "$(note)")" 12
+ok "the ten named rows are marked" is "$(awk -F'\t' '$6 == "2026-11-23"' "$ST/state.tsv" | wc -l | tr -d ' ')" 10
+ok "the other two are not" is "$(stf r11 6)$(stf r12 6)" "--"
+fill 1 12 2025-01-01 | mkrows; srun 2026-11-24 0
+ok "the next run names the other two" is "$(upkeep_line)" "r11 (quiet), r12 (quiet)"
+fill 1 12 2025-01-01 | mkrows; srun 2026-11-25 0
+ok "the third run names none" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+SCFG=cfg-10
+
+echo "M. The vault copy"
+fresh
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 0
+ok "no proposal and no upkeep entry: the inbox gets no note" is "$(inbox_notes)" 0
+fresh
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
+ok "a proposal copies the note" cmp -s "$(note)" "$INBOX/2026-11-23-weekly-research.md"
+ok "the copy carries the front matter" is "$(sed -n 1p "$INBOX/2026-11-23-weekly-research.md")" "---"
+fresh
+{ fill 1 1 2025-01-01; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 0
+ok "an upkeep entry copies the note" cmp -s "$(note)" "$INBOX/2026-11-23-weekly-research.md"
+fresh; printf 'MINE\n' > "$INBOX/2026-11-23-weekly-research.md"
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
+ok "an existing vault file does not fail the run" is "$(lr result)" ok
+ok "and is left byte-identical" is "$(cat "$INBOX/2026-11-23-weekly-research.md")" MINE
+ok "the state note is still written" has "$(note)" "## Research (model output)"
+fresh; ln -s "$T/nowhere/x" "$INBOX/2026-11-23-weekly-research.md"
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
+ok "a dangling link in the way does not fail the run" is "$(lr result)" ok
+ok "and is not written through" absent "$T/nowhere/x"
+rm -f "$INBOX/2026-11-23-weekly-research.md"
+fresh
+{ fill 1 1 2026-11-20 | sed 's/Item 1/FIRSTRUN/'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 1
+{ fill 1 1 2026-11-20 | sed 's/Item 1/SECONDRUN/'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 1
+ok "a second run on the same day replaces the state note" has "$(note)" SECONDRUN
+ok "and the state note no longer holds the first" lacks "$(note)" FIRSTRUN
+ok "the vault copy of the first run stays as it was" has "$INBOX/2026-11-23-weekly-research.md" FIRSTRUN
+ok "and holds nothing of the second" lacks "$INBOX/2026-11-23-weekly-research.md" SECONDRUN
+fresh
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-22 0
+cp "$ST/state.tsv" "$T/state-before"; ls "$ST/notes" > "$T/notes-before"
+SMODE=roinbox; fill 1 10 2026-11-21 | mkrows; srun 2026-11-23 1
+chmod 755 "$INBOX"; SMODE=ok
+failed "a vault that stops taking writes after the probe"
+ok "its reason names the vault" has "$ST/failures/$TODAY.txt" "vault"
+ok "last-run says the vault is not writable" is "$(lr vault)" "not writable"
+ok "it notifies" test -s "$SD/osascript.args"
+ok "it leaves the state byte-identical" cmp -s "$ST/state.tsv" "$T/state-before"
+ok "and the notes as they were" is "$(ls "$ST/notes" | cmp - "$T/notes-before" && echo same)" same
+ok "and no temp state file" absent "$ST/state.tsv.tmp"
+ok "the status says the inbox is not writable" is "$(wra --status | sed -n 's/^vault inbox: //p')" "not writable"
+
+echo "N. Failures in a row and the vault"
+TODAY=2026-11-23
+FAILNOTE=$INBOX/2026-11-23-weekly-research-failed.md
+stub_reset; printf '%s\n' noinit > "$SD/mode"
+fresh; go
+ok "the first failure counts one" is "$(lr failures_in_row)" 1
+ok "and writes no vault note" is "$(inbox_notes)" 0
+ok "and does not notify (the vault is fine)" absent "$SD/osascript.args"
+go
+ok "the second failure counts two" is "$(lr failures_in_row)" 2
+ok "and writes the vault note" test -s "$FAILNOTE"
+ok "the note has the vault's front matter" is "$(sed -n 1,6p "$FAILNOTE" | tr '\n' '|')" "---|title: Weekly research failed 2026-11-23|created_at: 2026-11-23|tags: [weekly-research]|source: agent-capture|---|"
+ok "it holds the reason" has "$FAILNOTE" "Reason: claude exited (code 3) before its init event: stub: cannot start"
+ok "and the log's path" has "$FAILNOTE" "Log: $ST/logs/2026-11-23.jsonl"
+ok "and no model text" lacks "$FAILNOTE" MODELMARKER
+cp "$FAILNOTE" "$T/failnote-1"
+TODAY=2026-11-24 go
+ok "the third failure counts three" is "$(lr failures_in_row)" 3
+ok "and writes no vault note" absent "$INBOX/2026-11-24-weekly-research-failed.md"
+ok "the first one is as it was" cmp -s "$FAILNOTE" "$T/failnote-1"
+TODAY=2026-11-23
+fresh; rm -f "$FAILNOTE"
+go; go
+ok "two failures on a day write the note" test -s "$FAILNOTE"
+cp "$FAILNOTE" "$T/failnote-2"
+stub_reset; go
+ok "a good run clears the count" is "$(lr failures_in_row)" 0
+printf '%s\n' exit1 > "$SD/mode"; go
+ok "the first failure after it counts one" is "$(lr failures_in_row)" 1
+go
+ok "the second one counts two again" is "$(lr failures_in_row)" 2
+ok "and that day's failure note is left byte-identical" cmp -s "$FAILNOTE" "$T/failnote-2"
+ok "it still holds the first reason" has "$FAILNOTE" "code 3"
+rm -f "$FAILNOTE"
+stub_reset
+for want in 1 2 3; do
+  if [ "$want" = 1 ]; then fresh; fi
+  INB="$T/no-such-inbox" go
+  ok "an unwritable inbox, failure $want: it counts $want" is "$(lr failures_in_row)" "$want"
+  ok "an unwritable inbox, failure $want: osascript is called" test -s "$SD/osascript.args"
+done
+INB=$INBOX
+stub_reset; printf '%s\n' lockfail > "$SD/mode"
+fresh; go; chmod 755 "$INBOX"
+ok "a failure after the probe, the first: no notification" absent "$SD/osascript.args"
+go; chmod 755 "$INBOX"
+ok "the second, when the inbox stopped taking the note: osascript is called" test -s "$SD/osascript.args"
+ok "and no note was written" absent "$FAILNOTE"
+stub_reset
+
+echo "O. --status"
+wstatus() { clear_records; wra "$@" >"$T/out" 2>"$T/err" </dev/null; rc=$?; }
+fresh
+wstatus --status
+ok "before any run: exit 1" rc_is 1
+ok "it says there is no run yet" has "$T/out" "no run yet"
+ok "it creates nothing" absent "$ST"
+run
+wstatus --status
+ok "after a good run: exit 0" rc_is 0
+ok "the date" has "$T/out" "last run: $TODAY"
+ok "the result" has "$T/out" "result: ok"
+ok "the cost" has "$T/out" 'cost: $1.80'
+ok "the note's path" has "$T/out" "note: $ST/notes/$TODAY.md"
+ok "the vault inbox is writable" has "$T/out" "vault inbox: writable"
+ok "no failures" has "$T/out" "failures in a row: 0"
+ok "no reason line" lacks "$T/out" "reason:"
+ok "it starts nothing" absent "$SD/claude.argv"
+ok "and leaves no lock" nolock "$ST/lock"
+printf '%s\n' noinit > "$SD/mode"; go
+wstatus --status
+ok "after a failed run: exit 0" rc_is 0
+ok "the result is failed" has "$T/out" "result: failed"
+ok "the reason is shown" has "$T/out" "reason: claude exited (code 3)"
+ok "the failures in a row" has "$T/out" "failures in a row: 1"
+ok "there is no note" has "$T/out" "note: none"
+ok "the vault is still writable" has "$T/out" "vault inbox: writable"
+stub_reset; INB="$T/no-such-inbox" go
+wstatus --status
+ok "after a run that found the inbox unwritable" has "$T/out" "vault inbox: not writable"
+INB=$INBOX
+wstatus --bogus
+ok "an unknown argument exits 2" rc_is 2
+wstatus --status extra
+ok "so does --status with another argument" rc_is 2
+ok "and neither starts a run" absent "$SD/claude.argv"
+
+TODAY=2026-11-23
 echo "K. No stray process"
 ok "no proxy of this suite is left running" bash -c '! pgrep -f "$0/weekly-research-proxy" >/dev/null 2>&1' "$BIN"
 

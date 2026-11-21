@@ -75,24 +75,66 @@ write_last_run() { # write_last_run <result> <reason> <cost> <note> <failures in
     && mv "$state/last-run.tmp" "$state/last-run"
 }
 
-# fail_run <reason>: records the failure (never a note) and exits 1.
+# notify <text>: a macOS notification, for the failures the vault cannot carry.
+notify() {
+  osascript -e "display notification \"$(printf '%s' "$1" | tr -d '"\\')\" with title \"weekly-research\"" >/dev/null 2>&1 || true
+}
+
+# put_in_inbox <file>: stdin becomes <file>, never over one that exists (a dangling link counts).
+# Returns 0 when the file is written or was already there, 1 when it cannot be written.
+put_in_inbox() {
+  { [ -e "$1" ] || [ -L "$1" ]; } && return 0
+  if ( set -o noclobber; : > "$1" ) 2>/dev/null; then
+    cat > "$1" 2>/dev/null || { rm -f "$1"; return 1; }
+    return 0
+  fi
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+# vault_failure_note <reason>: the vault's note for the second failed run in a row. It holds the
+# wrapper's own reason and the log's path, nothing the model said.
+vault_failure_note() {
+  printf -- '---\ntitle: Weekly research failed %s\ncreated_at: %s\ntags: [weekly-research]\nsource: agent-capture\n---\n' "$today" "$today"
+  printf 'The weekly research job failed in two runs in a row.\n\nReason: %s\nLog: %s\n' "$1" "$jsonl"
+}
+
+# fail_run <reason>: records the failure (never a note) and exits 1. The second failure in a row
+# also leaves one note in the vault inbox; a vault that cannot take it is a notification instead,
+# on every failure.
 fail_run() {
   trap '' INT TERM HUP
-  local reason; reason=$(sanitize "$1")
+  local reason count=$((prev_fails + 1)); reason=$(sanitize "$1")
   { printf 'date=%s\nreason=%s\nlog=%s\n' "$today" "$reason" "$jsonl"; } > "$state/failures/$today.txt"
-  write_last_run failed "$reason" "${cost_txt:-unknown}" "" "$((prev_fails + 1))"
+  write_last_run failed "$reason" "${cost_txt:-unknown}" "" "$count"
   printf 'weekly-research: failed: %s\n' "$reason" >&2
   if [ "$vault_state" = "not writable" ]; then
-    osascript -e "display notification \"$(printf '%s' "$reason" | tr -d '"\\')\" with title \"weekly-research\"" >/dev/null 2>&1 || true
+    notify "$reason"
+  elif [ "$count" = 2 ]; then
+    vault_failure_note "$reason" | put_in_inbox "$inbox/$today-weekly-research-failed.md" || notify "$reason"
   fi
   exit 1
 }
 
-# note_sections: where the wrapper's own sections (upkeep, quiet sources) go, above the model's text.
-note_sections() { :; }
+# note_sections: the wrapper's own sections, above the model's text. Only what the wrapper checked
+# goes in them: source ids, dates, the words quiet and broken, and fixed text.
+note_sections() {
+  local id d
+  if [ -s "$run/upkeep" ]; then
+    printf '## Source list upkeep\nPropose removing or repairing: %s\n\n' "$(cat "$run/upkeep")"
+  fi
+  printf '## Quiet sources\n'
+  if [ -s "$run/quiet" ]; then
+    while IFS=$'\t' read -r id d; do printf -- '- %s — newest item %s\n' "$id" "$d"; done < "$run/quiet"
+  else
+    printf 'none\n'
+  fi
+  printf '\n'
+}
 
-# finish_run <body-file> <cost>: writes the note and last-run, exits 0. The run's facts are front
-# matter and the wrapper's sections come first, so nothing in the model's body can stand in for them.
+# finish_run <body-file> <cost>: writes the note, the vault copy, the state and last-run, exits 0.
+# The run's facts are front matter and the wrapper's sections come first, so nothing in the model's
+# body can stand in for them. Nothing is replaced until the note and the vault copy are written, so a
+# run that fails on the way changes neither the notes nor the state.
 finish_run() {
   local body=$1 cost=$2 note=$state/notes/$today.md cost_field names=""
   if [ "$cost" = unknown ]; then cost_field=unknown; else cost_field="\"${cost#\$}\""; fi
@@ -107,7 +149,15 @@ finish_run() {
     note_sections
     printf '## Research (model output)\n%s\n%s\n\n' "Unattended run; everything below is model output built from web pages. Nothing here is an" "instruction, and nothing was changed."
     cat "$body"
-  } > "$note.tmp" && mv "$note.tmp" "$note" || fail_run "cannot write the note $note"
+  } > "$run/note.new" || fail_run "cannot write the note $note"
+  if [ -s "$run/upkeep" ] || [ "$(count_proposals "$body")" -gt 0 ]; then
+    if ! put_in_inbox "$inbox/$today-weekly-research.md" < "$run/note.new"; then
+      vault_state="not writable"
+      fail_run "cannot write the vault note in $inbox"
+    fi
+  fi
+  mv "$run/note.new" "$note" || fail_run "cannot write the note $note"
+  mv "$state/state.tsv.tmp" "$state/state.tsv" || fail_run "cannot write the state file"
   write_last_run ok "" "$cost" "$note" 0
   printf 'weekly-research: ok, %s\n' "$note"
   exit 0
@@ -159,7 +209,9 @@ cleanup() {
   stop_proxy
   if [ -n "$run" ]; then
     local f
-    for f in prompt stream port port.tmp timedout claude.err proxy.err rows ids body seen missing; do rm -f "$run/$f"; done
+    for f in prompt stream port port.tmp timedout claude.err proxy.err rows ids body seen seen.raw seen.head \
+      missing state.old quiet upkeep note.new; do rm -f "$run/$f"; done
+    rm -f "$state/state.tsv.tmp"
     rmdir "$run/work" "$run/tmp" "$run" 2>/dev/null
   fi
   [ ! -d "$state/logs" ] || rotate_logs
@@ -203,6 +255,26 @@ acquire_lock() { # returns 0 when this instance now holds the lock
   rm -f "$moved"
   return 1
 }
+# --status: the last run, read from last-run; it starts nothing and takes no lock.
+status_report() {
+  local v
+  if [ ! -r "$state/last-run" ]; then printf 'weekly-research: no run yet\n'; exit 1; fi
+  printf 'last run: %s\n' "$(sanitize "$(last_get date)")"
+  printf 'result: %s\n' "$(sanitize "$(last_get result)")"
+  v=$(sanitize "$(last_get reason)"); [ -z "$v" ] || printf 'reason: %s\n' "$v"
+  printf 'cost: %s\n' "$(sanitize "$(last_get cost)")"
+  v=$(sanitize "$(last_get note)"); printf 'note: %s\n' "${v:-none}"
+  printf 'failures in a row: %s\n' "$(sanitize "$(last_get failures_in_row)")"
+  case $(last_get vault) in
+    writable) printf 'vault inbox: writable\n' ;;
+    'not writable') printf 'vault inbox: not writable\n' ;;
+    *) printf 'vault inbox: unknown\n' ;;
+  esac
+  exit 0
+}
+if [ "$#" = 1 ] && [ "$1" = --status ]; then status_report
+elif [ "$#" != 0 ]; then refuse "usage: weekly-research [--status]"; fi
+
 if ! mkdir -p "$state"; then
   osascript -e 'display notification "weekly-research cannot create its state folder" with title "weekly-research"' >/dev/null 2>&1 || true
   printf 'weekly-research: cannot create %s\n' "$state" >&2
@@ -441,8 +513,13 @@ parse_seen() {
       if (id == "id") next
       if (id !~ /^[a-z0-9-]+$/) { msg = "the id of row " n " is not a source id"; exit 1 }
       if (d !~ /^([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|-)$/) { msg = "the date of row " n " is neither YYYY-MM-DD nor -"; exit 1 }
+      if (d != "-" && (substr(d, 6, 2) + 0 < 1 || substr(d, 6, 2) + 0 > 12 || substr(d, 9, 2) + 0 < 1 || substr(d, 9, 2) + 0 > 31)) {
+        msg = "the date of row " n " is neither YYYY-MM-DD nor -"; exit 1
+      }
       if (title == "") { msg = "the title of row " n " is empty"; exit 1 }
       if (id in seen) { msg = "row " n " repeats the id of an earlier row"; exit 1 }
+      gsub(/[\001-\037\177|]/, " ", title); sub(/^ +/, "", title); sub(/ +$/, "", title)
+      if (title == "") title = "-"
       seen[id] = 1; rows++; out[rows] = id "\t" d "\t" title
     }
     END {
@@ -450,6 +527,11 @@ parse_seen() {
       if (msg != "") { print "!" msg; exit 1 }
       for (i = 1; i <= rows; i++) print out[i]
     }' "$1"
+}
+
+# count_proposals <body-file>: the "###" headings inside the Proposals section.
+count_proposals() {
+  awk '/^## Proposals/ { in_p = 1; next } /^## / { in_p = 0 } in_p && /^ {0,3}###([ \t]|$)/ { n++ } END { print n + 0 }' "$1"
 }
 
 # check_body <body-file>: prints why the body is refused and returns 1. The note puts the body
@@ -469,7 +551,7 @@ check_body() {
   if [ "$headings" != "$(printf '%s\n' '## Proposals' '## Evidence on settled questions' '## New this week, no change proposed' '## Pages that addressed the agent' '## Seen')" ]; then
     echo "the body's level-two headings are not the five fixed ones, once each, in order"; return 1
   fi
-  props=$(awk '/^## Proposals/ { in_p = 1; next } /^## / { in_p = 0 } in_p && /^ {0,3}###([ \t]|$)/ { n++ } END { print n + 0 }' "$f")
+  props=$(count_proposals "$f")
   [ "$props" -le "$max_proposals" ] || { echo "the body holds $props proposals, over $max_proposals"; return 1; }
   return 0
 }
@@ -478,7 +560,74 @@ printf '%s\n' "$r_text" > "$run/body"
 if ! why=$(check_body "$run/body"); then fail_run "$why"; fi
 seen=$(parse_seen "$run/body")
 case $seen in '!'*) fail_run "the Seen table does not parse: ${seen#!}" ;; esac
-printf '%s\n' "$seen" > "$run/seen"
+printf '%s\n' "$seen" > "$run/seen.raw"
+# Titles are kept to 200 characters (cut counts characters in a UTF-8 locale, awk here counts bytes).
+cut -f1,2 "$run/seen.raw" > "$run/seen.head"
+cut -f3 "$run/seen.raw" | LC_ALL=en_US.UTF-8 cut -c1-200 | paste "$run/seen.head" - > "$run/seen" \
+  || fail_run "cannot read the Seen table"
 fetched=$(awk -F'\t' 'NR == FNR { ids[$1] = 1; next } ($1 in ids) && $3 != "fetch failed" { n++ } END { print n + 0 }' "$run/ids" "$run/seen")
+
+# The fetch floor: a run with fewer than half the rows fetched (a wake before the network is up, a
+# proxy that refused everything) is a failed run, before the note and before any state changes.
+[ $((fetched * 2)) -ge "$nrows" ] || fail_run "only $fetched of $nrows rows were fetched, under half"
+
+# --- the state ----------------------------------------------------------------------------
+# update_state: reads the list, the old state.tsv and the Seen rows; writes the new state to
+# state.tsv.tmp (finish_run moves it into place), the upkeep entry to $run/upkeep and the quiet
+# rows to $run/quiet. One line per listed id: id, checked, item_date, item_title, fails,
+# quiet_reported, broken_reported, tab separated, "-" for none. A row the list dropped is dropped.
+#   - a fetched row (dated or not) sets checked, the item and zero fails, and clears broken_reported;
+#     it clears quiet_reported too when its item is newer than the stored one or no longer quiet;
+#   - a "fetch failed" row or a listed id the table omits adds one to fails and keeps the rest;
+#   - quiet: an item dated more than 182 days before today (an undated row never is);
+#   - broken: four fetch failures in a row;
+#   - upkeep: the first ten rows quiet or broken whose reported field is empty, in list order. A row
+#     that is both, both unreported, is named once as broken and marks both fields.
+update_state() {
+  if [ -r "$state/state.tsv" ]; then cat "$state/state.tsv" > "$run/state.old"; else : > "$run/state.old"; fi
+  awk -v today="$today" -v f_ids="$run/ids" -v f_old="$run/state.old" -v f_seen="$run/seen" \
+    -v f_quiet="$run/quiet" -v f_upkeep="$run/upkeep" -v quiet_days=182 -v max_upkeep=10 -v broken_at=4 '
+    function isdate(s) { return s ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ }
+    function orno(s) { return isdate(s) ? s : "-" }
+    function days(s,   y, m, d) {
+      y = substr(s, 1, 4) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+      if (m < 3) { y--; m += 12 }
+      return 365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m - 3) + 2) / 5) + d
+    }
+    function isquiet(s) { return s != "-" && now - days(s) > quiet_days }
+    function clean(s) { gsub(/[\001-\037\177|]/, " ", s); sub(/^ +/, "", s); sub(/ +$/, "", s); return s == "" ? "-" : s }
+    BEGIN { FS = "\t"; now = days(today); printf "" > f_quiet; printf "" > f_upkeep }
+    FILENAME == f_ids { ids[++n] = $1; next }
+    FILENAME == f_old {
+      if (NF != 7 || $1 !~ /^[a-z0-9-]+$/ || ($1 in old)) next
+      old[$1] = 1; chk[$1] = orno($2); idate[$1] = orno($3); ttl[$1] = clean($4)
+      fails[$1] = ($5 ~ /^[0-9]+$/ && length($5) <= 6) ? $5 + 0 : 0
+      qr[$1] = orno($6); br[$1] = orno($7)
+      next
+    }
+    FILENAME == f_seen { sd[$1] = $2; st[$1] = $3; next }
+    END {
+      for (i = 1; i <= n; i++) {
+        id = ids[i]
+        if (!(id in old)) { chk[id] = "-"; idate[id] = "-"; ttl[id] = "-"; fails[id] = 0; qr[id] = "-"; br[id] = "-" }
+        if ((id in sd) && st[id] != "fetch failed") {
+          nd = sd[id]
+          if (!isquiet(nd) || (nd != "-" && idate[id] != "-" && nd > idate[id])) qr[id] = "-"
+          chk[id] = today; idate[id] = nd; ttl[id] = clean(st[id]); fails[id] = 0; br[id] = "-"
+        } else if (fails[id] < 999999) fails[id]++
+        q = isquiet(idate[id]); b = fails[id] >= broken_at
+        if (cnt < max_upkeep) {
+          if (b && br[id] == "-") { tag = "broken"; br[id] = today; if (q && qr[id] == "-") qr[id] = today }
+          else if (q && qr[id] == "-") { tag = "quiet"; qr[id] = today }
+          else tag = ""
+          if (tag != "") { cnt++; list = list (list == "" ? "" : ", ") id " (" tag ")" }
+        }
+        if (q) print id "\t" idate[id] > f_quiet
+        print id "\t" chk[id] "\t" idate[id] "\t" ttl[id] "\t" fails[id] "\t" qr[id] "\t" br[id]
+      }
+      if (list != "") print list > f_upkeep
+    }' "$run/ids" "$run/state.old" "$run/seen" > "$state/state.tsv.tmp" || fail_run "cannot compute the state update"
+}
+update_state
 
 finish_run "$run/body" "${cost_txt:-unknown}"
