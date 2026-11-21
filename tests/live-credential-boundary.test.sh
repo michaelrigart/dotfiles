@@ -45,9 +45,10 @@ else
   bad AGENT
 fi
 
-# The native agent must hold none of the backup keys: ssh-agent takes keys from any client, so an
-# AddKeysToAgent yes in the ssh config would put one there. Only the native socket is asked, never
-# 1Password's, and only the public-key blobs are compared; neither is printed.
+# The native agent must hold only the keys its loader lists (michael, viumore_rsa, michael_rsa):
+# ssh-agent takes keys from any client, so an AddKeysToAgent yes in the ssh config would put a
+# backup key there. Only the native socket is asked, never 1Password's, and only public-key blobs
+# are compared; neither is printed. An allowlist, so a held key whose own .pub is missing still shows.
 native="$HOME/.local/state/ssh-agent/agent.sock"
 if [ ! -S "$native" ]; then
   echo "AGENT_NATIVE=ABSENT"
@@ -57,16 +58,24 @@ else
   if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
     foreign=NONE
     if [ "$rc" -eq 0 ]; then
-      blobs=$(printf '%s\n' "$held" | while read -r _ blob _; do printf ' %s ' "$blob"; done)
-      for name in borg borg-append-only borg-append-only-fenrir borg-fenrir borg-hercules borg-synology huginn; do
-        pub=$(cat "$HOME/.ssh/$name.pub" 2>/dev/null) || continue
-        set -- $pub
-        [ -n "${2:-}" ] || continue
-        case "$blobs" in *" $2 "*) foreign=PRESENT ;; esac
+      allowed=
+      for name in michael viumore_rsa michael_rsa; do
+        blob=$(read -r _ b _ 2>/dev/null <"$HOME/.ssh/$name.pub" && printf '%s' "$b") || continue
+        [ -n "$blob" ] && allowed="$allowed $blob "
       done
+      if [ -z "$allowed" ]; then
+        foreign=UNKNOWN
+      else
+        while read -r _ blob _; do
+          [ -n "$blob" ] || continue
+          case "$allowed" in *" $blob "*) ;; *) foreign=PRESENT ;; esac
+        done <<EOF
+$held
+EOF
+      fi
     fi
     echo "AGENT_FOREIGN_KEYS=$foreign"
-    [ "$foreign" = PRESENT ] && bad AGENT_FOREIGN_KEYS
+    [ "$foreign" = NONE ] || bad AGENT_FOREIGN_KEYS
   else
     echo "AGENT_FOREIGN_KEYS=UNKNOWN"
     bad AGENT_FOREIGN_KEYS

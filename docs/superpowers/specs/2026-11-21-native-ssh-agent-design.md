@@ -172,7 +172,7 @@ On each machine (fenrir, then hercules):
 6. Restart Claude Code sessions as convenient; in a fresh one (sandboxed, so git goes through
    `ssh-sandbox-proxy`), run `./tests/run.sh live-agent-signing live-credential-boundary
    live-agent-auth`, which signs with `michael`, authenticates this repository's GitHub remote and
-   checks that the native agent holds no borg or huginn key, then `./tests/live-agent-auth.test.sh
+   checks that the native agent holds only `michael`, `viumore_rsa` and `michael_rsa`, then `./tests/live-agent-auth.test.sh
    <repo>` once for a repository on each other forge.
 7. When no running session predates the apply: 1Password → Settings → Developer → turn off "Use
    the SSH agent". From then on, no SSH or signing prompt should appear.
@@ -205,8 +205,9 @@ Rollback, on each machine:
   in an SSH login; without it, today's behaviour holds.
 - `plutil -lint` on the rendered plist, wherever the existing plists are checked, or in the new suite.
 - `.scripts/test-audit/subjects.tsv`: rows for the plist and the script.
-- `tests/live-credential-boundary.test.sh`: a probe that the native agent holds none of the borg or
-  huginn public keys (`AGENT_FOREIGN_KEYS`), and that its socket exists (`AGENT_NATIVE`).
+- `tests/live-credential-boundary.test.sh`: a probe that the native agent holds only the listed keys
+  (`michael`, `viumore_rsa`, `michael_rsa`; `AGENT_FOREIGN_KEYS`), and that its socket exists
+  (`AGENT_NATIVE`).
 - Acceptance after apply: Michael's steps 5 and 6.
 
 ## Left to the builder

@@ -224,8 +224,9 @@ After merge, on each machine:
    line in the "SSH config" note that pins it to the 1Password socket and must go. Keep the
    1Password agent on until every host passes.
 6. In a fresh Claude Code session, run `./tests/run.sh live-agent-signing live-credential-boundary
-   live-agent-auth`, then `./tests/live-agent-auth.test.sh <repo>` once for a repository on each
-   other forge.
+   live-agent-auth` (the boundary suite also checks that the agent holds only `michael`,
+   `viumore_rsa` and `michael_rsa`), then `./tests/live-agent-auth.test.sh <repo>` once for a
+   repository on each other forge.
 7. When no running session predates the apply, turn off 1Password → Settings → Developer → "Use the
    SSH agent".
 
