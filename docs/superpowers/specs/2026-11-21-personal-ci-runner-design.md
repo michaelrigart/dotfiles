@@ -299,7 +299,10 @@ a hole in the VM boundary behind it.
   out; `gitlab.com` resolves and a connection to port 443 succeeds.
 
 Then one full pipeline: `lint`, `test`, `cli`, `seed_smoke` and `a11y` pass on the runner, with
-`test` and `seed_smoke` running at the same time (which also shows `concurrent = 2` took), and `build_image` runs on a hosted runner. If a
+`test` and `seed_smoke` running at the same time (which also shows `concurrent = 2` took), and
+`build_image` runs on a hosted runner. Then a second pipeline on the same branch: the runner
+keeps its build directory, and `test` and `cli` hand the checkout to another user, so only a
+second run shows that the next job's fetch still works there. If a
 VM-boundary check fails and cannot be fixed in the template, the runner is removed and the
 fallback applies.
 
@@ -316,9 +319,10 @@ fallback applies.
 
 - For a while: `limactl stop ci`. Jobs tagged `hercules` then wait and are dropped after an hour;
   `limactl start ci` brings it back.
-- With CI still running: set the project variable `RUNNER_TAG` to `saas-linux-small-amd64`.
-  Every branch's next pipeline goes to hosted runners, with no commit; delete the variable to
-  come back.
+- With CI still running: set the project variable `RUNNER_TAG` to `saas-linux-small-amd64`,
+  created **unprotected** (a protected variable reaches only pipelines on protected branches
+  and tags, so it would move `main` alone). Every branch's next pipeline goes to hosted
+  runners, with no commit; delete the variable to come back.
 - For good: set that variable, delete the runner in curato's settings (this revokes the token),
   `limactl autostart disable ci`, `limactl delete ci`, drop the Brewfile line, and remove the
   tag lines from curato.

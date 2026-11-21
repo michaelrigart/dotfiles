@@ -201,7 +201,10 @@ PATH="$STUB:$PATH" CI_RUNNER_TTY="$ROOT/tty" CI_RUNNER_CONFIG="$ROOT/cfg.toml" "
 is "a registered runner is not registered again" "$?" 1
 is "and gitlab-runner was not called"            "$(wc -c < "$ROOT/argv" | tr -d ' ')" 0
 
-# apt: both repositories, and both in unattended upgrades
+# apt: the fetch tools come first, then both repositories, and both in unattended upgrades
+first_line() { grep -nE "$1" "$PROVISION" | head -1 | cut -d: -f1; }
+tools_before_fetch() { [ "$(first_line 'apt-get install .*ca-certificates curl gnupg')" -lt "$(first_line '(curl|gpg) .*(download\.docker\.com|packages\.gitlab\.com)')" ]; }
+ok "curl, gpg and certificates are installed before a key is fetched" tools_before_fetch
 ok "docker repository"  grep -q 'download.docker.com/linux/debian' "$PROVISION"
 ok "runner repository"  grep -q 'packages.gitlab.com/runner/gitlab-runner/debian' "$PROVISION"
 u="$(guest_file /etc/apt/apt.conf.d/52unattended-upgrades-local)"
@@ -214,6 +217,9 @@ ok "runner upgrades unattended" grep -qF 'origin=packages.gitlab.com/runner/gitl
 - [ ] **Step 3: Extend the provision script**
 
 In order, each step idempotent:
+0. Before anything is fetched: `apt-get update` and
+   `apt-get install -y ca-certificates curl gnupg` when `dpkg -s` reports one of them missing
+   (the cloud image is minimal; the key steps below need all three).
 1. `put` the Docker key and source (`/etc/apt/keyrings/docker.asc` from
    `https://download.docker.com/linux/debian/gpg`; `/etc/apt/sources.list.d/docker.sources`
    with `Types: deb`, `URIs: https://download.docker.com/linux/debian`, `Suites: trixie`,
@@ -274,7 +280,9 @@ for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; d
 done
 ok "a forward-hook chain of its own"    grep -Eq 'type filter hook forward priority' <<<"$nft_rules"
 ok "only out through the uplink"        grep -Eq 'oifname \$uplink ip daddr .* drop' <<<"$nft_rules"
-no "a rule without the uplink qualifier" grep -E 'drop' <<<"$nft_rules" | grep -vq 'oifname \$uplink'
+# a predicate, not a pipeline on the helper: a pipeline would run `no` in a subshell and lose its count
+unqualified_drop() { grep -E 'drop' <<<"$nft_rules" | grep -vq 'oifname \$uplink'; }
+no "a rule without the uplink qualifier" unqualified_drop
 no "flushes the whole ruleset"          grep -q 'flush ruleset' <<<"$nft_rules"
 
 # the loader, with stub `ip` and `nft` on PATH
@@ -303,12 +311,24 @@ ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner'
 : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' KERNEL_PENDING=1 "$CLEAN"
 ok "a pending kernel reboots"           grep -qx 'reboot' "$ROOT/calls"
 no "instead of starting the runner"     grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+# every failure keeps its status and still brings the runner back
+for failing in 'rm' 'system prune' 'volume prune'; do
+  : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' DOCKER_FAIL="$failing" "$CLEAN"
+  is "a failed docker $failing fails the unit"  "$?" 1
+  ok "and the runner is started again ($failing)" grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+  ok "and the later steps still ran ($failing)"   grep -qx 'docker volume prune --all --force' "$ROOT/calls"
+done
+: > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' KERNEL_PENDING=1 REBOOT_FAIL=1 "$CLEAN"
+is "a failed reboot fails the unit"     "$?" 1
+ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
 timer="$(guest_file /etc/systemd/system/ci-runner-cleanup.timer)"
 ok "weekly, at night" grep -Eq '^OnCalendar=Sun \*-\*-\* 04:00' <<<"$timer"
 ```
 
 The stubs log every call except the two queries: the `docker` stub prints `$DOCKER_VOLUMES` for
-`volume ls -q` and `c1` for `ps -aq`, logging neither. The `uname`/kernel stub: the
+`volume ls -q` and `c1` for `ps -aq`, logging neither, and exits 1 (after logging) for the
+subcommand named in `$DOCKER_FAIL`; the `reboot` stub exits 1 under `REBOOT_FAIL=1`. The
+`uname`/kernel stub: the
 cleanup script compares `uname -r` with the newest `/boot/vmlinuz-*` under
 `${CI_RUNNER_BOOT:-/boot}`; the test points `CI_RUNNER_BOOT` at a fixture directory and
 `KERNEL_PENDING=1` makes the stub `uname` print an older release.
@@ -377,6 +397,14 @@ Expected on fenrir: `0`, and the surrounding lines unbroken (`grep -n -B1 -A1 la
 export LIMA_HOME="$XDG_DATA_HOME/lima"
 ```
 
+This takes the spec's S5 condition as met, on evidence read from Lima's source at tag `v2.3.0`
+(the version Homebrew ships) on 2026-11-21: `pkg/autostart/managers.go` fills the plist's
+`LimaHome` from `dirnames.LimaDir()`, which returns `$LIMA_HOME` when set, and
+`pkg/autostart/launchd/io.lima-vm.autostart.INSTANCE.plist` writes it as the agent's
+`LIMA_HOME` environment variable. So `limactl autostart enable ci`, run from a shell with this
+export, records the directory. Michael's step still checks the written plist (S7 gains that
+line in Step 4).
+
 No test: a static export beside the file's other location exports, which have none.
 Run: `./tests/run.sh zshenv provision` — expected PASS, totals unchanged.
 
@@ -393,8 +421,11 @@ not added to Layout (it sits under `dot_config/`):
 Run: `./tests/run.sh agent-instructions` — expected PASS.
 
 - [ ] **Step 4: Spec status.** `**Status:** In progress (branch `feat/personal-ci-runner`)`.
-In S5, replace the `LIMA_HOME` bullet's conditional with the fact: `zshenv` sets it and the
-autostart agent records it.
+In S5, replace the `LIMA_HOME` bullet's conditional with the fact and its evidence (Step 2's
+two source files at `v2.3.0`): `zshenv` sets it and the autostart agent records it. In S7
+step 2, after `limactl autostart enable ci`, add: `plutil -p
+~/Library/LaunchAgents/io.lima-vm.autostart.ci.plist` shows `LIMA_HOME` as
+`~/.local/share/lima`; if it does not, stop and tell the line.
 
 - [ ] **Step 5: Full run and commit**
 
