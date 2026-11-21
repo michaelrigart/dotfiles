@@ -79,7 +79,7 @@ override for its suite only, as `prompt-audit.sh` does):
    in the foreground, no fork) and wait up to 5 s for the socket.
 4. For each name in its fixed key list, if `~/.ssh/<name>` exists, `ssh-add -q` it with
    `SSH_AUTH_SOCK` set to the socket and stdin from `/dev/null`. A missing file is skipped
-   silently (hercules may hold fewer keys); a failed add (a passphrase, a bad file) is logged.
+   silently (a machine may lack a rendered key); a failed add (a passphrase, a bad file) is logged.
 5. `wait` on the agent. When it exits, the script exits with its status; `KeepAlive` restarts the
    job, which reloads the keys. On `SIGTERM` (a `launchctl bootout` or `kickstart -k`) the script
    stops the agent and removes the socket before exiting, so no dead socket is left for a shell to
