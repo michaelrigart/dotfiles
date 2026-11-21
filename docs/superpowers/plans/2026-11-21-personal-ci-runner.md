@@ -350,9 +350,12 @@ cleanup script compares `uname -r` with the newest `/boot/vmlinuz-*` under
 4. `put 644` the drop-in: `[Unit]`, `Requires=docker.service ci-runner-firewall.service`,
    `After=docker.service ci-runner-firewall.service`.
 5. `put 755 /usr/local/sbin/ci-runner-cleanup`: stop the runner; `docker rm --force` every
-   container id from `docker ps -aq` (skipped when there is none); the two prunes; `left=$(docker volume ls -q)`; reboot when the newest installed kernel is
-   not the running one, else start the runner; exit 1 with the leftover names when `left` is
-   not empty (after the start).
+   container id from `docker ps -aq` (skipped when there is none); the two prunes;
+   `left=$(docker volume ls -q)`; reboot when the newest installed kernel is not the running
+   one, else start the runner. **No `set -e`:** the script keeps one status, set to 1 by any
+   failing command and by a non-empty `left` (whose names it prints), runs every later step
+   regardless, starts the runner on every path that does not reboot, including a `reboot` that
+   itself fails, and exits with that status.
 6. `put 644` the cleanup service (`Type=oneshot`, `ExecStart=` the script) and timer
    (`OnCalendar=Sun *-*-* 04:00`, `Persistent=false`, `WantedBy=timers.target`).
 7. `systemctl daemon-reload`, `systemctl enable ci-runner-firewall.service`,
