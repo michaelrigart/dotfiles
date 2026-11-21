@@ -1,6 +1,6 @@
 ---
 name: merge-request
-description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding a dependency. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, and the dependency rule.
+description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding or bumping a dependency. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, and the dependency rule.
 ---
 
 # Merge requests
@@ -46,7 +46,7 @@ description: Use before opening any merge request, pull request or issue, with g
   lists are `glab issue list --author <login>` and `glab mr list --author <login>`; one item is
   `glab api "projects/:id/issues/<n>" | jq 'select(.author.username == "<login>") | .description'`,
   and its notes are
-  `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>"))'`
+  `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>" and (.system | not)) | .body)'`
   (`merge_requests` in place of `issues` for an MR). Azure DevOps: take `<name>` from
   `az account show --query user.name -o tsv` and list with `az repos pr list --creator <name>`;
   the CLI has no author filter for a pull request's threads, so tell Michael instead of
@@ -65,4 +65,5 @@ description: Use before opening any merge request, pull request or issue, with g
   least seven days old, unless the bump fixes a vulnerability; the spec then says so. A tool
   added to the Brewfile or to mise is not a dependency for Sizing: it stays a small change. In
   the PR or MR body, list under "New dependencies" every line `change-facts <base>...<head>`
-  prints under `dependency lines`, or write `New dependencies: none`.
+  prints under `dependency lines`, and any other line the change adds to a dependency manifest
+  the command does not know; or write `New dependencies: none`.

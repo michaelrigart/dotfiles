@@ -57,8 +57,10 @@ The spec leaves these open; each stays inside it.
 3. **Lockfiles left out:** the baseline's list (`Gemfile.lock`, `package-lock.json`, `yarn.lock`,
    `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `Cargo.lock`, any `*.lock`), plus `go.sum` and
    `Package.resolved`, the lockfiles of two manifests the spec lists.
-4. **Renames** are detected (`-M`), so a moved file counts only its changed lines, under its new
-   path.
+4. **Renames** are not taken from git: its rename detection reads attributes from outside the two
+   commits. The tool pairs an added and a deleted file with the same content, class and manifest
+   status as a move that counts nothing; an edited move counts as a delete plus an add, so the
+   figure may be higher than a rename-aware diff's and a line is never hidden.
 5. **CI workflow files** are `.github/workflows/**`, `.gitlab-ci.yml`, `.gitlab/ci/**`,
    `azure-pipelines*.yml|yaml` and `.azure-pipelines/**`. Only GitHub workflows have `uses:`
    lines.
@@ -405,7 +407,7 @@ needs the six lines Task 2 frees). It names Task 1's command and calls nothing o
 - [ ] **Step 4: Edit the `merge-request` skill.** The description becomes:
 
   ```
-  description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding a dependency. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, and the dependency rule.
+  description: Use before opening any merge request, pull request or issue, with gh, glab or az, and when writing its title or body; before reading issues, comments or reviews from a forge; and before adding or bumping a dependency. Covers finding and filling the repository's template, rendering the text, assigning Michael, the no-attribution rule, reading forge text by author, and the dependency rule.
   ```
 
   Three bullets are added after "Never add agent attribution", wrapped like the others:
@@ -428,7 +430,7 @@ needs the six lines Task 2 frees). It names Task 1's command and calls nothing o
     lists are `glab issue list --author <login>` and `glab mr list --author <login>`; one item is
     `glab api "projects/:id/issues/<n>" | jq 'select(.author.username == "<login>") | .description'`,
     and its notes are
-    `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>"))'`
+    `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>" and (.system | not)) | .body)'`
     (`merge_requests` in place of `issues` for an MR). Azure DevOps: take `<name>` from
     `az account show --query user.name -o tsv` and list with `az repos pr list --creator <name>`;
     the CLI has no author filter for a pull request's threads, so tell Michael instead of
@@ -447,7 +449,8 @@ needs the six lines Task 2 frees). It names Task 1's command and calls nothing o
     least seven days old, unless the bump fixes a vulnerability; the spec then says so. A tool
     added to the Brewfile or to mise is not a dependency for Sizing: it stays a small change. In
     the PR or MR body, list under "New dependencies" every line `change-facts <base>...<head>`
-    prints under `dependency lines`, or write `New dependencies: none`.
+    prints under `dependency lines`, and any other line the change adds to a dependency manifest
+    the command does not know; or write `New dependencies: none`.
   ```
 - [ ] **Step 5: Check the commands.** `gh issue list --help`, `gh pr list --help`,
   `gh issue view --help`, `gh pr view --help`, `glab issue list --help` and
@@ -472,7 +475,7 @@ The task reviews found more than the plan held. What `change-facts` does beyond 
 - It runs on the system interpreter, `#!/usr/bin/python3 -I`: through `env python3` a
   repository's mise configuration stops or steers it.
 - More of git is pinned, each with a case that fails without it: `--diff-algorithm=myers`,
-  `-l1000`, `--ignore-submodules=none`, `-O/dev/null` and `--` on the diffs;
+  `--no-renames`, `--ignore-submodules=none`, `-O/dev/null` and `--` on the diffs;
   `--no-replace-objects` and `--no-lazy-fetch` on every call (a partial clone would otherwise
   fetch, and run the upload-pack command its configuration names); `GIT_GRAFT_FILE=/dev/null`.
   Measured and not needed: a driver's `diff.<driver>.algorithm`, and `core.bigFileThreshold`.
@@ -482,6 +485,10 @@ The task reviews found more than the plan held. What `change-facts` does beyond 
 - Equal blob ids are tested before any blob is read, and `(binary)` is listed only for a
   manifest with a head side. A broken pipe on the report ends in exit 0.
 - A blob the repository does not hold ends in exit 2, `change-facts: git cat-file failed`.
+- A move is an added and a deleted path with the same blob id, class and manifest status,
+  paired one to one in path order; it counts zero lines and lists nothing. A file moved out of
+  its class (`pkg/foo_test.go` to `pkg/foo_test.go.disabled`) or into a manifest name is a
+  delete plus an add, so a test renamed out of its class shows as test lines deleted.
 
 Task 3's two forge bullets were rewritten after their review; Step 4 above holds the final
 text. The lesson: the skill gives the filter as a program, and every command it names prints
