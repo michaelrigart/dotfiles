@@ -48,15 +48,9 @@ live, what is tracked and when each is committed never vary per repository.
   in task-sized commits. While work or review is active, set `**Status:** In progress`, plus the MR
   reference. In the final pre-merge commit, set `**Status:** Implemented` and cite the MR. A merge
   SHA can be added later; it never needs its own MR.
-- **Permanence.** A spec is permanent from sign-off. Specs and plans are never deleted, pruned or
-  gitignored, except material that must go on security or legal grounds (secrets, PII, customer
-  data; rotate anything exposed).
-- **Completed documents.** Mark a completed plan so it is not run again; its execution banners bind
-  that run only, never repository policy. Durable lessons go in the spec, plan, ADR or MR
-  description, never in raw run files.
 - **Cross-repo work.** Open both MRs before merging either; merge the canonical spec's MR first.
-- Load the `design-records` skill when creating, updating, completing or abandoning a spec or plan,
-  or setting its Status.
+- Load the `design-records` skill when creating, updating, reviewing, completing, abandoning or
+  deleting a spec or plan, or setting its Status.
 
 ## How to work
 

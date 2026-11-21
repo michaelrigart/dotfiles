@@ -104,10 +104,8 @@ tests/
 !.claude/skills/api-review/
 .claude/skills/api-review/*
 !.claude/skills/api-review/SKILL.md
-!.claude/skills/design-records/
-.claude/skills/design-records/*
-!.claude/skills/design-records/SKILL.md
 !.claude/skills/clarity
+!.claude/skills/design-records
 !.claude/skills/merge-request
 !.claude/skills/second-brain
 !.claude/projects/
