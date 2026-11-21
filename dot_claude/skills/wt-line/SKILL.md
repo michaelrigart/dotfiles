@@ -48,6 +48,9 @@ this skill before it starts.
   and `xreview` do not change. A stack is at most two deep: a third increment waits until the
   first has merged. The cost is named: every stacked increment needs one message from Michael and
   one extra review round, so a line stacks only when waiting for the merge would leave it idle.
+- **The driver outlives the stack.** A stack is driven from outside it, by the main checkout's
+  session, because a line's checkout is removed once it merges; a line that already drives a later
+  increment says so in its final report and gives its `wt-rm` only once that increment has reported.
 
 ## Scout lines
 
