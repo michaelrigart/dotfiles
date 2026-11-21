@@ -1,0 +1,2 @@
+Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl	data	own
+dot_local/bin/executable_codex-daemon	sh	own

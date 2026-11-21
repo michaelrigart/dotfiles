@@ -1,0 +1,6 @@
+dot_config/weekly-research/network.sb	data	own,guard
+dot_config/weekly-research/prompt.md	prose	own,guard
+dot_config/weekly-research/sources.tsv	data	own,guard
+dot_local/bin/executable_weekly-research	bash	own,guard
+dot_local/bin/executable_weekly-research-proxy	py	guard
+tests/fixtures/weekly-research/init.json	data	guard

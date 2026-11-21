@@ -1,0 +1,3 @@
+dot_claude/executable_xreview-guard.sh	bash	own
+dot_claude/xreview-guard.py	py	own
+dot_claude/xreview-ledger.py	py	-

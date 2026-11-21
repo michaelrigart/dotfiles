@@ -1,0 +1,7 @@
+.chezmoiexternal.toml	data	-
+.chezmoiignore	data	-
+dot_claude/agents/sp-architect.md	prose	-
+dot_claude/agents/sp-mechanical.md	prose	-
+dot_claude/agents/sp-reviewer.md	prose	-
+dot_claude/agents/sp-standard.md	prose	-
+dot_claude/skills/live-feedback/SKILL.md	prose	own

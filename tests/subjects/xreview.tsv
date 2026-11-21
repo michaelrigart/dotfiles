@@ -1,0 +1,12 @@
+dot_claude/xreview-ledger.py	py	-
+dot_claude/xreview-packet.py	py	-
+dot_config/herdr/codex-pane-command	data	-
+dot_config/xreview/findings.framed.schema.json	data	-
+dot_config/xreview/findings.schema.json	data	-
+dot_config/xreview/packets.conf	data	-
+dot_config/xreview/reviewer-framing.md	prose	-
+dot_config/xreview/reviewer.md	prose	-
+dot_local/bin/executable_agent-text-scan	py	-
+dot_local/bin/executable_xreview	bash	own
+dot_local/bin/executable_xreview-app-pane	zsh	-
+dot_local/bin/executable_xreview-rpc	py	-

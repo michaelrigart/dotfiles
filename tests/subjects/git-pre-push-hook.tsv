@@ -1,0 +1,2 @@
+dot_config/git/hooks/executable_pre-push	bash	own
+dot_config/git/hooks/executable_secret-scan	py	own

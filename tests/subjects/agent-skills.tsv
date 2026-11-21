@@ -1,0 +1,10 @@
+.chezmoiexternal.toml	data	own
+.chezmoiignore	data	own
+dot_agents/skills/design-records/SKILL.md	prose	-
+dot_agents/skills/merge-request/SKILL.md	prose	own
+dot_agents/skills/second-brain/SKILL.md	prose	-
+dot_claude/private_projects/dot_stignore	data	own
+dot_claude/skills/symlink_clarity	data	own
+dot_claude/skills/symlink_design-records	data	own
+dot_claude/skills/symlink_merge-request	data	own
+dot_claude/skills/symlink_second-brain	data	own

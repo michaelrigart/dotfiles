@@ -1,0 +1,3 @@
+dot_config/weekly-research/network.sb	data	guard
+dot_local/bin/executable_weekly-research	bash	guard
+dot_local/bin/executable_weekly-research-proxy	py	guard

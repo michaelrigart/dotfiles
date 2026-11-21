@@ -1,0 +1,5 @@
+dot_config/herdr/executable_layout.sh	zsh	-
+dot_config/herdr/executable_tab-goto.sh	zsh	-
+dot_config/zsh/functions	zsh	-
+dot_local/bin/executable_wt-rm	zsh	-
+dot_local/bin/executable_wt-teardown	zsh	-

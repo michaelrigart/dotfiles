@@ -1,0 +1,3 @@
+dot_config/private_ha-mcp/private_env-remote.tmpl	data	own
+dot_config/private_ha-mcp/private_env.tmpl	data	own
+dot_local/bin/executable_ha-mcp	sh	own

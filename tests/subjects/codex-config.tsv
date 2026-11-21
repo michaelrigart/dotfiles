@@ -1,0 +1,4 @@
+.chezmoiexternal.toml	data	-
+.chezmoiignore	data	-
+dot_codex/modify_private_config.toml	data	own,guard
+dot_codex/modify_private_hooks.json	data	own,guard
