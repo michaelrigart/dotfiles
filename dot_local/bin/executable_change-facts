@@ -7,8 +7,11 @@ lines deleted, CI workflow files and the added lines of dependency manifests. It
 nothing: the exit status is 0 whatever the change holds, and 2 only for a usage error, a
 directory that is not a git repository or a side that names no commit. It reads only the two
 commits' history, never the work tree, the index or the network, and runs no command that a
-repository's configuration names. Pinned to the system Python 3.9 (`/usr/bin/python3`): an
-untrusted mise config in the repository cannot stop or steer it, and nothing newer than 3.9 is used.
+repository's configuration names. Git's rename detection is not used, since it reads attributes
+from outside the two commits: an added and a deleted file with the same content, class and
+manifest status are one move that counts nothing, and an edited move is a delete plus an add.
+Pinned to the system Python 3.9 (`/usr/bin/python3`): an untrusted mise config in the repository
+cannot stop or steer it, and nothing newer than 3.9 is used.
 """
 import fnmatch
 import os
@@ -21,7 +24,7 @@ ENV = dict(os.environ, GIT_GRAFT_FILE=os.devnull)
 GIT = ["git", "--no-pager", "--no-replace-objects", "--no-lazy-fetch", "-c", "core.fsmonitor=false"]
 DIFF = [
     "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-relative",
-    "--diff-algorithm=myers", "--ignore-submodules=none", "-O/dev/null", "-l1000", "-M",
+    "--diff-algorithm=myers", "--ignore-submodules=none", "-O/dev/null", "--no-renames",
 ]
 USAGE = "usage: change-facts <base>...<head>"
 CEILING = 2000
@@ -112,18 +115,41 @@ def printable(data, keep_tab=False):
     return text.encode("utf-8")
 
 
-def records(base, head):
-    """One (old, new, paths) per file of the change; a side is (mode, blob id) or None."""
+def raw_records(base, head):
+    """One (old, new, paths) per path of the change; a side is (mode, blob id) or None."""
     tokens = git(*DIFF, "--raw", "-z", "--no-abbrev", "%s...%s" % (base, head), "--").split(b"\0")
     i = 0
     while i < len(tokens) and tokens[i].startswith(b":"):
         old_mode, new_mode, old_id, new_id, status = tokens[i][1:].split(b" ")
-        count = 2 if status[:1] in (b"R", b"C") else 1
-        paths = tokens[i + 1 : i + 1 + count]
-        i += 1 + count
+        paths = [tokens[i + 1]]
+        i += 2
         old = (old_mode, old_id) if old_id.strip(b"0") else None
         new = (new_mode, new_id) if new_id.strip(b"0") else None
         yield old, new, paths
+
+
+def records(base, head):
+    """One (old, new, paths) per file of the change, a move as one record with both paths.
+
+    A move is an added and a deleted path with the same blob id, class and manifest status,
+    paired one to one in path order; everything else stays what git reported.
+    """
+    added, deleted, kept = {}, {}, []
+    for old, new, paths in raw_records(base, head):
+        if old and new:
+            kept.append((old, new, paths))
+            continue
+        side = new or old
+        key = (side[1], classify(paths[0]), is_manifest(paths[0]))
+        (added if new else deleted).setdefault(key, []).append((old, new, paths))
+    for key in sorted(set(added) | set(deleted)):
+        adds = sorted(added.get(key, []), key=lambda r: r[2][0])
+        dels = sorted(deleted.get(key, []), key=lambda r: r[2][0])
+        for (old, _, old_paths), (_, new, new_paths) in zip(dels, adds):
+            kept.append((old, new, old_paths + new_paths))
+        kept.extend(adds[len(dels):])
+        kept.extend(dels[len(adds):])
+    return sorted(kept, key=lambda r: r[2])
 
 
 def split_lines(data):

@@ -241,6 +241,20 @@ for place in work staged info file; do
 done
 attr info '* -diff'
 
+# 13b. attributes cannot change a move either: git's rename scoring reads them, so git no longer pairs
+crlf() { n "$1" "${2:-l}" | awk '{printf "%s\r\n", $0}'; }
+fx c13b; crlf 20 | wf old.rb; wt seed.txt s; base
+git -C "$R" rm -q old.rb; { crlf 11; crlf 9 m; } | wf new.rb; commit
+rep; cp "$T/out" "$T/first"
+lines_ok "attributes: a CRLF file replaced by one keeping 11 lines, the plain report" "code: 40 lines (+20 -20)"
+for place in work staged info file; do attr $place '* binary'; done
+fx c13c; { crlf 4 g; printf 'gem "evil"\n'; crlf 5 o; } | wf spec/fixtures/Gemfile; wt seed.txt s; base
+git -C "$R" rm -q spec/fixtures/Gemfile; { crlf 4 g; printf 'gem "evil"\n'; n 5 h; } | wf Gemfile; commit
+rep
+lines_ok "a CRLF fixture Gemfile moved to the root with half its lines changed lists the gem it holds" '    + gem "evil"'
+printf '* binary\n' > "$R/.git/info/attributes"; rep; rm -f "$R/.git/info/attributes"
+lines_ok "the same with * binary in .git/info/attributes" '    + gem "evil"' "code: 10 lines (+10 -0)" "test: 10 lines (+0 -10)"
+
 # 14. paths
 fx c14; wt seed.txt s; base
 wt "my dir/a b.rb" x; wt "ünï.rb" x; wt $'nl\nname.rb' x; wt $'ctl\ty/Gemfile' x; wt $'nl\ndir/Gemfile' x
@@ -276,17 +290,47 @@ test lines deleted: 0
 ci workflow files: none
 dependency lines: none"
 
-# 16. renames, with the setting that turns them off
+# 16. moves are paired by content alone, with the setting that turns git's renames off
 fx c16; git -C "$R" config diff.renames false
 wn lib/old.rb 20; wn sub/package.json 6 p; wn Gemfile 4 g; base
 git -C "$R" mv lib/old.rb lib/new.rb; sed -i.bak '5s/.*/changed/' "$R/lib/new.rb"; rm "$R/lib/new.rb.bak"
 git -C "$R" mv sub/package.json package.json
 git -C "$R" mv Gemfile sub/Gemfile; printf 'gem "rack"\n' >> "$R/sub/Gemfile"
 commit; rep
-lines_ok "a renamed file with one changed line counts 2" "code: 3 lines (+2 -1)"
-from_is "a moved manifest lists only its added line" "dependency lines:" "dependency lines:
+lines_ok "an edited move is a delete plus an add: 20+5 added, 20+4 deleted, the unchanged move counts nothing" "code: 49 lines (+25 -24)"
+from_is "an edited moved manifest lists every line of the new file" "dependency lines:" "dependency lines:
   sub/Gemfile
+    + g1
+    + g2
+    + g3
+    + g4
     + gem \"rack\""
+fx c16d; wn lib/old.rb 20; wn sub/package.json 6 p; wn docs/a.md 3; base
+git -C "$R" mv lib/old.rb lib/new.rb; git -C "$R" mv sub/package.json package.json; git -C "$R" mv docs/a.md docs/b.md
+commit; rep
+same "an unchanged move within a class counts zero and lists nothing" "code: 0 lines (+0 -0)
+test: 0 lines (+0 -0)
+docs: 0 lines (+0 -0)
+code over 2000: no
+test lines deleted: 0
+ci workflow files: none
+dependency lines: none"
+fx c16e; wn pkg/foo_test.go 40; base
+git -C "$R" mv pkg/foo_test.go pkg/foo_test.go.disabled; commit; rep
+lines_ok "a test renamed out of its class is a delete plus an add" "test: 40 lines (+0 -40)" "test lines deleted: 40" "code: 40 lines (+40 -0)"
+fx c16f; wn deps.txt 3 d; base
+git -C "$R" mv deps.txt requirements.txt; commit; rep
+from_is "a file moved unchanged to a manifest name lists its lines" "dependency lines:" "dependency lines:
+  requirements.txt
+    + d1
+    + d2
+    + d3"
+fx c16g; for k in a b; do wn "lib/$k.rb" 5 s; done; base
+for k in a b; do git -C "$R" mv "lib/$k.rb" "lib/n$k.rb"; done; commit; rep
+lines_ok "two identical files moved are two moves" "code: 0 lines (+0 -0)"
+fx c16h; for k in a b c; do wn "lib/$k.rb" 5 s; done; base
+for k in a b; do git -C "$R" mv "lib/$k.rb" "lib/n$k.rb"; done; git -C "$R" rm -q lib/c.rb; commit; rep
+lines_ok "three identical files deleted and two added pair two and delete one" "code: 5 lines (+0 -5)"
 
 # 16a. one record, one file
 fx c16a; ln -s nope "$R/Gemfile"; base
@@ -299,7 +343,7 @@ from_is "only the file's lines are listed" "dependency lines:" "dependency lines
     + gem \"c\""
 fx c16b; wn lib/tool 20; base
 rm "$R/lib/tool"; wn lib/tool/main.rb 20; wn lib/tool/extra.rb 5 e; commit; rep
-lines_ok "a file renamed into a directory beside a new file" "code: 5 lines (+5 -0)"
+lines_ok "a file moved into a directory beside a new file" "code: 5 lines (+5 -0)"
 fx c16c; wt seed.txt s; base
 printf 'x\ny' | wf lib/nonl.rb; : | wf lib/empty.rb; commit; rep
 lines_ok "a last line without a newline counts, an empty file counts zero" "code: 2 lines (+2 -0)"
@@ -339,8 +383,13 @@ lines_ok "diff.algorithm = patience does not change the counts (myers: +4 -4)" "
 
 fx c20b; for k in a b c; do wn "lib/$k.rb" 20 "$k"; done; base
 for k in a b c; do n 20 "$k" | sed '5s/.*/changed/' | wf "lib/n$k.rb"; rm "$R/lib/$k.rb"; done
-commit; git -C "$R" config diff.renameLimit 1; rep
-lines_ok "diff.renameLimit = 1 does not turn three renames into deletions and additions" "code: 6 lines (+3 -3)"
+commit; rep; cp "$T/out" "$T/first"
+lines_ok "three edited moves are three deletes and adds" "code: 120 lines (+60 -60)"
+for v in copies true; do
+  git -C "$R" config diff.renames $v; rep
+  if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "diff.renames = $v does not change the report"
+  else _fail "diff.renames = $v does not change the report" "rc=$rc $(head -c 400 "$T/out")"; fi
+done
 
 fx c20c; wt seed.txt s; git -C "$R" add seed.txt
 git -C "$R" update-index --add --cacheinfo "160000,1111111111111111111111111111111111111111,sub1"
