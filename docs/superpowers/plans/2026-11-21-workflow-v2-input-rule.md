@@ -221,19 +221,22 @@ A path is printed with any control character replaced by `?`.
   9. CI workflow files: `.github/workflows/ci.yml`, `.gitlab-ci.yml`, `.gitlab/ci/build.yml`,
      `azure-pipelines.yml` and a deleted `.github/workflows/old.yml` are listed in path order;
      `ci.yml` at the root is not; none gives `ci workflow files: none`;
-  10. Review Focus, header: a `Gemfile` whose added line is `++ odd` is listed as `+ ++ odd`,
-      and no listed line starts with `+ ++ b/`;
+  10. Review Focus, header: a `Gemfile` existing at the base, whose one added line is
+      `++ odd`, is listed with exactly the line `+ ++ odd`, and `code: 1 lines (+1 -0)`;
   11. Review Focus, arguments: no argument, two arguments, `main..HEAD`, `...HEAD`, `main...`,
       `--output=x...HEAD` and `main...--stat` each exit 2 with a `change-facts:` line and write
       no file; `nope...HEAD` exits 2 with a `change-facts:` line and nothing from git on
       stderr; a directory that is not a repository exits 2;
-  12. Review Focus, configuration: a fixture whose `.git/config` sets `diff.external` to a
-      script that writes a marker, and a `.gitattributes` `diff=mark` driver with a `textconv`
-      that writes one: after the run no marker exists and the report is correct;
+  12. Review Focus, configuration: a head that changes a file existing at the base, in a
+      fixture whose `.git/config` sets `diff.external` to a script that writes a marker, and
+      whose `.gitattributes` says `* diff=mark` with a `diff.mark.textconv` that writes one:
+      after the run no marker exists and the report is correct;
   13. Review Focus, attributes: a head that adds one line to `Gemfile` and 10 to `app/a.rb`.
-      Take the report; then, one at a time, mark both files `binary` in an uncommitted
-      `.gitattributes`, in a staged one, in `.git/info/attributes` and in a file
-      `core.attributesFile` names, and `-diff` in `.git/info/attributes`: each report is
+      Both files exist at the base, so both go through the blob-pair diff. Take the report;
+      then, one at a time, write `* binary` (every path, so it also matches the blob ids a
+      blob-pair diff shows as names) and `Gemfile binary` with `app/a.rb binary`, each in an
+      uncommitted `.gitattributes`, in a staged one, in `.git/info/attributes` and in a file
+      `core.attributesFile` names, and `* -diff` in `.git/info/attributes`: each report is
       byte-identical to the first, with `code: 11 lines (+11 -0)` and the `Gemfile` line listed;
   14. Review Focus, paths: `my dir/a b.rb`, `ünï.rb` and a file whose name holds a newline are
       each counted once as code; the report has exactly seven top-level items;
@@ -268,7 +271,8 @@ A path is printed with any control character replaced by `?`.
 - [ ] **Step 6: Run** `./tests/run.sh change-facts hook-path missing-subject`. Expected: all
   pass; report passed/total per suite.
 - [ ] **Step 7: Revert check.** For each of: the lockfile rule (case 5), `-M` (case 16),
-  `--no-ext-diff --no-textconv` (case 12), `--text` (case 13), `--no-relative` (case 18), the
+  `--no-ext-diff` (case 12), `--no-textconv` (case 12), `--text` (case 13, its `*` rows),
+  `--no-relative` (case 18), the
   `@@` header skip (case 10), the NUL check (case 15), the blob-pair diff (replace it with a
   diff limited to the record's paths; case 16a), the `rev-parse` verification (case 11): remove
   it, see the named case fail,
