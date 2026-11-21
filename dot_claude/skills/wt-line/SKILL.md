@@ -38,9 +38,10 @@ this skill before it starts.
   against that branch (`--diff origin/<lower>...<branch>`), and its PR targets that branch with the
   merge state `hold until <lower PR> merges`. An approval is bound to its destination: the review
   against the lower branch never approves the default branch, even when the diff is the same. So
-  once the lower one has merged, Michael tells the line in one message; it rebases onto the
-  default branch if needed, retargets the PR, runs a fresh full-range pre-merge round against the
-  default branch, and only then replaces `hold` with `safe to merge` or `check first`. The gate
+  once the lower one has merged and Michael has said so in one message, the line rebases onto the
+  default branch if needed, runs a fresh full-range pre-merge round against
+  `origin/<default>...<branch>` first, and only after its approval retargets the PR and replaces
+  `hold` with `safe to merge` or `check first`, because nothing gates a retarget. The gate
   and `xreview` do not change. A stack is at most two deep: a third increment waits until the
   first has merged. The cost is named: every stacked increment needs one message from Michael and
   one extra review round, so a line stacks only when waiting for the merge would leave it idle.
@@ -49,13 +50,16 @@ this skill before it starts.
 
 A driver may brief a line as a scout. A scout attempts a hard task only to learn which files and
 problems it touches. It opens no PR, asks for no review and writes no record; its report is a
-brief for the real line (files, traps, a size estimate), and its checkout is thrown away. The
-real line never starts from the scout's code. This costs tokens and none of Michael's review time.
+brief for the real line (files, traps, a size estimate), and its checkout is thrown away. Its
+branch is named `scout/<topic>` and is never pushed. The real line never starts from the
+scout's code. This costs tokens and none of Michael's review time.
 
 ## Finishing
 
 Never run `wt-rm` or `git worktree remove`: the line's final report (the driver's, if dropped
 before hand-off) gives Michael the `wt-rm <branch>` command to run once it is merged or abandoned.
+A final report is the top-level session's report to Michael or to its driver; a subagent's
+handback to its controller is not one.
 
 **Fresh sessions.** When asking for spec sign-off and in a final report, end with one line
 suggesting `/clear` plus a paste-ready prompt (checkout, branch, artifact paths, next step).

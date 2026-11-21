@@ -67,9 +67,10 @@ a CLI against a scratch home. Record the command and what it showed in the ledge
 unexpected is a finding for the final review's fix wave. What needs Michael (an apply, an
 unsandboxed or live suite) goes in the final report as his step.
 
-Run `change-facts <base>...<head>` and record its output in the ledger. A code figure over the
-ceiling, or half again over the increment's estimate in the spec, stops the run: the proposed
-split goes to Michael, because it changes the spec.
+Run `change-facts <base>...<head>` and record its output in the ledger. For a spec with a
+`**Size:**` line, a code figure over the ceiling, or half again over the increment's estimate in
+the spec, stops the run: the proposed split goes to Michael, because it changes the spec. A spec
+without one predates v2 and is never split retroactively.
 
 ## After the run
 

@@ -64,9 +64,10 @@ description: Use before opening any merge request, pull request or issue, with g
   spec. The spec states that the package was looked up at its registry and is the intended
   one. Where the manifest pins a version, a new or bumped dependency pins a release that is at
   least seven days old, unless the bump fixes a vulnerability; the spec then says so. A tool
-  added to the Brewfile or to mise is not a dependency for Sizing: it stays a small change. In
-  the merge state's `new dependencies` field, list every line `change-facts <base>...<head>`
-  prints under `dependency lines`, or write `none`.
+  added to the Brewfile or to mise is not a dependency for Sizing: it stays a small change, but
+  its PR is always `check first`. In the merge state's `new dependencies` field, list every line
+  `change-facts <base>...<head>` prints under `dependency lines`, or write `none`; any line
+  there forces `check first`.
 
 ## The merge state
 
@@ -74,9 +75,9 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 
 ```
 **Merge:** safe to merge | check first | hold
-**Checked:** Codex pre-merge approve <nonce> on <40-character head>; Claude review <done>;
-  suite <passed/total>; CI <green | pending | none>; size <code> / <test> lines;
-  new dependencies <none | list>
+**Checked:** Codex pre-merge approve <nonce> on <40-character head> into <destination>;
+  Claude review <done>; suite <passed/total>; CI <green | pending | none>;
+  size <code> / <test> lines; tests deleted <n>; new dependencies <none | list>
 **Check by hand:** nothing | a numbered list: what to look at, how, and what he should see
 **After merge:** nothing | the commands to run
 **What and why:** at most five plain lines: what changes for a user, and why it was needed
@@ -84,15 +85,23 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
   bug fix, the test, failing before and passing after
 ```
 
-- **`safe to merge`** needs all of these: Codex's pre-merge review approved exactly this head;
-  the repository's pre-merge suite and linters passed on it; the repository's `Checks` line says
-  `strong` (below); the change touches no safety boundary as Sizing lists them; it adds no
-  dependency; it is within the size ceiling; nothing needs Michael's eyes or hands before the
-  merge; no ruling is waiting for him. With CI still running, the line says `safe to merge once
-  CI is green`.
+- **`safe to merge`** needs all of these: Codex's pre-merge review approved exactly this head
+  for this PR's or MR's destination; the repository's pre-merge suite and linters passed on it;
+  the repository's `Checks` line says `strong` (below), read from the default branch as origin
+  has it, never from the change's own head, and a change that adds or edits a `Checks` line is
+  never `safe to merge`; the change touches no safety boundary as Sizing lists them, and no agent
+  instruction text that states one: the instruction fragments, a repository's `AGENTS.md`, or a
+  skill that states a safety rule, the merge state or the `Checks` tiers; it adds no dependency
+  (the `new dependencies` field is `none`); it is within its size limit: the increment ceiling
+  when the change has a signed spec, the small-change limit of Sizing otherwise, as
+  `change-facts` reports the code figure; nothing needs Michael's eyes or hands before the merge;
+  no ruling is waiting for him. With CI still running, the line says `safe to merge once CI is
+  green`.
 - **`check first`** is everything else that is ready, and `Check by hand` is then never empty.
-  A change that touches a safety boundary, adds a dependency or lives in a `weak` repository is
-  always `check first`.
+  A change that touches a safety boundary, adds a dependency (any line in `new dependencies`, a
+  Brewfile or mise tool included) or lives in a `weak` repository is always `check first`. So is
+  a change that deletes test lines (the `test lines deleted` figure of `change-facts`): it lists
+  them under `Check by hand`.
 - **`hold`** means do not merge yet, with the reason: stacked on an open PR, waiting for his
   manual test, waiting for another repository's MR.
 - **What it is.** The state is the author's summary of recorded facts. It is not a gate and not
@@ -100,9 +109,11 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
   merges is unchanged: Michael does, and an agent only where he asks for it in that
   conversation, through the pinned pre-merge gate, as the `cross-review` skill already says.
 - **Where each `Checked` fact comes from.** The facts come from tools, not from the agent's
-  memory: the nonce from
-  `xreview receipts`, the size and dependency lines from `change-facts`, the totals from the
-  suite's own output. Leave no fact out of the block: a missing one is never `safe to merge`.
+  memory: the nonce and
+  the destination from `xreview receipts`, the size, tests-deleted and dependency lines from
+  `change-facts`, the totals from the suite's own output. The `Claude review` fact is the verdict
+  of the `sp-reviewer` or `sp-architect` run on this head, never the author session's own
+  reading. Leave no fact out of the block: a missing one is never `safe to merge`.
 
 ## Bugs that escaped
 
@@ -114,8 +125,9 @@ bug in this sense and gets no trailer.
 Bug-introduced-by: <full commit id, or PR/MR reference, or unknown>
 ```
 
-The trailer works on every forge and needs no labels. Where the reference is known, it shows
-which change let the bug through, including whether its PR said `safe to merge`.
+`unknown` is allowed only with one line saying what was searched (for example `git log -S`,
+blame). The trailer works on every forge and needs no labels. Where the reference is known, it
+shows which change let the bug through, including whether its PR said `safe to merge`.
 
 ## Checks
 

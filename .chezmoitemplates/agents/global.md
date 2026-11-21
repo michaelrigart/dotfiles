@@ -83,8 +83,8 @@ live, what is tracked and when each is committed never vary per repository.
 - Test behaviour, not wording; extend a case before adding one. Logic and bug fixes are
   test-first; UI and glue code need a pass/fail check you can run, not a unit test per line.
   A real bug fix ships with a test; a review finding, only if its bug could plausibly return. Each
-  test passes the revert check (revert the fix, see it fail, restore it). Never special-case code
-  to pass a test; report it.
+  test or check passes the revert check (revert the change, see it fail, restore it). Never
+  special-case code to pass a test; report it.
 - Disagree when you have reason to (a mistaken request, a weak spec, a stale decision, a wrong
   review finding): say it once, with evidence, then follow Michael's call.
 

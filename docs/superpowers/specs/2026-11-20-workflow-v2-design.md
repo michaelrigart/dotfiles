@@ -1,6 +1,6 @@
 # Workflow v2: smaller increments, shorter fix chains, a merge state, an input rule
 
-**Status:** Implemented (increment 1 on branch `feat/workflow-v2`, increment 2 on
+**Status:** Implemented (increment 1 on branch `feat/workflow-v2`, PR #33 for increment 1, increment 2 on
 `feat/workflow-v2-input-rule`, increment 3 with the queue on `feat/workflow-v2-switch`)
 **Sign-off:** Michael, 2026-11-20, in the line's own pane, with the eight decisions under Decisions.
 Codex approved the spec in round 3 (xr-1795214348-4c57c9f3).
@@ -204,8 +204,9 @@ The six steps of H2, with what v2 changes at each. Everything not named stays as
   merge state `hold until <lower PR> merges`. An approval is bound to its destination: the review
   against the lower branch never approves the default branch, even when the diff is the same. So
   once the lower one has merged, Michael tells the line in one message; it rebases onto the
-  default branch if needed, retargets the PR, runs a fresh full-range pre-merge round against the
-  default branch, and only then replaces `hold` with `safe to merge` or `check first`. The gate
+  default branch if needed, runs a fresh full-range pre-merge round against
+  `origin/<default>...<branch>` first, and only after its approval retargets the PR and replaces
+  `hold` with `safe to merge` or `check first`, because nothing gates a retarget. The gate
   and `xreview` do not change. A stack is at most two deep: a third increment waits until the
   first has merged. The cost is named: every stacked increment needs one message from Michael and
   one extra review round, so a line stacks only when waiting for the merge would leave it idle.
@@ -279,9 +280,9 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 
 ```
 **Merge:** safe to merge | check first | hold
-**Checked:** Codex pre-merge approve <nonce> on <40-character head>; Claude review <done>;
-  suite <passed/total>; CI <green | pending | none>; size <code> / <test> lines;
-  new dependencies <none | list>
+**Checked:** Codex pre-merge approve <nonce> on <40-character head> into <destination>;
+  Claude review <done>; suite <passed/total>; CI <green | pending | none>;
+  size <code> / <test> lines; tests deleted <n>; new dependencies <none | list>
 **Check by hand:** nothing | a numbered list: what to look at, how, and what he should see
 **After merge:** nothing | the commands to run
 **What and why:** at most five plain lines: what changes for a user, and why it was needed
@@ -535,8 +536,8 @@ below and names it; it never cuts a clause.
 
 **Triggers.** A moved rule must still load when it binds, so each trigger names every moment:
 
-- `wt-line`: before opening, briefing, stacking or finishing a line, and when asking for sign-off.
-  The line's own session meets "finishing" and "asking for sign-off", which is where stacking,
+- `wt-line`: before opening, briefing, stacking or finishing a line, asking for sign-off or a
+  final report. The line's own session meets "finishing" and "asking for sign-off", which is where stacking,
   the `wt-rm <branch>` line of the final report and Fresh sessions bind.
 - `design-records`: creating, updating, reviewing, completing, abandoning or deleting a spec or
   plan, setting
@@ -594,7 +595,7 @@ and in Sizing's list of safety boundaries, after "migrations": "a new dependency
 >   Redis and storage. Every new branch in `~/Code` or the dotfiles is one, small changes and
 >   increments included: never a plain branch or a harness worktree there, and
 >   `using-git-worktrees` takes `wt` as declared, without asking. Load the `wt-line` skill before
->   opening, briefing, stacking or finishing a line, and when asking for sign-off. Never run
+>   opening, briefing, stacking or finishing a line, asking for sign-off or a final report. Never run
 >   `wt-rm` or `git worktree remove`.
 
 `codex.md`:

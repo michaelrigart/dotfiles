@@ -11,9 +11,9 @@ Every change except a small one (see Sizing) has a spec and a plan, versioned wi
 
 ## Size and increments
 
-Every spec has a `**Size:**` line: the estimated lines of non-test code (added plus deleted; design records and other docs not counted) and what the estimate rests on, such as the files it expects to touch or a comparable earlier change. Michael never produces or checks the number; it is there so the split happens before the code exists.
+Every spec has a `**Size:**` line: the estimated lines of non-test code (added plus deleted; design records and other docs not counted) and what the estimate rests on, such as the files it expects to touch or a comparable earlier change. Michael never has to produce or check this number; it is there so the split happens before the code exists.
 
-A spec whose estimate is over about 500 lines has an `## Increments` section. Each increment has a name, what it delivers, its own estimate, and one sentence on why the default branch works once it is merged alone. Aim for a few hundred lines per increment. About 2,000 is the ceiling: an increment estimated over it is split again. If one cannot be split (a generated file, a mechanical rename), the spec says why, and that exception is part of what Michael signs.
+A spec whose estimate is over about 500 lines has an `## Increments` section. Each increment has a name, what it delivers, its own estimate, and one sentence on why the default branch works once it is merged alone. Aim for a few hundred lines per increment. About 2,000 is the ceiling: an increment estimated over it is split again. If one truly cannot be split (a generated file, a mechanical rename), the spec says why, and that exception is part of what Michael signs.
 
 Work that needs several pieces before anything works is still split: the early increments merge behind a flag, or unreferenced. The spec says which, and names the increment that turns it on.
 
