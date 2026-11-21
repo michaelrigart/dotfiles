@@ -144,12 +144,13 @@ dot_config/zsh/config	zsh	zsh-config	zsh-config
 dot_config/zsh/functions	zsh	wt-functions	wt-functions,chezmoi-wrapper,dev,zshrc-reload,dev-topology,herdr-app
 dot_config/zsh/zshenv	zsh	zshenv	zshenv,wt-functions,zshrc
 dot_local/bin/executable_agent-text-scan	py	agent-text-scan	agent-text-scan,xreview,hook-path
-dot_local/bin/executable_change-facts	py	change-facts	change-facts,hook-path
+dot_local/bin/executable_change-facts	py	change-facts	change-facts,hook-path,merge-state
 dot_local/bin/executable_codex	sh	codex-launcher	codex-launcher,codex-code-mode-host,hook-path
 dot_local/bin/executable_codex-code-mode-host	sh	codex-code-mode-host	codex-code-mode-host,hook-path
 dot_local/bin/executable_codex-daemon	sh	codex-daemon	codex-daemon,codex-code-mode-host,hook-path
 dot_local/bin/executable_codex-memory-share	bash	codex-memory-share	codex-memory-share
 dot_local/bin/executable_ha-mcp	sh	ha-mcp	ha-mcp,hook-path
+dot_local/bin/executable_merge-state	py	merge-state	merge-state,hook-path
 dot_local/bin/executable_review	bash	review	review,hook-path
 dot_local/bin/executable_sdd-clean	bash	sdd-clean	sdd-clean,hook-path
 dot_local/bin/executable_ssh-sandbox-proxy	bash	ssh-sandbox-proxy	ssh-sandbox-proxy,hook-path
