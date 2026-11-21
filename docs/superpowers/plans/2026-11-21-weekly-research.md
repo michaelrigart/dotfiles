@@ -251,8 +251,11 @@ The pinned skills' releases are left out: the `skill-updates` workflow already r
   - stdin holds the prompt text, every source id, the fenced `GLOBAL.md` and spec, and names a
     spec the front matter lists but the folder lacks;
   - init check, one case each, all ending in `result=failed`, no note, and the stub killed
-    before it prints its result: a third tool, an MCP server, a plugin, a skill, a memory path,
-    `apiKeySource` other than `none`;
+    before it prints its result: a third tool, an MCP server, a skill, a slash command, a
+    plugin whose `path` is not `builtin`, an agent outside the fixture's six (`claude`,
+    `Explore`, `general-purpose`, `Plan`, `statusline-setup`, `web-fetch`), a non-empty
+    `memory_paths`, `apiKeySource` other than `none`; the unchanged fixture passes (its six
+    built-in plugins and six agents, and no memory field at all);
   - result checks, each a failed run: non-zero exit, `is_error`, a non-empty
     `permission_denials`, a missing heading, an unparsable "Seen" table, five proposals, 201
     body lines, a body with `## Run`, with `## Quiet sources`, with `## Source list upkeep`, or
