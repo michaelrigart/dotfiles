@@ -261,11 +261,13 @@ things are enforced outside the model. For this job:
     permission rules from them), no MCP server, no skills or commands, and no session saved.
     The machine-wide managed settings still apply; they carry no hook.
 - **Two independent checks.** The suite pins the argument list and the environment the wrapper
-  passes. At run time the wrapper reads the `system/init` event and kills the run before the
-  first model call unless the tools are exactly the two, the MCP servers, skills and commands
+  passes. At run time the wrapper reads the `system/init` event as it arrives and kills the run,
+  never using its result, unless the tools are exactly the two, the MCP servers, skills and commands
   it lists are empty, every plugin it lists is one built into the binary (path `builtin`),
   every agent is one of the binary's own, no memory path is loaded and the credential is the
-  login, not a key (the pattern `review` uses for its credential check). Measured in the plan's
+  login, not a key (the pattern `review` uses for its credential check). The check comes after
+  the start, so it detects a drifted start rather than preventing one; the flags and the
+  environment are what prevent it. Measured in the plan's
   Task 2 on CLI 2.1.327: the isolated start still lists six built-in plugins and six built-in
   agents, which no flag removes; the model holds no tool to start an agent. The wrapper holds
   the six agent names, so a Claude Code upgrade that adds one fails the run until the list is
