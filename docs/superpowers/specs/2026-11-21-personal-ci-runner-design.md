@@ -1,6 +1,6 @@
 # A self-hosted GitLab CI runner on hercules for private personal projects
 
-**Status:** Approved
+**Status:** In progress (branch `feat/personal-ci-runner`)
 **Date:** 2026-11-21
 **Branch:** `feat/personal-ci-runner`
 **Sign-off:** Michael, 2026-11-21 (the nine rulings below as written, hercules over the rented
@@ -229,8 +229,11 @@ in section 7 shows.
   three conditions of section 1 and the runner is locked to it; no agent registers, unlocks or
   assigns a runner, or runs a job with privileged mode.
 - `LIMA_HOME`: Lima keeps its instances in `~/.lima`, against the strict-XDG rule. `zshenv` sets
-  `LIMA_HOME` to `~/.local/share/lima` if the builder confirms the autostart agent honours it;
-  otherwise `~/.lima` stays and the MR says so.
+  `LIMA_HOME` to `~/.local/share/lima`, and the autostart agent records it: in Lima v2.3.0,
+  `pkg/autostart/managers.go` fills the plist's `LimaHome` from `dirnames.LimaDir()`, which
+  returns `$LIMA_HOME` when set, and the plist template
+  `pkg/autostart/launchd/io.lima-vm.autostart.INSTANCE.plist` writes it as the agent's
+  `LIMA_HOME` environment variable.
 
 ### 6. Changes in curato (its own merge request, after sign-off)
 
@@ -257,8 +260,9 @@ After both merge requests are open; this repository's merges first.
 2. hercules: `chezmoi apply`, `brew bundle install --file ~/.config/homebrew/Brewfile`, then at
    the machine (not over ssh, so launchd sees the GUI session):
    `limactl create --name=ci ~/.config/ci-runner/lima.yaml`, `limactl start ci`,
-   `limactl autostart enable ci`. Approve Lima in Little Snitch (again after each
-   `brew upgrade lima`). Exclude Lima's instance directory from Borg and Time Machine.
+   `limactl autostart enable ci`; `plutil -p ~/Library/LaunchAgents/io.lima-vm.autostart.ci.plist`
+   shows `LIMA_HOME` as `~/.local/share/lima`; if it does not, stop and tell the line. Approve
+   Lima in Little Snitch (again after each `brew upgrade lima`). Exclude Lima's instance directory from Borg and Time Machine.
 3. Run the VM-boundary checks below.
 4. GitLab: check the three conditions of section 1. Members of the project, of each ancestor
    group and of groups shared into them; trigger tokens and schedules; visibility Private.
