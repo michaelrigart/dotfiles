@@ -172,6 +172,7 @@ for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; d
 done
 ok "a forward-hook chain of its own"    grep -Eq 'type filter hook forward priority' <<<"$nft_rules"
 ok "only out through the uplink"        grep -Eq 'oifname \$uplink ip daddr .* drop' <<<"$nft_rules"
+ok "forwarded IPv6 is dropped too"      grep -Eq '^[[:space:]]*oifname \$uplink meta nfproto ipv6 drop$' <<<"$nft_rules"
 # a predicate, not a pipeline on the helper: a pipeline would run `no` in a subshell and lose its count
 unqualified_drop() { grep -E 'drop' <<<"$nft_rules" | grep -vq 'oifname \$uplink'; }
 no "a rule without the uplink qualifier" unqualified_drop
@@ -189,6 +190,8 @@ dropin="$(guest_file /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.co
 ok "the runner requires the firewall"    grep -Eq '^Requires=.*ci-runner-firewall\.service' <<<"$dropin"
 ok "and starts after it"                 grep -Eq '^After=.*ci-runner-firewall\.service' <<<"$dropin"
 ok "the firewall unit is enabled"        grep -q 'systemctl enable ci-runner-firewall.service' "$PROVISION"
+ok "a changed firewall is reloaded"      grep -q 'systemctl restart ci-runner-firewall.service' "$PROVISION"
+ok "provisioning ends by starting the runner" grep -qx 'systemctl start gitlab-runner' "$PROVISION"
 
 : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' "$CLEAN" 2> /dev/null
 is "cleanup succeeds" "$?" 0
@@ -201,6 +204,11 @@ ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner'
 : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' KERNEL_PENDING=1 "$CLEAN" 2> /dev/null
 ok "a pending kernel reboots"           grep -qx 'reboot' "$ROOT/calls"
 no "instead of starting the runner"     grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+# a failure is not hidden by a reboot: the kernel waits for the next clean week
+: > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='runner-cache-1' KERNEL_PENDING=1 "$CLEAN" 2> /dev/null
+is "a leftover volume with a pending kernel fails the unit" "$?" 1
+no "and does not reboot"                grep -qx 'reboot' "$ROOT/calls"
+ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
 # every failure keeps its status and still brings the runner back
 for failing in 'rm' 'system prune' 'volume prune'; do
   : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' DOCKER_FAIL="$failing" "$CLEAN" 2> /dev/null
@@ -213,6 +221,7 @@ is "a failed reboot fails the unit"     "$?" 1
 ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
 timer="$(guest_file /etc/systemd/system/ci-runner-cleanup.timer)"
 ok "weekly, at night" grep -Eq '^OnCalendar=Sun \*-\*-\* 04:00' <<<"$timer"
+ok "a missed run happens at the next boot" grep -qx 'Persistent=true' <<<"$timer"
 
 printf '\n%d/%d passed\n' "$pass" "$((pass + fail))"
 [ "$fail" -eq 0 ]
