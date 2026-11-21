@@ -1,6 +1,6 @@
 # Native SSH agent for agents and shells
 
-**Status:** In progress
+**Status:** Implemented — PR #40 (https://github.com/michaelrigart/dotfiles/pull/40)
 **Signed off:** Michael, 2026-11-21, with the key list as proposed.
 **Amended:** 2026-11-21, after the final review: AddKeysToAgent step, the agent-contents probe, and the step corrections listed in the PR.
 **Size:** about 120 lines of non-test code: one LaunchAgent plist (mostly its header comment), one

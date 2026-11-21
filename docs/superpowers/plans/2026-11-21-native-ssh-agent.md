@@ -1,5 +1,8 @@
 # Native SSH agent Implementation Plan
 
+> **Completed 2026-11-21 in PR #40. Do not run it again.** The fixes from the task, final and
+> pre-merge reviews are in the branch history and the PR's Rulings.
+
 > **For agentic workers:** run this plan with the `plan-run` skill (it overrides
 > superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax for tracking.
 
