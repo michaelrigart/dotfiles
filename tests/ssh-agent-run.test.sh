@@ -66,8 +66,9 @@ fresh_home() {
   : >"$STUB_LOG"
 }
 runit() { # runit [VAR=value...]: runs the script to the end; sets RC
-  env HOME="$H" PINNED_PATH="$STUBS:/usr/bin:/bin" STUB_LOG="$STUB_LOG" "$@" /bin/bash "$SCRIPT" >/dev/null 2>&1
+  /usr/bin/timeout 20 env HOME="$H" XDG_STATE_HOME="$T/xdg" PINNED_PATH="$STUBS:/usr/bin:/bin" STUB_LOG="$STUB_LOG" "$@" /bin/bash "$SCRIPT" >/dev/null 2>&1
   RC=$?
+  [ "$RC" -ne 124 ] || _fail "script finished within 20 s" "timed out (rc 124)"
 }
 adds() { grep '^add ' "$STUB_LOG" | sed "s|^add $SOCK -q $H/.ssh/||"; }
 
@@ -88,18 +89,22 @@ check "loads all three listed keys in order" "$(adds | tr '\n' ' ')" "michael vi
 fresh_home
 runit STUB_AGENT_LIFE=1 STUB_AGENT_RC=7
 check "exits with the agent's status" "$RC" "7"
+if [ -e "$SOCK" ] || [ -L "$SOCK" ]; then _fail "socket is removed after the agent exits" "still there"; else _pass "socket is removed after the agent exits"; fi
+if [ -e "$T/xdg" ]; then _fail "XDG_STATE_HOME is ignored" "$(ls -A "$T/xdg")"; else _pass "XDG_STATE_HOME is ignored"; fi
 
 fresh_home
 mkdir -p "$H/.local/state/ssh-agent"
+chmod 755 "$H/.local/state/ssh-agent"
 ln -s "$target" "$SOCK"
 runit STUB_AGENT_LIFE=1 STUB_AGENT_RC=7
 check "stale socket is removed: rc" "$RC" "7"
+check "existing state directory is tightened to mode 700" "$(stat -f %Lp "$H/.local/state/ssh-agent")" "700"
 check "stale socket is removed: agent started" "$(grep -c '^agent-exists' "$STUB_LOG")" "0"
 
 fresh_home
 mkdir -p "$H/.local/state/ssh-agent"
 echo planted >"$SOCK"
-runit
+runit STUB_AGENT_LIFE=1 STUB_AGENT_RC=7
 check "regular file at the socket path is refused: rc" "$RC" "1"
 check "regular file at the socket path is refused: no agent" "$(grep -c '^agent ' "$STUB_LOG")" "0"
 check "regular file at the socket path is kept" "$(cat "$SOCK" 2>/dev/null)" "planted"
@@ -120,15 +125,18 @@ if grep -q 'STUBSECRET' "$LOGF" 2>/dev/null; then _fail "failed add does not lea
 check "failed add: the rest still load" "$(adds | tr '\n' ' ')" "michael viumore_rsa "
 
 fresh_home
-env HOME="$H" PINNED_PATH="$STUBS:/usr/bin:/bin" STUB_LOG="$STUB_LOG" /bin/bash "$SCRIPT" >/dev/null 2>&1 &
+/usr/bin/timeout 20 env HOME="$H" XDG_STATE_HOME="$T/xdg" PINNED_PATH="$STUBS:/usr/bin:/bin" STUB_LOG="$STUB_LOG" /bin/bash "$SCRIPT" >/dev/null 2>&1 &
 pid=$!
 i=0
 while [ "$i" -lt 100 ] && [ "$(grep -c '^add ' "$STUB_LOG")" -lt 2 ]; do /bin/sleep 0.1; i=$((i + 1)); done
 kill -TERM "$pid" 2>/dev/null
 wait "$pid"; RC=$?
+[ "$RC" -ne 124 ] || _fail "SIGTERM: finished within 20 s" "timed out (rc 124)"
 check "SIGTERM: rc 143" "$RC" "143"
 check "SIGTERM stops the agent" "$(grep -c '^agent-term' "$STUB_LOG")" "1"
 if [ -e "$SOCK" ] || [ -L "$SOCK" ]; then _fail "SIGTERM removes the socket" "still there"; else _pass "SIGTERM removes the socket"; fi
+
+if [ -e "$T/xdg" ]; then _fail "XDG_STATE_HOME is ignored (SIGTERM run too)" "$(ls -A "$T/xdg")"; else _pass "XDG_STATE_HOME is ignored (SIGTERM run too)"; fi
 
 H="$T/plisthome"; mkdir "$H"
 P="$T/ssh-agent.plist"

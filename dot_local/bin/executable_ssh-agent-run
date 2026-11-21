@@ -2,8 +2,8 @@
 # Runs our own ssh-agent on a fixed socket and loads a fixed key list, for the
 # be.netronix.ssh-agent LaunchAgent (spec 2026-11-21-native-ssh-agent, section 1).
 # Exits with the agent's status (KeepAlive restarts it and reloads the keys); 1 when the socket
-# path holds a non-socket or the socket does not appear within 5 s; 143 on SIGTERM, after
-# stopping the agent and removing the socket. Errors go to error.log, never key material or
+# path holds a non-socket or the socket does not appear within 5 s; 143 on SIGTERM. The socket
+# is removed whenever the agent stops. Errors go to error.log, never key material or
 # ssh-add's output. PINNED_PATH is for the suite only. Bash 3.2 compatible.
 PATH=${PINNED_PATH:-/usr/bin:/bin}; export PATH
 set -u
@@ -54,5 +54,6 @@ done
 
 wait "$agent"
 rc=$?
+rm -f "$sock"
 logline "ssh-agent exited with status $rc"
 exit "$rc"
