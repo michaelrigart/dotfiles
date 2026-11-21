@@ -1,4 +1,4 @@
-#!/usr/bin/env -S python3 -I
+#!/usr/bin/python3 -I
 """change-facts <base>...<head>
 
 Print the measured facts of the change since the merge base of two commits: lines added and
@@ -7,7 +7,8 @@ lines deleted, CI workflow files and the added lines of dependency manifests. It
 nothing: the exit status is 0 whatever the change holds, and 2 only for a usage error, a
 directory that is not a git repository or a side that names no commit. It reads only the two
 commits' history, never the work tree, the index or the network, and runs no command that a
-repository's configuration names.
+repository's configuration names. Pinned to the system Python 3.9 (`/usr/bin/python3`): an
+untrusted mise config in the repository cannot stop or steer it, and nothing newer than 3.9 is used.
 """
 import fnmatch
 import re
@@ -16,7 +17,10 @@ import sys
 import unicodedata
 
 GIT = ["git", "--no-pager", "-c", "core.fsmonitor=false"]
-DIFF = ["diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-relative", "-M"]
+DIFF = [
+    "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-relative",
+    "--diff-algorithm=myers", "-M",
+]
 USAGE = "usage: change-facts <base>...<head>"
 CEILING = 2000
 SUBMODULE = b"160000"

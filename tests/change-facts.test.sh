@@ -17,16 +17,6 @@ trap 'rm -rf "$T"' EXIT
 export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
 printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n' > "$GIT_CONFIG_GLOBAL"
 
-# The script's shebang finds python3 on PATH, and a mise shim there would read the fixture's own
-# mise config, which no test fixture can trust; hand it the first python3 that is not a shim.
-mkdir "$T/bin"
-for p in $(type -ap python3); do
-  case $p in */mise/shims/*) continue;; esac
-  ln -s "$p" "$T/bin/python3"; break
-done
-[ -e "$T/bin/python3" ] || { echo "no python3 outside a mise shim" >&2; exit 2; }
-export PATH="$T/bin:$PATH"
-
 R=""
 rc=0
 # fx <name>: a fresh repository on main; $R names it.
@@ -331,6 +321,19 @@ git -C "$R" config diff.relative true
 runin "$R/app" base...HEAD
 if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "diff.relative does not change the report from a subdirectory"
 else _fail "diff.relative does not change the report from a subdirectory" "rc=$rc $(head -c 400 "$T/out") | $(cat "$T/err")"; fi
+
+# 19. an untrusted mise config in the work tree cannot stop the script
+fx c19; wn app/a.rb 2; wt .mise.toml 'not toml ['; wt .tool-versions 'python 2.7.99'; base; wn app/a.rb 5; commit; rep
+lines_ok "a work tree with an untrusted .mise.toml and a .tool-versions naming a missing python" "code: 3 lines (+3 -0)"
+
+# 20. diff.algorithm cannot change the counts
+fx c20; printf 'x\nc\nc\nb\nb\nc\nb\n' | wf app/a.rb; base
+printf 'c\na\nc\na\nx\na\nc\n' | wf app/a.rb; commit
+git -C "$R" config diff.algorithm patience
+if [ "$(git -C "$R" diff --numstat base...HEAD | cut -f1,2)" = "$(printf '5\t5')" ]; then _pass "control: patience counts this pair as +5 -5"
+else _fail "control: patience counts this pair as +5 -5" "$(git -C "$R" diff --numstat base...HEAD)"; fi
+rep
+lines_ok "diff.algorithm = patience does not change the counts (myers: +4 -4)" "code: 8 lines (+4 -4)"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
