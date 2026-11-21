@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests what a suite does when a file it reads is gone: it must stop with exit 2 before it
-# asserts anything (tests/AGENTS.md, "A new suite"). Each row hides one file in a throwaway
-# copy of the tracked tree and runs one suite there.
+# asserts anything (tests/AGENTS.md, "A new suite"). Each case comes from a guard role in
+# tests/subjects/<suite>.tsv: it hides that file in a throwaway copy of the tracked tree and
+# runs the suite there.
 #
 # Bugs caught: a guard that exits 1, which reads as a failed assertion where there is none; and
 # a suite with no guard for a file, whose absence checks then pass on nothing.
@@ -59,59 +60,20 @@ missing() {
   verdict "$1 stops with exit 2 when ${2##*/} is missing" "$2"
 }
 
-RELAY="Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay"
-missing agent-instructions    AGENTS.md
-missing agent-instructions    tests/AGENTS.md
-missing alfred-relay          "$RELAY/info.plist"
-missing alfred-relay          "$RELAY/From Codex.json"
-missing alfred-relay          "$RELAY/From Claude Code.json"
-missing change-facts          dot_local/bin/executable_change-facts
-missing claude-settings       dot_config/agents/plugins.conf
-missing codex-code-mode-host  dot_local/bin/executable_codex-code-mode-host
-missing codex-code-mode-host  dot_local/bin/executable_codex
-missing codex-code-mode-host  dot_local/bin/executable_codex-daemon
-missing codex-config          dot_codex/modify_private_config.toml
-missing codex-config          dot_codex/modify_private_hooks.json
-missing codex-memory-share    dot_local/bin/executable_codex-memory-share
-missing ssh-agent-run          dot_local/bin/executable_ssh-agent-run
-missing ssh-agent-run          Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl
-missing preflight-ssh-agent   .scripts/preflight-ssh-agent.sh
-missing dev                   dot_config/zsh/functions
-missing dev                   dot_config/herdr/executable_layout.sh
-missing dev                   dot_config/herdr/executable_tab-goto.sh
-missing dev                   dot_config/herdr/config.toml
-missing dev                   dot_config/nvim/lua/plugins/smart-splits.lua
-missing git-forge-guard       dot_claude/executable_git-forge-guard.sh
-missing herdr-app             dot_config/herdr-app/bin/executable_retire
-missing herdr-app             dot_config/herdr-app/bin/executable_checkout-spaces
-missing herdr-app             dot_config/zsh/functions
-missing herdr-app-resume      dot_config/herdr-app/bin/executable_session-running
-missing herdr-app-resume      dot_config/herdr-app/mods/resume/decide.js
-missing herdr-app-xreview     dot_config/herdr-app/bin/executable_xreview-app
-missing xreview-app-pane      dot_local/bin/executable_xreview-app-pane
-missing xreview-app-pane      dot_local/bin/executable_xreview
-missing herdr-phase           dot_config/herdr/executable_phase.sh
-missing merge-state           dot_local/bin/executable_merge-state
-missing merge-state           dot_local/bin/executable_change-facts
-missing live-rm-denies        dot_claude/modify_private_settings.json
-missing live-weekly-research   dot_local/bin/executable_weekly-research
-missing live-weekly-research   dot_local/bin/executable_weekly-research-proxy
-missing live-weekly-research   dot_config/weekly-research/network.sb
-missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
-missing run                   tests/subjects
-missing weekly-research       dot_local/bin/executable_weekly-research
-missing weekly-research       dot_local/bin/executable_weekly-research-proxy
-missing weekly-research       dot_config/weekly-research/prompt.md
-missing weekly-research       dot_config/weekly-research/sources.tsv
-missing weekly-research       dot_config/weekly-research/network.sb
-missing weekly-research       tests/fixtures/weekly-research/init.json
-missing weekly-research-proxy dot_local/bin/executable_weekly-research-proxy
-missing weekly-research-schedule Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl
-missing weekly-research-schedule .chezmoiignore
-missing weekly-research-schedule .chezmoidata/machines.toml
-missing worktree-guard        dot_claude/executable_worktree-guard.sh
-missing xreview-skill         .chezmoitemplates/agents/global.md
-missing zshrc                 dot_config/zsh/zshenv
+# One case per guard row of every suite's subject file, read from the copy so the working
+# tree's files are what is tested. The rows come in on descriptor 3, which no suite inherits
+# as its stdin.
+guards=0
+for subjects in "$COPY"/tests/subjects/*.tsv; do
+  [ -f "$subjects" ] || continue
+  suite=$(basename "$subjects" .tsv)
+  while IFS=$'\t' read -r file lang role <&3; do
+    case "$file" in ''|'#'*) continue ;; esac
+    case "$role" in *guard*) guards=$((guards + 1)); missing "$suite" "$file" ;; esac
+  done 3<"$subjects"
+done
+[ "$guards" -gt 0 ] || { echo "missing file under test: guard rows in tests/subjects" >&2; exit 2; }
+missing run tests/subjects
 
 # A missing tool is the same case: the suite cannot decide. /usr/bin and /bin hold bash but
 # no chezmoi.
