@@ -46,6 +46,10 @@ jq -c . "$FIXTURE" > "$SD/fixture.json"
 
 cat > "$SD/bin/sandbox-exec" <<'EOF'
 #!/usr/bin/env bash
+# The stubborn claude ignores TERM from its first instruction, not from the case in its own script: the clock's TERM
+# comes a fixed time after the start, and a slow start under load would otherwise be killed by it. An ignored
+# signal stays ignored across the exec below.
+read -r mode < "${0%/*}/../mode" 2>/dev/null; [ "$mode" = stubborn ] && trap '' TERM
 D=$(cd "$(dirname "$0")/.." && pwd)
 printf '%s\n' "$@" > "$D/sandbox.argv"
 while [ "$#" -gt 0 ]; do case $1 in -D|-f) shift 2 ;; *) break ;; esac; done
