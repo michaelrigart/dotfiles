@@ -1,6 +1,12 @@
 # The Lima VM of the personal GitLab CI runner (spec 2026-11-21-personal-ci-runner-design).
-# `plain` can only be chosen when the instance is created, so changing it means recreating it:
+# `limactl create` copies this file into the instance ($LIMA_HOME/ci/lima.yaml), and every start
+# provisions from that copy, so a later change to this file reaches the VM only when it is copied
+# over it with the instance stopped (the disk, and so the registration, survive):
+#   limactl stop ci && cp ~/.config/ci-runner/lima.yaml "$LIMA_HOME/ci/lima.yaml" && limactl start ci
+# then rerun the VM-boundary checks of spec section 7. `plain` is fixed when the instance is
+# created, so changing it means recreating the instance:
 #   limactl create --name=ci ~/.config/ci-runner/lima.yaml
+minimumLimaVersion: 2.3.0
 vmType: vz
 plain: true
 cpus: 4
@@ -28,10 +34,72 @@ provision:
       installed() { dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q 'ok installed'; }
 
       need=""
-      for p in ca-certificates curl gnupg; do installed "$p" || need=1; done
+      for p in ca-certificates curl gnupg nftables; do installed "$p" || need=1; done
       if [ -n "$need" ]; then
         apt-get -o DPkg::Lock::Timeout=300 update
-        apt-get -o DPkg::Lock::Timeout=300 install -y ca-certificates curl gnupg
+        apt-get -o DPkg::Lock::Timeout=300 install -y ca-certificates curl gnupg nftables
+        systemctl disable nftables.service || true
+      fi
+
+      fw_sum() { cat /etc/ci-runner/firewall.nft /usr/local/sbin/ci-runner-firewall /etc/systemd/system/ci-runner-firewall.service 2> /dev/null | cksum; }
+      fw_before=$(fw_sum)
+      put 644 /etc/ci-runner/firewall.nft <<'EOF'
+      table inet ci_runner {}
+      delete table inet ci_runner
+      table inet ci_runner {
+        chain forward {
+          type filter hook forward priority -10; policy accept;
+          oifname $uplink ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
+          oifname $uplink meta nfproto ipv6 drop
+        }
+      }
+      EOF
+
+      put 755 /usr/local/sbin/ci-runner-firewall <<'EOF'
+      #!/bin/sh
+      set -eu
+      uplink=$(ip -o route show default | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+      if [ -z "$uplink" ]; then
+        echo "ci-runner-firewall: no default route, so no uplink to protect" >&2
+        exit 1
+      fi
+      exec nft -D uplink="$uplink" -f /etc/ci-runner/firewall.nft
+      EOF
+
+      put 644 /etc/systemd/system/ci-runner-firewall.service <<'EOF'
+      [Unit]
+      Description=Keep the CI runner's containers off the local network
+      After=network-online.target
+      Wants=network-online.target
+      Before=docker.service gitlab-runner.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/ci-runner-firewall
+      ExecReload=/usr/local/sbin/ci-runner-firewall
+      ExecStop=/usr/sbin/nft delete table inet ci_runner
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      fw_after=$(fw_sum)
+
+      dropin_before=$(cksum 2> /dev/null < /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf || true)
+      put 644 /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf <<'EOF'
+      [Unit]
+      Requires=docker.service ci-runner-firewall.service
+      After=docker.service ci-runner-firewall.service
+      EOF
+      dropin_after=$(cksum < /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf)
+
+      systemctl daemon-reload
+      systemctl enable ci-runner-firewall.service
+      if [ "$fw_before" != "$fw_after" ]; then
+        systemctl reload-or-restart ci-runner-firewall.service
+      else
+        systemctl start ci-runner-firewall.service
       fi
 
       install -d -m 755 /etc/apt/keyrings
@@ -65,13 +133,13 @@ provision:
       EOF
 
       need=""
-      for p in docker-ce docker-ce-cli containerd.io gitlab-runner nftables unattended-upgrades; do
+      for p in docker-ce docker-ce-cli containerd.io gitlab-runner unattended-upgrades; do
         installed "$p" || need=1
       done
       if [ -n "$need" ]; then
         apt-get -o DPkg::Lock::Timeout=300 update
-        apt-get -o DPkg::Lock::Timeout=300 install -y docker-ce docker-ce-cli containerd.io gitlab-runner nftables unattended-upgrades
-        systemctl disable nftables.service || true
+        apt-get -o DPkg::Lock::Timeout=300 install -y docker-ce docker-ce-cli containerd.io gitlab-runner unattended-upgrades
+        apt-get -o DPkg::Lock::Timeout=300 -y full-upgrade
       fi
 
       put 644 /etc/apt/apt.conf.d/52unattended-upgrades-local <<'EOF'
@@ -141,59 +209,6 @@ provision:
       if command -v systemctl > /dev/null 2>&1; then systemctl restart gitlab-runner; fi
       EOF
 
-      fw_sum() { cat /etc/ci-runner/firewall.nft /usr/local/sbin/ci-runner-firewall /etc/systemd/system/ci-runner-firewall.service 2> /dev/null | cksum; }
-      fw_before=$(fw_sum)
-      put 644 /etc/ci-runner/firewall.nft <<'EOF'
-      table inet ci_runner {}
-      delete table inet ci_runner
-      table inet ci_runner {
-        chain forward {
-          type filter hook forward priority -10; policy accept;
-          oifname $uplink ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
-          oifname $uplink meta nfproto ipv6 drop
-        }
-      }
-      EOF
-
-      put 755 /usr/local/sbin/ci-runner-firewall <<'EOF'
-      #!/bin/sh
-      set -eu
-      uplink=$(ip -o route show default | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
-      if [ -z "$uplink" ]; then
-        echo "ci-runner-firewall: no default route, so no uplink to protect" >&2
-        exit 1
-      fi
-      exec nft -D uplink="$uplink" -f /etc/ci-runner/firewall.nft
-      EOF
-
-      put 644 /etc/systemd/system/ci-runner-firewall.service <<'EOF'
-      [Unit]
-      Description=Keep the CI runner's containers off the local network
-      After=network-online.target
-      Wants=network-online.target
-      Before=docker.service gitlab-runner.service
-
-      [Service]
-      Type=oneshot
-      RemainAfterExit=yes
-      ExecStart=/usr/local/sbin/ci-runner-firewall
-      ExecReload=/usr/local/sbin/ci-runner-firewall
-      ExecStop=/usr/sbin/nft delete table inet ci_runner
-
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-
-      fw_after=$(fw_sum)
-
-      dropin_before=$(cksum 2> /dev/null < /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf || true)
-      put 644 /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf <<'EOF'
-      [Unit]
-      Requires=docker.service ci-runner-firewall.service
-      After=docker.service ci-runner-firewall.service
-      EOF
-      dropin_after=$(cksum < /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.conf)
-
       put 755 /usr/local/sbin/ci-runner-cleanup <<'EOF'
       #!/bin/sh
       boot=${CI_RUNNER_BOOT:-/boot}
@@ -244,12 +259,6 @@ provision:
       EOF
 
       systemctl daemon-reload
-      systemctl enable ci-runner-firewall.service
       systemctl enable --now ci-runner-cleanup.timer
-      if [ "$fw_before" != "$fw_after" ]; then
-        systemctl reload-or-restart ci-runner-firewall.service
-      else
-        systemctl start ci-runner-firewall.service
-      fi
       if [ "$dropin_before" != "$dropin_after" ]; then systemctl restart gitlab-runner; fi
       systemctl start gitlab-runner

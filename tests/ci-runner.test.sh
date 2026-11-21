@@ -47,6 +47,8 @@ is "60 GiB"               "$(yaml_get 'y["disk"]')" 60GiB
 is "arm64 only"           "$(yaml_get 'y["images"].map { |i| i["arch"] }.uniq.join(",")')" aarch64
 is "every image pinned"   "$(yaml_get 'y["images"].all? { |i| i["digest"].to_s.start_with?("sha512:") }')" true
 is "no port forwards"     "$(yaml_get 'y.fetch("portForwards", []).inspect')" '[]'
+is "no extra networks"    "$(yaml_get 'y.fetch("networks", nil).to_a.inspect')" '[]'
+is "an older Lima refuses it" "$(yaml_get 'y["minimumLimaVersion"]')" 2.3.0
 is "one provision script" "$(yaml_get 'y["provision"].map { |p| p["mode"] }.join(",")')" system
 ok "the script parses"    bash -n "$PROVISION"
 no "an unquoted here-document" grep -Eq '(^|[^<])<<-?[[:space:]]*[A-Za-z_]' "$PROVISION"
@@ -106,6 +108,16 @@ echo "D. apt"
 first_line() { grep -nE "$1" "$PROVISION" | head -1 | cut -d: -f1; }
 tools_before_fetch() { [ "$(first_line 'apt-get .*install .*ca-certificates curl gnupg')" -lt "$(first_line '(curl|gpg) .*(download\.docker\.com|packages\.gitlab\.com)')" ]; }
 ok "curl, gpg and certificates are installed before a key is fetched" tools_before_fetch
+gate_before_runner() {
+  runner=$(first_line 'apt-get .*install .*gitlab-runner')
+  [ -n "$runner" ] &&
+    [ "$(first_line 'put [0-9]+ /etc/systemd/system/gitlab-runner\.service\.d/10-ci-runner\.conf')" -lt "$runner" ] &&
+    [ "$(first_line 'systemctl (start|reload-or-restart) ci-runner-firewall\.service')" -lt "$runner" ]
+}
+ok "the firewall gate is in place before the runner package is installed" gate_before_runner
+ok "nftables comes with the first install" grep -Eq 'apt-get .*install .*ca-certificates curl gnupg nftables$' "$PROVISION"
+upgrade_after_install() { [ "$(first_line 'apt-get .*full-upgrade')" -gt "$(first_line 'apt-get .*install .*gitlab-runner')" ]; }
+ok "a fresh VM is upgraded after the install" upgrade_after_install
 docker_source() {
   src="$(guest_file /etc/apt/sources.list.d/docker.sources)" || return 1
   grep -qxF 'URIs: https://download.docker.com/linux/debian' <<<"$src" &&
@@ -192,6 +204,8 @@ ok "and starts after it"                 grep -Eq '^After=.*ci-runner-firewall\.
 ok "the firewall unit is enabled"        grep -q 'systemctl enable ci-runner-firewall.service' "$PROVISION"
 ok "a changed firewall is reloaded in place" grep -q 'systemctl reload-or-restart ci-runner-firewall.service' "$PROVISION"
 ok "the unit can reload"                 grep -qx 'ExecReload=/usr/local/sbin/ci-runner-firewall' <<<"$unit"
+writes_config() { grep -Eq '(put [0-9]+|>) */etc/gitlab-runner/config\.toml' "$PROVISION"; }
+no "the provision script never rewrites config.toml" writes_config
 last_provision_line() { [ "$(grep -v '^[[:space:]]*$' "$PROVISION" | tail -n 1)" = 'systemctl start gitlab-runner' ]; }
 ok "provisioning ends by starting the runner" last_provision_line
 
