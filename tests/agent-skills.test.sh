@@ -374,7 +374,7 @@ else
     && ! printf '%s' "$out" | grep -qF "$hostile"; then
     _pass "author filter keeps a workflow issue and its own comments, drops another author's"
   else _fail "author filter keeps a workflow issue and its own comments, drops another author's" "$out"; fi
-  out=$(printf '%s' '{"author":{"login":"mallory"},"body":"'$hostile' body","comments":['"$mine,$evil"']}' | jq -c "$prog" 2>&1)
+  out=$(printf '%s' '{"author":{"login":"mallory"},"body":"'"$hostile"' body","comments":['"$mine,$evil"']}' | jq -c "$prog" 2>&1)
   if [ "$(printf '%s' "$out" | jq '.body' 2>/dev/null)" = null ] && ! printf '%s' "$out" | grep -qF "$hostile"; then
     _pass "author filter drops the body of an issue another author wrote"
   else _fail "author filter drops the body of an issue another author wrote" "$out"; fi
