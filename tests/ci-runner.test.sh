@@ -190,8 +190,10 @@ dropin="$(guest_file /etc/systemd/system/gitlab-runner.service.d/10-ci-runner.co
 ok "the runner requires the firewall"    grep -Eq '^Requires=.*ci-runner-firewall\.service' <<<"$dropin"
 ok "and starts after it"                 grep -Eq '^After=.*ci-runner-firewall\.service' <<<"$dropin"
 ok "the firewall unit is enabled"        grep -q 'systemctl enable ci-runner-firewall.service' "$PROVISION"
-ok "a changed firewall is reloaded"      grep -q 'systemctl restart ci-runner-firewall.service' "$PROVISION"
-ok "provisioning ends by starting the runner" grep -qx 'systemctl start gitlab-runner' "$PROVISION"
+ok "a changed firewall is reloaded in place" grep -q 'systemctl reload-or-restart ci-runner-firewall.service' "$PROVISION"
+ok "the unit can reload"                 grep -qx 'ExecReload=/usr/local/sbin/ci-runner-firewall' <<<"$unit"
+last_provision_line() { [ "$(grep -v '^[[:space:]]*$' "$PROVISION" | tail -n 1)" = 'systemctl start gitlab-runner' ]; }
+ok "provisioning ends by starting the runner" last_provision_line
 
 : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' "$CLEAN" 2> /dev/null
 is "cleanup succeeds" "$?" 0
@@ -219,6 +221,8 @@ done
 : > "$ROOT/calls"; PATH="$STUB:$PATH" DOCKER_VOLUMES='' KERNEL_PENDING=1 REBOOT_FAIL=1 "$CLEAN" 2> /dev/null
 is "a failed reboot fails the unit"     "$?" 1
 ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
+clean_unit="$(guest_file /etc/systemd/system/ci-runner-cleanup.service)"
+ok "the cleanup waits for provisioning" grep -qx 'After=cloud-final.service' <<<"$clean_unit"
 timer="$(guest_file /etc/systemd/system/ci-runner-cleanup.timer)"
 ok "weekly, at night" grep -Eq '^OnCalendar=Sun \*-\*-\* 04:00' <<<"$timer"
 ok "a missed run happens at the next boot" grep -qx 'Persistent=true' <<<"$timer"

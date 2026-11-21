@@ -177,6 +177,7 @@ provision:
       Type=oneshot
       RemainAfterExit=yes
       ExecStart=/usr/local/sbin/ci-runner-firewall
+      ExecReload=/usr/local/sbin/ci-runner-firewall
       ExecStop=/usr/sbin/nft delete table inet ci_runner
 
       [Install]
@@ -223,6 +224,7 @@ provision:
       put 644 /etc/systemd/system/ci-runner-cleanup.service <<'EOF'
       [Unit]
       Description=Clean the CI runner's Docker state
+      After=cloud-final.service
 
       [Service]
       Type=oneshot
@@ -245,7 +247,7 @@ provision:
       systemctl enable ci-runner-firewall.service
       systemctl enable --now ci-runner-cleanup.timer
       if [ "$fw_before" != "$fw_after" ]; then
-        systemctl restart ci-runner-firewall.service
+        systemctl reload-or-restart ci-runner-firewall.service
       else
         systemctl start ci-runner-firewall.service
       fi
