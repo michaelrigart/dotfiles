@@ -341,12 +341,19 @@ mr_desc=$(sed -n 's/^description: //p' "$mr_skill")
 if printf '%s' "$mr_desc" | grep -qF 'merge request, pull request or issue'; then
   _pass "merge-request description names issues"
 else _fail "merge-request description names issues" "description: $mr_desc"; fi
+for text in 'before reading issues, comments or reviews from a forge' 'before adding a dependency'; do
+  if printf '%s' "$mr_desc" | grep -qF -- "$text"; then _pass "merge-request description holds: $text"
+  else _fail "merge-request description holds: $text" "description: $mr_desc"; fi
+done
 for text in 'gh pr create --assignee @me' 'gh issue create --assignee @me' \
   'glab api user | jq -r .username' 'glab mr create --assignee <login>' \
   'glab issue create --assignee <login>' '--hostname <the MR' 'prints nothing or `null`, omit the flag' \
   'Azure DevOps PRs have no assignee' \
   'az boards work-item create --assigned-to me' 'create it once without the flag' \
-  'say so in your report' 'never repeat a create that already failed for the same reason'; do
+  'say so in your report' 'never repeat a create that already failed for the same reason' \
+  'gh issue list --author @me' 'gh issue list --app github-actions' 'gh pr list --author @me' \
+  'isCrossRepository' 'glab issue list --author <login>' 'glab mr list --author <login>' \
+  'az repos pr list --creator <login>' 'change-facts <base>...<head>'; do
   if grep -qF -- "$text" "$mr_skill"; then _pass "merge-request skill carries: $text"
   else _fail "merge-request skill carries: $text" "absent from $mr_skill"; fi
 done
