@@ -77,7 +77,7 @@ The spec leaves these open; each stays inside it.
    seven-day rule) and listing the added manifest lines in the PR or MR body. Increment 3's merge
    state later carries the same list in its `Checked` line.
 10. **The `merge-request` description widens,** so the skill loads when the new rules bind:
-    before reading issues or comments from a forge, and before adding a dependency. Without it
+    before reading issues or comments from a forge, and before adding or bumping a dependency. Without it
     the rules would sit in a file that never loads at that moment, which the spec names as an
     anti-goal.
 
@@ -382,7 +382,7 @@ needs the six lines Task 2 frees). It names Task 1's command and calls nothing o
     `**A new dependency is never a small change.**`).
   - `tests/agent-skills.test.sh`: beside the existing description check, the description also
     holds `before reading issues, comments or reviews from a forge` and
-    `before adding a dependency`; a behavioural case extracts the jq program from the skill
+    `before adding or bumping a dependency`; a behavioural case extracts the jq program from the skill
     (the line that starts with `["<login>"`), puts a test login in place of `<login>` and runs it
     under `jq` over two fixtures: a workflow-authored issue keeps its body and exactly the two
     comments by the test login and `github-actions`, and an issue by `mallory` has a null body
