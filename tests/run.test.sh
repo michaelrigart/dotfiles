@@ -1154,13 +1154,16 @@ if [ "$rc" = 0 ] && [ -z "$got" ]; then _pass "the subject map covers every file
 # suite; a row whose file is not a regular file; a row without three fields; a role other than
 # -, own, guard or own,guard; a file listed with two langs; a file two suites mark own.
 map_lint() {
-  local root=$1 f s tag a b
+  local root=$1 f s tag a b out files
   for f in "$root"/tests/subjects/*.tsv; do
     [ -e "$f" ] || continue
     s=$(basename "$f" .tsv)
     [ -f "$root/tests/$s.test.sh" ] || printf 'tests/subjects/%s.tsv: no suite tests/%s.test.sh\n' "$s" "$s"
   done
-  for f in "$root"/tests/subjects/*.tsv; do [ -e "$f" ] && printf '%s\0' "$f"; done | xargs -0 awk -F'\t' '
+  files=()
+  for f in "$root"/tests/subjects/*.tsv; do [ -e "$f" ] && files+=("$f"); done
+  [ ${#files[@]} -gt 0 ] || return 0
+  out=$(awk -F'\t' '
     FNR == 1 { s = FILENAME; sub(/.*\//, "", s); sub(/\.tsv$/, "", s) }
     /^#/ || $0 == "" { next }
     NF != 3 { printf "P\ttests/subjects/%s.tsv:%d: want file, lang, role\n", s, FNR; next }
@@ -1169,13 +1172,14 @@ map_lint() {
     ($1 in lang) && lang[$1] != $2 { printf "P\ttests/subjects/%s.tsv:%d: %s is %s here and %s in %s.tsv\n", s, FNR, $1, $2, lang[$1], langin[$1] }
     !($1 in lang) { lang[$1] = $2; langin[$1] = s }
     $3 ~ /^own/ { if (($1 in owner) && owner[$1] != s) printf "P\ttests/subjects/%s.tsv:%d: %s is owned by %s and %s\n", s, FNR, $1, owner[$1], s
-                  if (!($1 in owner)) owner[$1] = s }' 2>/dev/null \
-  | while IFS=$'\t' read -r tag a b; do
-      case $tag in
-        P) printf '%s\n' "$a" ;;
-        F) [ -f "$root/$b" ] || printf 'tests/subjects/%s.tsv: %s is not a file\n' "$a" "$b" ;;
-      esac
-    done
+                  if (!($1 in owner)) owner[$1] = s }' "${files[@]}" 2>/dev/null) \
+    || { echo "map_lint: awk failed on tests/subjects"; return 0; }
+  while IFS=$'\t' read -r tag a b; do
+    case $tag in
+      P) printf '%s\n' "$a" ;;
+      F) [ -f "$root/$b" ] || printf 'tests/subjects/%s.tsv: %s is not a file\n' "$a" "$b" ;;
+    esac
+  done <<<"$out"
 }
 lint_fixture() { # a clean root: two suites, two files, one owner
   local d="$T/lint"
@@ -1203,6 +1207,11 @@ lint_fixture; printf 'lib/b.sh\tsh\t-\n' >> "$T/lint/tests/subjects/x.tsv"
 lints "a file listed with two langs is reported" "tests/subjects/y.tsv:1: lib/b.sh is bash here and sh in x.tsv"
 lint_fixture; printf 'lib/a.sh\tsh\town,guard\n' >> "$T/lint/tests/subjects/y.tsv"
 lints "a file two suites mark own is reported" "tests/subjects/y.tsv:2: lib/a.sh is owned by x and y"
+# Bug caught: an awk that fails at run time read as "no problems", so a broken lint passes the real tree.
+mkdir -p "$T/awkfail"; printf '#!/bin/sh\necho "awk: stub failure" >&2\nexit 2\n' > "$T/awkfail/awk"; chmod 755 "$T/awkfail/awk"
+lint_fixture
+got="$(PATH="$T/awkfail:$PATH" map_lint "$T/lint")"
+if [ "$got" = "map_lint: awk failed on tests/subjects" ]; then _pass "an awk failure is reported, not read as no problems"; else _fail "an awk failure is reported, not read as no problems" "$(printf '%s' "$got" | tr '\n' '|')"; fi
 got="$(map_lint "$SRC")"
 if [ -z "$got" ]; then _pass "every subject file is well-formed and consistent"; else _fail "every subject file is well-formed and consistent" "$(printf '%s' "$got" | tr '\n' '|')"; fi
 # Bug caught: a heavy tag the runner's parse does not read as exactly `heavy` (one space before the

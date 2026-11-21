@@ -68,10 +68,10 @@
 # they are read NUL-delimited and compared byte for byte. A heavy suite left out prints
 # "(no subject changed since <merge base>)"; one that runs carries [needs: heavy; changed:
 # <first changed subject>(, +N more)]. Whatever the runner cannot read or decide runs every
-# heavy suite and says why in the same bracket: not a git work tree, an
-# unresolvable base, no merge base, a failing git command, or a missing tests/subjects
-# directory. A missing, empty, unreadable or malformed suite file (working tree or merge base)
-# runs that suite only. An exact name or --all
+# heavy suite and says why in the same bracket: not a git work tree, an unresolvable base, no
+# merge base, a failing git command while computing the selection, or a missing tests/subjects
+# directory. A missing, empty, unreadable or malformed suite file (working tree or merge base),
+# or a failing git read of it at the merge base, runs that suite only. An exact name or --all
 # still runs a heavy suite whatever the diff; every other gate stays.
 set -uo pipefail
 
