@@ -49,7 +49,67 @@ is "every image pinned"   "$(yaml_get 'y["images"].all? { |i| i["digest"].to_s.s
 is "no port forwards"     "$(yaml_get 'y.fetch("portForwards", []).inspect')" '[]'
 is "one provision script" "$(yaml_get 'y["provision"].map { |p| p["mode"] }.join(",")')" system
 ok "the script parses"    bash -n "$PROVISION"
-no "an unquoted here-document" grep -Eq '<<-?[A-Za-z_]' "$PROVISION"
+no "an unquoted here-document" grep -Eq '(^|[^<])<<-?[[:space:]]*[A-Za-z_]' "$PROVISION"
+
+STUB="$ROOT/stub"; mkdir -p "$STUB"
+cat > "$STUB/gitlab-runner" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$ROOT/argv"
+printf '%s' "${CI_SERVER_TOKEN:-}" > "$ROOT/env.token"
+printf '%s' "${CI_SERVER_URL:-}" > "$ROOT/env.url"
+EOF
+chmod +x "$STUB/gitlab-runner"
+export ROOT
+
+CONC="$ROOT/ci-runner-concurrency"; REG="$ROOT/ci-runner-register"
+guest_file /usr/local/sbin/ci-runner-concurrency > "$CONC"; chmod +x "$CONC"
+guest_file /usr/local/sbin/ci-runner-register > "$REG"; chmod +x "$REG"
+
+echo "B. concurrency"
+f="$ROOT/absent.toml"; "$CONC" "$f"
+is "an absent config is created" "$(cat "$f" 2>/dev/null)" 'concurrent = 2'
+printf 'concurrent = 1\ncheck_interval = 0\n\n[[runners]]\n  name = "ci"\n  token = "glrt-fixture"\n' > "$ROOT/reg.toml"
+"$CONC" "$ROOT/reg.toml"; "$CONC" "$ROOT/reg.toml"
+is "concurrent is 2"            "$(grep -c '^concurrent = 2$' "$ROOT/reg.toml")" 1
+is "nothing else changed"       "$(grep -v '^concurrent' "$ROOT/reg.toml" | shasum | cut -d' ' -f1)" \
+                                "$(printf 'check_interval = 0\n\n[[runners]]\n  name = "ci"\n  token = "glrt-fixture"\n' | shasum | cut -d' ' -f1)"
+printf '[[runners]]\n  token = "glrt-fixture"\n' > "$ROOT/noline.toml"; "$CONC" "$ROOT/noline.toml"
+is "a missing line is added first" "$(head -1 "$ROOT/noline.toml")" 'concurrent = 2'
+
+echo "C. registration"
+printf 'glrt-fixture\n' > "$ROOT/tty"; : > "$ROOT/cfg.toml"
+PATH="$STUB:$PATH" CI_RUNNER_TTY="$ROOT/tty" CI_RUNNER_CONFIG="$ROOT/cfg.toml" "$REG" > /dev/null 2>&1; rc=$?
+is "register succeeds"            "$rc" 0
+is "the token is in the environment" "$(cat "$ROOT/env.token" 2>/dev/null)" glrt-fixture
+no "the token is in argv"         grep -q glrt-fixture "$ROOT/argv"
+is "the server"                   "$(cat "$ROOT/env.url" 2>/dev/null)" https://gitlab.com
+for flag in '--non-interactive' '--executor docker' '--docker-privileged=false' \
+  '--docker-pull-policy if-not-present' '--docker-memory 2500m' '--docker-cpus 2' \
+  '--docker-service-memory 1g' '--docker-service-cpus 1' '--docker-dns 1.1.1.1' '--docker-dns 9.9.9.9'; do
+  ok "register passes $flag" grep -qF -- "$flag" "$ROOT/argv"
+done
+no "register adds a volume or socket" grep -Eq -- '--docker-volumes|docker\.sock' "$REG"
+no "register can lift privileged"     grep -Eq -- 'privileged(=| )true' "$REG"
+printf '\n' > "$ROOT/tty"; : > "$ROOT/cfg.toml"
+PATH="$STUB:$PATH" CI_RUNNER_TTY="$ROOT/tty" CI_RUNNER_CONFIG="$ROOT/cfg.toml" "$REG" > /dev/null 2>&1
+is "an empty token is refused" "$?" 1
+printf '  glrt-spaced \t\n' > "$ROOT/tty"; : > "$ROOT/cfg.toml"
+PATH="$STUB:$PATH" CI_RUNNER_TTY="$ROOT/tty" CI_RUNNER_CONFIG="$ROOT/cfg.toml" "$REG" > /dev/null 2>&1
+is "whitespace around the token is stripped" "$(cat "$ROOT/env.token" 2>/dev/null)" glrt-spaced
+printf 'glrt-other\n' > "$ROOT/tty"; printf '[[runners]]\n' > "$ROOT/cfg.toml"; : > "$ROOT/argv"
+PATH="$STUB:$PATH" CI_RUNNER_TTY="$ROOT/tty" CI_RUNNER_CONFIG="$ROOT/cfg.toml" "$REG" > /dev/null 2>&1
+is "a registered runner is not registered again" "$?" 1
+is "and gitlab-runner was not called"            "$(wc -c < "$ROOT/argv" | tr -d ' ')" 0
+
+echo "D. apt"
+first_line() { grep -nE "$1" "$PROVISION" | head -1 | cut -d: -f1; }
+tools_before_fetch() { [ "$(first_line 'apt-get install .*ca-certificates curl gnupg')" -lt "$(first_line '(curl|gpg) .*(download\.docker\.com|packages\.gitlab\.com)')" ]; }
+ok "curl, gpg and certificates are installed before a key is fetched" tools_before_fetch
+ok "docker repository"  grep -q 'download.docker.com/linux/debian' "$PROVISION"
+ok "runner repository"  grep -q 'packages.gitlab.com/runner/gitlab-runner/debian' "$PROVISION"
+u="$(guest_file /etc/apt/apt.conf.d/52unattended-upgrades-local)"
+ok "docker upgrades unattended" grep -qF 'origin=Docker' <<<"$u"
+ok "runner upgrades unattended" grep -qF 'origin=packages.gitlab.com/runner/gitlab-runner' <<<"$u"
 
 printf '\n%d/%d passed\n' "$pass" "$((pass + fail))"
 [ "$fail" -eq 0 ]

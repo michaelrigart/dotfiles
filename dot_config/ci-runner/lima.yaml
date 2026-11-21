@@ -24,3 +24,110 @@ provision:
 
       # put <mode> <path>: install stdin at <path> only when the content differs
       put() { tmp=$(mktemp); cat > "$tmp"; if ! cmp -s "$tmp" "$2"; then install -D -m "$1" "$tmp" "$2"; fi; rm -f "$tmp"; }
+
+      need=""
+      for p in ca-certificates curl gnupg; do dpkg -s "$p" > /dev/null 2>&1 || need=1; done
+      if [ -n "$need" ]; then
+        apt-get update
+        apt-get install -y ca-certificates curl gnupg
+      fi
+
+      install -d -m 755 /etc/apt/keyrings
+      if [ ! -f /etc/apt/keyrings/docker.asc ]; then
+        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+        chmod 644 /etc/apt/keyrings/docker.asc
+      fi
+      put 644 /etc/apt/sources.list.d/docker.sources <<'EOF'
+      Types: deb
+      URIs: https://download.docker.com/linux/debian
+      Suites: trixie
+      Components: stable
+      Architectures: arm64
+      Signed-By: /etc/apt/keyrings/docker.asc
+      EOF
+
+      runner_key=/etc/apt/keyrings/runner_gitlab-runner-archive-keyring.gpg
+      if [ ! -f "$runner_key" ]; then
+        key_tmp=$(mktemp)
+        curl -fsSL https://packages.gitlab.com/gpgkey/gpg.key -o "$key_tmp"
+        gpg --dearmor --yes -o "$runner_key" "$key_tmp"
+        chmod 644 "$runner_key"
+        rm -f "$key_tmp"
+      fi
+      put 644 /etc/apt/sources.list.d/runner_gitlab-runner.list <<'EOF'
+      deb [signed-by=/etc/apt/keyrings/runner_gitlab-runner-archive-keyring.gpg] https://packages.gitlab.com/runner/gitlab-runner/debian trixie main
+      EOF
+
+      need=""
+      for p in docker-ce docker-ce-cli containerd.io gitlab-runner nftables unattended-upgrades; do
+        dpkg -s "$p" > /dev/null 2>&1 || need=1
+      done
+      if [ -n "$need" ]; then
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io gitlab-runner nftables unattended-upgrades
+        systemctl disable nftables.service || true
+      fi
+
+      put 644 /etc/apt/apt.conf.d/52unattended-upgrades-local <<'EOF'
+      Unattended-Upgrade::Origins-Pattern {
+        "origin=Docker,label=Docker CE,archive=${distro_codename}";
+        "origin=packages.gitlab.com/runner/gitlab-runner,codename=${distro_codename}";
+      };
+      EOF
+      put 644 /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      EOF
+
+      put 755 /usr/local/sbin/ci-runner-concurrency <<'EOF'
+      #!/bin/sh
+      set -eu
+      file=${1:-/etc/gitlab-runner/config.toml}
+      if [ ! -f "$file" ]; then
+        mkdir -p "$(dirname "$file")"
+        printf 'concurrent = 2\n' > "$file"
+        exit 0
+      fi
+      tmp=$(mktemp "$file.XXXXXX")
+      if grep -q '^concurrent = ' "$file"; then
+        awk '/^concurrent = / { print "concurrent = 2"; next } { print }' "$file" > "$tmp"
+      else
+        { printf 'concurrent = 2\n'; cat "$file"; } > "$tmp"
+      fi
+      cmp -s "$tmp" "$file" || cat "$tmp" > "$file"
+      rm -f "$tmp"
+      EOF
+      /usr/local/sbin/ci-runner-concurrency
+
+      put 755 /usr/local/sbin/ci-runner-register <<'EOF'
+      #!/bin/sh
+      set -eu
+      config=${CI_RUNNER_CONFIG:-/etc/gitlab-runner/config.toml}
+      input=${CI_RUNNER_TTY:-/dev/tty}
+      if grep -q '^\[\[runners\]\]' "$config" 2> /dev/null; then
+        echo "ci-runner-register: $config already holds a runner; delete that runner on its page in GitLab, remove its [[runners]] block here, then run this again" >&2
+        exit 1
+      fi
+      exec 3< "$input"
+      printf 'Runner authentication token (hidden): ' >&2
+      if [ -t 3 ]; then
+        trap 'stty echo <&3' EXIT
+        stty -echo <&3
+      fi
+      token=
+      IFS= read -r token <&3 || true
+      if [ -t 3 ]; then echo >&2; fi
+      token=$(printf '%s' "$token" | tr -d '[:space:]')
+      if [ -z "$token" ]; then
+        echo "ci-runner-register: no token given" >&2
+        exit 1
+      fi
+      export CI_SERVER_URL=https://gitlab.com CI_SERVER_TOKEN="$token"
+      gitlab-runner register --non-interactive --config "$config" \
+        --executor docker --docker-image debian:trixie-slim \
+        --docker-privileged=false --docker-pull-policy if-not-present \
+        --docker-memory 2500m --docker-cpus 2 \
+        --docker-service-memory 1g --docker-service-cpus 1 \
+        --docker-dns 1.1.1.1 --docker-dns 9.9.9.9
+      if command -v systemctl > /dev/null 2>&1; then systemctl restart gitlab-runner; fi
+      EOF
