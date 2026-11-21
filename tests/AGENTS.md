@@ -9,8 +9,14 @@ A suite whose subject has moved must fail loudly, not silently pass: each one ch
 target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard
 is missing otherwise reports every "must allow" case as a pass. Exit 2, never 1: 1 means an
 assertion failed. `run.sh` prints the guard's line under the suite's `????` row.
-`tests/missing-subject.test.sh` hides one file per row and pins the exit; a
-suite whose guard changes gets a row there.
+`tests/missing-subject.test.sh` hides the file of every `guard` row in `tests/subjects/` and
+pins the exit, so a suite whose guard changes updates its roles there.
+
+Each suite that loads a file has `tests/subjects/<suite>.tsv`: one row per file, three
+tab-separated columns, `file`, `lang`, `role` (`#` and blank lines skipped). `own_suite` is
+the one suite marking a file `own`; otherwise `-`, meaning the audit never mutates it. `guard`
+marks a file whose absence the suite must turn into exit 2; `own,guard` is both. A file no
+suite loads is absent.
 
 Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
 `KEY=VALUE` status the `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
