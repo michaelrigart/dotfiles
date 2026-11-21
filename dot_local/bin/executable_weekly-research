@@ -577,7 +577,7 @@ fetched=$(awk -F'\t' 'NR == FNR { ids[$1] = 1; next } ($1 in ids) && $3 != "fetc
 # rows to $run/quiet. One line per listed id: id, checked, item_date, item_title, fails,
 # quiet_reported, broken_reported, tab separated, "-" for none. A row the list dropped is dropped.
 #   - a fetched row (dated or not) sets checked, the item and zero fails, and clears broken_reported;
-#     it clears quiet_reported too when its item is newer than the stored one or no longer quiet;
+#     it clears quiet_reported only when its item is no longer quiet (a still-old item keeps it);
 #   - a "fetch failed" row or a listed id the table omits adds one to fails and keeps the rest;
 #   - quiet: an item dated more than 182 days before today (an undated row never is);
 #   - broken: four fetch failures in a row;
@@ -612,7 +612,7 @@ update_state() {
         if (!(id in old)) { chk[id] = "-"; idate[id] = "-"; ttl[id] = "-"; fails[id] = 0; qr[id] = "-"; br[id] = "-" }
         if ((id in sd) && st[id] != "fetch failed") {
           nd = sd[id]
-          if (!isquiet(nd) || (nd != "-" && idate[id] != "-" && nd > idate[id])) qr[id] = "-"
+          if (!isquiet(nd)) qr[id] = "-"
           chk[id] = today; idate[id] = nd; ttl[id] = clean(st[id]); fails[id] = 0; br[id] = "-"
         } else if (fails[id] < 999999) fails[id]++
         q = isquiet(idate[id]); b = fails[id] >= broken_at

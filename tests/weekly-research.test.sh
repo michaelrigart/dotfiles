@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# test-slow  # 140 s on 2026-11-21
 # Tests for dot_local/bin/executable_weekly-research, the weekly research job's wrapper: it
 # validates the source list, builds the prompt, starts the fetch proxy, runs claude inside
 # sandbox-exec with a clean environment, checks the JSON stream (init first, then the result)
@@ -784,8 +785,13 @@ ok "a run with nothing new to report has no upkeep section" is "$(grep -c '^## S
 fresh
 { fill 1 1 2026-04-01; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 0
 { fill 1 1 2026-04-15; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-24 0
-ok "a newer item clears the mark even when the source is still quiet, so it is raised again" is "$(upkeep_line)" "r1 (quiet)"
-ok "and the mark carries the new date" is "$(stf r1 6)" 2026-11-24
+ok "a newer item that is still over 182 days old is not raised again" is "$(grep -c '^## Source list upkeep' "$(note)")" 0
+ok "and keeps the mark" is "$(stf r1 6)" 2026-11-23
+ok "the source stays under Quiet sources, with the newer date" has "$(note)" "- r1 — newest item 2026-04-15"
+{ fill 1 1 2026-05-26; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-25 0
+ok "an item 183 days old is still quiet: the mark stays" is "$(stf r1 6)" 2026-11-23
+{ fill 1 1 2026-05-27; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-25 0
+ok "an item 182 days old is recent: the mark is cleared" is "$(stf r1 6)" -
 
 fresh
 for d in 02 03 04; do
