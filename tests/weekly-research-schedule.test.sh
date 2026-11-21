@@ -63,6 +63,12 @@ case "$(printf '%s\n' "$other" | grep -Fx -- "$TARGET")" in "$TARGET") _pass "an
 mine="$(scratch mine "$HOST")"
 case "$(printf '%s\n' "$mine" | grep -Fx -- "$TARGET")" in "") _pass "this machine as research_host deploys the plist" ;; *) _fail "this machine as research_host deploys the plist" "$mine" ;; esac
 is "and the plist is not ignored by anything else in the scratch source" "$(printf '%s\n' "$mine" | grep -c 'weekly-research')" 0
+nodata="$ROOT/nodata"
+mkdir -p "$nodata/Library/LaunchAgents"
+cp "$IGNORE" "$nodata/.chezmoiignore"
+cp "$PLIST" "$nodata/Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl"
+unnamed="$(XDG_DATA_HOME="$ROOT/decoy" chezmoi --source "$nodata" ignored 2>&1)"
+case "$(printf '%s\n' "$unnamed" | grep -Fx -- "$TARGET")" in "$TARGET") _pass "a source without .chezmoidata renders and ignores the plist" ;; *) _fail "a source without .chezmoidata renders and ignores the plist" "$unnamed" ;; esac
 research_host="$(grep -E '^research_host *=' "$DATA" | head -1)"
 is "machines.toml names the research host" "$research_host" 'research_host = "fenrir"'
 
