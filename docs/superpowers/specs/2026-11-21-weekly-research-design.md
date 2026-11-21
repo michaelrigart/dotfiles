@@ -250,7 +250,7 @@ run succeeds. When the failure is the vault itself, it posts a macOS notificatio
 - **Billing:** the machine's Claude Code login, so the subscription. The wrapper unsets
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and the provider selectors before the run, so a
   stray key cannot bill it elsewhere. Expected cost: a few dollars of API-equivalent usage a
-  week (not measured; the first runs report it in the note's Run line).
+  week (not measured; the first runs report it in the note's `cost_usd`).
 
 ## Safety
 
@@ -405,7 +405,7 @@ permission lost later (a macOS update, a moved vault) shows in `--status` and in
 date, and step 4 applies again.
 
 **Open check at the first run:** that `--max-budget-usd` binds on a subscription login as it
-does on an API key. The Run line of the first note shows the cost; the wall clock binds either
+does on an API key. The first note's `cost_usd` shows the cost; the wall clock binds either
 way.
 
 ## Decisions
