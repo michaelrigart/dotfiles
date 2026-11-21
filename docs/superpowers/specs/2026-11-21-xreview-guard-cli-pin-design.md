@@ -1,7 +1,9 @@
 # Pre-merge gate: weigh `gh event` and move the CLI pin
 
-**Status:** Approved
+**Status:** Implemented (the pull request of branch `fix/xreview-guard-cli-pin`)
 **Date:** 2026-11-21
+**Sign-off:** Michael, 2026-11-21, with the recommendation of §4. Codex spec review: approve in
+round 1, no findings (`xr-1795221938-6e3797c7`).
 **Branch:** `fix/xreview-guard-cli-pin`, in the `wt` checkout
 `~/.local/share/chezmoi-fix-xreview-guard-cli-pin`, from `main` at `430fd6d`
 **Related:** `2026-11-12-xreview-trust-design.md` §5.5 (the canary and its procedure), §5.2 (the
@@ -21,7 +23,7 @@ Pinned on glab 1.130.0, gh 2.103.3, az 2.90.0 with azure-devops 1.0.8. Installed
 gh 2.105.0, az 2.93.0 with azure-devops 1.0.8.
 
 The suite compares all seven groups in one run and reports every one that differs; it does not stop
-at the first. Its whole output:
+at the first. Its only `INCONCLUSIVE:` line (the versions and the procedure follow it):
 
 ```
 INCONCLUSIVE: gh top level: added event; removed none
@@ -69,7 +71,7 @@ source guard:
 
 | Command | Gate |
 |---|---|
-| `gh event listen --resource <pr-url> --event <type>` | allowed (never reaches the Python grammar) |
+| `gh event listen --resource <pr-url> --event <type>` | allowed (the fast path passes it; a type or URL holding a trigger word, such as `merge_conflict`, sends it to the grammar, which finds no gated verb) |
 | `gh event subscription create --resource <pr-url> --event <type>` | allowed (`create` sends it to the grammar, which finds no gated verb) |
 | `gh event subscription delete sub_1` | allowed |
 | `gh event listen … && gh pr merge 1 --merge` | denied (not the plain form) |
