@@ -352,9 +352,9 @@ if status=$(proj_cm status); then
   if printf '%s\n' "$status" | grep -qE '^.. \.claude/projects$'; then
     _fail "status reports no change to .claude/projects" "$status"
   else _pass "status reports no change to .claude/projects"; fi
-  if printf '%s\n' "$status" | grep -qxF ' A .claude/projects/.stignore'; then
-    _pass "status adds .claude/projects/.stignore"
-  else _fail "status adds .claude/projects/.stignore" "$status"; fi
+  if [ "$status" = ' A .claude/projects/.stignore' ]; then
+    _pass "status adds .claude/projects/.stignore and nothing else"
+  else _fail "status adds .claude/projects/.stignore and nothing else" "$status"; fi
   if [ "$(proj_cm managed --include=files)" = .claude/projects/.stignore ]; then
     _pass ".stignore is the only managed file"
   else _fail ".stignore is the only managed file" "$(proj_cm managed --include=files)"; fi
