@@ -852,8 +852,8 @@ cannot be left out: a missing one is a usage error, never a quieter state. `--bo
   waiting for another repository's MR).
 
 **The state.** `hold` when `--hold` is given. Otherwise `check first` when any line of this
-table holds, and each one that holds becomes a numbered item under `Check by hand`, in this
-order, before the declared `--check` items. Otherwise `safe to merge`.
+table holds, and each one that holds becomes a numbered item under `Check by hand`, in the
+table's order. Otherwise `safe to merge`.
 
 | Condition | The item it prints |
 |---|---|
