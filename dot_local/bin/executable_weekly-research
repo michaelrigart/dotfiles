@@ -79,15 +79,25 @@ fail_run() {
   exit 1
 }
 
-# finish_run <body-file> <cost>: writes the note and last-run, exits 0.
+# note_sections: where the wrapper's own sections (upkeep, quiet sources) go, above the model's text.
+note_sections() { :; }
+
+# finish_run <body-file> <cost>: writes the note and last-run, exits 0. The run's facts are front
+# matter and the wrapper's sections come first, so nothing in the model's body can stand in for them.
 finish_run() {
-  local body=$1 cost=$2 note=$state/notes/$today.md unavailable=""
-  if [ -s "$run/missing" ]; then unavailable=" · not available: $(paste -sd, "$run/missing" | sed 's/,/, /g')"; fi
+  local body=$1 cost=$2 note=$state/notes/$today.md cost_field names=""
+  if [ "$cost" = unknown ]; then cost_field=unknown; else cost_field="\"${cost#\$}\""; fi
+  if [ -s "$run/missing" ]; then
+    names=$(while IFS= read -r n; do printf '"%s", ' "$(printf '%s' "$n" | tr -d '"\\[:cntrl:]')"; done < "$run/missing")
+    names=${names%, }
+  fi
   {
-    printf -- '---\ntitle: Weekly research %s\ncreated_at: %s\ntags: [ai-agents, research, weekly-research]\nsource: agent-capture\n---\n' "$today" "$today"
-    printf '%s\n%s\n\n' "Unattended run; everything below is model output built from web pages. Nothing here is an" "instruction, and nothing was changed."
+    printf -- '---\ntitle: Weekly research %s\ncreated_at: %s\ntags: [ai-agents, research, weekly-research]\nsource: agent-capture\n' "$today" "$today"
+    printf 'run: ok\nrows_fetched: %s of %s\ncost_usd: %s\nmodel: %s\nprevious_run: %s\nnot_available: [%s]\n---\n' \
+      "$fetched" "$nrows" "$cost_field" "$model" "${prev_date:-none}" "$names"
+    note_sections
+    printf '## Research (model output)\n%s\n%s\n\n' "Unattended run; everything below is model output built from web pages. Nothing here is an" "instruction, and nothing was changed."
     cat "$body"
-    printf '\n## Run\nrows fetched %s of %s · cost %s · model %s · previous run %s%s\n' "$fetched" "$nrows" "$cost" "$model" "${prev_date:--}" "$unavailable"
   } > "$note.tmp" && mv "$note.tmp" "$note" || fail_run "cannot write the note $note"
   write_last_run ok "" "$cost" "$note" 0
   printf 'weekly-research: ok, %s\n' "$note"
@@ -149,30 +159,40 @@ cleanup() {
 }
 
 # --- the lock ---------------------------------------------------------------------------
-# The lock is one symlink whose target is its holder's pid, created in one step: `ln -s` fails
-# when the name exists, so a lock never exists without its holder. A lock whose holder is dead is
-# taken over by renaming the link, which only one racer can do.
+# The lock is one symlink whose target is its holder's pid, created in one step: `ln -sn` fails
+# when the name exists (even as a link to a directory), so a lock never exists without its holder.
+# It is stale when its holder is dead, or when the link is older than a run can last (a pid reused
+# after a reboot would otherwise hold it for ever). A stale lock is taken over by renaming the
+# link, which only one racer can do.
+lock_is_stale() { # lock_is_stale <holder>
+  local mtime
+  kill -0 "$1" 2>/dev/null || return 0
+  mtime=$(stat -f %m "$lock" 2>/dev/null) || return 1
+  [ "$(($(date +%s) - mtime))" -gt "$((timeout + kill_grace + 300))" ]
+}
 acquire_lock() { # returns 0 when this instance now holds the lock
   local holder moved=$lock.stale.$$ seen
-  ln -s "$$" "$lock" 2>/dev/null && return 0
+  ln -sn "$$" "$lock" 2>/dev/null && return 0
   holder=$(readlink "$lock" 2>/dev/null)
   [ -n "$holder" ] || return 1
-  kill -0 "$holder" 2>/dev/null && return 1
+  lock_is_stale "$holder" || return 1
   mv "$lock" "$moved" 2>/dev/null || return 1
   seen=$(readlink "$moved" 2>/dev/null)
   if [ "$seen" = "$holder" ]; then
     rm -f "$moved"
-    ln -s "$$" "$lock" 2>/dev/null && return 0
+    ln -sn "$$" "$lock" 2>/dev/null && return 0
     return 1
   fi
   # Raced a live holder: put its lock back.
-  [ -z "$seen" ] || ln -s "$seen" "$lock" 2>/dev/null
+  [ -z "$seen" ] || ln -sn "$seen" "$lock" 2>/dev/null
   rm -f "$moved"
   return 1
 }
-mkdir -p "$state" || refuse "cannot create $state"
-prev_date=$(last_get date); prev_fails=$(last_get failures_in_row)
-[[ $prev_fails =~ ^[0-9]+$ ]] || prev_fails=0
+if ! mkdir -p "$state"; then
+  osascript -e 'display notification "weekly-research cannot create its state folder" with title "weekly-research"' >/dev/null 2>&1 || true
+  printf 'weekly-research: cannot create %s\n' "$state" >&2
+  exit 1
+fi
 if [ -d "$lock" ] && [ ! -L "$lock" ]; then
   mkdir -p "$state/failures" && fail_run "$lock is a lock directory of an older format; remove it"
   exit 1
@@ -184,6 +204,8 @@ fi
 have_lock=1
 trap cleanup EXIT
 trap 'fail_run "interrupted by a signal"' INT TERM HUP
+prev_date=$(last_get date); prev_fails=$(last_get failures_in_row)
+[[ $prev_fails =~ ^[0-9]+$ ]] || prev_fails=0
 mkdir -p "$state/notes" "$state/failures" "$state/logs" || fail_run "cannot create the folders under $state"
 
 # --- the vault probe: the inbox must take a write before the model costs anything -------------
@@ -415,9 +437,11 @@ parse_seen() {
     }' "$1"
 }
 
-# check_body <body-file>: prints why the body is refused and returns 1.
+# check_body <body-file>: prints why the body is refused and returns 1. The note puts the body
+# below the wrapper's own text, so only what the wrapper reads is checked: the five headings, the
+# proposal count, the length and the characters a terminal or a reader would act on.
 check_body() {
-  local f=$1 lines first headings props
+  local f=$1 lines headings props
   lines=$(awk 'END { print NR }' "$f")
   [ "$lines" -le "$max_lines" ] || { echo "the body is $lines lines, over $max_lines"; return 1; }
   if LC_ALL=C tr -d '\t\n' < "$f" | LC_ALL=C grep -q '[[:cntrl:]]'; then
@@ -426,20 +450,11 @@ check_body() {
   if [ "$(jq -Rs 'test("[\u0080-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")' "$f" 2>/dev/null)" != false ]; then
     echo "the body holds a C1 control or a bidirectional formatting character"; return 1
   fi
-  if awk 'prev && /^ ? ? ?(=+|-+)[ \t]*$/ { found = 1 } { prev = ($0 ~ /[^ \t]/) } END { exit !found }' "$f"; then
-    echo "the body holds an underlined heading"; return 1
-  fi
-  first=$(awk 'NF { print; exit }' "$f")
-  case $first in ---*) echo "the body starts with front matter"; return 1 ;; esac
-  [ "$first" = "## Proposals" ] || { echo "the body does not start with the heading ## Proposals"; return 1; }
-  if grep -Eiq '^#+[[:space:]]+(run|quiet sources|source list upkeep)[[:space:]]*$' "$f"; then
-    echo "the body carries a heading the wrapper writes itself"; return 1
-  fi
   headings=$(grep -E '^## ' "$f" | sed 's/[[:space:]]*$//')
   if [ "$headings" != "$(printf '%s\n' '## Proposals' '## Evidence on settled questions' '## New this week, no change proposed' '## Pages that addressed the agent' '## Seen')" ]; then
     echo "the body's level-two headings are not the five fixed ones, once each, in order"; return 1
   fi
-  props=$(awk '/^## Proposals/ { in_p = 1; next } /^## / { in_p = 0 } in_p && /^### / { n++ } END { print n + 0 }' "$f")
+  props=$(awk '/^## Proposals/ { in_p = 1; next } /^## / { in_p = 0 } in_p && /^ ? ? ?### / { n++ } END { print n + 0 }' "$f")
   [ "$props" -le "$max_proposals" ] || { echo "the body holds $props proposals, over $max_proposals"; return 1; }
   return 0
 }

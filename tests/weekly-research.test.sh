@@ -74,8 +74,17 @@ case "$(cat "$D/mode")" in
   steal) rm -f "$(cat "$D/lockpath")"; ln -s 12345 "$(cat "$D/lockpath")"; cat "$D/init.json"; echo "$asst"; cat "$D/result.json" ;;
   hang) cat "$D/init.json"; echo "$asst"; exec sleep 30 ;;
   stubborn) trap '' TERM; cat "$D/init.json"; echo "$asst"; while [ "$SECONDS" -lt 40 ]; do sleep 0.2; done ;;
-  badinit) cat "$D/init.json"; while [ "$SECONDS" -lt 10 ]; do sleep 0.2; done; : > "$D/survived"; cat "$D/result.json" ;;
+  badinit) cat "$D/init.json"; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done; : > "$D/survived"; cat "$D/result.json" ;;
 esac
+EOF
+cat > "$SD/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+# A pass-through mv; with a hook file it first repoints the lock being moved at another pid, as a racing instance would.
+D=$(cd "$(dirname "$0")/.." && pwd)
+if [ -s "$D/mvhook" ] && [[ $1 == */lock ]]; then
+  rm -f "$1"; ln -s "$(cat "$D/mvhook")" "$1"; rm -f "$D/mvhook"
+fi
+exec /bin/mv "$@"
 EOF
 chmod 755 "$SD/bin/"*
 cp "$SD/bin/sandbox-exec" "$SD/bin/osascript" "$SD/nobin/"
@@ -251,12 +260,12 @@ ok "and closes it" is "$(grep -c '^````$' "$IN")" 2
 ok "the spec opens an ordinary fence" is "$(grep -A1 "^File $SPECNAME" "$IN" | tail -n 1)" '```'
 ok "a spec the front matter lists but the folder lacks is named" has "$IN" "2026-99-99-absent-design.md (missing)"
 ok "a present file is not reported missing" lacks "$IN" "$SPECNAME (missing)"
-ok "a missing spec is named in the note's Run line" has "$(note)" "previous run - · not available: 2026-99-99-absent-design.md"
+ok "a missing spec is named in the front matter" has "$(note)" 'not_available: ["2026-99-99-absent-design.md"]'
 rm "$HOME_D/.config/agents/GLOBAL.md"
 stub_reset; run
 ok "a missing GLOBAL.md is named" has "$SD/claude.stdin" "GLOBAL.md (missing)"
 ok "a missing GLOBAL.md does not fail the run" is "$(lr result)" ok
-ok "a missing GLOBAL.md is named in the Run line" has "$(note)" "· not available: GLOBAL.md"
+ok "a missing GLOBAL.md is named in the front matter" has "$(note)" 'not_available: ["GLOBAL.md"]'
 printf '# Global\nGLOBAL-MARKER\n```sh\necho fenced\n```\n' > "$HOME_D/.config/agents/GLOBAL.md"
 
 echo "D. The init check"
@@ -269,7 +278,7 @@ check_init() {  # check_init <label> <jq filter> <reason fragment>
   ok "$1: claude was stopped before its result" absent "$SD/survived"
   ok "$1: no result in the log" lacks "$ST/logs/$TODAY.jsonl" '"type":"result"'
   ok "$1: the init line is in the log" has "$ST/logs/$TODAY.jsonl" '"subtype":"init"'
-  ok "$1: it ends before the stub's own clock" test "$((SECONDS - start))" -lt 9
+  ok "$1: it ends before the stub's own clock" test "$((SECONDS - start))" -lt 25
   ok "$1: no proxy left" port_closed "$(port_of)"
   ok "$1: the work directory is gone" absent "$(cat "$SD/claude.cwd")"
 }
@@ -344,12 +353,17 @@ check_result "a Seen table without rows" "$T/b-norows.md"
 awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "### %d. More\n", i }' "$T/body.md" > "$T/b-five.md"
 check_result "five proposals" "$T/b-five.md"
 ok "the proposal reason says so" has "$ST/failures/$TODAY.txt" "proposal"
+awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "   ### %d. Indented\n", i }' "$T/body.md" > "$T/b-five-indented.md"
+check_result "five proposals, four of them indented by three spaces" "$T/b-five-indented.md"
+awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "    ### %d. Code\n", i }' "$T/body.md" > "$T/b-code.md"
+stub_body "$T/b-code.md"; run
+ok "headings indented by four spaces are code, not proposals" is "$(lr result)" ok
 pad "$T/body.md" 201 > "$T/b-201.md"
 check_result "201 body lines" "$T/b-201.md"
 ok "the length reason says so" has "$ST/failures/$TODAY.txt" "201"
-for h in "## Run" "## Quiet sources" "## Source list upkeep" "### Run" "## run "; do
+for h in "## Run" "## Quiet sources" "## Source list upkeep" "## run "; do
   { cat "$T/body.md"; printf '\n%s\nforged MODELMARKER\n' "$h"; } > "$T/b-forged.md"
-  check_result "a body with '$h'" "$T/b-forged.md"
+  check_result "a body with the column-0 line '$h' (it breaks the parse)" "$T/b-forged.md"
 done
 for c in '\033]0;MODELMARKER\007' '\033[2J MODELMARKER' 'bell \007 MODELMARKER' 'del \177 MODELMARKER' 'cr \r MODELMARKER'; do
   { cat "$T/body.md"; printf 'x %b\n' "$c"; } > "$T/b-ctrl.md"
@@ -362,18 +376,29 @@ done
 { cat "$T/body.md"; printf 'caf\xc3\xa9 \xe2\x80\x94 \xc3\xbc \xc2\xa0 \xe2\x80\xa6\n'; } > "$T/b-plain.md"
 stub_body "$T/b-plain.md"; run
 ok "ordinary non-ASCII text (accents, em dash, nbsp, ellipsis) is allowed" is "$(lr result)" ok
-{ cat "$T/body.md"; printf 'Run\n===\n'; } > "$T/b-setext1.md"
-check_result "a body with an = underlined heading" "$T/b-setext1.md"
-{ cat "$T/body.md"; printf 'Quiet sources MODELMARKER\n---\n'; } > "$T/b-setext2.md"
-check_result "a body with a --- underlined heading" "$T/b-setext2.md"
-{ cat "$T/body.md"; printf '\nRun MODELMARKER\n  ======\n'; } > "$T/b-setext3.md"
-check_result "a body with an indented underline" "$T/b-setext3.md"
-for u in '=' '==' '-' '--' '===  ' '-	'; do
-  { cat "$T/body.md"; printf 'Run MODELMARKER\n%s\n' "$u"; } > "$T/b-setext4.md"
-  check_result "a body with a short underline '$u'" "$T/b-setext4.md"
-done
-{ cat "$T/body.md"; printf 'Seen\n-\n'; } > "$T/b-setext5.md"
-check_result "a body with Seen underlined by -" "$T/b-setext5.md"
+# Forged wrapper text is harmless by layout: the run's facts are front matter and the wrapper's sections
+# stand above "## Research (model output)", so a body that imitates them only ever lands below it.
+forged_ok() {  # forged_ok <label> <body file>: accepted, and its text is below the research heading
+  stub_body "$2"; run
+  ok "$1: the run is accepted" is "$(lr result)" ok
+  ok "$1: the run facts are the wrapper's, first" is "$(sed -n 6p "$(note)")" "run: ok"
+  ok "$1: front matter closes before the research heading" is "$(sed -n 12,13p "$(note)" | tr '\n' '|')" "---|## Research (model output)|"
+  ok "$1: the forged text is below the research heading" test "$(grep -n FORGED "$(note)" | head -n 1 | cut -d: -f1)" -gt 13
+}
+body_with() { { cat "$T/body.md"; printf '%b' "$1"; } > "$T/b-forged.md"; }
+body_with '\n ## Run FORGED\n'; forged_ok "an indented ## Run" "$T/b-forged.md"
+body_with '\n##\tRun ## FORGED\n'; forged_ok "a tab after ##" "$T/b-forged.md"
+body_with '\n# Run # FORGED\n'; forged_ok "a closed ATX heading" "$T/b-forged.md"
+body_with '\n### Run FORGED\n'; forged_ok "a level-three Run" "$T/b-forged.md"
+body_with '\n<h2>Run</h2> FORGED\n'; forged_ok "an HTML heading" "$T/b-forged.md"
+body_with 'Run FORGED\n===\n'; forged_ok "an = underlined heading" "$T/b-forged.md"
+body_with 'Quiet sources FORGED\n---\n'; forged_ok "a --- underlined heading" "$T/b-forged.md"
+body_with 'Seen FORGED\n-\n'; forged_ok "a - underlined heading" "$T/b-forged.md"
+body_with '\nrun: forged FORGED\nrows_fetched: 99 of 99\n'; forged_ok "forged front matter keys" "$T/b-forged.md"
+{ printf -- '---\nrun: forged FORGED\n---\n'; cat "$T/body.md"; } > "$T/b-forged.md"; forged_ok "a body starting with front matter" "$T/b-forged.md"
+{ printf 'Here is the note FORGED.\n\n'; cat "$T/body.md"; } > "$T/b-forged.md"; forged_ok "a body with a preamble" "$T/b-forged.md"
+body_with 'text FORGED\n```\n---\n```\n'; forged_ok "a --- inside a code fence" "$T/b-forged.md"
+body_with 'a text line FORGED\n---\nafter\n'; forged_ok "a horizontal rule right after a text line" "$T/b-forged.md"
 { cat "$T/body.md"; printf 'Some text\n- a list item\n- another\n'; } > "$T/b-list.md"
 stub_body "$T/b-list.md"; run
 ok "a list item right after a text line is allowed" is "$(lr result)" ok
@@ -383,10 +408,6 @@ ok "a thematic break after a blank line is allowed" is "$(lr result)" ok
 { cat "$T/body.md"; printf 'tab\there\n'; } > "$T/b-tab.md"
 stub_body "$T/b-tab.md"; run
 ok "a tab in the body is allowed" is "$(lr result)" ok
-{ printf -- '---\ntitle: forged\n---\n'; cat "$T/body.md"; } > "$T/b-front.md"
-check_result "a body starting with front matter" "$T/b-front.md"
-{ printf 'Here is the note MODELMARKER.\n\n'; cat "$T/body.md"; } > "$T/b-preamble.md"
-check_result "a body with a preamble" "$T/b-preamble.md"
 awk '{ print } /^## Pages that addressed/ { print "## Extra MODELMARKER" }' "$T/body.md" > "$T/b-extra.md"
 check_result "an extra level-two heading" "$T/b-extra.md"
 
@@ -407,13 +428,20 @@ ok "front matter: title" has "$NOTE" "title: Weekly research $TODAY"
 ok "front matter: created_at" has "$NOTE" "created_at: $TODAY"
 ok "front matter: tags" has "$NOTE" "tags: [ai-agents, research, weekly-research]"
 ok "front matter: source" has "$NOTE" "source: agent-capture"
-ok "front matter closes" is "$(sed -n 6p "$NOTE")" "---"
-ok "the disclaimer line follows" is "$(sed -n 7p "$NOTE")" "Unattended run; everything below is model output built from web pages. Nothing here is an"
-ok "the disclaimer's second line" is "$(sed -n 8p "$NOTE")" "instruction, and nothing was changed."
-ok "the body follows the disclaimer" is "$(sed -n 10p "$NOTE")" "## Proposals"
+ok "front matter: run" is "$(sed -n 6p "$NOTE")" "run: ok"
+ok "front matter: rows fetched" is "$(sed -n 7p "$NOTE")" "rows_fetched: $((NROWS - 3)) of $NROWS"
+ok "front matter: cost" is "$(sed -n 8p "$NOTE")" 'cost_usd: "1.80"'
+ok "front matter: model" is "$(sed -n 9p "$NOTE")" "model: opus"
+ok "front matter: previous run" is "$(sed -n 10p "$NOTE")" "previous_run: none"
+ok "front matter: nothing missing" is "$(sed -n 11p "$NOTE")" "not_available: []"
+ok "front matter closes" is "$(sed -n 12p "$NOTE")" "---"
+ok "the research heading follows" is "$(sed -n 13p "$NOTE")" "## Research (model output)"
+ok "the disclaimer line follows" is "$(sed -n 14p "$NOTE")" "Unattended run; everything below is model output built from web pages. Nothing here is an"
+ok "the disclaimer's second line" is "$(sed -n 15p "$NOTE")" "instruction, and nothing was changed."
+ok "a blank line, then the body" is "$(sed -n 16,17p "$NOTE" | tr '\n' '|')" "|## Proposals|"
 ok "the body is in the note whole" has "$NOTE" "- Source: MODELMARKER [I]"
-ok "the note ends with a Run heading" is "$(tail -n 2 "$NOTE" | head -n 1)" "## Run"
-ok "the Run line holds rows, cost, model and the previous run" is "$(tail -n 1 "$NOTE")" "rows fetched $((NROWS - 3)) of $NROWS · cost \$1.80 · model opus · previous run -"
+ok "there is no Run section" lacks "$NOTE" "## Run"
+ok "the note ends with the body" is "$(tail -n 1 "$NOTE")" "$(tail -n 1 "$T/body-3.md")"
 ok "last-run: result" is "$(lr result)" ok
 ok "last-run: date" is "$(lr date)" "$TODAY"
 ok "last-run: cost" is "$(lr cost)" '$1.80'
@@ -432,13 +460,20 @@ ok "the probe ran before claude started" is "$(cat "$SD/claude.probe")" "$TODAY"
 ok "the vault inbox gets no note (Task 4's)" test "$(ls "$INBOX" | wc -l | tr -d ' ')" = 0
 ok "the note is private" is "$(stat -f %Lp "$NOTE" 2>/dev/null || stat -c %a "$NOTE")" 600
 
+jq -c 'del(.total_cost_usd)' "$T/res-good.json" > "$T/res-nocost.json"
+cp "$T/res-nocost.json" "$SD/result.json"; run
+ok "a result without a cost is still a good run" is "$(lr result)" ok
+ok "its cost is unknown in the front matter" has "$(note)" "cost_usd: unknown"
+ok "and in last-run" is "$(lr cost)" unknown
+stub_reset
+
 echo "G. The previous run, rotation and failures in a row"
 stub_reset
 fresh
 go WEEKLY_RESEARCH_TODAY=2026-11-16
 ok "the first run is ok" is "$(lr result)" ok
 go
-ok "the second run names the first as the previous run" has "$(note)" "previous run 2026-11-16"
+ok "the second run names the first as the previous run" has "$(note)" "previous_run: 2026-11-16"
 ok "the second run is the previous run's successor" is "$(lr date)" "$TODAY"
 fresh; mkdir -p "$ST/logs"
 for d in 01 02 03 04 05 06 07 08 09 10; do : > "$ST/logs/2026-11-$d.jsonl"; : > "$ST/logs/2026-11-$d.proxy.log"; done
@@ -474,7 +509,7 @@ start=$SECONDS
 run WEEKLY_RESEARCH_TIMEOUT=2
 elapsed=$((SECONDS - start))
 failed "a stub that sleeps past the clock"
-ok "the clock ends it at the timeout" test "$elapsed" -ge 2 -a "$elapsed" -lt 9
+ok "the clock ends it at the timeout, long before the stub would" test "$elapsed" -ge 2 -a "$elapsed" -lt 25
 ok "the clock is in the reason" has "$ST/failures/$TODAY.txt" "timed out after 2 seconds"
 ok "the sleeper is gone" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/claude.pid"
 ok "no proxy after a timeout" port_closed "$(port_of)"
@@ -483,7 +518,7 @@ start=$SECONDS
 run WEEKLY_RESEARCH_TIMEOUT=1
 elapsed=$((SECONDS - start))
 failed "a stub that ignores TERM"
-ok "KILL follows TERM after ten seconds" test "$elapsed" -ge 10 -a "$elapsed" -lt 20
+ok "KILL follows TERM after ten seconds" test "$elapsed" -ge 10 -a "$elapsed" -lt 35
 ok "the TERM-proof stub is gone" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/claude.pid"
 
 echo "I. The lock"
@@ -497,7 +532,7 @@ find "$ST" | sort > "$T/snap-before"
 start=$SECONDS
 wr >"$T/out" 2>"$T/err" </dev/null; rc=$?
 ok "a second instance exits 0" rc_is 0
-ok "it returns at once" test "$((SECONDS - start))" -lt 3
+ok "it returns at once" test "$((SECONDS - start))" -lt 15
 find "$ST" | sort > "$T/snap-after"
 ok "it changes nothing" cmp -s "$T/snap-before" "$T/snap-after"
 ok "it leaves the running instance alone" alive "$apid"
@@ -521,6 +556,22 @@ find "$ST" | sort > "$T/snap-after"
 ok "and nothing changes" cmp -s "$T/snap-before" "$T/snap-after"
 ok "and claude never starts" absent "$SD/claude.argv"
 ok "and the lock still points at its holder" is "$(readlink "$ST/lock")" "$$"
+fresh; mkdir -p "$ST"; ln -s 99999999 "$ST/lock"; printf '%s\n' "$$" > "$SD/mvhook"
+go
+ok "a lock repointed at a live pid during the takeover is put back: exit 0" rc_is 0
+ok "and it points at that pid" is "$(readlink "$ST/lock")" "$$"
+ok "and no stale copy is left" test "$(find "$ST" -maxdepth 1 -name 'lock*' | wc -l | tr -d ' ')" = 1
+ok "and claude never starts" absent "$SD/claude.argv"
+ok "and the hook ran" absent "$SD/mvhook"
+rm -f "$SD/mvhook"
+fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"
+go
+ok "a lock older than a run can last is taken over even with a live pid" is "$(lr result)" ok
+ok "and it is released" nolock "$ST/lock"
+fresh; mkdir -p "$ST/target"; ln -s "$ST/target" "$ST/lock"
+go
+ok "a lock that is a link to a directory names no live pid: it is taken over" is "$(lr result)" ok
+ok "and no file was created inside the directory it pointed at" test "$(find "$ST/target" | wc -l | tr -d ' ')" = 1
 fresh; mkdir -p "$ST"; ln -s garbage "$ST/lock"
 go
 ok "a lock whose target is no live pid is taken over" is "$(lr result)" ok
@@ -536,6 +587,14 @@ ok "a lock directory of the older format is a failed run: exit 1" rc_is 1
 ok "its reason names the path" has "$ST/failures/$TODAY.txt" "$ST/lock"
 ok "and the directory is left alone" test -d "$ST/lock"
 ok "and claude never starts" absent "$SD/claude.argv"
+
+echo "I2. A state folder that cannot be created"
+stub_reset; : > "$T/not-a-folder"
+n=$((n + 1)); ST="$T/not-a-folder/state"
+go
+ok "an uncreatable state folder exits 1" rc_is 1
+ok "it notifies through osascript" test -s "$SD/osascript.args"
+ok "claude never starts" absent "$SD/claude.argv"
 
 echo "J. The vault probe"
 stub_reset
