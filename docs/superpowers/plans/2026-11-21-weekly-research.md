@@ -77,7 +77,10 @@ commit.
   `CONNECT host:port` and absolute-URI plain HTTP requests. One log line per request:
   `<ISO time>\t<allow|deny>\t<host>:<port>\t<reason or address>`.
 - Produces: `weekly-research-proxy --check <host> <port>`: prints `allow <address>` and exits 0,
-  or `deny <reason>` and exits 1. It runs the same function the server uses.
+  or `deny <reason>` and exits 1. It runs the same function the server uses:
+  `check(host, port)`, returning `(True, address)` or `(False, reason)` and calling
+  `socket.getaddrinfo` exactly once. The file runs its command line only under
+  `if __name__ == "__main__":`, so a test can load it as a module.
 - The rule: resolve with `getaddrinfo`; deny when the port is not 80 or 443, when resolution
   fails, or when **any** returned address is loopback, private, link-local, carrier-grade NAT
   (`100.64.0.0/10`), multicast, unspecified, reserved, or an IPv4-mapped IPv6 form of one; on
@@ -88,7 +91,12 @@ commit.
   `169.254.169.254 80`, `100.64.0.1 443`, `0.0.0.0 443`, `224.0.0.1 443`, `::1 443`,
   `fe80::1 443`, `fc00::1 443`, `::ffff:127.0.0.1 443`, `localhost 443` (a name resolving to
   loopback), `93.184.216.34 8080` (port), `no-such-host.invalid 443`; allow `93.184.216.34 443`
-  and `2606:2800:220:1:248:1893:25c8:1946 443`. Server rows: start it, read the port file,
+  and `2606:2800:220:1:248:1893:25c8:1946 443`. Mixed-address rows: a `/usr/bin/python3` snippet in the
+  suite loads the script with `importlib.machinery.SourceFileLoader`, replaces
+  `socket.getaddrinfo` with a fake, and asserts `check("x.example", 443)` denies for the
+  answers `[93.184.216.34, 10.0.0.1]` and `[10.0.0.1, 93.184.216.34]`, allows
+  `[93.184.216.34, 93.184.216.35]` with the first address, and that the fake was called once.
+  Server rows: start it, read the port file,
   `curl -x` a `CONNECT` to `localhost:443` and a plain `http://127.0.0.1/` both answer 403 and
   each adds a `deny` log line; TERM ends the process. Guard: exit 2 when the script is missing.
 - [ ] **Step 2: Run it:** `./tests/weekly-research-proxy.test.sh`. Expected: exit 2, missing
