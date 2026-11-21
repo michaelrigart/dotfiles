@@ -241,11 +241,13 @@ def build_copy(repo, sha, root, command):
         die(f"cannot replace the previous copy at {copy}: {err}")
     if copy not in SESSION.copies:
         SESSION.copies.append(copy)
-    archive = subprocess.Popen(["git", "-C", str(repo), "archive", sha], stdout=subprocess.PIPE)
-    untar = subprocess.run(["tar", "-x", "-C", str(copy)], stdin=archive.stdout)
-    archive.stdout.close()
-    if archive.wait() != 0 or untar.returncode != 0:
-        die(f"cannot archive {sha} from {repo}")
+    # Not a pipe: tar stops reading at the end-of-archive marker, and git archive, writing its
+    # padding after it into a closed pipe, would exit 141 without a word.
+    with tempfile.TemporaryFile() as tarball:
+        archived = subprocess.run(["git", "-C", str(repo), "archive", sha], stdout=tarball).returncode == 0
+        tarball.seek(0)
+        if not archived or subprocess.run(["tar", "-x", "-C", str(copy)], stdin=tarball).returncode != 0:
+            die(f"cannot archive {sha} from {repo}")
     stamp = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%cI", sha], check=True,
                            capture_output=True, text=True).stdout.strip()
     env = {**os.environ, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}

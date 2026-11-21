@@ -14,7 +14,7 @@ FIX="$SRC/tests/fixtures/test-audit"
 pass=0; fail=0; OUT=""; ERR=""; RC=0
 _pass(){ echo "  PASS: $1"; pass=$((pass+1)); }
 _fail(){ echo "  FAIL: $1"; fail=$((fail+1)); }
-rc_is(){ [ "$RC" -eq "$1" ] && _pass "$2" || _fail "$2 (rc=$RC: ${ERR: -900})"; }
+rc_is(){ [ "$RC" -eq "$1" ] && _pass "$2" || _fail "$2 (rc=$RC: $(printf '%s' "$ERR" | tail -c 900))"; }
 has(){ case "$3" in *"$1"*) _pass "$2";; *) _fail "$2 (got: $3)";; esac; }
 lacks(){ case "$3" in *"$1"*) _fail "$2 (found: $1)";; *) _pass "$2";; esac; }
 eq(){ [ "$1" = "$2" ] && _pass "$3" || _fail "$3 (got: $1, want: $2)"; }
@@ -1082,6 +1082,39 @@ chmod 755 "$T/copies"
 rc_is 2 "Q29: a copy root a mutant made unsearchable ends the run with the harness's exit 2"
 has "cannot replace the previous copy at" "Q29: and says so" "$ERR"
 lacks "Traceback" "Q29: instead of a traceback" "$ERR"
+
+# Q30: tar stops reading two records past the end-of-archive marker, before the padding git archive
+# writes after it. Piped, a git that tar outran (the machine under load) wrote that padding into a
+# closed pipe and exited 141 without a word, and the session died with "cannot archive". The stub
+# git writes through what tar reads, waits, then writes the rest; every other command is git's.
+mk Q30
+mkdir -p "$T/gitstub"
+cat > "$T/gitstub/git" <<'STUB'
+#!/usr/bin/env bash
+[ "${3:-}" = archive ] || exec "$REAL_GIT" "$@"
+"$REAL_GIT" "$@" | python3 -c '
+import os, sys, time
+data = sys.stdin.buffer.read()
+cut = -(-len(data.rstrip(b"\0")) // 512) * 512 + 1024
+out = sys.stdout.buffer
+out.write(data[:cut]); out.flush()
+time.sleep(1)
+if data[cut:]:
+    open(os.environ["AUDIT_MARKERS"] + "/split", "w").close()
+try:
+    out.write(data[cut:]); out.flush()
+except BrokenPipeError:
+    os._exit(141)
+'
+STUB
+chmod 755 "$T/gitstub/git"
+REAL_GIT=$(command -v git); export REAL_GIT
+oldpath=$PATH; PATH="$T/gitstub:$PATH"
+run inventory s
+PATH=$oldpath
+rc_is 0 "Q30: a git archive still writing its padding after tar has stopped reading builds the copy"
+[ -e "$T/markers/split" ] && _pass "Q30: the stub held back padding past what tar reads" || _fail "Q30: the stub held back padding past what tar reads"
+eq "$(suite_failed)" "{'s': (0, 0)}" "Q30: and the suite runs green in that copy"
 
 echo "R. rule mutants"
 mk R
