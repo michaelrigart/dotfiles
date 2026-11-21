@@ -1,0 +1,12 @@
+; Network profile for the weekly research run, used as
+; sandbox-exec -D PROXY_PORT=<port> -f network.sb <command>
+(version 1)
+
+; Everything but the network stays as the OS allows it: the profile only limits connections.
+(allow default)
+
+; No outbound connection by default, so a fetch that ignores the proxy fails in the kernel.
+(deny network-outbound)
+
+; The one TCP destination: the fetch proxy on the loopback port the wrapper passes in.
+(allow network-outbound (remote ip (string-append "localhost:" (param "PROXY_PORT"))))

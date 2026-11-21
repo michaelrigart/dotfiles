@@ -8,9 +8,9 @@
 #   loaded_by  comma list of every suite that sources, executes, renders, copies or greps the file; includes own_suite.
 # Non-goal suites are listed in loaded_by for completeness; the harness never runs them.
 # Files no suite loads are absent.
-.chezmoidata/machines.toml	data	provision	provision
+.chezmoidata/machines.toml	data	provision	provision,weekly-research-schedule
 .chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,agent-instructions
-.chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,herdr-app,herdr-app-xreview
+.chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,herdr-app,herdr-app-xreview,weekly-research-schedule
 .chezmoitemplates/agents/claude-code.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/codex.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/global.md	prose	agent-instructions	agent-instructions,xreview-skill
@@ -37,6 +37,7 @@ Library/Application Support/Claude/modify_private_claude_desktop_config.json	bas
 Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl	data	codex-daemon	codex-daemon
 Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	codex-memory-share	codex-memory-share
 Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	herdr-phase	herdr-phase
+Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl	data	weekly-research-schedule	weekly-research-schedule
 dot_agents/skills/design-records/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills
 dot_agents/skills/merge-request/SKILL.md	prose	agent-skills	agent-skills
 dot_agents/skills/second-brain/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills
@@ -136,6 +137,9 @@ dot_config/private_ha-mcp/private_env-remote.tmpl	data	ha-mcp	ha-mcp
 dot_config/private_ha-mcp/private_env.tmpl	data	ha-mcp	ha-mcp
 dot_config/private_tagteam/private_config.toml	data	tagteam-config	tagteam-config
 dot_config/private_unifi-network/private_env.tmpl	data	unifi-network-mcp	unifi-network-mcp
+dot_config/weekly-research/network.sb	data	weekly-research	weekly-research,live-weekly-research
+dot_config/weekly-research/prompt.md	prose	weekly-research	weekly-research
+dot_config/weekly-research/sources.tsv	data	weekly-research	weekly-research
 dot_config/xreview/findings.framed.schema.json	data	xreview-packet	xreview-packet,xreview
 dot_config/xreview/findings.schema.json	data	xreview-rpc	xreview-rpc,xreview,xreview-packet,live-codex-daemon
 dot_config/xreview/packets.conf	data	xreview-packet	xreview-packet,xreview
@@ -156,6 +160,8 @@ dot_local/bin/executable_review	bash	review	review,hook-path
 dot_local/bin/executable_sdd-clean	bash	sdd-clean	sdd-clean,hook-path
 dot_local/bin/executable_ssh-sandbox-proxy	bash	ssh-sandbox-proxy	ssh-sandbox-proxy,hook-path
 dot_local/bin/executable_unifi-network-mcp	sh	unifi-network-mcp	unifi-network-mcp,hook-path
+dot_local/bin/executable_weekly-research	bash	weekly-research	weekly-research,live-weekly-research,hook-path
+dot_local/bin/executable_weekly-research-proxy	py	weekly-research-proxy	weekly-research-proxy,weekly-research,live-weekly-research,hook-path
 dot_local/bin/executable_wt-prepare	zsh	wt-functions	wt-functions,hook-path
 dot_local/bin/executable_wt-rm	zsh	wt-functions	wt-functions,dev-topology,hook-path
 dot_local/bin/executable_wt-teardown	zsh	wt-teardown	wt-teardown,wt-functions,dev-topology,hook-path
@@ -190,6 +196,7 @@ tests/fixtures/test-audit/tests/pins.test.sh	bash	-	test-audit
 tests/fixtures/test-audit/tests/red.test.sh	bash	-	test-audit
 tests/fixtures/test-audit/tests/s.test.sh	bash	-	test-audit
 tests/fixtures/test-audit/tests/s2.test.sh	bash	-	test-audit
+tests/fixtures/weekly-research/init.json	data	-	weekly-research
 tests/live-deny-modes.test.sh	bash	deny-modes-probe	deny-modes-probe
 tests/live-write-boundary.test.sh	bash	write-boundary-probe	write-boundary-probe
 tests/run.sh	bash	run	run,test-audit

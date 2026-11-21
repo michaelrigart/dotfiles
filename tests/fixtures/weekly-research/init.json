@@ -1,0 +1,91 @@
+{
+  "additional_directories": [],
+  "agents": [
+    "claude",
+    "Explore",
+    "general-purpose",
+    "Plan",
+    "statusline-setup",
+    "web-fetch"
+  ],
+  "analytics_disabled": false,
+  "apiKeySource": "none",
+  "capabilities": [
+    "interrupt_receipt_v1",
+    "interrupt_cancel_queued_v1",
+    "interrupt_send_now_v1",
+    "interrupt_requeue_taken_v1",
+    "msg_lifecycle_v1",
+    "request_marker_lists_v1",
+    "ask_user_question_unanswered_v1",
+    "lifecycle_wakeup_source_v1",
+    "sdk_mcp_tools_list_changed",
+    "sdk_mcp_manifests",
+    "mcp_read_resource_v1",
+    "mcp_tool_ui_meta_v1",
+    "ui_surface_v1",
+    "mcp_call_result_not_for_model_v1",
+    "mcp_call_check_permissions_v1",
+    "voice_call_talk_line_v1",
+    "withdrawn_files_note_v2",
+    "ui_pane_widget_v1",
+    "reload_plugins_refuse_if_busy_v1",
+    "silent_resend_files_v1"
+  ],
+  "claude_code_version": "2.1.327",
+  "cwd": "<cwd>",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "fast_mode_state": "off",
+  "mcp_servers": [],
+  "model": "claude-haiku-5-5",
+  "original_cwd": "<cwd>",
+  "output_style": "default",
+  "per_turn_effort_active": true,
+  "permissionMode": "dontAsk",
+  "plugins": [
+    {
+      "name": "cc-plugin-sec-default",
+      "path": "builtin",
+      "source": "cc-plugin-sec-default@builtin"
+    },
+    {
+      "name": "cc-plugin-agents-md",
+      "path": "builtin",
+      "source": "cc-plugin-agents-md@builtin"
+    },
+    {
+      "name": "cc-plugin-telemetry",
+      "path": "builtin",
+      "source": "cc-plugin-telemetry@builtin"
+    },
+    {
+      "name": "cc-plugin-privacy",
+      "path": "builtin",
+      "source": "cc-plugin-privacy@builtin"
+    },
+    {
+      "name": "cc-plugin-plugin-authoring",
+      "path": "builtin",
+      "source": "cc-plugin-plugin-authoring@builtin"
+    },
+    {
+      "name": "cc-plugin-easel",
+      "path": "builtin",
+      "source": "cc-plugin-easel@builtin"
+    }
+  ],
+  "product_feedback_disabled": false,
+  "session_id": "<session_id>",
+  "skills": [],
+  "slash_commands": [],
+  "subtype": "init",
+  "tools": [
+    "WebFetch",
+    "WebSearch"
+  ],
+  "type": "system",
+  "ultrathink_available": false,
+  "ultrathink_typed_raises": false,
+  "uuid": "<uuid>",
+  "view_mode": "default"
+}

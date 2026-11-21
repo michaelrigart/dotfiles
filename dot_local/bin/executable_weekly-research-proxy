@@ -1,0 +1,266 @@
+#!/usr/bin/python3
+"""Fetch proxy for the weekly research job: the job's only network path.
+
+  weekly-research-proxy --port-file PATH --log PATH   serve on 127.0.0.1 until TERM
+  weekly-research-proxy --check HOST PORT             print the verdict for one target
+
+It refuses the machine itself and the home network: a target is allowed only when its port
+is 80 or 443 and every address it resolves to is public. It connects to the addresses it
+checked, in order, and never resolves again, so a name cannot change its answer between check
+and use.
+"""
+import ipaddress
+import os
+import select
+import signal
+import socket
+import socketserver
+import sys
+import threading
+import time
+from urllib.parse import urlsplit
+
+PORTS = (80, 443)
+CGNAT = ipaddress.ip_network("100.64.0.0/10")
+# IPv6 transition prefixes: (network, name, the IPv4 address it embeds, or None). All are
+# refused; where an IPv4 address is embedded, the reason names why that one is off limits.
+TRANSITION = (
+    (ipaddress.ip_network("64:ff9b::/96"), "NAT64",
+     lambda ip: ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)),
+    (ipaddress.ip_network("64:ff9b:1::/48"), "local-use NAT64", None),
+    (ipaddress.ip_network("2002::/16"), "6to4",
+     lambda ip: ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)),
+    (ipaddress.ip_network("2001::/32"), "Teredo", None),
+)
+HEADER_LIMIT = 65536
+READ_TIMEOUT = 15
+CONNECT_TIMEOUT = 10
+RELAY_TIMEOUT = 120
+HOP_HEADERS = (b"proxy-connection", b"proxy-authorization", b"connection", b"keep-alive")
+
+
+def bad_address(text):
+    """The reason an address is off limits, or None."""
+    ip = ipaddress.ip_address(text.split("%", 1)[0])
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.version == 6:
+        for network, name, embedded in TRANSITION:
+            if ip in network:
+                inner = bad_address(str(embedded(ip))) if embedded else None
+                return "%s address %s%s" % (name, ip, " embedding a " + inner if inner else "")
+    for name in ("loopback", "private", "link_local", "site_local", "multicast", "unspecified",
+                 "reserved"):
+        if getattr(ip, "is_" + name, False):
+            return "%s address %s" % (name.replace("_", "-"), ip)
+    if ip.version == 4 and ip in CGNAT:
+        return "carrier-grade NAT address %s" % ip
+    return None
+
+
+def check(host, port):
+    """(True, [addresses it checked, in order]) or (False, reason). Resolves once."""
+    if port not in PORTS:
+        return False, "port %s not allowed" % port
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as err:
+        return False, "resolution failed: %s" % err
+    addresses = list(dict.fromkeys(info[4][0] for info in infos))
+    if not addresses:
+        return False, "resolution returned no address"
+    for address in addresses:
+        reason = bad_address(address)
+        if reason:
+            return False, reason
+    return True, addresses
+
+
+def clean(text):
+    return "".join(c if c.isprintable() else "?" for c in text)[:200]
+
+
+def split_hostport(target, default_port=None):
+    """host, port from 'host:port' or '[v6]:port'; raises ValueError."""
+    if target.startswith("["):
+        host, _, rest = target[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    else:
+        host, _, port = target.rpartition(":")
+        if not host:
+            host, port = target, ""
+    if not host:
+        raise ValueError("no host")
+    return host, int(port) if port else default_port
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def log(self, verdict, host, port, detail):
+        line = "%s\t%s\t%s:%s\t%s\n" % (
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            verdict, clean(str(host)), port, clean(detail))
+        try:
+            with self.server.log_lock:
+                with open(self.server.log_path, "a") as handle:
+                    handle.write(line)
+        except OSError as err:
+            sys.stderr.write("weekly-research-proxy: cannot write the log %s: %s\n"
+                             % (self.server.log_path, err))
+            raise
+
+    def refuse(self, host, port, reason):
+        self.log("deny", host, port, reason)
+        self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n"
+                             b"Content-Length: 0\r\n\r\n")
+
+    def read_head(self):
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            if len(buf) > HEADER_LIMIT:
+                raise ValueError("header too large")
+            data = self.request.recv(8192)
+            if not data:
+                raise ValueError("connection closed in the header")
+            buf += data
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        return head.split(b"\r\n"), rest
+
+    def handle(self):
+        try:
+            self.serve_request()
+        except OSError:
+            pass  # the client went away mid-request or mid-relay
+
+    def serve_request(self):
+        self.request.settimeout(READ_TIMEOUT)
+        try:
+            lines, rest = self.read_head()
+            method, target, version = lines[0].decode("latin-1").split(" ", 2)
+        except (ValueError, OSError) as err:
+            return self.refuse("-", "-", "bad request: %s" % err)
+        try:
+            if method.upper() == "CONNECT":
+                host, port = split_hostport(target)
+                tunnel = True
+            else:
+                url = urlsplit(target)
+                if url.scheme != "http" or not url.hostname:
+                    return self.refuse("-", "-", "not a proxy request")
+                host, port, tunnel = url.hostname, url.port or 80, False
+        except ValueError as err:
+            return self.refuse("-", "-", "bad request: %s" % err)
+        if port is None:
+            return self.refuse(host, "-", "no port")
+        allowed, detail = check(host, port)
+        if not allowed:
+            return self.refuse(host, port, detail)
+        upstream, address, failure = None, None, "no address"
+        for address in detail:
+            sock = None
+            try:
+                family = socket.AF_INET6 if ":" in address else socket.AF_INET
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.settimeout(CONNECT_TIMEOUT)
+                sock.connect((address, port))
+                upstream = sock
+                break
+            except OSError as err:
+                if sock is not None:
+                    sock.close()
+                failure = "%s: %s" % (address, err)
+        if upstream is None:
+            self.log("error", host, port, "connect failed: %s" % failure)
+            return self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n"
+                                        b"Content-Length: 0\r\n\r\n")
+        self.log("allow", host, port, address)
+        with upstream:
+            upstream.settimeout(RELAY_TIMEOUT)
+            self.request.settimeout(RELAY_TIMEOUT)
+            if tunnel:
+                self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            else:
+                path = url.path or "/"
+                if url.query:
+                    path += "?" + url.query
+                out = [("%s %s %s" % (method, path, version)).encode("latin-1")]
+                out += [l for l in lines[1:]
+                        if l.split(b":", 1)[0].strip().lower() not in HOP_HEADERS]
+                out.append(b"Connection: close")
+                upstream.sendall(b"\r\n".join(out) + b"\r\n\r\n")
+            if rest:
+                upstream.sendall(rest)
+            self.relay(upstream)
+
+    def relay(self, upstream):
+        """Copy both ways until upstream closes or RELAY_TIMEOUT passes with no traffic; a client
+        EOF only half-closes upstream."""
+        client = self.request
+        readers = [client, upstream]
+        while True:
+            ready, _, _ = select.select(readers, [], [], RELAY_TIMEOUT)
+            if not ready:
+                return
+            for sock in ready:
+                try:
+                    data = sock.recv(65536)
+                except OSError:
+                    return
+                if sock is upstream:
+                    if not data:
+                        return
+                    client.sendall(data)
+                elif data:
+                    upstream.sendall(data)
+                else:
+                    readers.remove(client)
+                    upstream.shutdown(socket.SHUT_WR)
+
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    request_queue_size = 64
+
+
+def make_server(log_path):
+    server = Server(("127.0.0.1", 0), Handler)
+    server.log_path = log_path
+    server.log_lock = threading.Lock()
+    return server
+
+
+def serve(port_file, log_path):
+    server = make_server(log_path)
+    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
+    tmp = port_file + ".tmp"
+    with open(tmp, "w") as handle:
+        handle.write("%d\n" % server.server_address[1])
+    os.replace(tmp, port_file)
+    server.serve_forever()
+    server.server_close()
+    return 0
+
+
+def main(argv):
+    if len(argv) == 3 and argv[0] == "--check":
+        try:
+            port = int(argv[2])
+        except ValueError:
+            return usage()
+        allowed, detail = check(argv[1], port)
+        print("%s %s" % ("allow" if allowed else "deny", detail[0] if allowed else detail))
+        return 0 if allowed else 1
+    if len(argv) == 4 and sorted(argv[0::2]) == ["--log", "--port-file"]:
+        opts = dict(zip(argv[0::2], argv[1::2]))
+        return serve(opts["--port-file"], opts["--log"])
+    return usage()
+
+
+def usage():
+    sys.stderr.write("usage: weekly-research-proxy --port-file PATH --log PATH\n"
+                     "       weekly-research-proxy --check HOST PORT\n")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

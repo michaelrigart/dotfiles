@@ -1,0 +1,39 @@
+# Weekly research sources: id, kind, url, separated by tabs. At most 40 rows.
+# kind: official | vendor | independent | practitioner. The list changes only by a commit;
+# adding a row past the cap means removing one in the same commit. Public text only.
+claude-code-releases	official	https://github.com/anthropics/claude-code/releases.atom
+claude-code-changelog	official	https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
+claude-code-whats-new	official	https://code.claude.com/docs/en/whats-new/index.md
+claude-code-best-practices	official	https://code.claude.com/docs/en/best-practices
+claude-code-sub-agents	official	https://code.claude.com/docs/en/sub-agents
+claude-code-workflows	official	https://code.claude.com/docs/en/workflows
+claude-code-code-review	official	https://code.claude.com/docs/en/code-review
+claude-code-routines	official	https://code.claude.com/docs/en/routines
+claude-code-advisories	official	https://github.com/anthropics/claude-code/security/advisories
+anthropic-engineering	official	https://www.anthropic.com/engineering
+claude-blog	official	https://claude.com/blog
+codex-releases	official	https://github.com/openai/codex/releases.atom
+codex-changelog	official	https://learn.chatgpt.com/docs/changelog
+superpowers-releases	official	https://github.com/obra/superpowers/releases.atom
+mcp-spec-releases	official	https://github.com/modelcontextprotocol/modelcontextprotocol/releases.atom
+openai-dev-blog-codex	vendor	https://developers.openai.com/blog/topic/codex
+cognition-blog	vendor	https://cognition.com/blog
+cursor-blog	vendor	https://cursor.com/blog
+amp-notes	vendor	https://ampcode.com/notes.rss
+github-blog-copilot	vendor	https://github.blog/ai-and-ml/github-copilot/
+metr	independent	https://metr.org/feed.xml
+dora	independent	https://dora.dev/research/
+arxiv-cs-se	independent	https://rss.arxiv.org/rss/cs.SE
+thoughtworks-radar	independent	https://www.thoughtworks.com/radar
+epoch-ai	independent	https://epoch.ai/latest
+owasp-genai	independent	https://genai.owasp.org/feed/
+embrace-the-red	practitioner	https://embracethered.com/blog/index.xml
+willison-agentic-engineering	practitioner	https://simonwillison.net/tags/agentic-engineering.atom
+willison-lethal-trifecta	practitioner	https://simonwillison.net/tags/lethal-trifecta.atom
+fowler-exploring-gen-ai	practitioner	https://martinfowler.com/articles/exploring-gen-ai.html
+ronacher	practitioner	https://lucumr.pocoo.org/feed.atom
+jesse-vincent	practitioner	https://blog.fsck.com/feed/feed.xml
+humanlayer	practitioner	https://www.humanlayer.dev/blog
+pragmatic-engineer	practitioner	https://newsletter.pragmaticengineer.com/feed
+hashimoto	practitioner	https://mitchellh.com/writing
+huntley	practitioner	https://ghuntley.com/rss/
