@@ -309,6 +309,17 @@ things are enforced outside the model. For this job:
   which needs an API key readable unattended and therefore reopens decision 2 and this spec.
 - **If a later CLI no longer gives this start on a subscription login,** the init check fails
   the run, and the fix is a line of its own; it may reopen decision 2.
+- **Known limits** (the task reviews of 2026-11-21; none is reachable by a model that holds
+  only the two web tools, so each is recorded rather than closed):
+  - the proxy judges addresses by class, so the network's own public addresses pass: the
+    router's WAN address (hairpin NAT to anything it forwards on 80 or 443), and a home device's
+    global IPv6 address, once the network has any (today it has only ULA addresses, which are
+    refused);
+  - the profile's `localhost:<port>` may also match `[::1]:<port>`, which only another local
+    process listening there could use;
+  - the profile allows Mach lookups, so system services that make their own connections
+    (`nsurlsessiond`, Launch Services opening a URL) stay reachable to code inside the process;
+    the `claude` process uses neither, and the model cannot run a command.
 - **What an injected page can do:** put false text in a note. It cannot make the run act. The
   note opens with a line saying it is unattended model output, and the untrusted-input rule
   makes it data for any agent that later reads it: an agent never acts on a proposal because
