@@ -68,6 +68,7 @@ guest_file /usr/local/sbin/ci-runner-register > "$REG"; chmod +x "$REG"
 echo "B. concurrency"
 f="$ROOT/absent.toml"; "$CONC" "$f"
 is "an absent config is created" "$(cat "$f" 2>/dev/null)" 'concurrent = 2'
+is "and is private to its owner" "$(stat -f %Lp "$f")" 600
 printf 'concurrent = 1\ncheck_interval = 0\n\n[[runners]]\n  name = "ci"\n  token = "glrt-fixture"\n' > "$ROOT/reg.toml"
 "$CONC" "$ROOT/reg.toml"; "$CONC" "$ROOT/reg.toml"
 is "concurrent is 2"            "$(grep -c '^concurrent = 2$' "$ROOT/reg.toml")" 1
@@ -103,10 +104,20 @@ is "and gitlab-runner was not called"            "$(wc -c < "$ROOT/argv" | tr -d
 
 echo "D. apt"
 first_line() { grep -nE "$1" "$PROVISION" | head -1 | cut -d: -f1; }
-tools_before_fetch() { [ "$(first_line 'apt-get install .*ca-certificates curl gnupg')" -lt "$(first_line '(curl|gpg) .*(download\.docker\.com|packages\.gitlab\.com)')" ]; }
+tools_before_fetch() { [ "$(first_line 'apt-get .*install .*ca-certificates curl gnupg')" -lt "$(first_line '(curl|gpg) .*(download\.docker\.com|packages\.gitlab\.com)')" ]; }
 ok "curl, gpg and certificates are installed before a key is fetched" tools_before_fetch
-ok "docker repository"  grep -q 'download.docker.com/linux/debian' "$PROVISION"
-ok "runner repository"  grep -q 'packages.gitlab.com/runner/gitlab-runner/debian' "$PROVISION"
+docker_source() {
+  src="$(guest_file /etc/apt/sources.list.d/docker.sources)" || return 1
+  grep -qxF 'URIs: https://download.docker.com/linux/debian' <<<"$src" &&
+    grep -qxF 'Signed-By: /etc/apt/keyrings/docker.asc' <<<"$src"
+}
+ok "docker repository"  docker_source
+runner_source() {
+  src="$(guest_file /etc/apt/sources.list.d/runner_gitlab-runner.list)" || return 1
+  grep -qF 'signed-by=/etc/apt/keyrings/runner_gitlab-runner-archive-keyring.gpg' <<<"$src" &&
+    grep -qF 'https://packages.gitlab.com/runner/gitlab-runner/debian' <<<"$src"
+}
+ok "runner repository"  runner_source
 u="$(guest_file /etc/apt/apt.conf.d/52unattended-upgrades-local)"
 ok "docker upgrades unattended" grep -qF 'origin=Docker' <<<"$u"
 ok "runner upgrades unattended" grep -qF 'origin=packages.gitlab.com/runner/gitlab-runner' <<<"$u"

@@ -25,17 +25,21 @@ provision:
       # put <mode> <path>: install stdin at <path> only when the content differs
       put() { tmp=$(mktemp); cat > "$tmp"; if ! cmp -s "$tmp" "$2"; then install -D -m "$1" "$tmp" "$2"; fi; rm -f "$tmp"; }
 
+      installed() { dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q 'ok installed'; }
+
       need=""
-      for p in ca-certificates curl gnupg; do dpkg -s "$p" > /dev/null 2>&1 || need=1; done
+      for p in ca-certificates curl gnupg; do installed "$p" || need=1; done
       if [ -n "$need" ]; then
-        apt-get update
-        apt-get install -y ca-certificates curl gnupg
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y ca-certificates curl gnupg
       fi
 
       install -d -m 755 /etc/apt/keyrings
       if [ ! -f /etc/apt/keyrings/docker.asc ]; then
-        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-        chmod 644 /etc/apt/keyrings/docker.asc
+        rm -f /etc/apt/keyrings/docker.asc.tmp
+        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc.tmp
+        chmod 644 /etc/apt/keyrings/docker.asc.tmp
+        mv /etc/apt/keyrings/docker.asc.tmp /etc/apt/keyrings/docker.asc
       fi
       put 644 /etc/apt/sources.list.d/docker.sources <<'EOF'
       Types: deb
@@ -48,10 +52,12 @@ provision:
 
       runner_key=/etc/apt/keyrings/runner_gitlab-runner-archive-keyring.gpg
       if [ ! -f "$runner_key" ]; then
+        rm -f "$runner_key.tmp"
         key_tmp=$(mktemp)
         curl -fsSL https://packages.gitlab.com/gpgkey/gpg.key -o "$key_tmp"
-        gpg --dearmor --yes -o "$runner_key" "$key_tmp"
-        chmod 644 "$runner_key"
+        gpg --dearmor --yes -o "$runner_key.tmp" "$key_tmp"
+        chmod 644 "$runner_key.tmp"
+        mv "$runner_key.tmp" "$runner_key"
         rm -f "$key_tmp"
       fi
       put 644 /etc/apt/sources.list.d/runner_gitlab-runner.list <<'EOF'
@@ -60,11 +66,11 @@ provision:
 
       need=""
       for p in docker-ce docker-ce-cli containerd.io gitlab-runner nftables unattended-upgrades; do
-        dpkg -s "$p" > /dev/null 2>&1 || need=1
+        installed "$p" || need=1
       done
       if [ -n "$need" ]; then
-        apt-get update
-        apt-get install -y docker-ce docker-ce-cli containerd.io gitlab-runner nftables unattended-upgrades
+        apt-get -o DPkg::Lock::Timeout=300 update
+        apt-get -o DPkg::Lock::Timeout=300 install -y docker-ce docker-ce-cli containerd.io gitlab-runner nftables unattended-upgrades
         systemctl disable nftables.service || true
       fi
 
@@ -82,6 +88,7 @@ provision:
       put 755 /usr/local/sbin/ci-runner-concurrency <<'EOF'
       #!/bin/sh
       set -eu
+      umask 077
       file=${1:-/etc/gitlab-runner/config.toml}
       if [ ! -f "$file" ]; then
         mkdir -p "$(dirname "$file")"
@@ -98,6 +105,8 @@ provision:
       rm -f "$tmp"
       EOF
       /usr/local/sbin/ci-runner-concurrency
+      if [ -d /etc/gitlab-runner ]; then chmod 700 /etc/gitlab-runner; fi
+      if [ -f /etc/gitlab-runner/config.toml ]; then chmod 600 /etc/gitlab-runner/config.toml; fi
 
       put 755 /usr/local/sbin/ci-runner-register <<'EOF'
       #!/bin/sh
