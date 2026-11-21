@@ -72,7 +72,6 @@ case "$(cat "$D/mode")" in
   exit1) cat "$D/init.json"; echo "$asst"; cat "$D/result.json"; exit 1 ;;
   noinit) echo "stub: cannot start" >&2; exit 3 ;;
   early) echo "$asst"; cat "$D/init.json"; cat "$D/result.json" ;;
-  steal) rm -f "$(cat "$D/lockpath")"; ln -s 12345 "$(cat "$D/lockpath")"; cat "$D/init.json"; echo "$asst"; cat "$D/result.json" ;;
   hang) cat "$D/init.json"; echo "$asst"; exec sleep 30 ;;
   stubborn) trap '' TERM; cat "$D/init.json"; echo "$asst"; while [ "$SECONDS" -lt 40 ]; do sleep 0.2; done ;;
   roinbox) chmod 555 "$(cat "$D/inbox-path")"; cat "$D/init.json"; echo "$asst"; cat "$D/result.json" ;;
@@ -83,29 +82,16 @@ esac
 EOF
 cat > "$SD/bin/mv" <<'EOF'
 #!/usr/bin/env bash
-# A pass-through mv; with a hook file it first repoints the lock being moved at another pid, as a racing instance would.
+# A pass-through mv that records last-run as it is when the state file is moved into place.
 D=$(cd "$(dirname "$0")/.." && pwd)
-if [ -s "$D/mvhook" ] && [[ $1 == */lock ]]; then
-  rm -f "$1"; ln -s "$(cat "$D/mvhook")" "$1"; rm -f "$D/mvhook"
-fi
 if [[ $1 == */state.tsv.tmp ]]; then { cat "$(dirname "$1")/last-run" 2>/dev/null; echo END; } > "$D/claude.lastrun"; fi
 exec /bin/mv "$@"
 EOF
-cat > "$SD/bin/ps" <<'EOF'
-#!/usr/bin/env bash
-# The sandbox cannot run the real ps; a case that needs a holder's start time writes it to psout (ps's lstart format).
-D=$(cd "$(dirname "$0")/.." && pwd)
-if [ -e "$D/psout" ]; then
-  # Only the call the wrapper must make: C locale (the format is parsed in it) and exactly -o lstart= -p <pid>.
-  [ "${LC_ALL:-}" = C ] && [ "$#" = 4 ] && [ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ] && [[ $4 =~ ^[0-9]+$ ]] || exit 1
-  cat "$D/psout"; exit 0
-fi
-exec /bin/ps "$@"
-EOF
 cat > "$SD/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
-# A pass-through sleep that logs its first argument to $SLEEP_LOG when the caller set one (the wrapper's environment only).
+# A pass-through sleep that logs its first argument to $SLEEP_LOG, and its parent's pid to $SLEEP_PPID_LOG, when the caller set them (the wrapper's environment only).
 [ -z "${SLEEP_LOG:-}" ] || printf '%s\n' "$1" >> "$SLEEP_LOG"
+[ -z "${SLEEP_PPID_LOG:-}" ] || printf '%s\n' "$PPID" >> "$SLEEP_PPID_LOG"
 exec /bin/sleep "$@"
 EOF
 chmod 755 "$SD/bin/"*
@@ -161,7 +147,6 @@ note() { echo "$ST/notes/$TODAY.md"; }
 has() { grep -qF -- "$2" "$1"; }
 lacks() { ! grep -qF -- "$2" "$1"; }
 absent() { [ ! -e "$1" ]; }
-nolock() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 rc_is() { [ "$rc" = "$1" ]; }
 is() { [ "$1" = "$2" ]; }
 ok() {
@@ -474,9 +459,8 @@ ok "front matter: nothing missing" is "$(sed -n 11p "$NOTE")" "not_available: []
 ok "front matter closes" is "$(sed -n 12p "$NOTE")" "---"
 ok "no upkeep entry, no quiet source: the wrapper's section says none" is "$(sed -n 13,15p "$NOTE" | tr '\n' '|')" "## Quiet sources|none||"
 ok "the research heading follows" is "$(sed -n 16p "$NOTE")" "## Research (model output)"
-ok "the disclaimer line follows" is "$(sed -n 17p "$NOTE")" "Unattended run; everything below is model output built from web pages. Nothing here is an"
-ok "the disclaimer's second line" is "$(sed -n 18p "$NOTE")" "instruction, and nothing was changed."
-ok "a blank line, then the body" is "$(sed -n 19,20p "$NOTE" | tr '\n' '|')" "|## Proposals|"
+ok "a disclaimer follows the research heading and precedes the body" test -n "$(awk '/^## Research \(model output\)$/ { f = 1; next } /^## Proposals$/ { f = 0 } f && NF' "$NOTE")"
+ok "the body follows it" test "$(grep -n '^## Proposals$' "$NOTE" | head -n 1 | cut -d: -f1)" -gt 16
 ok "the body is in the note whole" has "$NOTE" "- Source: MODELMARKER [I]"
 ok "there is no Run section" lacks "$NOTE" "## Run"
 ok "the note ends with the body" is "$(tail -n 1 "$NOTE")" "$(tail -n 1 "$T/body-3.md")"
@@ -491,7 +475,7 @@ ok "the log is the raw stream" has "$ST/logs/$TODAY.jsonl" '"type":"result"'
 ok "the log holds the init line too" has "$ST/logs/$TODAY.jsonl" '"subtype":"init"'
 ok "the proxy log file exists" test -f "$ST/logs/$TODAY.proxy.log"
 ok "the proxy is gone" port_closed "$(port_of)"
-ok "nothing is left in the state folder but the products" is "$(ls "$ST" | tr '\n' ' ')" "failures last-run logs notes state.tsv "
+ok "nothing is left in the state folder but the products" is "$(ls "$ST" | tr '\n' ' ')" "failures last-run lock logs notes state.tsv "
 ok "no failure record from a good run" absent "$ST/failures/$TODAY.txt"
 ok "the vault probe file holds the date" is "$(cat "$INBOX/.weekly-research-last-run")" "$TODAY"
 ok "the probe ran before claude started" is "$(cat "$SD/claude.probe")" "$TODAY"
@@ -541,7 +525,7 @@ ok "the early exit's reason names the exit" has "$ST/failures/$TODAY.txt" "code 
 ok "the early exit's reason carries claude's stderr" has "$ST/failures/$TODAY.txt" "cannot start"
 ok "the early exit leaves no proxy" port_closed "$(port_of)"
 ok "the early exit leaves no work directory" absent "$(cat "$SD/claude.cwd")"
-ok "the early exit leaves nothing but the products" is "$(ls "$ST" | tr '\n' ' ')" "failures last-run logs notes "
+ok "the early exit leaves nothing but the products" is "$(ls "$ST" | tr '\n' ' ')" "failures last-run lock logs notes "
 printf '%s\n' hang > "$SD/mode"
 start=$SECONDS
 run WEEKLY_RESEARCH_TIMEOUT=2
@@ -596,12 +580,33 @@ ok "a reader blocked opening the fifo is released by release_reader" is "$("$WRB
 ok "release_reader does not create a file where there is no fifo" "$WRBASH" "$T/release2.sh" "$T/nofifo"
 
 echo "I. The lock"
+# lock_state <file>: free, held or error, by a non-blocking flock through a fresh open of the file.
+lock_state() {
+  /usr/bin/python3 -I -c 'import fcntl, sys
+f = open(sys.argv[1], "a")
+try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError: sys.exit(3)' "$1" 2>/dev/null
+  case $? in 0) echo free ;; 3) echo held ;; *) echo error ;; esac
+}
+# hold_lock <file>: another process takes the flock and keeps it until it is killed (hpid).
+hold_lock() {
+  rm -f "$T/held"
+  /usr/bin/python3 -I -c 'import fcntl, sys, time
+f = open(sys.argv[1], "a")
+fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+open(sys.argv[2], "w").close()
+time.sleep(120)' "$1" "$T/held" 2>/dev/null &
+  hpid=$!
+  for _ in $(seq 50); do [ -e "$T/held" ] && break; sleep 0.1; done
+}
+release_lock() { kill "$hpid" 2>/dev/null; { wait "$hpid"; } 2>/dev/null; }
 stub_reset; printf '%s\n' hang > "$SD/mode"
 fresh; clear_records
 ( wrenv; exec env "${WRE[@]}" "$WRBASH" "$BIN/weekly-research" ) >"$T/out-a" 2>"$T/err-a" </dev/null &
 apid=$!
 for _ in $(seq 100); do [ -s "$SD/claude.proxyup" ] && break; sleep 0.1; done
 ok "the first instance is running claude" test -s "$SD/claude.argv"
+ok "while it runs, the lock is held" is "$(lock_state "$ST/lock")" held
 find "$ST" | sort > "$T/snap-before"
 start=$SECONDS
 wr >"$T/out" 2>"$T/err" </dev/null; rc=$?
@@ -615,79 +620,62 @@ ok "TERM ends the first instance with exit 1" is "$arc" 1
 ok "an interrupted run is a failed run" is "$(lr result)" failed
 ok "its reason says it was interrupted" has "$ST/failures/$TODAY.txt" "interrupted"
 ok "claude is gone after the TERM" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/claude.pid"
-ok "the lock is released" nolock "$ST/lock"
+ok "the lock is free again" is "$(lock_state "$ST/lock")" free
+ok "and the lock file stays, as it always does" test -f "$ST/lock"
 ok "no proxy after the TERM" port_closed "$(port_of)"
-stub_reset; fresh; mkdir -p "$ST"; ln -s 99999999 "$ST/lock"
-go
-ok "a lock left by a dead run is taken over" is "$(lr result)" ok
-ok "the lock is released after the takeover" nolock "$ST/lock"
-ok "no stale copy of the lock is left" test "$(find "$ST" -maxdepth 1 -name 'lock*' | wc -l | tr -d ' ')" = 0
-PS_OLD="Wed Jan  1 00:00:00 2020    "
-fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; printf '%s\n' "$PS_OLD" > "$SD/psout"
+# A lock another process holds (the test's own flock), whatever the file says.
+stub_reset; fresh; mkdir -p "$ST"; : > "$ST/lock"; hold_lock "$ST/lock"
 find "$ST" | sort > "$T/snap-before"
 go
-ok "a lock held by a live process is respected: exit 0" rc_is 0
+ok "a lock held by another process: exit 0" rc_is 0
+ok "it says another run holds it" has "$T/err" "another run holds"
 find "$ST" | sort > "$T/snap-after"
 ok "and nothing changes" cmp -s "$T/snap-before" "$T/snap-after"
 ok "and claude never starts" absent "$SD/claude.argv"
-ok "and the lock still points at its holder" is "$(readlink "$ST/lock")" "$$"
-rm -f "$SD/psout"
-fresh; mkdir -p "$ST"; ln -s 99999999 "$ST/lock"; printf '%s\n' "$$" > "$SD/mvhook"
+release_lock
 go
-ok "a lock repointed at a live pid during the takeover is put back: exit 0" rc_is 0
-ok "and it points at that pid" is "$(readlink "$ST/lock")" "$$"
-ok "and no stale copy is left" test "$(find "$ST" -maxdepth 1 -name 'lock*' | wc -l | tr -d ' ')" = 1
+ok "once the holder is gone the next run goes ahead" is "$(lr result)" ok
+# A lock file left behind by a dead run (it names a pid, as an old one did) holds nothing.
+fresh; mkdir -p "$ST"; printf '99999999\n' > "$ST/lock"
+go
+ok "a lock file left behind by a dead run does not block the next run" is "$(lr result)" ok
+# A wrapper killed without a chance to clean up leaves its children running; none of them may keep the lock.
+# The proxy records its pid (the real one is run by a stub that execs it), a timer subshell's pid is the parent
+# of its sleeps (pgrep is not available sandboxed), and claude's pid is in claude.pid.
+mv "$BIN/weekly-research-proxy" "$BIN/proxy.real"
+printf '#!/bin/bash\necho $$ > "%s"\nexec "%s" "$@"\n' "$T/proxy.pid" "$BIN/proxy.real" > "$BIN/weekly-research-proxy"
+chmod 755 "$BIN/weekly-research-proxy"
+orphans() {  # orphans <label> <stub mode> <subshells to find>: kill the wrapper mid-run, look at its survivors
+  local label=$1 want=$3 kids k alive_all=1
+  stub_reset; [ "$2" != stubinit ] || stub_init '.tools += ["Bash"]'
+  printf '%s\n' "$2" > "$SD/mode"
+  fresh; clear_records; rm -f "$T/sleep-ppids" "$T/proxy.pid"
+  ( wrenv; exec env "${WRE[@]}" WEEKLY_RESEARCH_TIMEOUT=60 SLEEP_PPID_LOG="$T/sleep-ppids" "$WRBASH" "$BIN/weekly-research" ) >"$T/out-a" 2>"$T/err-a" </dev/null &
+  apid=$!
+  for _ in $(seq 100); do [ -s "$SD/claude.proxyup" ] && break; sleep 0.1; done
+  for _ in $(seq 80); do [ "$(grep -vx "$apid" "$T/sleep-ppids" 2>/dev/null | sort -u | wc -l | tr -d ' ')" -ge "$want" ] && break; sleep 0.1; done
+  kids=$(grep -vx "$apid" "$T/sleep-ppids" 2>/dev/null | sort -u)
+  ok "$label: the instance to be killed holds the lock" is "$(lock_state "$ST/lock")" held
+  kill -KILL "$apid"; { wait "$apid"; } 2>/dev/null
+  ok "$label: claude outlives the killed wrapper" alive "$(cat "$SD/claude.pid")"
+  ok "$label: so does the proxy" alive "$(cat "$T/proxy.pid")"
+  for k in $kids; do alive "$k" || alive_all=0; done
+  ok "$label: and its $want timer subshell(s)" test "$alive_all" = 1 -a "$(printf '%s\n' "$kids" | grep -c .)" = "$want"
+  ok "$label: yet the lock is free: no child inherited it" is "$(lock_state "$ST/lock")" free
+  kill -KILL "$(cat "$SD/claude.pid")" "$(cat "$T/proxy.pid")" $kids 2>/dev/null
+  for _ in $(seq 50); do alive "$(cat "$SD/claude.pid")" || alive "$(cat "$T/proxy.pid")" || break; sleep 0.1; done
+  stub_reset; go
+  ok "$label: and the next run goes ahead" is "$(lr result)" ok
+}
+orphans "a wrapper killed while claude runs" hang 1
+orphans "a wrapper killed while the watchdog counts the grace" stubinit 2
+mv "$BIN/proxy.real" "$BIN/weekly-research-proxy"
+# A lock that cannot be opened is a run that cannot start.
+fresh; mkdir -p "$ST/lock"
+go
+ok "a lock path that cannot be opened: exit 1" rc_is 1
+ok "it notifies through osascript" test -s "$SD/osascript.args"
 ok "and claude never starts" absent "$SD/claude.argv"
-ok "and the hook ran" absent "$SD/mvhook"
-rm -f "$SD/mvhook"
-# A live holder is stale only when it started after its link was made: its pid was reused.
-fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf '%s\n' "$PS_OLD" > "$SD/psout"
-go
-ok "a live holder that started with its link is respected, however old the link" rc_is 0
-ok "and the old link is left alone" is "$(readlink "$ST/lock")" "$$"
-ok "and claude never starts" absent "$SD/claude.argv"
-fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf 'Wed Jan  1 00:00:03 2020\n' > "$SD/psout"
-go
-ok "a holder that started within the slack after its link is respected" rc_is 0
-ok "and claude never starts" absent "$SD/claude.argv"
-fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf 'Wed Jan  1 00:00:30 2020  \n' > "$SD/psout"
-go
-ok "a live pid that started well after its link was made is a reused pid: taken over" is "$(lr result)" ok
-ok "and the lock is released" nolock "$ST/lock"
-for ps_out in "" "not a date"; do
-  fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf '%s\n' "$ps_out" > "$SD/psout"
-  go
-  ok "a holder whose start time cannot be read (\"$ps_out\") counts as live: exit 0" rc_is 0
-  ok "and claude never starts" absent "$SD/claude.argv"
-  ok "and the lock still points at its holder" is "$(readlink "$ST/lock")" "$$"
-done
-fresh; mkdir -p "$ST"; ln -s 0 "$ST/lock"; printf '%s\n' "$PS_OLD" > "$SD/psout"
-go
-ok "a lock that names pid 0 (a process group, never a holder) is taken over" is "$(lr result)" ok
-rm -f "$SD/psout"
-fresh; mkdir -p "$ST/target"; ln -s "$ST/target" "$ST/lock"
-go
-ok "a lock that is a link to a directory names no live pid: it is taken over" is "$(lr result)" ok
-ok "and no file was created inside the directory it pointed at" test "$(find "$ST/target" | wc -l | tr -d ' ')" = 1
-fresh; mkdir -p "$ST"; ln -s garbage "$ST/lock"
-go
-ok "a lock whose target is no live pid is taken over" is "$(lr result)" ok
-fresh; mkdir -p "$ST"
-printf '%s\n' "$ST/lock" > "$SD/lockpath"; printf '%s\n' steal > "$SD/mode"
-go
-ok "a run whose lock was replaced still finishes" is "$(lr result)" ok
-ok "its cleanup leaves a lock that points elsewhere alone" is "$(readlink "$ST/lock")" 12345
-rm -f "$SD/lockpath"
-fresh; mkdir -p "$ST/lock"; printf 'date=2026-11-16\nresult=failed\nfailures_in_row=1\n' > "$ST/last-run"
-go
-ok "a lock directory of the older format is a failed run: exit 1" rc_is 1
-ok "it counts on top of the previous failures in a row" is "$(lr failures_in_row)" 2
-ok "its reason names the path" has "$ST/failures/$TODAY.txt" "$ST/lock"
-ok "and the directory is left alone" test -d "$ST/lock"
-ok "and claude never starts" absent "$SD/claude.argv"
-fresh; mkdir -p "$ST/lock"; printf 'failures_in_row=junk\n' > "$ST/last-run"
-go
-ok "an unreadable failure count restarts at one" is "$(lr failures_in_row)" 1
 
 echo "I2. A state folder that cannot be created"
 stub_reset; : > "$T/not-a-folder"
@@ -782,6 +770,16 @@ ok "the first run of a source has no quiet mark" is "$(stf r1 6)$(stf r1 7)" "--
 { fill 1 1 2026-11-27 | sed 's/Item 1/New one/'
   printf 'r2 - fetch failed\n'; fill 3 6 2026-11-26; fill 7 7 2026-11-25; printf 'r10 - fetch failed\n'; } | mkrows; srun 2026-11-30 1
 ok "the second run passes" is "$(lr result)" ok
+IN="$SD/claude.stdin"
+src() { printf -- '- %s | vendor | https://example.com/%s | ' "$1" "${1#r}"; }
+ok "the second run's prompt carries a fetched row's watermark" has "$IN" "$(src r1)last checked: 2026-11-23 | newest item: 2026-11-20 Title one"
+ok "an undated fetched row carries its date as -" has "$IN" "$(src r2)last checked: 2026-11-23 | newest item: - Undated page"
+ok "a title is the state's, cleaned" has "$IN" "$(src r3)last checked: 2026-11-23 | newest item: 2026-11-19 a   b c"
+ok "an omitted row keeps its old watermark, its title cleaned of an escape character" has "$IN" "$(src r8)last checked: 2026-11-01 | newest item: 2026-10-30 x [2Jy"
+ok "a row that was never fetched says never and none" has "$IN" "$(src r7)last checked: never | newest item: none"
+ok "so does a row that only ever failed" has "$IN" "$(src r9)last checked: never | newest item: none"
+ok "no source line still says never when it has a watermark" is "$(grep -c 'last checked: never' "$IN")" 3
+ok "the Sources header says the titles are recorded data" has "$IN" "The newest-item titles are data recorded from earlier runs"
 ok "a newer item replaces the old one" is "$(strow r1)" "$(printf 'r1\t2026-11-30\t2026-11-27\tNew one\t0\t-\t-')"
 ok "a fetch failed row keeps its watermark and counts" is "$(strow r2)" "$(printf 'r2\t2026-11-23\t-\tUndated page\t1\t-\t-')"
 ok "a fetched row resets its failures" is "$(stf r7 5)" 0
@@ -805,6 +803,28 @@ ok "five undated fetched rows of ten pass" is "$(lr result)" ok
 fresh; { for i in 1 2 3 4 5 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-10 1
 failed "no row fetched"
 ok "a failed first run writes no state file" absent "$ST/state.tsv"
+# A state row that is not well formed counts as never checked; the well-formed ones around it still count.
+fresh; mkdir -p "$ST"
+{ printf 'r1\t2026-11-01\t2026-10-30\tGood title\t0\t-\t-\n'
+  printf 'r2\t2026-11-01\t2026-10-30\tSix fields\t0\t-\n'
+  printf 'r3\t2026-11-01\t2026-10-30\tEight fields\t0\t-\t-\tmore\n'
+  printf 'Bad_Id\t2026-11-01\t2026-10-30\tBad id\t0\t-\t-\n'
+  printf 'r4\tyesterday\t2026-10-30\tBad checked date\t0\t-\t-\n'
+  printf 'r5\t2026-11-01\ttomorrow\tBad item date\t0\t-\t-\n'
+  printf 'r6\t2026-11-02\t2026-10-31\tFirst r6\t0\t-\t-\n'
+  printf 'r6\t2026-11-03\t2026-11-01\tSecond r6\t0\t-\t-\n'
+  printf 'r7\t-\t-\t-\t4\t-\t-\n'; } > "$ST/state.tsv"
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
+IN="$SD/claude.stdin"
+ok "a well-formed state row reaches the prompt" has "$IN" "$(src r1)last checked: 2026-11-01 | newest item: 2026-10-30 Good title"
+ok "a six-field state row falls back to never" has "$IN" "$(src r2)last checked: never | newest item: none"
+ok "an eight-field one too" has "$IN" "$(src r3)last checked: never | newest item: none"
+ok "a bad checked date too" has "$IN" "$(src r4)last checked: never | newest item: none"
+ok "a bad item date too" has "$IN" "$(src r5)last checked: never | newest item: none"
+ok "the first of two rows for an id wins, as in the state update" has "$IN" "$(src r6)last checked: 2026-11-02 | newest item: 2026-10-31 First r6"
+ok "a row of a source that never fetched says never" has "$IN" "$(src r7)last checked: never | newest item: none"
+ok "a row with a bad id names no source" lacks "$IN" "Bad_Id"
+ok "the run goes on" is "$(lr result)" ok
 # Variants of a failed fetch: undated ones match the "fetch failed ..." prefix (or the whole title), dated ones only
 # the whole title once formatting, a closing . or : and surrounding spaces are stripped.
 for dv in '-|`fetch failed`' '-|Fetch failed' '-|**fetch failed**' '-|fetch failed (403)' '-|`Fetch Failed`: timeout' '-|_fetch failed_' \
@@ -916,6 +936,27 @@ echo "M. The vault copy"
 fresh
 fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 0
 ok "no proposal and no upkeep entry: the inbox gets no note" is "$(inbox_notes)" 0
+TODAY=2026-11-23
+fresh
+fill 1 10 2026-11-20 | mkrows
+sbody 0 < "$T/rows" | awk '/^None\.$/ && !d { print "### None this week"; d = 1; next } { print }' > "$T/b-none.md"
+stub_reset; stub_body "$T/b-none.md"; CFGD="$T/cfg-10" go
+ok "a '### None this week' heading is no proposal: the run is ok" is "$(lr result)" ok
+ok "and no empty note goes to the inbox" is "$(inbox_notes)" 0
+for h in '### NONE' '###	None.' '   ### none: nothing worth changing'; do
+  fresh; sed "s/^### None this week\$/$h/" "$T/b-none.md" > "$T/b-none2.md"
+  stub_reset; stub_body "$T/b-none2.md"; CFGD="$T/cfg-10" go
+  ok "'$h' is no proposal either" is "$(inbox_notes)" 0
+done
+fresh
+{ sbody 4 < "$T/rows" | awk '/^## Evidence/ && !d { print "### None this week"; print ""; d = 1 } { print }'; } > "$T/b-none3.md"
+stub_reset; stub_body "$T/b-none3.md"; CFGD="$T/cfg-10" go
+ok "four proposals and a None heading stay within the cap" is "$(lr result)" ok
+ok "and the proposals still send the note to the inbox" cmp -s "$(note)" "$INBOX/2026-11-23-weekly-research.md"
+fresh
+sbody 0 < "$T/rows" | awk '/^None\.$/ && !d { print "### Nonexistent doc fix"; d = 1; next } { print }' > "$T/b-none4.md"
+stub_reset; stub_body "$T/b-none4.md"; CFGD="$T/cfg-10" go
+ok "a heading that merely starts with the letters none is a proposal" cmp -s "$(note)" "$INBOX/2026-11-23-weekly-research.md"
 fresh
 fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
 ok "a proposal copies the note" cmp -s "$(note)" "$INBOX/2026-11-23-weekly-research.md"
@@ -1039,7 +1080,8 @@ ok "the vault inbox is writable" has "$T/out" "vault inbox: writable"
 ok "no failures" has "$T/out" "failures in a row: 0"
 ok "no reason line" lacks "$T/out" "reason:"
 ok "it starts nothing" absent "$SD/claude.argv"
-ok "and leaves no lock" nolock "$ST/lock"
+hold_lock "$ST/lock"; wstatus --status; release_lock
+ok "it takes no lock: it answers while a run holds it" rc_is 0
 printf '%s\n' noinit > "$SD/mode"; go
 wstatus --status
 ok "after a failed run: exit 0" rc_is 0

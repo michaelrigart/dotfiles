@@ -160,8 +160,8 @@ dot_local/bin/executable_review	bash	review	review,hook-path
 dot_local/bin/executable_sdd-clean	bash	sdd-clean	sdd-clean,hook-path
 dot_local/bin/executable_ssh-sandbox-proxy	bash	ssh-sandbox-proxy	ssh-sandbox-proxy,hook-path
 dot_local/bin/executable_unifi-network-mcp	sh	unifi-network-mcp	unifi-network-mcp,hook-path
-dot_local/bin/executable_weekly-research	bash	weekly-research	weekly-research,live-weekly-research
-dot_local/bin/executable_weekly-research-proxy	py	weekly-research-proxy	weekly-research-proxy,weekly-research,live-weekly-research
+dot_local/bin/executable_weekly-research	bash	weekly-research	weekly-research,live-weekly-research,hook-path
+dot_local/bin/executable_weekly-research-proxy	py	weekly-research-proxy	weekly-research-proxy,weekly-research,live-weekly-research,hook-path
 dot_local/bin/executable_wt-prepare	zsh	wt-functions	wt-functions,hook-path
 dot_local/bin/executable_wt-rm	zsh	wt-functions	wt-functions,dev-topology,hook-path
 dot_local/bin/executable_wt-teardown	zsh	wt-teardown	wt-teardown,wt-functions,dev-topology,hook-path

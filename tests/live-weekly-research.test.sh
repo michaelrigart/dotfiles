@@ -11,14 +11,14 @@
 # same way (a refusal at once) makes the row INCONCLUSIVE, never ok:
 #   1.1.1.1, a LAN address, another loopback listener, and a throwaway Unix socket fail under
 #   the profile; the staged proxy is reachable under it, and its log says allow.
-# The lock's staleness check: the wrapper's own `ps -o lstart=` and BSD `date -j` parse, run
-# against a real live process, lands within a few seconds of `date +%s` (the default suite stubs
-# ps, so a future macOS format change fails only here).
 # Wrapper rows (the model): one run of the staged wrapper over a two-row list, haiku, budget
-# 0.5, the real HOME for the login. It is retried once only when its body or Seen table was
+# 0.5, the real HOME for the login, under the wrapper's own pinned PATH (the one launchd gives it, so
+# claude must be found there). The model fetches both rows and runs one WebSearch. It is retried once only when its body or Seen table was
 # refused (haiku sometimes strays from the shape), so at most two model runs. Expected:
-# last-run says result=ok, the note exists, the proxy log has an allow for example.com:443 and a
-# deny for localtest.me, the init event of the saved stream is the restricted one, and nothing
+# last-run says result=ok (the wrapper fails a run with any denied tool call, the WebSearch included),
+# the note exists, the stream shows the WebSearch call (the search itself runs server side, so its
+# host is the login's own api.anthropic.com), the proxy log has an allow for example.com:443, a
+# deny for localtest.me and an allow for api.anthropic.com:443, the init event of the saved stream is the restricted one, and nothing
 # was written outside the scratch state and inbox. The CLI also makes connections the proxy
 # denies (telemetry), so the rows assert on the lines they expect, never on the log holding only
 # them.
@@ -188,28 +188,14 @@ else
   bad "the proxy log has an allow for example.com:443" "$(tail -n 3 "$S/probe/proxy.log" | cut -c1-160 | tr '\n' ' ')"
 fi
 
-# --- the lock's staleness parse, against a real live process ---
-before=$(date +%s)
-sleep 60 &
-spid=$!
-pids="$pids $spid"
-after=$(date +%s)
-started=$(LC_ALL=C ps -o lstart= -p "$spid" 2>/dev/null)
-epoch=$(LC_ALL=C /bin/date -j -f '%a %b %e %T %Y' "$started" +%s 2>/dev/null)
-started=$(printf '%s' "$started" | tr -s ' ')
-if [[ $epoch =~ ^[0-9]+$ ]] && [ "$epoch" -ge $((before - 2)) ] && [ "$epoch" -le $((after + 2)) ]; then
-  ok "ps -o lstart= and date -j read a live process's start within 2 s of date +%s ($started)"
-else
-  bad "ps -o lstart= and date -j read a live process's start time" "lstart='$started' parsed to '${epoch:-}', expected $before..$after"
-fi
-
 # --- the wrapper, with the model ---
 printf 'example\tofficial\thttps://example.com\nlocaltest\tindependent\thttps://localtest.me/\n' >"$CFG/sources.tsv"
 cat >"$CFG/prompt.md" <<'PROMPT'
 # Live check
 
 You run unattended with two tools: WebFetch and WebSearch. For each row under "Sources", fetch its
-url once with WebFetch. Do not search, do not follow links and do not retry a fetch that fails.
+url once with WebFetch. Do not follow links and do not retry a fetch that fails. Then run exactly one
+WebSearch, for "example domain", and do not mention it in your answer.
 
 Your final message is the body of a note and nothing else: no preamble, no front matter, no code
 fence. Keep these five level-two headings exactly as written, once each, in this order, and write
@@ -238,7 +224,6 @@ None.
 date when the page shows none. Use `fetch failed` as the title of a url you could not fetch.
 PROMPT
 today=$(date +%Y-%m-%d)
-CLAUDE_DIR=$(dirname "$(command -v claude)")
 real_snap() {
   find "$HOME/.config/weekly-research" "$HOME/.local/state/weekly-research" -type f \
     -exec stat -f '%N %m %z' {} + 2>/dev/null | sort
@@ -253,7 +238,6 @@ run_wrapper() { # run_wrapper <n>: fresh state and inbox, one run of the staged 
   WEEKLY_RESEARCH_CONFIG=$CFG WEEKLY_RESEARCH_STATE=$S/state WEEKLY_RESEARCH_INBOX=$S/inbox \
     WEEKLY_RESEARCH_TODAY=$today WEEKLY_RESEARCH_MODEL=haiku WEEKLY_RESEARCH_BUDGET=0.5 \
     WEEKLY_RESEARCH_TIMEOUT=600 \
-    WEEKLY_RESEARCH_PATH="$CLAUDE_DIR:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     "$BIN/weekly-research" </dev/null >"$S/probe/wrapper.out.$1" 2>"$S/probe/wrapper.err.$1"
   w_rc=$?
 }
@@ -306,6 +290,12 @@ else
 fi
 
 JSONL=$LOGS/$today.jsonl
+searches=$(jq -r 'select(type == "object" and .type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "WebSearch") | .name' "$JSONL" 2>/dev/null | wc -l | tr -d ' ')
+if [ "${searches:-0}" -ge 1 ]; then
+  ok "the run made $searches WebSearch call(s) and, being result=ok, none was denied"
+else
+  inconclusive "the model made no WebSearch call, so the search is not shown to work under the profile"
+fi
 init_check='select(type == "object" and .type == "system" and .subtype == "init")
   | [ ((.tools | map(tostring) | sort) == ["WebFetch", "WebSearch"]),
       (.mcp_servers == []), (.skills == []), (.apiKeySource == "none"),
@@ -331,11 +321,11 @@ note "model runs: $attempt; cost of the last run: \$${cost:-unknown}; last-run s
 # state's and the inbox's entries, and the real config and state folders
 top=$(ls -A "$S" | tr '\n' ' ')
 inbox_extra=$(ls -A "$S/inbox" | grep -vxE "\.weekly-research-last-run|$today-weekly-research\.md" | tr '\n' ' ')
-state_extra=$(ls -A "$S/state" | grep -vxE 'notes|failures|logs|last-run|state\.tsv' | tr '\n' ' ')
+state_extra=$(ls -A "$S/state" | grep -vxE 'notes|failures|logs|last-run|lock|state\.tsv' | tr '\n' ' ')
 fails_left=$(ls -A "$S/state/failures" 2>/dev/null | tr '\n' ' ')
 if [ "$top" = "bin config helpers inbox probe state " ] && [ "$(tree_sum)" = "$tree_before" ] \
   && [ -z "$inbox_extra" ] && [ -z "$state_extra" ] && [ -z "$fails_left" ]; then
-  ok "nothing was written outside the scratch state and inbox, and no run folder or lock was left"
+  ok "nothing was written outside the scratch state and inbox, and no run folder was left"
 else
   bad "nothing was written outside the scratch state and inbox" "top: $top; inbox extra: $inbox_extra; state extra: $state_extra; failures: $fails_left"
 fi
