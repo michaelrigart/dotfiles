@@ -44,42 +44,40 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   previews (`diff`, `status`, `cat`, …) deploy or render a fresh clone of origin's main, and
   only from a clean main equal to it. `--dirty-ok` is for a deliberate local change. Every
   `init` is refused; use `chezmoi apply --init`.
-- The global agent instructions are tracked fragments in `.chezmoitemplates/agents/`.
-  `global.md` (shared, tool-agnostic) renders into all three targets
-  (`~/.config/agents/GLOBAL.md`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`);
-  `claude-code.md` (Claude Code only, opening with `## Claude Code only`) is appended to
-  `~/.claude/CLAUDE.md` alone; `codex.md` (Codex only, opening with `## Codex only`) is
-  appended to `~/.codex/AGENTS.md` alone. Edit a fragment; it deploys once merged, when
-  Michael runs `chezmoi apply`. This repo is public: nothing private goes in them.
+- The global agent instructions are tracked fragments in `.chezmoitemplates/agents/`. `global.md`
+  (shared, tool-agnostic) renders into all three targets (`~/.config/agents/GLOBAL.md`,
+  `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`); `claude-code.md` (Claude Code only, opening with
+  `## Claude Code only`) is appended to `~/.claude/CLAUDE.md` alone; `codex.md` (Codex only, opening
+  with `## Codex only`) is appended to `~/.codex/AGENTS.md` alone. Edit a fragment; it deploys once
+  merged, when Michael runs `chezmoi apply`. This repo is public: nothing private goes in them.
   `global.md` stays within 150 lines, `claude-code.md` within 50 and `codex.md` within 30;
   `tests/agent-instructions.test.sh` pins all three, and the renders.
-- The main checkout `~/.local/share/chezmoi` stays on a clean `main`: never switched,
-  never edited in place, because Michael applies from it and the wrapper needs a clean
-  `main`. Every branch is a `wt` checkout at `~/.local/share/chezmoi-<branch>`, run by its
-  own session with its own Codex pane. The sandbox grants a sibling's writes only to its
-  own session's shell, so another session (the driver in the main checkout) writes there
-  only with its Edit/Write tools and git commands that touch only the repository (`add`,
-  `commit`). Check `git branch --show-current` before each commit, since a session can sit
-  in the wrong checkout.
-- A line ends with its branch pushed and a pull request against `main`, opened with `gh pr create`
-  after the pre-merge review, ready for review and assigned to Michael. No agent merges it or
-  pushes `main`: Michael merges from his own terminal, pinned to the head's full 40-character id
-  (GitHub refuses a short one): `gh pr merge <number> --merge --admin --match-head-commit <sha>`,
-  then `git -C ~/.local/share/chezmoi pull --ff-only`, then `chezmoi apply`.
+- The main checkout `~/.local/share/chezmoi` stays on a clean `main`: never switched, never edited
+  in place, because Michael applies from it and the wrapper needs a clean `main`. Every branch is a
+  `wt` checkout at `~/.local/share/chezmoi-<branch>`, run by its own session with its own Codex
+  pane. The sandbox grants a sibling's writes only to its own session's shell, so another session
+  (the driver in the main checkout) writes there only with its Edit/Write tools and git commands
+  that touch only the repository (`add`, `commit`). Check `git branch --show-current` before each
+  commit, since a session can sit in the wrong checkout.
+- A line ends with its branch pushed and a pull request against `main`, or against the lower
+  increment when it is stacked, opened with `gh pr create` after the pre-merge review, ready for
+  review and assigned to Michael. No agent merges it or pushes `main`: Michael merges from his own
+  terminal, pinned to the head's full 40-character id (GitHub refuses a short one):
+  `gh pr merge <number> --merge --admin --match-head-commit <sha>`, then
+  `git -C ~/.local/share/chezmoi pull --ff-only`, then `chezmoi apply`.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`, `reconcile-agents.sh`,
-  `preflight-ssh-agent.sh`), deliberately not `run_once_` scripts: they change system settings
-  and need interaction. `install-claude-managed-settings.sh` installs
-  `claude-managed-settings.json`, the Claude Code mods lock, into
-  `/Library/Application Support/ClaudeCode/`, and refuses a `managed-settings.d` beside it.
-  `configure.sh` runs it; `chezmoi apply` never does. Running it for real (sudo, `--replace` to
-  overwrite a different policy) is Michael's; agents run it only in test mode, through its
-  suite and `tests/provision.test.sh`.
-  `forge-protection.sh check` is read-only (GET calls only): it walks `~/Code` to three levels
-  and reads each repository's forge protection, skipping the ones listed in the owner's
-  `~/.config/forge-protection/exceptions`. Its output names repositories and is never committed;
-  agents run it only through its mocked suite, never with a write verb.
-  The scripts are mode `755` (not the 644 policy file, nor a module a script imports, such as
-  `test-audit/mutators.py`) — git stores only the exec bit, so a clone yields 755, never 700.
+  `preflight-ssh-agent.sh`), deliberately not `run_once_` scripts: they change system settings and
+  need interaction. `install-claude-managed-settings.sh` installs `claude-managed-settings.json`,
+  the Claude Code mods lock, into `/Library/Application Support/ClaudeCode/`, and refuses a
+  `managed-settings.d` beside it. `configure.sh` runs it; `chezmoi apply` never does. Running it for
+  real (sudo, `--replace` to overwrite a different policy) is Michael's; agents run it only in test
+  mode, through its suite and `tests/provision.test.sh`. `forge-protection.sh check` is read-only
+  (GET calls only): it walks `~/Code` to three levels and reads each repository's forge protection,
+  skipping the ones listed in the owner's `~/.config/forge-protection/exceptions`. Its output names
+  repositories and is never committed; agents run it only through its mocked suite, never with a
+  write verb. The scripts are mode `755` (not the 644 policy file, nor a module a script imports,
+  such as `test-audit/mutators.py`) — git stores only the exec bit, so a clone yields 755, never
+  700.
 - The global pre-push hook and its secret scan live in `dot_config/git/hooks/` and deploy to
   `~/.config/git/hooks` (`core.hooksPath`, which replaces each repository's `.git/hooks`; the hook
   runs the repository's own one after its scan). Edit the source; never the deployed copy.
@@ -126,6 +124,8 @@ docs/superpowers/         # design records (tracked, ignored by chezmoi)
 ```
 
 ## Testing
+
+**Checks:** strong — ./tests/run.sh --changed; CI required to merge: no
 
 ```bash
 ./tests/run.sh                 # every suite with no special requirement

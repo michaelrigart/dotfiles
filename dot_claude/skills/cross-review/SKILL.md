@@ -62,7 +62,9 @@ against the default branch. A range that starts at a commit (`5c86f2c..<branch>`
 is recorded but never opens the gate, so point the reviewer at the new commits in the body, not
 in `--diff`. Every fix round needs a fresh full-range round: any change to the content after the
 approval closes the gate again, and a clean rebase over changes to other files does not. One
-review can cover several repositories, each with its own `--diff <repo-path>:<range>`.
+review can cover several repositories, each with its own `--diff <repo-path>:<range>`. A stacked
+increment is reviewed against its lower branch, an approval is bound to its destination, and the
+`wt-line` skill holds the steps.
 
 **Land through the gate.** MR/PR creation names its destination explicitly
 (`glab mr create --target-branch <dest>`, `gh pr create --head <branch> --base <dest>`), from a
@@ -153,6 +155,9 @@ reviewer's assertion alone.
    same round.
 5. **One dispatch per round.** Re-dispatch once every finding of the round has been fixed or
    ruled on, never per finding; a finding that went to Michael waits for his decision.
+6. **Reproduce first.** A fix for a race, an authorization finding or an input-handling finding
+   starts with a test that reproduces the reviewer's failure scenario and fails. The fix commit
+   states the invariant it restores, in one sentence.
 
 ## Iterating
 
@@ -183,7 +188,11 @@ Escalate to Michael when, and only when:
 - you cannot verify a claim
 - the loop stops converging: two rounds in a row that mostly find problems in the last
   round's fixes, or a goal that can never be finished. Bring Michael the round count, what
-  recurs and a structural option. A loop that converges runs as long as it needs.
+  recurs and a structural option. A loop that converges runs as long as it needs. The structural
+  option may be a restart: a fresh line from the same spec, with what the failed branch taught
+  written into its brief. Signs: edits outside the plan's declared paths, a plan that keeps being
+  rewritten, a fix with no failing test, a diff far over its estimate. The line proposes; Michael
+  decides, because a restart discards work.
 - `xreview` refuses with `Michael's call: report this and stop.`, or a `codex-daemon ensure` that
   a refusal told you to run does not start the daemon
 

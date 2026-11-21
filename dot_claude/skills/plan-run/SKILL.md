@@ -10,6 +10,8 @@ Where this skill and superpowers' subagent-driven-development disagree, this ski
 
 ## Batches
 
+A plan covers one increment, and a run ends with that increment's finish.
+
 A batch is tasks with no pending dependency, disjoint files (neither one's tests load the
 other's), and no shared test resource such as a database, server or port. Dispatch a batch's
 implementers together in the line's checkout; they do not commit. Then commit the tasks one at a
@@ -64,6 +66,12 @@ Run the change once the way its user will, inside the sandbox: the `run` skill f
 a CLI against a scratch home. Record the command and what it showed in the ledger. Anything
 unexpected is a finding for the final review's fix wave. What needs Michael (an apply, an
 unsandboxed or live suite) goes in the final report as his step.
+
+Run `change-facts <base>...<head>` and record its output in the ledger. For a spec with a
+`**Size:**` line, a code figure over the ceiling, or half again over the increment's estimate in
+the spec, stops the run: the proposed split goes to Michael, because it changes the spec. An
+increment whose signed spec records that it cannot be split is not stopped by the ceiling, only by
+its estimate. A spec without one predates v2 and is never split retroactively.
 
 ## After the run
 

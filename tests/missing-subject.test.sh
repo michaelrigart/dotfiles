@@ -88,6 +88,8 @@ missing herdr-app-xreview     dot_config/herdr-app/bin/executable_xreview-app
 missing xreview-app-pane      dot_local/bin/executable_xreview-app-pane
 missing xreview-app-pane      dot_local/bin/executable_xreview
 missing herdr-phase           dot_config/herdr/executable_phase.sh
+missing merge-state           dot_local/bin/executable_merge-state
+missing merge-state           dot_local/bin/executable_change-facts
 missing live-rm-denies        dot_claude/modify_private_settings.json
 missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
 missing run                   .scripts/test-audit/subjects.tsv

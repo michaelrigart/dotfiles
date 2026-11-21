@@ -371,7 +371,8 @@ mr_desc=$(sed -n 's/^description: //p' "$mr_skill")
 if printf '%s' "$mr_desc" | grep -qF 'merge request, pull request or issue'; then
   _pass "merge-request description names issues"
 else _fail "merge-request description names issues" "description: $mr_desc"; fi
-for text in 'before reading issues, comments or reviews from a forge' 'before adding or bumping a dependency'; do
+for text in 'before reading issues, comments or reviews from a forge' 'before adding or bumping a dependency' \
+  'or committing a fix for a bug that already merged to the default branch'; do
   if printf '%s' "$mr_desc" | grep -qF -- "$text"; then _pass "merge-request description holds: $text"
   else _fail "merge-request description holds: $text" "description: $mr_desc"; fi
 done

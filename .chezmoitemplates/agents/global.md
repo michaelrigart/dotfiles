@@ -20,16 +20,11 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 - **Layout:** code lives in `~/Code/<Org>/<repo>`; the main organisations are Netronix and Viu More.
 - **`wt` worktrees.** `wt <branch>` makes a sibling checkout `<repo>-<branch>` beside the main one
   with its own Herdr workspace and a Claude Code session in it; worktrees share one database, Redis
-  and storage. Every new branch in `~/Code` or the dotfiles is one, small changes included: never a
-  plain branch (`git switch -c`) or a harness worktree there, and `using-git-worktrees` takes `wt`
-  as declared, without asking. The driver runs `wt --no-focus <branch> <local-branch>` (a remote
-  start point sets an upstream) before the line's first file and names the checkout in its report;
-  if `wt` fails, it stops and tells Michael. In the same turn it briefs the checkout's session,
-  which does the recon, writes the spec, asks Michael for sign-off in its own pane and runs the
-  line, taking spec changes to him; the driver keeps only briefing and collecting the report,
-  never the line's work. Never run `wt-rm` or `git worktree remove`: the line's final report
-  (the driver's, if dropped before hand-off) gives Michael the `wt-rm <branch>` command to run once
-  it is merged or abandoned. Harness worktrees follow their tool's lifecycle.
+  and storage. Every new branch in `~/Code` or the dotfiles is one, small changes and increments
+  included: never a plain branch (`git switch -c`) or a harness worktree there, and
+  `using-git-worktrees` takes `wt` as declared, without asking. Load the `wt-line` skill before
+  opening, briefing, stacking or finishing a line, asking for sign-off or a final report. Never
+  run `wt-rm` or `git worktree remove`. Harness worktrees follow their tool's lifecycle.
 - **Backups:** Borg skips uncommitted `wt` work (the vault's Backups note); commit at checkpoints.
 
 ## Design records
@@ -48,9 +43,8 @@ live, what is tracked and when each is committed never vary per repository.
   in task-sized commits. While work or review is active, set `**Status:** In progress`, plus the MR
   reference. In the final pre-merge commit, set `**Status:** Implemented` and cite the MR. A merge
   SHA can be added later; it never needs its own MR.
-- **Cross-repo work.** Open both MRs before merging either; merge the canonical spec's MR first.
 - Load the `design-records` skill when creating, updating, reviewing, completing, abandoning or
-  deleting a spec or plan, or setting its Status.
+  deleting a spec or plan, setting its Status, or working across repositories.
 
 ## How to work
 
@@ -79,14 +73,18 @@ live, what is tracked and when each is committed never vary per repository.
 
 ## Engineering judgement
 
+- When goals conflict: safety first, as a fixed limit; then no severe bug reaching a user; then
+  Michael's time; then speed; then cost.
 - Solve today's problem with well-structured code: clear responsibilities, honest names, invariants
   in one place. A pattern or abstraction must solve a problem you can name now.
 - Prefer an in-scope refactor over a workaround when it removes duplicated rules, invalid states or
   a design that makes the change hard; outside scope, propose it with its cost. No unrequested
   features, files, docs, notes or options.
-- Test behaviour, not wording; extend a case before adding one. A real bug fix ships with a test;
-  a review finding, only if its bug could plausibly return. Each test passes the revert check
-  (revert the fix, see it fail, restore it). Never special-case code to pass a test; report it.
+- Test behaviour, not wording; extend a case before adding one. Logic and bug fixes are
+  test-first; UI and glue code need a pass/fail check you can run, not a unit test per line.
+  A real bug fix ships with a test; a review finding, only if its bug could plausibly return. Each
+  test or check passes the revert check (revert the change, see it fail, restore it). Never
+  special-case code to pass a test; report it.
 - Disagree when you have reason to (a mistaken request, a weak spec, a stale decision, a wrong
   review finding): say it once, with evidence, then follow Michael's call.
 
@@ -98,13 +96,17 @@ specs and merges; in between, the driver proceeds on its own.
 
 - **Asking.** Ask only for a real decision: a design choice, a trade-off outside the approved spec,
   or an irreversible action. Otherwise take the sensible default and say which one you took.
-- **Execution** is always subagent-driven. Move to the next task or plan in a series without asking.
+- **Execution** is subagent-driven; a small change is written by the line's own session. Move to
+  the next task or plan in a series without asking.
 - **Sizing.** Size the process to the change, never the quality bar. A small change (a fix, config
   change or contained addition: under ~150 lines of non-test code, no open design choice, no safety
   boundary such as permissions, sandbox, guards, auth, secrets, deletion, push or merge tooling,
-  migrations, a new dependency) skips the spec and plan: test first, implement, then a cold diff
-  review and Codex's pre-merge review together. Every other change has a spec and a plan,
-  versioned with the code. Unsure or outgrown: not small; say which.
+  migrations, a new dependency) skips the spec and plan: test or runnable check first, implement,
+  then a cold diff review and Codex's pre-merge review together. Every other change has a spec and
+  a plan, versioned with the code. Unsure or outgrown: not small; say which.
+- **Increments.** A spec states its size and splits the work into increments that each merge on
+  their own: aim for a few hundred lines of non-test code, about 2,000 at most. Each is a line of
+  its own and may stack on the one before (the `design-records` and `wt-line` skills).
 - **Brainstorming.** Present the whole design in one message.
 - **Cross-review** runs at every checkpoint (spec sign-off, plan completion, pre-merge) unasked.
   Commits after the last pre-merge review need a new review before you report the work as done.
@@ -113,13 +115,12 @@ specs and merges; in between, the driver proceeds on its own.
 - **Fix now.** Fix in-scope findings on this branch. No follow-up MRs unless Michael asks.
 - **Convergence.** A loop converges when each round leaves less to fix. Two rounds in a row that
   mostly find problems in the last round's fixes, or a goal that can never be finished, mean it does
-  not: stop and bring Michael the round count, what recurs and a structural option.
+  not: stop and bring Michael the round count, what recurs and a structural option. A structural
+  option may be a restart from the spec in a fresh line.
 - **Finishing.** Push the feature branch and open a Draft MR where the repository uses MRs. For the
   dotfiles, open the PR ready for review; Michael merges. Show no finishing menus, and never merge.
+  Every MR and PR opens with its merge state (the `merge-request` skill).
 - **Reporting.** Final reports end on one state line: pushed, review receipt, open items, next step.
-- **Fresh sessions.** When asking for spec sign-off and in a final report, end with one line
-  suggesting `/clear` plus a paste-ready prompt (checkout, branch, artifact paths, next step).
-  Persist anything not yet on disk first; never stop only to suggest it.
 - **Momentum.** Don't stop while the next step is already authorised. For a run expected to take
   over about 15 minutes, give its size and ETA at the start and one line per milestone, without
   stopping. Send one notification when an unattended stretch ends or is blocked, not one per step.
