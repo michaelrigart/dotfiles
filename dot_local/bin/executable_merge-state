@@ -10,7 +10,9 @@ error, a directory that is not a git repository or a commit that does not exist.
 `origin/<destination>` and never fetches, writes nothing and calls no forge.
 Pinned to the system Python 3.9 (`/usr/bin/python3`), and nothing newer is used. Git is pinned
 too (`/usr/bin/git`, never found through PATH) and runs in an environment built from scratch, so
-nothing the caller exports can change the report.
+GIT_DIR, GIT_CONFIG_* and another git first on PATH cannot change what it reads from the
+repository. Two things the caller exports are read on purpose: XREVIEW_LEDGER names the review
+ledger script, and HOME and XDG_STATE_HOME (passed to the ledger) say where its state is.
 """
 import json
 import os
@@ -59,8 +61,10 @@ order. Otherwise it is `safe to merge`, or `safe to merge once CI is green` with
 13. any --check but none
 
 The Checks line is read from origin's default branch, never from the change. Instruction text is
-a changed AGENTS.md, CLAUDE.md or SKILL.md, a path under .chezmoitemplates/agents/, or a path
-under an `agents` directory directly inside .claude, dot_claude, .codex or dot_codex."""
+a changed AGENTS.md, CLAUDE.md or SKILL.md (any case), a path under .chezmoitemplates/agents/ or
+.config/agents/, or a path under an `agents` directory directly inside .claude or .codex. Paths
+are compared by the name chezmoi deploys: private_, exact_, executable_ and the other source
+attributes are dropped, dot_ becomes a dot, and a final .tmpl is dropped."""
 SINGLE = ("--claude-review", "--suite", "--lint", "--ci", "--spec", "--hold")
 REPEAT = ("--boundary", "--check")
 TYPES = ("sp-reviewer", "sp-architect")
@@ -68,8 +72,12 @@ CHOICES = {"--lint": ("pass", "fail", "not-run", "none"), "--ci": ("green", "pen
 SPEC_DIR = "docs/superpowers/specs/"
 CHECKS = re.compile(r"\*\*Checks:\*\* (strong|weak) — (.+); CI required to merge: (yes|no)$")
 NONCE = re.compile(r"xr-[A-Za-z0-9-]+")
-INSTRUCTION_NAMES = ("AGENTS.md", "CLAUDE.md", "SKILL.md")
-INSTRUCTION_PARENTS = (".claude", "dot_claude", ".codex", "dot_codex")
+INSTRUCTION_NAMES = ("agents.md", "claude.md", "skill.md")
+INSTRUCTION_PARENTS = (".claude", ".codex")
+SOURCE_PREFIXES = (
+    "private_", "readonly_", "exact_", "symlink_", "create_", "modify_", "empty_", "executable_", "encrypted_",
+    "once_", "onchange_", "before_", "after_", "remove_", "external_", "literal_",
+)
 
 
 class Fail(Exception):
@@ -147,8 +155,8 @@ def parse(argv):
         if opts[name] not in allowed:
             raise Fail("%s must be one of %s" % (name, ", ".join(allowed)))
     suite = opts["--suite"]
-    if suite != "none" and not re.fullmatch(r"[0-9]+/[0-9]+", suite):
-        raise Fail("--suite must be <passed>/<total> or none")
+    if suite != "none" and (not re.fullmatch(r"[0-9]+/[0-9]+", suite) or int(suite.split("/")[0]) > int(suite.split("/")[1])):
+        raise Fail("--suite must be <passed>/<total> with passed not above total, or none")
     review = opts["--claude-review"]
     if review != "none":
         kind, _, commit = review.partition(":")
@@ -157,14 +165,14 @@ def parse(argv):
     return pos[0], pos[1], opts
 
 
-def codex(dest, head):
+def codex(dest, dest_id, head):
     """(nonce, None) when the ledger approves this change, else (None, what to tell Michael)."""
-    if run(GIT + ["rev-parse", "--verify", "--quiet", "--end-of-options", "refs/remotes/origin/%s^{commit}" % dest]).returncode:
+    if dest_id is None:
         return None, "origin/%s is not available locally; fetch it" % dest
     ledger = os.environ.get("XREVIEW_LEDGER") or os.path.expanduser("~/.claude/xreview-ledger.py")
     if not os.path.isfile(ledger):
         return None, "no review ledger script at %s" % ledger
-    done = run(["/usr/bin/python3", ledger, "decide", ".", dest, "origin/" + dest, head])
+    done = run(["/usr/bin/python3", ledger, "decide", ".", dest, "refs/remotes/origin/" + dest, head])
     try:
         answer = json.loads(done.stdout)
         reason = answer["reason"]
@@ -178,15 +186,17 @@ def codex(dest, head):
     return (nonce.group(), None) if nonce else (None, "the ledger approved without a nonce: " + reason)
 
 
-def sizes(dest, head):
+def sizes(dest_id, head):
     """({code, test, deleted, deps}, None), or (None, why) when change-facts cannot answer."""
+    if dest_id is None:
+        return None, "change-facts has no destination to compare with"
     for name in ("change-facts", "executable_change-facts"):
         path = os.path.join(HERE, name)
         if os.path.isfile(path):
             break
     else:
         return None, "change-facts is not beside merge-state"
-    done = run([path, "origin/%s...%s" % (dest, head)])
+    done = run([path, "%s...%s" % (dest_id, head)])
     if done is None or done.returncode:
         return None, "change-facts failed"
     text = done.stdout.decode("utf-8", "replace")
@@ -198,10 +208,10 @@ def sizes(dest, head):
                 ("deleted", r"^test lines deleted: (\d+)$"),
             )
         }
+        marker = re.search(r"^dependency lines:( none)?$", text, re.M)
+        found["deps"] = [] if marker.group(1) else [l for l in text[marker.end():].split("\n") if l.startswith("  ")]
     except AttributeError:
         return None, "change-facts printed a report merge-state cannot read"
-    tail = text.split("\ndependency lines:\n", 1)[1:]
-    found["deps"] = [l for l in tail[0].split("\n") if l.startswith("  ")] if tail else []
     return found, None
 
 
@@ -216,9 +226,26 @@ def checks_line():
     return (found[0].group(1), found[0].group(3) == "yes") if len(found) == 1 else ("weak", False)
 
 
-def instruction_text(path):
-    parts = path.split("/")
-    if parts[-1] in INSTRUCTION_NAMES or path.startswith(".chezmoitemplates/agents/"):
+def target_parts(path):
+    """The path's components as chezmoi deploys them: source attributes, dot_ and a final .tmpl dropped."""
+    parts = []
+    for part in path.split("/"):
+        stripped = True
+        while stripped:
+            stripped = False
+            for prefix in SOURCE_PREFIXES:
+                if part.startswith(prefix):
+                    part, stripped = part[len(prefix):], True
+        parts.append("." + part[4:] if part.startswith("dot_") else part)
+    if parts[-1].endswith(".tmpl"):
+        parts[-1] = parts[-1][:-5]
+    return parts
+
+
+def instruction_text(parts):
+    if parts[-1].lower() in INSTRUCTION_NAMES:
+        return True
+    if len(parts) > 2 and (parts[0], parts[1]) in ((".chezmoitemplates", "agents"), (".config", "agents")):
         return True
     return any(a in INSTRUCTION_PARENTS and b == "agents" for a, b in zip(parts[:-2], parts[1:-1]))
 
@@ -233,16 +260,18 @@ def edits_checks(span, path):
     return False
 
 
-def change(dest, head):
+def change(dest_id, head):
     """(paths touching a Checks line, instruction text paths), or None when the change is unreadable."""
-    span = "origin/%s...%s" % (dest, head)
+    if dest_id is None:
+        return None
+    span = "%s...%s" % (dest_id, head)
     try:
         names = git(*DIFF, "--name-only", "-z", span, "--").split(b"\0")
         paths = sorted(p.decode("utf-8", "surrogateescape") for p in names if p)
-        edited = [p for p in paths if p.rsplit("/", 1)[-1] == "AGENTS.md" and edits_checks(span, p)]
+        edited = [p for p in paths if target_parts(p)[-1].lower() == "agents.md" and edits_checks(span, p)]
     except Fail:
         return None
-    return edited, [p for p in paths if instruction_text(p)]
+    return edited, [p for p in paths if instruction_text(target_parts(p))]
 
 
 def items_of(dest, head, opts, facts):
@@ -310,10 +339,14 @@ def main(argv):
     except Fail as err:
         sys.stderr.write("merge-state: %s\n" % err)
         return 2
-    nonce, reason = codex(dest, head)
-    size, why = sizes(dest, head)
+    try:
+        dest_id = resolve("refs/remotes/origin/" + dest)
+    except Fail:
+        dest_id = None
+    nonce, reason = codex(dest, dest_id, head)
+    size, why = sizes(dest_id, head)
     tier, ci_required = checks_line()
-    items = items_of(dest, head, opts, (nonce, reason, review, size, why, tier, ci_required, change(dest, head)))
+    items = items_of(dest, head, opts, (nonce, reason, review, size, why, tier, ci_required, change(dest_id, head)))
     boundaries = [b for b in opts["--boundary"] if b != "none"]
     if "--hold" in opts:
         state = "hold: " + opts["--hold"]

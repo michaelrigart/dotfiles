@@ -826,7 +826,7 @@ cannot be left out: a missing one is a usage error, never a quieter state. `--bo
 | code and test lines, test lines deleted, dependency lines | `change-facts origin/<destination>...<head>` |
 | the repository's `Checks` tier and whether CI is required | the `**Checks:**` line of `AGENTS.md` on the default branch as origin has it; no line, or a line it cannot parse, is `weak` |
 | whether the change adds, removes or edits a `**Checks:**` line | the change's own diff |
-| whether the change touches agent instruction text | the paths of the change: an `AGENTS.md` or `CLAUDE.md` anywhere, the instruction fragments (`.chezmoitemplates/agents/`), an agent definition (a file in an `agents` directory under `.claude`, `dot_claude`, `.codex` or `dot_codex`), any `SKILL.md` |
+| whether the change touches agent instruction text | the paths of the change: an `AGENTS.md` or `CLAUDE.md` anywhere, the instruction fragments (`.chezmoitemplates/agents/`), an agent definition (a file in an `agents` directory under `.claude`, `dot_claude`, `.codex` or `dot_codex`), any `SKILL.md`. Paths are compared by target name: chezmoi's source attributes (`dot_`, `private_`, `exact_`, a trailing `.tmpl` and the like) are stripped and the three file names are matched without case, so `dot_claude/CLAUDE.md.tmpl` counts; so does a file under `.config/agents/`, where the shared global instructions render (added after the task review, 2026-11-21) |
 
 **Facts the author declares**, because no tool on this machine records them. Each is printed in
 `Checked` as given, so Michael sees what was claimed:

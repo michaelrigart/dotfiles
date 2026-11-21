@@ -102,8 +102,8 @@ same_out="**Merge:** safe to merge
 if [ "$rc" = 0 ] && [ "$(cat "$T/out")" = "$same_out" ] && [ ! -s "$T/err" ]; then _pass "all clear prints the three lines of safe to merge"
 else _fail "all clear prints the three lines of safe to merge" "rc=$rc $(cat "$T/out") | $(cat "$T/err")"; fi
 cp "$T/out" "$T/first"
-if grep -qxF "decide . main origin/main $H" "$T/ledger/args.log"; then _pass "the ledger is asked about this destination and the head's commit id"
-else _fail "the ledger is asked about this destination and the head's commit id" "$(cat "$T/ledger/args.log")"; fi
+if grep -qxF "decide . main refs/remotes/origin/main $H" "$T/ledger/args.log"; then _pass "the ledger is asked about this destination, its remote-tracking ref and the head's commit id"
+else _fail "the ledger is asked about this destination, its remote-tracking ref and the head's commit id" "$(cat "$T/ledger/args.log")"; fi
 defaults; A_CI=pending; ms
 state "ci pending on the all-clear case" "safe to merge once CI is green"
 defaults; A_LINT=none; A_CI=none; ms
@@ -128,7 +128,6 @@ chk "row 2: another commit than the head" "Claude review read $P, not the head"
 
 # 4. row 3: the suite
 for v in none 9/10 0/0; do defaults; A_SUITE=$v; ms; chk "row 3: suite $v" "suite: $v"; done
-defaults; A_SUITE=11/10; ms; state "a passed count above the total is not row 3" "safe to merge"
 
 # 5. row 4: lint
 for v in fail not-run; do defaults; A_LINT=$v; ms; chk "row 4: lint $v" "lint: $v"; done
@@ -167,14 +166,25 @@ defaults; ms; chk "row 7: a Checks line added to another AGENTS.md" "the change 
 newhead; printf '%s\nmore\n' "$STRONG" > "$R/AGENTS.md"; commit h
 defaults; ms; chk "row 7: an AGENTS.md edit that leaves the Checks line alone is row 8 only" "agent instruction text: AGENTS.md"
 
+newhead; wt dot_codex/AGENTS.md.tmpl "$STRONG"; commit h
+defaults; ms; chk "row 7: a Checks line added to a chezmoi template of AGENTS.md" "the change edits a Checks line: dot_codex/AGENTS.md.tmpl" "agent instruction text: dot_codex/AGENTS.md.tmpl"
+newhead; wt sub/agents.md "$STRONG"; commit h
+defaults; ms; chk "row 7: the file name is compared without case" "the change edits a Checks line: sub/agents.md" "agent instruction text: sub/agents.md"
+
 # 9. row 8: instruction text, once per path kind
 for p in sub/AGENTS.md CLAUDE.md skills/x/SKILL.md .chezmoitemplates/agents/global.md dot_claude/agents/a.md \
          .claude/agents/a.md .codex/agents/a.toml dot_codex/agents/a.toml dot_claude/agents/sub/nested.md; do
   newhead; wt "$p" x; commit h; defaults; ms; chk "row 8: $p" "agent instruction text: $p"
 done
+for p in dot_claude/CLAUDE.md.tmpl dot_codex/AGENTS.md.tmpl dot_config/agents/GLOBAL.md.tmpl sub/claude.md sub/Agents.md \
+         dot_claude/skills/x/private_SKILL.md dot_claude/skills/x/skill.md dot_claude/private_agents/a.md dot_codex/exact_agents/b.md \
+         dot_claude/readonly_private_agents/executable_c.sh.tmpl .config/agents/x/y.md dot_config/agents/sub/z.json; do
+  newhead; wt "$p" x; commit h; defaults; ms; chk "row 8: $p" "agent instruction text: $p"
+done
 newhead; wt sub/AGENTS.md x; wt CLAUDE.md x; commit h
 defaults; ms; chk "row 8: two files, comma-separated and sorted" "agent instruction text: CLAUDE.md, sub/AGENTS.md"
-for p in dot_claude/skills/a.md agents/a.md foo/agents/a.md dot_claude/x/agents/a.md dot_claude/hooks/agents.sh .chezmoitemplates/other/a.md notes/AGENTS.md.bak; do
+for p in dot_claude/skills/a.md agents/a.md foo/agents/a.md dot_claude/x/agents/a.md dot_claude/hooks/agents.sh .chezmoitemplates/other/a.md notes/AGENTS.md.bak docs/CLAUDE.md.txt src/agents/a.md \
+         dot_config/zsh/a.md dot_claude/skills/x/SKILL.md.bak dot_claude/xagents/a.md dot_dir/AGENTS.mdx; do
   newhead; wt "$p" x; commit h; defaults; ms; state "row 8: $p is not instruction text" "safe to merge"
 done
 
@@ -233,6 +243,7 @@ defaults; A_REVIEW=sp-nope:HEAD; ms; usage_err "a bad reviewer type"
 defaults; A_REVIEW=sp-reviewer; ms; usage_err "a review with no commit"
 defaults; A_REVIEW=sp-reviewer:nope; ms; usage_err "a review commit that names no commit"
 for v in 3 a/b -1/2 3/ 1/2/3 ""; do defaults; A_SUITE=$v; ms; usage_err "suite figure '$v'"; done
+defaults; A_SUITE=11/10; ms; usage_err "a passed count above the total"
 defaults; A_LINT=maybe; ms; usage_err "a bad lint outcome"
 defaults; A_CI=maybe; ms; usage_err "a bad CI state"
 defaults; A_SPEC=docs/other.md; ms; usage_err "a spec outside docs/superpowers/specs/"
@@ -260,6 +271,29 @@ chk "a ledger that prints another JSON shape" "Codex pre-merge: the review ledge
 approve
 defaults; ( CDPATH= cd -- "$R" && "$T/solo/merge-state" main HEAD --claude-review sp-reviewer:HEAD --suite 10/10 --lint pass --ci green --spec "$SPEC" --boundary none --check none ) >"$T/out" 2>"$T/err"; rc=$?
 chk "no sibling change-facts" "size: unknown, change-facts is not beside merge-state (limit 2000)"
+mkdir "$T/stub"; cp "$MS" "$T/stub/merge-state"; chmod 755 "$T/stub/merge-state"
+stub_cf() { printf '#!/bin/sh\ncat <<EOF\n%s\nEOF\n' "$1" > "$T/stub/change-facts"; chmod 755 "$T/stub/change-facts"; }
+stub_run() { ( CDPATH= cd -- "$R" && "$T/stub/merge-state" main HEAD --claude-review sp-reviewer:HEAD --suite 10/10 --lint pass --ci green --spec "$SPEC" --boundary none --check none ) >"$T/out" 2>"$T/err"; rc=$?; }
+REPORT='code: 5 lines (+5 -0)
+test: 0 lines (+0 -0)
+docs: 0 lines (+0 -0)
+code over 2000: no
+test lines deleted: 0
+ci workflow files: none'
+stub_cf "$REPORT
+dependency lines: none"; stub_run
+state "a stub change-facts report with every line the parse needs is clear" "safe to merge"
+stub_cf "$REPORT"; stub_run
+chk "a change-facts report without its dependency section" "size: unknown, change-facts printed a report merge-state cannot read (limit 2000)"
+stub_cf "$REPORT
+dependency lines:
+  Gemfile
+    + gem \"rack\""; stub_run
+chk "a stub report listing a dependency" "new dependency lines:"
+for gone in 'code: ' 'test: ' 'test lines deleted'; do
+  stub_cf "$(printf '%s\n' "$REPORT" "dependency lines: none" | grep -v "^$gone")"; stub_run
+  chk "a change-facts report without its '$gone' line" "size: unknown, change-facts printed a report merge-state cannot read (limit 2000)"
+done
 mk gone; git -C "$R" update-ref -d refs/remotes/origin/main
 defaults; ms
 if [ "$rc" = 0 ] && sed -n 1p "$T/out" | grep -qx '\*\*Merge:\*\* check first' && numbered | grep -qxF 'Codex pre-merge: origin/main is not available locally; fetch it'; then _pass "no origin/<destination>: check first, naming it"
@@ -267,6 +301,10 @@ else _fail "no origin/<destination>: check first, naming it" "rc=$rc $(cat "$T/o
 defaults; A_DEST=nobranch; ms
 if [ "$rc" = 0 ] && sed -n 1p "$T/out" | grep -qx '\*\*Merge:\*\* check first' && numbered | grep -qxF 'Codex pre-merge: origin/nobranch is not available locally; fetch it'; then _pass "a destination origin does not have"
 else _fail "a destination origin does not have" "rc=$rc $(cat "$T/out") | $(cat "$T/err")"; fi
+R="$T/clear"
+mk tagged; newhead; wn app/big.rb 151; commit h; git -C "$R" tag origin/main HEAD
+defaults; A_SPEC=none; ms
+chk "a local tag named origin/main does not stand for the destination" "size: 151 code lines, over 150"
 R="$T/clear"
 
 # 18. declared text shows control characters as ?
