@@ -17,7 +17,8 @@ import subprocess
 import sys
 import unicodedata
 
-GIT = ["git", "--no-pager", "--no-replace-objects", "-c", "core.fsmonitor=false"]
+ENV = dict(os.environ, GIT_GRAFT_FILE=os.devnull)
+GIT = ["git", "--no-pager", "--no-replace-objects", "--no-lazy-fetch", "-c", "core.fsmonitor=false"]
 DIFF = [
     "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-relative",
     "--diff-algorithm=myers", "--ignore-submodules=none", "-O/dev/null", "-l1000", "-M",
@@ -49,7 +50,7 @@ def git(*args):
     try:
         done = subprocess.run(
             GIT + list(args), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=ENV,
         )
     except OSError:
         raise Fail("cannot run git")
@@ -105,7 +106,7 @@ def printable(data, keep_tab=False):
     """The bytes with every control character and every byte that is not UTF-8 shown as ?."""
     text = data.decode("utf-8", "surrogateescape")
     text = "".join(
-        "?" if unicodedata.category(ch) in ("Cc", "Cf", "Cs") and not (keep_tab and ch == "\t") else ch
+        "?" if unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") and not (keep_tab and ch == "\t") else ch
         for ch in text
     )
     return text.encode("utf-8")

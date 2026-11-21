@@ -371,14 +371,16 @@ lines_ok "a binary Gemfile moved unchanged and a deleted binary gemspec list not
 
 # 23. control characters in a dependency line
 fx c23; wt seed.txt s; base
-printf 'gem "a"\r\033[2Kgem "b"\ngem "c" \x9b x\ngem\t"d"\ngem "e"\xe2\x80\xaex\ngem "f"\xe2\x80\x8bg\n' | wf Gemfile; commit; rep
-from_is "control, format and stray bytes in an added line show as ?, a tab stays" "dependency lines:" "dependency lines:
+printf 'gem "a"\r\033[2Kgem "b"\ngem "c" \x9b x\ngem\t"d"\ngem "e"\xe2\x80\xaex\ngem "f"\xe2\x80\x8bg\ngem "g"\xe2\x80\xa8x\ngem "h"\xe2\x80\xa9y\n' | wf Gemfile; commit; rep
+from_is "control, format, separator and stray bytes in an added line show as ?, a tab stays" "dependency lines:" "dependency lines:
   Gemfile
     + gem \"a\"??[2Kgem \"b\"
     + gem \"c\" ? x
     + gem"$'\t'"\"d\"
     + gem \"e\"?x
-    + gem \"f\"?g"
+    + gem \"f\"?g
+    + gem \"g\"?x
+    + gem \"h\"?y"
 
 # 24. a reader that exits at once
 fx c24; wt seed.txt s; base; wn Gemfile 30000; commit
@@ -389,6 +391,32 @@ fx c24b; wt seed.txt s; base; wt app/a.rb x; commit
 ( CDPATH= cd -- "$R" && "$CF" base...HEAD 2>"$T/err" | true ); rc=$?
 if [ "$rc" = 0 ] && [ ! -s "$T/err" ]; then _pass "a short report into a pipe already closed ends quietly with exit 0"
 else _fail "a short report into a pipe already closed ends quietly with exit 0" "rc=$rc $(head -c 300 "$T/err")"; fi
+
+# 25. nothing is fetched, and grafts do not rewrite the history
+fx c25; wt seed.txt s; base; wn app/a.rb 4; commit
+git init -q --bare "$T/bare25"
+printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$T/fetch-ran" > "$T/uploadpack.sh"; chmod 755 "$T/uploadpack.sh"
+git -C "$R" config core.repositoryformatversion 1
+git -C "$R" config extensions.partialClone origin
+git -C "$R" config remote.origin.url "$T/bare25"
+git -C "$R" config remote.origin.promisor true
+git -C "$R" config remote.origin.uploadpack "$T/uploadpack.sh"
+blob="$(git -C "$R" rev-parse HEAD:app/a.rb)"; rm -f "$R/.git/objects/${blob:0:2}/${blob:2}"
+git -C "$R" cat-file blob "$blob" >/dev/null 2>&1
+if [ -e "$T/fetch-ran" ]; then _pass "control: git fetches a missing blob of a partial clone through remote.origin.uploadpack"
+else _fail "control: git fetches a missing blob of a partial clone through remote.origin.uploadpack" "no marker"; fi
+rm -f "$T/fetch-ran"
+usage_err "a missing blob of a partial clone is an error, not a fetch" "$R" base...HEAD
+if [ ! -e "$T/fetch-ran" ]; then _pass "the configured uploadpack command never runs"; else _fail "the configured uploadpack command never runs" "the command ran"; fi
+
+fx c25b; wt seed.txt s; base; wn app/a.rb 2; commit one; wn app/a.rb 5; commit two
+one="$(git -C "$R" rev-parse HEAD~1)"; rep "$one...HEAD"; cp "$T/out" "$T/first"
+printf '%s %s\n' "$(git -C "$R" rev-parse HEAD)" "$(git -C "$R" rev-parse base)" > "$R/.git/info/grafts"
+if [ "$(git -C "$R" diff --numstat "$one...HEAD" 2>/dev/null | cut -f1,2)" = "$(printf '5\t0')" ]; then _pass "control: git honours .git/info/grafts"
+else _fail "control: git honours .git/info/grafts" "$(git -C "$R" diff --numstat "$one...HEAD" 2>/dev/null)"; fi
+rep "$one...HEAD"
+if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "a graft re-parenting the head does not change the report"
+else _fail "a graft re-parenting the head does not change the report" "rc=$rc $(head -c 300 "$T/out")"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
