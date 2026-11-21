@@ -243,13 +243,15 @@ attr info '* -diff'
 
 # 14. paths
 fx c14; wt seed.txt s; base
-wt "my dir/a b.rb" x; wt "ünï.rb" x; wt $'nl\nname.rb' x; wt $'ctl\ty/Gemfile' x
+wt "my dir/a b.rb" x; wt "ünï.rb" x; wt $'nl\nname.rb' x; wt $'ctl\ty/Gemfile' x; wt $'nl\ndir/Gemfile' x
 commit; rep
-lines_ok "spaces, non-ASCII and a newline in a path count once each" "code: 4 lines (+4 -0)"
+lines_ok "spaces, non-ASCII and a newline in a path count once each" "code: 5 lines (+5 -0)"
 if [ "$(grep -c '^[a-z]' "$T/out")" = 7 ]; then _pass "the report has exactly seven top-level items"
 else _fail "the report has exactly seven top-level items" "$(cat "$T/out")"; fi
 from_is "a control character in a printed path becomes ?" "dependency lines:" "dependency lines:
   ctl?y/Gemfile
+    + x
+  nl?dir/Gemfile
     + x"
 
 # 15. edges
@@ -334,6 +336,57 @@ if [ "$(git -C "$R" diff --numstat base...HEAD | cut -f1,2)" = "$(printf '5\t5')
 else _fail "control: patience counts this pair as +5 -5" "$(git -C "$R" diff --numstat base...HEAD)"; fi
 rep
 lines_ok "diff.algorithm = patience does not change the counts (myers: +4 -4)" "code: 8 lines (+4 -4)"
+
+fx c20b; for k in a b c; do wn "lib/$k.rb" 20 "$k"; done; base
+for k in a b c; do n 20 "$k" | sed '5s/.*/changed/' | wf "lib/n$k.rb"; rm "$R/lib/$k.rb"; done
+commit; git -C "$R" config diff.renameLimit 1; rep
+lines_ok "diff.renameLimit = 1 does not turn three renames into deletions and additions" "code: 6 lines (+3 -3)"
+
+fx c20c; wt seed.txt s; git -C "$R" add seed.txt
+git -C "$R" update-index --add --cacheinfo "160000,1111111111111111111111111111111111111111,sub1"
+git -C "$R" commit -q -m base; git -C "$R" tag base
+git -C "$R" update-index --add --cacheinfo "160000,2222222222222222222222222222222222222222,sub1"
+git -C "$R" update-index --add --cacheinfo "160000,3333333333333333333333333333333333333333,sub2"
+git -C "$R" commit -q -m head; git -C "$R" config diff.ignoreSubmodules all; rep
+lines_ok "diff.ignoreSubmodules = all: an added gitlink is +1, a bumped one +1 -1" "code: 3 lines (+2 -1)"
+
+fx c20d; wn app/a.rb 2; base; wn app/a.rb 5; commit; git -C "$R" config diff.orderFile "$T/no-such-order-file"; rep
+lines_ok "diff.orderFile naming a missing file" "code: 3 lines (+3 -0)"
+
+fx c20e; wn app/a.rb 2; base; wn app/a.rb 5; commit
+git -C "$R" replace "$(git -C "$R" rev-parse base:app/a.rb)" "$(n 50 | git -C "$R" hash-object -w --stdin)"; rep
+lines_ok "a replace ref on a blob of the change" "code: 3 lines (+3 -0)"
+
+# 21. a file named after a blob id
+fx c21; wn app/a.rb 2; base; id="$(git -C "$R" rev-parse base:app/a.rb)"
+wn app/a.rb 5; wt "$id" x; commit; rep
+lines_ok "a committed file named after the base blob id of a modified file" "code: 4 lines (+4 -0)"
+wt "$(git -C "$R" rev-parse base)...$(git -C "$R" rev-parse HEAD)" x; rep
+lines_ok "an untracked file named after the range of two commit ids" "code: 4 lines (+4 -0)"
+
+# 22. a binary manifest that only moved or went away lists nothing
+fx c22; printf 'a\0g\n' | wf Gemfile; printf 'b\0x\n' | wf x.gemspec; wt seed.txt s; base
+mkdir "$R/sub"; mv "$R/Gemfile" "$R/sub/Gemfile"; rm "$R/x.gemspec"; commit; rep
+lines_ok "a binary Gemfile moved unchanged and a deleted binary gemspec list nothing" "dependency lines: none"
+
+# 23. control characters in a dependency line
+fx c23; wt seed.txt s; base
+printf 'gem "a"\r\033[2Kgem "b"\ngem "c" \x9b x\ngem\t"d"\n' | wf Gemfile; commit; rep
+from_is "control characters and a stray byte in an added line show as ?, a tab stays" "dependency lines:" "dependency lines:
+  Gemfile
+    + gem \"a\"??[2Kgem \"b\"
+    + gem \"c\" ? x
+    + gem"$'\t'"\"d\""
+
+# 24. a reader that exits at once
+fx c24; wt seed.txt s; base; wn Gemfile 30000; commit
+( CDPATH= cd -- "$R" && "$CF" base...HEAD 2>"$T/err" | head -1 >/dev/null ); rc=$?
+if [ "$rc" = 0 ] && [ ! -s "$T/err" ]; then _pass "a closed pipe ends quietly with exit 0"
+else _fail "a closed pipe ends quietly with exit 0" "rc=$rc $(head -c 300 "$T/err")"; fi
+fx c24b; wt seed.txt s; base; wt app/a.rb x; commit
+( CDPATH= cd -- "$R" && "$CF" base...HEAD 2>"$T/err" | true ); rc=$?
+if [ "$rc" = 0 ] && [ ! -s "$T/err" ]; then _pass "a short report into a pipe already closed ends quietly with exit 0"
+else _fail "a short report into a pipe already closed ends quietly with exit 0" "rc=$rc $(head -c 300 "$T/err")"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

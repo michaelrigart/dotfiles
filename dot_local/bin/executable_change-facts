@@ -11,15 +11,16 @@ repository's configuration names. Pinned to the system Python 3.9 (`/usr/bin/pyt
 untrusted mise config in the repository cannot stop or steer it, and nothing newer than 3.9 is used.
 """
 import fnmatch
+import os
 import re
 import subprocess
 import sys
 import unicodedata
 
-GIT = ["git", "--no-pager", "-c", "core.fsmonitor=false"]
+GIT = ["git", "--no-pager", "--no-replace-objects", "-c", "core.fsmonitor=false"]
 DIFF = [
     "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-relative",
-    "--diff-algorithm=myers", "-M",
+    "--diff-algorithm=myers", "--ignore-submodules=none", "-O/dev/null", "-l1000", "-M",
 ]
 USAGE = "usage: change-facts <base>...<head>"
 CEILING = 2000
@@ -100,15 +101,19 @@ def is_ci(path):
     return path.startswith(CI_DIRS)
 
 
-def printable(path):
-    text = path.decode("utf-8", "surrogateescape")
-    text = "".join("?" if unicodedata.category(ch) == "Cc" else ch for ch in text)
-    return text.encode("utf-8", "surrogateescape")
+def printable(data, keep_tab=False):
+    """The bytes with every control character and every byte that is not UTF-8 shown as ?."""
+    text = data.decode("utf-8", "surrogateescape")
+    text = "".join(
+        "?" if unicodedata.category(ch) in ("Cc", "Cs") and not (keep_tab and ch == "\t") else ch
+        for ch in text
+    )
+    return text.encode("utf-8")
 
 
 def records(base, head):
     """One (old, new, paths) per file of the change; a side is (mode, blob id) or None."""
-    tokens = git(*DIFF, "--raw", "-z", "--no-abbrev", "%s...%s" % (base, head)).split(b"\0")
+    tokens = git(*DIFF, "--raw", "-z", "--no-abbrev", "%s...%s" % (base, head), "--").split(b"\0")
     i = 0
     while i < len(tokens) and tokens[i].startswith(b":"):
         old_mode, new_mode, old_id, new_id, status = tokens[i][1:].split(b" ")
@@ -129,6 +134,8 @@ def split_lines(data):
 
 def measure(old, new):
     """(added lines, deleted count, binary) from the record's two blobs alone."""
+    if old and new and old[1] == new[1]:
+        return [], 0, False
     blobs = {
         key: git("cat-file", "blob", side[1])
         for key, side in (("old", old), ("new", new))
@@ -137,10 +144,8 @@ def measure(old, new):
     if any(b"\0" in data[:8000] for data in blobs.values()):
         return [], 0, True
     if len(blobs) == 2:
-        if old[1] == new[1]:
-            return [], 0, False
         added, deleted, body = [], 0, False
-        for line in git(*DIFF, "-U0", old[1], new[1]).split(b"\n"):
+        for line in git(*DIFF, "-U0", old[1], new[1], "--").split(b"\n"):
             if line.startswith(b"@@"):
                 body = True
             elif body and line[:1] == b"+":
@@ -168,8 +173,8 @@ def report(base, head):
         if is_manifest(path):
             if is_workflow(path):
                 added = [line for line in added if USES.match(line)]
-            lines = [b"    + " + line for line in added if line.strip()]
-            if binary:
+            lines = [b"    + " + printable(line, True) for line in added if line.strip()]
+            if binary and new:
                 lines = [b"    (binary)"]
             if lines:
                 deps[path] = lines
@@ -207,7 +212,11 @@ def main(argv):
     except Fail as err:
         sys.stderr.write("change-facts: %s\n" % err)
         return 2
-    sys.stdout.buffer.write(text)
+    try:
+        sys.stdout.buffer.write(text)
+        sys.stdout.buffer.flush()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     return 0
 
 
