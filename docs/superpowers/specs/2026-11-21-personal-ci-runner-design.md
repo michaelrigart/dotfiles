@@ -1,6 +1,6 @@
 # A self-hosted GitLab CI runner on hercules for private personal projects
 
-**Status:** Abandoned — replaced by a CI runner on Viu More's k1 cluster (spec in opsmaster)
+**Status:** Superseded — see https://gitlab.com/viumore/autops/opsmaster/-/blob/main/docs/superpowers/specs/2026-11-21-k1-ci-isolation-curato-runner-design.md
 **Date:** 2026-11-21
 **Branch:** `feat/personal-ci-runner`
 **Sign-off:** Michael, 2026-11-21 (the nine rulings below as written, hercules over the rented
