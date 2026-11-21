@@ -45,6 +45,43 @@ else
   bad AGENT
 fi
 
+# The native agent must hold only the keys its loader lists (michael, viumore_rsa, michael_rsa):
+# ssh-agent takes keys from any client, so an AddKeysToAgent yes in the ssh config would put a
+# backup key there. Only the native socket is asked, never 1Password's, and only public-key blobs
+# are compared; neither is printed. An allowlist, so a held key whose own .pub is missing still shows.
+native="$HOME/.local/state/ssh-agent/agent.sock"
+if [ ! -S "$native" ]; then
+  echo "AGENT_NATIVE=ABSENT"
+  bad AGENT_NATIVE
+else
+  held=$(SSH_AUTH_SOCK="$native" ssh-add -L 2>/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+    foreign=NONE
+    if [ "$rc" -eq 0 ]; then
+      allowed=
+      for name in michael viumore_rsa michael_rsa; do
+        blob=$(read -r _ b _ 2>/dev/null <"$HOME/.ssh/$name.pub" && printf '%s' "$b") || continue
+        [ -n "$blob" ] && allowed="$allowed $blob "
+      done
+      if [ -z "$allowed" ]; then
+        foreign=UNKNOWN
+      else
+        while read -r _ blob _; do
+          [ -n "$blob" ] || continue
+          case "$allowed" in *" $blob "*) ;; *) foreign=PRESENT ;; esac
+        done <<EOF
+$held
+EOF
+      fi
+    fi
+    echo "AGENT_FOREIGN_KEYS=$foreign"
+    [ "$foreign" = NONE ] || bad AGENT_FOREIGN_KEYS
+  else
+    echo "AGENT_FOREIGN_KEYS=UNKNOWN"
+    bad AGENT_FOREIGN_KEYS
+  fi
+fi
+
 # tagteam can hold a login in plaintext in three places. A path that does not exist yet was
 # not measured (ABSENT); only a readable one is a failure. The sandbox answers ENOENT for a
 # missing path even under a deny, and EPERM for an existing denied one, so the error text

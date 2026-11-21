@@ -19,7 +19,7 @@
 A modern, security-focused macOS development environment featuring:
 
 - 🔧 **XDG Base Directory** compliant configuration
-- 🛡️ **1Password integration** for SSH keys and secrets
+- 🛡️ **1Password integration** for secrets and SSH keys, served to git by a native SSH agent
 - ⚡ **Modern CLI tools** replacing traditional Unix utilities
 - 🎨 **Customized terminal** with Ghostty, Starship, and Zsh
 - 📦 **Automated setup** with a single command
@@ -200,6 +200,50 @@ SSH keys are stored in 1Password and templated automatically:
 # Example: private_dot_ssh/private_michael.tmpl
 {{ onepasswordRead "op://Private/michael/private key?ssh-format=openssh" }}
 ```
+
+### SSH Agent
+
+Agents and shells sign and authenticate through a native `ssh-agent` on
+`~/.local/state/ssh-agent/agent.sock`, run by the `be.netronix.ssh-agent` LaunchAgent, so the
+1Password SSH agent and its prompts can be turned off. Reasons and design:
+`docs/superpowers/specs/2026-11-21-native-ssh-agent-design.md`.
+
+After merge, on each machine:
+
+1. `chezmoi apply`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`.
+2. `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh-add -l` lists the keys present on that
+   machine (three on fenrir, two on hercules); a key that failed to load is named in
+   `~/.local/state/ssh-agent/error.log`.
+3. For each borg and huginn host, `ssh -G <host> | grep -i '^addkeystoagent'` must print
+   `addkeystoagent false`; if not, set `AddKeysToAgent no` in the "SSH config" 1Password note, or a
+   by-hand ssh or borg run would add a backup key to the agent every session can use.
+4. Lock 1Password, so any request its agent still serves prompts and is noticed.
+5. In your own terminal, check that `git@github.com`, `git@gitlab.com` and `git@ssh.dev.azure.com`
+   authenticate with that `SSH_AUTH_SOCK` and no 1Password prompt (`ssh -T`), plus a `git ls-remote`
+   against any other host. A host that prompts or fails is missing a key, or has an `IdentityAgent`
+   line in the "SSH config" note that pins it to the 1Password socket: delete a per-host pin; if
+   it is a catch-all (`Host *`), set its value to `~/.local/state/ssh-agent/agent.sock` instead, so
+   processes that never source `zshenv` (GUI git clients, launchd jobs) still reach an agent. Keep
+   the 1Password agent on until every host passes.
+6. In a fresh Claude Code session, run `./tests/run.sh live-agent-signing live-credential-boundary
+   live-agent-auth` (the boundary suite also checks that the agent holds only `michael`,
+   `viumore_rsa` and `michael_rsa`), then `./tests/live-agent-auth.test.sh <repo>` once for a
+   repository on each other forge.
+7. When no running shell or Claude Code session predates step 1 (open new tabs and panes, restart
+   sessions), turn off 1Password → Settings → Developer → "Use the SSH agent".
+
+An emptied or locked agent is fixed by `launchctl kickstart -k gui/$(id -u)/be.netronix.ssh-agent`;
+run it also after a key in `~/.ssh` changes, since a rotated key stays loaded until the agent
+restarts.
+
+Rollback, on each machine: turn the 1Password SSH agent back on; if step 5 pointed a catch-all
+`IdentityAgent` at the native socket, set it back to
+`"~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"` (quoted for the space) in the
+"SSH config" note and run
+`chezmoi apply` (this renders `~/.ssh/config` again) before booting the job out, so ssh never
+points at a missing socket; `launchctl bootout gui/$(id -u)/be.netronix.ssh-agent`; revert the PR,
+`chezmoi apply` and `rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`; restart shells and
+Claude Code sessions.
 
 ### Secrets in Config
 

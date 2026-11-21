@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Run our own ssh-agent on a fixed socket and load the fixed key list into it.
+
+  Managed by chezmoi (source: Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl).
+  Bootstrapped by .scripts/configure.sh; load by hand with:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist
+
+  ssh-agent-run starts /usr/bin/ssh-agent in the foreground on
+  ~/.local/state/ssh-agent/agent.sock and loads the keys from ~/.ssh. KeepAlive restarts the job
+  when the agent exits, which reloads the keys. Design:
+  docs/superpowers/specs/2026-11-21-native-ssh-agent-design.md, section 1.
+
+  The script pins its own PATH and logs its own errors to
+  ~/.local/state/ssh-agent/error.log, so launchd's output goes nowhere.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>be.netronix.ssh-agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ .chezmoi.homeDir }}/.local/bin/ssh-agent-run</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

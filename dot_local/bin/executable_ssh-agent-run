@@ -1,0 +1,59 @@
+#!/bin/bash
+# Runs our own ssh-agent on a fixed socket and loads a fixed key list, for the
+# be.netronix.ssh-agent LaunchAgent (spec 2026-11-21-native-ssh-agent, section 1).
+# Exits with the agent's status (KeepAlive restarts it and reloads the keys); 1 when the socket
+# path holds a non-socket or the socket does not appear within 5 s; 143 on SIGTERM. The socket
+# is removed whenever the agent stops. Errors go to error.log, never key material or
+# ssh-add's output. PINNED_PATH is for the suite only. Bash 3.2 compatible.
+PATH=${PINNED_PATH:-/usr/bin:/bin}; export PATH
+set -u
+umask 077
+
+dir="$HOME/.local/state/ssh-agent"
+sock="$dir/agent.sock"
+log="$dir/error.log"
+keys="michael viumore_rsa michael_rsa"
+
+mkdir -p "$dir" && chmod 700 "$dir" || exit 1
+
+logline() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$log"; }
+
+if [ -S "$sock" ]; then
+  rm -f "$sock"
+elif [ -e "$sock" ] || [ -L "$sock" ]; then
+  logline "refusing to start: $sock exists and is not a socket"
+  exit 1
+fi
+
+ssh-agent -D -a "$sock" &
+agent=$!
+
+stop_agent() {
+  kill "$agent" 2>/dev/null
+  wait "$agent" 2>/dev/null
+  rm -f "$sock"
+}
+trap 'stop_agent; exit 143' TERM
+
+i=0
+while [ ! -S "$sock" ]; do
+  if ! kill -0 "$agent" 2>/dev/null || [ "$i" -ge 50 ]; then
+    logline "ssh-agent did not create $sock"
+    stop_agent
+    exit 1
+  fi
+  sleep 0.1
+  i=$((i + 1))
+done
+
+for name in $keys; do
+  [ -f "$HOME/.ssh/$name" ] || continue
+  SSH_AUTH_SOCK="$sock" ssh-add -q "$HOME/.ssh/$name" </dev/null >/dev/null 2>&1 \
+    || logline "could not load key $name"
+done
+
+wait "$agent"
+rc=$?
+rm -f "$sock"
+logline "ssh-agent exited with status $rc"
+exit "$rc"
