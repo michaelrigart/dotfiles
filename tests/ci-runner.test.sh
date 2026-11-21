@@ -205,6 +205,11 @@ ok "the runner requires the firewall"    grep -Eq '^Requires=.*ci-runner-firewal
 ok "and starts after it"                 grep -Eq '^After=.*ci-runner-firewall\.service' <<<"$dropin"
 ok "the firewall unit is enabled"        grep -q 'systemctl enable ci-runner-firewall.service' "$PROVISION"
 ok "a changed firewall is reloaded in place" grep -q 'systemctl reload-or-restart ci-runner-firewall.service' "$PROVISION"
+stops_on_failed_reload() {
+  block="$(grep -A3 -F 'if ! systemctl reload-or-restart ci-runner-firewall.service; then' "$PROVISION" | sed 's/^[[:space:]]*//')"
+  grep -qx 'systemctl stop gitlab-runner.service || true' <<<"$block" && grep -qx 'exit 1' <<<"$block"
+}
+ok "a changed firewall that fails to reload stops the runner and fails provisioning" stops_on_failed_reload
 ok "the unit can reload"                 grep -qx 'ExecReload=/usr/local/sbin/ci-runner-firewall' <<<"$unit"
 writes_config() { grep -Eq '(put [0-9]+|>) */etc/gitlab-runner/config\.toml' "$PROVISION"; }
 no "the provision script never rewrites config.toml" writes_config

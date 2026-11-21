@@ -98,7 +98,10 @@ provision:
       systemctl daemon-reload
       systemctl enable ci-runner-firewall.service
       if [ "$fw_before" != "$fw_after" ]; then
-        systemctl reload-or-restart ci-runner-firewall.service
+        if ! systemctl reload-or-restart ci-runner-firewall.service; then
+          systemctl stop gitlab-runner.service || true
+          exit 1
+        fi
       else
         systemctl start ci-runner-firewall.service
       fi
