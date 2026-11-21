@@ -1,6 +1,7 @@
 # Workflow v2: smaller increments, shorter fix chains, a merge state, an input rule
 
-**Status:** In progress (increment 1 of 3, on branch `feat/workflow-v2`)
+**Status:** In progress (increment 2 of 3, on branch `feat/workflow-v2-input-rule`; increment 1
+on branch `feat/workflow-v2`)
 **Sign-off:** Michael, 2026-11-20, in the line's own pane, with the eight decisions under Decisions.
 Codex approved the spec in round 3 (xr-1795214348-4c57c9f3).
 **Date:** 2026-11-20

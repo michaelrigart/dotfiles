@@ -1,0 +1,263 @@
+#!/usr/bin/python3 -I
+"""change-facts <base>...<head>
+
+Print the measured facts of the change since the merge base of two commits: lines added and
+deleted per class (code, test, docs; lockfiles left out), whether code passes 2000 lines, test
+lines deleted, CI workflow files and the added lines of dependency manifests. It judges
+nothing: the exit status is 0 whatever the change holds, and 2 only for a usage error, a
+directory that is not a git repository or a side that names no commit. It reads only the two
+commits' history, never the work tree, the index or the network, and runs no command that a
+repository's configuration names. Git's rename detection is not used, since it reads attributes
+from outside the two commits: an added and a deleted file with the same content, mode and
+class, neither a dependency manifest, are one move that counts nothing; an edited move or a
+moved manifest is a delete plus an add.
+Pinned to the system Python 3.9 (`/usr/bin/python3`): an untrusted mise config in the repository
+cannot stop or steer it, and nothing newer than 3.9 is used. Git is pinned too (`/usr/bin/git`,
+never found through PATH) and runs in an environment built from scratch, so nothing the caller
+exports (GIT_DIR, GIT_CONFIG_*, GIT_EXTERNAL_DIFF, another git first on PATH) can change the
+report.
+"""
+import fnmatch
+import os
+import re
+import subprocess
+import sys
+import unicodedata
+
+ENV = {
+    "PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_GRAFT_FILE": os.devnull,
+    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+}
+if "HOME" in os.environ:
+    ENV["HOME"] = os.environ["HOME"]
+GIT = ["/usr/bin/git", "--no-pager", "--no-replace-objects", "--no-lazy-fetch", "-c", "core.fsmonitor=false"]
+DIFF = [
+    "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-relative",
+    "--diff-algorithm=myers", "--ignore-submodules=none", "-O/dev/null", "--no-renames",
+]
+USAGE = "usage: change-facts <base>...<head>"
+CEILING = 2000
+SUBMODULE = b"160000"
+
+LOCK_NAMES = (
+    b"Gemfile.lock", b"package-lock.json", b"yarn.lock", b"pnpm-lock.yaml", b"poetry.lock",
+    b"uv.lock", b"Cargo.lock", b"go.sum", b"Package.resolved",
+)
+TEST_DIR = re.compile(rb"(^|/)(tests?|spec|specs|__tests__|e2e|cypress|features)/")
+TEST_NAME = re.compile(rb"(_test|_spec|\.test|\.spec|-test)\.[a-z0-9]+$|^test_.*\.py$|\.tests?\.[a-z]+$")
+MANIFEST_NAMES = (
+    b"Gemfile", b"package.json", b"pyproject.toml", b"Cargo.toml", b"Package.swift", b"go.mod",
+    b"Brewfile", b".chezmoiexternal.toml", b"mise.toml", b".mise.toml", b".tool-versions",
+)
+MANIFEST_GLOBS = (b"*.gemspec", b"requirements*.txt", b"mise.*.toml", b".mise.*.toml")
+CI_DIRS = (b".github/workflows/", b".gitlab/ci/", b".azure-pipelines/")
+USES = re.compile(rb"""uses["']?\s*:""")
+
+
+class Fail(Exception):
+    pass
+
+
+def git(*args):
+    try:
+        done = subprocess.run(
+            GIT + list(args), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=ENV,
+        )
+    except OSError:
+        raise Fail("cannot run git")
+    if done.returncode:
+        raise Fail("git %s failed" % args[0])
+    return done.stdout
+
+
+def resolve(side):
+    try:
+        return git("rev-parse", "--verify", "--quiet", "--end-of-options", side + "^{commit}").strip().decode()
+    except Fail:
+        raise Fail("no commit named %r" % side)
+
+
+def classify(path):
+    name = path.rsplit(b"/", 1)[-1]
+    if name in LOCK_NAMES or name.endswith(b".lock"):
+        return "lock"
+    pl, base = path.lower(), name.lower()
+    if pl.startswith(b"docs/"):
+        return "docs"
+    if TEST_DIR.search(pl) or TEST_NAME.search(base) or base.endswith(b"tests.cs"):
+        return "test"
+    if pl.endswith((b".md", b".txt", b".rst", b".adoc")):
+        return "docs"
+    return "code"
+
+
+def is_workflow(path):
+    return path.startswith(b".github/workflows/") and path.endswith((b".yml", b".yaml"))
+
+
+def is_manifest(path):
+    if is_workflow(path):
+        return True
+    parts = path.split(b"/")
+    name = parts[-1]
+    if name.endswith(b".tmpl"):
+        name = name[:-5]
+    if name in MANIFEST_NAMES or any(fnmatch.fnmatchcase(name, g) for g in MANIFEST_GLOBS):
+        return True
+    return name == b"config.toml" and len(parts) > 1 and parts[-2] == b"mise"
+
+
+def is_ci(path):
+    if b"/" not in path:
+        return path == b".gitlab-ci.yml" or any(
+            fnmatch.fnmatchcase(path, b"azure-pipelines*" + ext) for ext in (b".yml", b".yaml")
+        )
+    return path.startswith(CI_DIRS)
+
+
+def printable(data, keep_tab=False):
+    """The bytes with every control character and every byte that is not UTF-8 shown as ?."""
+    text = data.decode("utf-8", "surrogateescape")
+    text = "".join(
+        "?" if unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") and not (keep_tab and ch == "\t") else ch
+        for ch in text
+    )
+    return text.encode("utf-8")
+
+
+def raw_records(base, head):
+    """One (old, new, paths) per path of the change; a side is (mode, blob id) or None."""
+    tokens = git(*DIFF, "--raw", "-z", "--no-abbrev", "%s...%s" % (base, head), "--").split(b"\0")
+    i = 0
+    while i < len(tokens) and tokens[i].startswith(b":"):
+        old_mode, new_mode, old_id, new_id, status = tokens[i][1:].split(b" ")
+        paths = [tokens[i + 1]]
+        i += 2
+        old = (old_mode, old_id) if old_id.strip(b"0") else None
+        new = (new_mode, new_id) if new_id.strip(b"0") else None
+        yield old, new, paths
+
+
+def records(base, head):
+    """One (old, new, paths) per file of the change, a move as one record with both paths.
+
+    A move is an added and a deleted path with the same blob id, mode and class, neither a
+    dependency manifest, paired one to one in path order; everything else stays what git
+    reported, so a moved manifest lists its lines.
+    """
+    added, deleted, kept = {}, {}, []
+    for old, new, paths in raw_records(base, head):
+        if (old and new) or is_manifest(paths[0]):
+            kept.append((old, new, paths))
+            continue
+        side = new or old
+        key = (side[1], side[0], classify(paths[0]))
+        (added if new else deleted).setdefault(key, []).append((old, new, paths))
+    for key in sorted(set(added) | set(deleted)):
+        adds = sorted(added.get(key, []), key=lambda r: r[2][0])
+        dels = sorted(deleted.get(key, []), key=lambda r: r[2][0])
+        for (old, _, old_paths), (_, new, new_paths) in zip(dels, adds):
+            kept.append((old, new, old_paths + new_paths))
+        kept.extend(adds[len(dels):])
+        kept.extend(dels[len(adds):])
+    return sorted(kept, key=lambda r: r[2])
+
+
+def split_lines(data):
+    lines = data.split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
+def measure(old, new):
+    """(added lines, deleted count, binary) from the record's two blobs alone."""
+    if old and new and old[1] == new[1]:
+        return [], 0, False
+    blobs = {
+        key: git("cat-file", "blob", side[1])
+        for key, side in (("old", old), ("new", new))
+        if side and side[0] != SUBMODULE
+    }
+    if any(b"\0" in data[:8000] for data in blobs.values()):
+        return [], 0, True
+    if len(blobs) == 2:
+        added, deleted, body = [], 0, False
+        for line in git(*DIFF, "-U0", old[1], new[1], "--").split(b"\n"):
+            if line.startswith(b"@@"):
+                body = True
+            elif body and line[:1] == b"+":
+                added.append(line[1:])
+            elif body and line[:1] == b"-":
+                deleted += 1
+        return added, deleted, False
+    old_lines = split_lines(blobs["old"]) if "old" in blobs else [b""] if old else []
+    new_lines = split_lines(blobs["new"]) if "new" in blobs else [b""] if new else []
+    return new_lines, len(old_lines), False
+
+
+def report(base, head):
+    totals = {cls: [0, 0] for cls in ("code", "test", "docs")}
+    ci, deps = set(), {}
+    for old, new, paths in records(base, head):
+        path = paths[-1]
+        ci.update(p for p in paths if is_ci(p))
+        cls = classify(path)
+        if cls == "lock":
+            continue
+        added, deleted, binary = measure(old, new)
+        totals[cls][0] += len(added)
+        totals[cls][1] += deleted
+        if is_manifest(path):
+            if is_workflow(path):
+                added = [line for line in added if USES.search(line)]
+            lines = [b"    + " + printable(line, True) for line in added if line.strip()]
+            if binary and new:
+                lines = [b"    (binary)"]
+            if lines:
+                deps[path] = lines
+    code = sum(totals["code"])
+    out = [
+        b"%s: %d lines (+%d -%d)" % (cls.encode(), sum(t), t[0], t[1])
+        for cls, t in totals.items()
+    ]
+    out.append(b"code over %d: %s" % (CEILING, b"yes" if code > CEILING else b"no"))
+    out.append(b"test lines deleted: %d" % totals["test"][1])
+    for title, paths in ((b"ci workflow files", sorted(ci)), (b"dependency lines", sorted(deps))):
+        if not paths:
+            out.append(title + b": none")
+            continue
+        out.append(title + b":")
+        for path in paths:
+            out.append(b"  " + printable(path))
+            if title == b"dependency lines":
+                out.extend(deps[path])
+    return b"\n".join(out) + b"\n"
+
+
+def main(argv):
+    try:
+        if len(argv) != 1:
+            raise Fail(USAGE)
+        base, sep, head = argv[0].partition("...")
+        if not sep or not base or not head:
+            raise Fail(USAGE)
+        try:
+            git("rev-parse", "--git-dir")
+        except Fail:
+            raise Fail("not a git repository")
+        text = report(resolve(base), resolve(head))
+    except Fail as err:
+        sys.stderr.write("change-facts: %s\n" % err)
+        return 2
+    try:
+        sys.stdout.buffer.write(text)
+        sys.stdout.buffer.flush()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
