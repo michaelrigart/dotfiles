@@ -76,7 +76,8 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 ```
 **Merge:** safe to merge | check first | hold
 **Checked:** Codex pre-merge approve <nonce> on <40-character head> into <destination>;
-  Claude review <done>; suite <passed/total>; CI <green | pending | none>;
+  Claude review approve (<sp-reviewer | sp-architect>, on this head, whole range);
+  suite <passed/total>; CI <green | pending | none>;
   size <code> / <test> lines; tests deleted <n>; new dependencies <none | list>
 **Check by hand:** nothing | a numbered list: what to look at, how, and what he should see
 **After merge:** nothing | the commands to run
@@ -86,12 +87,13 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 ```
 
 - **`safe to merge`** needs all of these: Codex's pre-merge review approved exactly this head
-  for this PR's or MR's destination; the repository's pre-merge suite and linters passed on it;
+  for this PR's or MR's destination; an approving Claude review of the whole range on this head;
+  the repository's pre-merge suite and linters passed on it;
   the repository's `Checks` line says `strong` (below), read from the default branch as origin
   has it, never from the change's own head, and a change that adds or edits a `Checks` line is
   never `safe to merge`; the change touches no safety boundary as Sizing lists them, and no agent
-  instruction text that states one: the instruction fragments, a repository's `AGENTS.md`, or a
-  skill that states a safety rule, the merge state or the `Checks` tiers; it adds no dependency
+  instruction text that states one: the instruction fragments, a repository's `AGENTS.md`, an
+  agent definition, or a skill that states a safety rule, the merge state or the `Checks` tiers; it adds no dependency
   (the `new dependencies` field is `none`); it is within its size limit: the increment ceiling
   when the change has a signed spec, the small-change limit of Sizing otherwise, as
   `change-facts` reports the code figure; nothing needs Michael's eyes or hands before the merge;
@@ -100,8 +102,10 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 - **`check first`** is everything else that is ready, and `Check by hand` is then never empty.
   A change that touches a safety boundary, adds a dependency (any line in `new dependencies`, a
   Brewfile or mise tool included) or lives in a `weak` repository is always `check first`. So is
-  a change that deletes test lines (the `test lines deleted` figure of `change-facts`): it lists
-  them under `Check by hand`.
+  `tests deleted <n>` is always shown in `Checked`, as `change-facts` reports it (it counts a
+  replaced line as deleted, so an edit shows here too). A change that removes or weakens an
+  assertion, or removes or skips a test, lists each one under `Check by hand`, so it is
+  `check first`.
 - **`hold`** means do not merge yet, with the reason: stacked on an open PR, waiting for his
   manual test, waiting for another repository's MR.
 - **What it is.** The state is the author's summary of recorded facts. It is not a gate and not
@@ -111,9 +115,10 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 - **Where each `Checked` fact comes from.** The facts come from tools, not from the agent's
   memory: the nonce and
   the destination from `xreview receipts`, the size, tests-deleted and dependency lines from
-  `change-facts`, the totals from the suite's own output. The `Claude review` fact is the verdict
-  of the `sp-reviewer` or `sp-architect` run on this head, never the author session's own
-  reading. Leave no fact out of the block: a missing one is never `safe to merge`.
+  `change-facts`, the totals from the suite's own output. The `Claude review` fact is an
+  approving verdict of an `sp-reviewer` or `sp-architect` run that read the whole range on this
+  head, never the author session's own reading; a run on a later fix commit alone does not
+  count. Leave no fact out of the block: a missing one is never `safe to merge`.
 
 ## Bugs that escaped
 

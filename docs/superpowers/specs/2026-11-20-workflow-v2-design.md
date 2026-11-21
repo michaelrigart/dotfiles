@@ -201,7 +201,8 @@ The six steps of H2, with what v2 changes at each. Everything not named stays as
 - **Stacking.** The next increment may start before the one under it has merged. Its checkout is
   created from that branch (`wt --no-focus <branch> <lower-branch>`), its pre-merge review runs
   against that branch (`--diff origin/<lower>...<branch>`), and its PR targets that branch with the
-  merge state `hold until <lower PR> merges`. An approval is bound to its destination: the review
+  merge state `hold until <lower PR> merges and this PR has a fresh review against the default
+  branch`. An approval is bound to its destination: the review
   against the lower branch never approves the default branch, even when the diff is the same. So
   once the lower one has merged, Michael tells the line in one message; it rebases onto the
   default branch if needed, runs a fresh full-range pre-merge round against
@@ -281,7 +282,7 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 ```
 **Merge:** safe to merge | check first | hold
 **Checked:** Codex pre-merge approve <nonce> on <40-character head> into <destination>;
-  Claude review <done>; suite <passed/total>; CI <green | pending | none>;
+  Claude review approve (<sp-reviewer | sp-architect>, on this head, whole range); suite <passed/total>; CI <green | pending | none>;
   size <code> / <test> lines; tests deleted <n>; new dependencies <none | list>
 **Check by hand:** nothing | a numbered list: what to look at, how, and what he should see
 **After merge:** nothing | the commands to run
@@ -759,6 +760,19 @@ Nothing in it changes the structure of this spec.
   Michael signs the wording.
 - **A1's note** asks that the added goals bring him no extra overhead. They bring none: they are
   recorded here and add no rule or field.
+
+## Amendments during implementation
+
+Made on 2026-11-21 while building increment 3, after two cold reviews. Michael was away and had asked for the work to continue on his recommendations; he has not read these, and each can be reversed in the pull request.
+
+- **Stacking.** The fresh review against the default branch runs before the retarget, not after: nothing gates a retarget. The hold text names that review.
+- **The merge state.** `Checked` also carries the approval's destination, `tests deleted`, and an approving Claude review of the whole range. `safe to merge` further requires: a size within the small-change limit when there is no signed spec; no line in `new dependencies`, a Brewfile or mise tool included; no change to agent instruction text that states a safety rule; a `Checks` line read from the default branch, never from the change itself.
+- **Tests.** The revert check also binds the runnable check that UI and glue code may use, so one sentence of the test bullet beyond the added one changed.
+- **The `wt-line` trigger** also names a final report, so Fresh sessions still loads for a session that has no line.
+- **The queue.** A question gets a note of its own. An answer counts only when Michael gives it in the line's pane. A brief authorises a comment in a client's tool only where it quotes his own instruction.
+- **The bug trailer.** `unknown` needs one line on what was searched.
+- **Scouts** use a `scout/<topic>` branch that is never pushed.
+- **Not done:** the bug trailer's moment is named only in the `merge-request` skill's description, because `global.md` is at its cap.
 
 ## Decisions
 
