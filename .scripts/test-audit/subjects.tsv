@@ -79,6 +79,7 @@ dot_codex/modify_private_config.toml	data	codex-config	codex-config
 dot_codex/modify_private_hooks.json	data	codex-config	codex-config
 dot_config/agents/GLOBAL.md.tmpl	data	agent-instructions	agent-instructions
 dot_config/agents/plugins.conf	data	claude-settings	claude-settings
+dot_config/ci-runner/lima.yaml	data	ci-runner	ci-runner
 dot_config/git/allowed_signers.tmpl	data	git-signing-config	git-signing-config
 dot_config/git/config	data	git-config	git-config,git-signing-config
 dot_config/git/hooks/executable_pre-push	bash	git-pre-push-hook	git-pre-push-hook

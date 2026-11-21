@@ -66,6 +66,7 @@ missing alfred-relay          "$RELAY/info.plist"
 missing alfred-relay          "$RELAY/From Codex.json"
 missing alfred-relay          "$RELAY/From Claude Code.json"
 missing change-facts          dot_local/bin/executable_change-facts
+missing ci-runner             dot_config/ci-runner/lima.yaml
 missing claude-settings       dot_config/agents/plugins.conf
 missing codex-code-mode-host  dot_local/bin/executable_codex-code-mode-host
 missing codex-code-mode-host  dot_local/bin/executable_codex

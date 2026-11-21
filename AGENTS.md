@@ -21,19 +21,18 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   time — a re-include cannot reach inside an ignored directory. A new managed file under
   those trees needs its own `!` entry, or `chezmoi add` silently drops it.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `tests/`, `.scripts/` are ignored, never in `$HOME`.
-- Edit the source in a `wt` checkout (never in the main one); it deploys once merged, when
-  Michael runs `chezmoi apply`. Never hand-edit a deployed file. Agents preview with
-  `command chezmoi cat <target>` and `command chezmoi apply --dry-run --verbose`:
-  sandboxed, so running the working tree's scripts is safe. In a `wt` sibling a bare
-  `command chezmoi` renders the main checkout, so preview with
-  `command chezmoi --source <checkout> cat <target>` and
-  `command chezmoi --source <checkout> apply --dry-run --verbose`. The zsh wrapper reaches
-  agent shells too (Claude Code's shell snapshot omits every function whose name starts
-  with a single `_`, so each public function in `~/.config/zsh/functions` that uses a
-  helper reloads the file when it is missing): off main it refuses previews, and on main
-  its clone into `~/.cache` hits a sandbox denial. Data variables (`.name`, `.email`,
-  `.is_arm`) come from `.chezmoi.toml.tmpl`, which `chezmoi apply --init` re-renders — not
-  plain `apply`; `.known_hostnames` comes from `.chezmoidata/machines.toml`.
+- Edit the source in a `wt` checkout (never in the main one); it deploys once merged, when Michael
+  runs `chezmoi apply`. Never hand-edit a deployed file. Agents preview with
+  `command chezmoi cat <target>` and `command chezmoi apply --dry-run --verbose`: sandboxed, so
+  running the working tree's scripts is safe. In a `wt` sibling a bare `command chezmoi` renders the
+  main checkout, so preview with `command chezmoi --source <checkout> cat <target>` and
+  `command chezmoi --source <checkout> apply --dry-run --verbose`. The zsh wrapper reaches agent
+  shells too (Claude Code's shell snapshot omits every function whose name starts with a single `_`,
+  so each public function in `~/.config/zsh/functions` that uses a helper reloads the file when it
+  is missing): off main it refuses previews, and on main its clone into `~/.cache` hits a sandbox
+  denial. Data variables (`.name`, `.email`, `.is_arm`) come from `.chezmoi.toml.tmpl`, which
+  `chezmoi apply --init` re-renders — not plain `apply`; `.known_hostnames` comes from
+  `.chezmoidata/machines.toml`.
 - chezmoi manages only Michael's files in `~/.config/herdr-app` (the allowlist). `settings.json`
   is a `create_` seed (the app writes it): `add --create` brings a live change back; plain `add`
   (file or tree) makes it fully managed, `re-add` skips it. `mods/michael-spaces` and
@@ -97,13 +96,14 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   once merged, Michael runs `chezmoi apply` and `brew bundle install --file ~/.config/homebrew/Brewfile`.
 - `~/.claude/projects/.stignore` is Syncthing's scope for Claude memory, and `codex-memory-share` is
   the only writer into `~/.codex/memories` besides Codex (spec 2026-11-15-hercules-agent-machine).
-- `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`, because `zshenv`
-  puts `~/.local/bin` in front of Homebrew after `brew shellenv` (which prepends);
-  `tests/zshenv.test.sh` pins the order. Interactive starts attach to the
-  launchd-started daemon or refuse (`--no-daemon` is the escape). Anything needing the
-  real binary uses `codex-daemon real-bin`, never `command -v codex`. The daemon would update
-  itself outside Homebrew, so it is pinned to the CLI's package with
-  `codex app-server daemon update --from-cli`; Michael re-runs that after every
+- The CI runner VM (spec 2026-11-21-personal-ci-runner) serves only private projects that meet its
+  conditions, never privileged; creating it and registering or assigning the runner are Michael's.
+- `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`, because `zshenv` puts
+  `~/.local/bin` in front of Homebrew after `brew shellenv` (which prepends); `tests/zshenv.test.sh`
+  pins the order. Interactive starts attach to the launchd-started daemon or refuse (`--no-daemon`
+  is the escape). Anything needing the real binary uses `codex-daemon real-bin`, never
+  `command -v codex`. The daemon would update itself outside Homebrew, so it is pinned to the CLI's
+  package with `codex app-server daemon update --from-cli`; Michael re-runs that after every
   `brew upgrade codex`, when no review is active, then runs the `live-codex-daemon` canary.
 
 ## Layout
