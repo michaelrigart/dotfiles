@@ -81,14 +81,17 @@ notify() {
 
 # put_in_inbox <file>: stdin becomes <file>, never over one that exists (a dangling link counts).
 # Returns 0 when the file is written, 2 when it was already there (left as it is), 1 when it cannot be written.
+# The file is opened once, exclusively (noclobber makes the redirection O_CREAT|O_EXCL) and written through that
+# descriptor, so a file that appears or is replaced after the open is never truncated; a write that fails
+# removes only the file this call created.
 put_in_inbox() {
   { [ -e "$1" ] || [ -L "$1" ]; } && return 2
-  if ( set -o noclobber; : > "$1" ) 2>/dev/null; then
-    cat > "$1" 2>/dev/null || { rm -f "$1"; return 1; }
-    return 0
-  fi
-  if [ -e "$1" ] || [ -L "$1" ]; then return 2; fi
-  return 1
+  ( set -o noclobber; exec 3> "$1" || exit 3; cat >&3 || { rm -f "$1"; exit 1; } ) 2>/dev/null
+  case $? in
+    0) return 0 ;;
+    3) if [ -e "$1" ] || [ -L "$1" ]; then return 2; fi; return 1 ;;
+    *) return 1 ;;
+  esac
 }
 
 # vault_failure_note <reason>: the vault's note for the second failed run in a row. It holds the
@@ -103,14 +106,16 @@ vault_failure_note() {
 # on every failure.
 fail_run() {
   trap '' INT TERM HUP
-  local reason count=$((prev_fails + 1)); reason=$(sanitize "$1")
-  { printf 'date=%s\nreason=%s\nlog=%s\n' "$today" "$reason" "$jsonl"; } > "$state/failures/$today.txt"
+  local reason count=$((prev_fails + 1)) recorded=1; reason=$(sanitize "$1")
+  { printf 'date=%s\nreason=%s\nlog=%s\n' "$today" "$reason" "$jsonl"; } > "$state/failures/$today.txt" || recorded=0
   if [ "$vault_state" != "not writable" ] && [ "$count" = 2 ]; then
     vault_failure_note "$reason" | put_in_inbox "$inbox/$today-weekly-research-failed.md"
     [ "$?" != 1 ] || vault_state="not writable"
   fi
-  write_last_run failed "$reason" "${cost_txt:-unknown}" "" "$count"
+  write_last_run failed "$reason" "${cost_txt:-unknown}" "" "$count" || recorded=0
   printf 'weekly-research: failed: %s\n' "$reason" >&2
+  # A failure that cannot be recorded never advances the count, so nothing else would show it.
+  [ "$recorded" = 1 ] || notify "cannot record a failed run in $state"
   if [ "$vault_state" = "not writable" ]; then notify "$reason"; fi
   exit 1
 }
@@ -160,7 +165,7 @@ finish_run() {
     esac
   fi
   mv "$run/note.new" "$note" || fail_run "cannot write the note $note"
-  write_last_run ok "" "$cost" "$note" 0
+  write_last_run ok "" "$cost" "$note" 0 || fail_run "cannot write last-run"
   mv "$state/state.tsv.tmp" "$state/state.tsv" || fail_run "cannot write the state file"
   printf 'weekly-research: ok, %s\n' "$note"
   exit 0

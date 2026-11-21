@@ -94,6 +94,13 @@ D=$(cd "$(dirname "$0")/.." && pwd)
 if [[ $1 == */state.tsv.tmp ]]; then { cat "$(dirname "$1")/last-run" 2>/dev/null; echo END; } > "$D/claude.lastrun"; fi
 exec /bin/mv "$@"
 EOF
+cat > "$SD/bin/cat" <<'EOF'
+#!/usr/bin/env bash
+# A pass-through cat. When the caller set CAT_SWAP_FROM and CAT_SWAP_TO, the first call that reads its stdin (no
+# arguments) first renames FROM over TO, as a sync process replacing a placeholder would.
+if [ "$#" = 0 ] && [ -n "${CAT_SWAP_FROM:-}" ] && [ -e "$CAT_SWAP_FROM" ]; then /bin/mv "$CAT_SWAP_FROM" "$CAT_SWAP_TO"; fi
+exec /bin/cat "$@"
+EOF
 cat > "$SD/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 # A pass-through sleep that logs its first argument to $SLEEP_LOG, and its parent's pid to $SLEEP_PPID_LOG, when the caller set them (the wrapper's environment only).
@@ -982,6 +989,16 @@ fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1
 ok "a dangling link in the way does not fail the run" is "$(lr result)" ok
 ok "and is not written through" absent "$T/nowhere/x"
 rm -f "$INBOX/2026-11-23-weekly-research.md"
+# The vault copy is one exclusive open: a file that replaces the placeholder after it is created (a sync process)
+# is never truncated. The cat shim renames THEIRS over the target as the note is written; the swap lands after the
+# open, which is where the old two-open version had its window (checked against that version with the swap
+# injected between its two opens).
+fresh; printf 'THEIRS\n' > "$T/theirs"
+fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1 CAT_SWAP_FROM="$T/theirs" CAT_SWAP_TO="$INBOX/2026-11-23-weekly-research.md"
+ok "a file that replaces the placeholder mid-write does not fail the run" is "$(lr result)" ok
+ok "and is left byte-identical, not truncated" is "$(cat "$INBOX/2026-11-23-weekly-research.md")" THEIRS
+ok "and the swap happened" absent "$T/theirs"
+rm -f "$INBOX/2026-11-23-weekly-research.md"
 fresh
 { fill 1 1 2026-11-20 | sed 's/Item 1/FIRSTRUN/'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 1
 { fill 1 1 2026-11-20 | sed 's/Item 1/SECONDRUN/'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 1
@@ -1069,6 +1086,22 @@ ok "and no note was written" absent "$FAILNOTE"
 ok "last-run says the vault is not writable" is "$(lr vault)" "not writable"
 ok "and so does the status" is "$(wra --status | sed -n 's/^vault inbox: //p')" "not writable"
 stub_reset
+
+# last-run is the record the count and --status rest on: a write that fails is never silent.
+stub_reset; printf '%s\n' noinit > "$SD/mode"
+fresh; mkdir -p "$ST/last-run.tmp"; go
+ok "a failed run whose last-run cannot be written: exit 1" rc_is 1
+ok "it notifies through osascript, since nothing else shows it" has "$SD/osascript.args" "cannot record a failed run"
+ok "the failure record is still written" test -s "$ST/failures/$TODAY.txt"
+ok "and last-run is not" absent "$ST/last-run"
+stub_reset
+fresh; mkdir -p "$ST/last-run.tmp"; go
+ok "a good run whose last-run cannot be written ends failed: exit 1" rc_is 1
+ok "its reason says so" has "$ST/failures/$TODAY.txt" "cannot write last-run"
+ok "it notifies" has "$SD/osascript.args" "cannot record a failed run"
+ok "and the state is not moved" absent "$ST/state.tsv"
+fresh; go
+ok "a run whose last-run can be written does not notify" absent "$SD/osascript.args"
 
 echo "O. --status"
 wstatus() { clear_records; wra "$@" >"$T/out" 2>"$T/err" </dev/null; rc=$?; }
