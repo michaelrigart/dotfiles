@@ -79,7 +79,6 @@ provision:
       RemainAfterExit=yes
       ExecStart=/usr/local/sbin/ci-runner-firewall
       ExecReload=/usr/local/sbin/ci-runner-firewall
-      ExecStop=/usr/sbin/nft delete table inet ci_runner
 
       [Install]
       WantedBy=multi-user.target
@@ -90,13 +89,6 @@ provision:
       put 755 /usr/local/sbin/ci-runner-fail-closed <<'EOF'
       #!/bin/sh
       systemctl stop gitlab-runner.service || true
-      if command -v docker > /dev/null 2>&1; then
-        ids=$(docker ps -aq) || true
-        if [ -n "$ids" ]; then
-          # shellcheck disable=SC2086
-          docker rm --force $ids || true
-        fi
-      fi
       systemctl stop ci-runner-firewall.service || true
       EOF
 

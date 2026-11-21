@@ -212,6 +212,7 @@ fails_closed_on_reload() {
   grep -qx '/usr/local/sbin/ci-runner-fail-closed' <<<"$block" && grep -qx 'exit 1' <<<"$block"
 }
 ok "a changed firewall that fails to reload runs the fail-closed script and fails provisioning" fails_closed_on_reload
+no "stopping the unit leaves the last valid table loaded" grep -q '^ExecStop=' <<<"$unit"
 ok "the unit can reload"                 grep -qx 'ExecReload=/usr/local/sbin/ci-runner-firewall' <<<"$unit"
 writes_config() { grep -Eq '(put [0-9]+|>) */etc/gitlab-runner/config\.toml' "$PROVISION"; }
 no "the provision script never rewrites config.toml" writes_config
@@ -246,12 +247,9 @@ is "a failed reboot fails the unit"     "$?" 1
 ok "and the runner is started again"    grep -qx 'systemctl start gitlab-runner' "$ROOT/calls"
 : > "$ROOT/calls"; PATH="$STUB:$PATH" "$CLOSED" 2> /dev/null
 is "fail-closed succeeds" "$?" 0
-is "fail-closed stops the runner, removes containers, then stops the firewall" "$(cat "$ROOT/calls")" \
-  "$(printf '%s\n' 'systemctl stop gitlab-runner.service' 'docker rm --force c1' 'systemctl stop ci-runner-firewall.service')"
-NODOCKER="$ROOT/nodocker"; mkdir -p "$NODOCKER"; cp "$STUB/systemctl" "$NODOCKER/systemctl"
-: > "$ROOT/calls"; PATH="$NODOCKER:/usr/bin:/bin" "$CLOSED" 2> /dev/null
-is "without docker it still stops both units" "$(cat "$ROOT/calls")" \
+is "fail-closed stops the runner, then the firewall unit" "$(cat "$ROOT/calls")" \
   "$(printf '%s\n' 'systemctl stop gitlab-runner.service' 'systemctl stop ci-runner-firewall.service')"
+no "and never removes containers or the table" grep -Eq 'docker|nft' "$CLOSED"
 clean_unit="$(guest_file /etc/systemd/system/ci-runner-cleanup.service)"
 ok "the cleanup waits for provisioning" grep -qx 'After=cloud-final.service' <<<"$clean_unit"
 timer="$(guest_file /etc/systemd/system/ci-runner-cleanup.timer)"
