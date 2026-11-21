@@ -94,6 +94,7 @@ missing merge-state           dot_local/bin/executable_change-facts
 missing live-rm-denies        dot_claude/modify_private_settings.json
 missing path-resolution-guard dot_claude/executable_path-resolution-guard.sh
 missing run                   .scripts/test-audit/subjects.tsv
+missing weekly-research-proxy dot_local/bin/executable_weekly-research-proxy
 missing worktree-guard        dot_claude/executable_worktree-guard.sh
 missing xreview-skill         .chezmoitemplates/agents/global.md
 missing zshrc                 dot_config/zsh/zshenv
