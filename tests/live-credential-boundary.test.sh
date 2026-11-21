@@ -45,7 +45,7 @@ else
   bad AGENT
 fi
 
-# The native agent must hold only the keys its loader lists (michael, viumore_rsa, michael_rsa):
+# The native agent must hold only the keys its loader lists (michael, viumore_rsa):
 # ssh-agent takes keys from any client, so an AddKeysToAgent yes in the ssh config would put a
 # backup key there. Only the native socket is asked, never 1Password's, and only public-key blobs
 # are compared; neither is printed. An allowlist, so a held key whose own .pub is missing still shows.
@@ -59,7 +59,7 @@ else
     foreign=NONE
     if [ "$rc" -eq 0 ]; then
       allowed=
-      for name in michael viumore_rsa michael_rsa; do
+      for name in michael viumore_rsa; do
         blob=$(read -r _ b _ 2>/dev/null <"$HOME/.ssh/$name.pub" && printf '%s' "$b") || continue
         [ -n "$blob" ] && allowed="$allowed $blob "
       done

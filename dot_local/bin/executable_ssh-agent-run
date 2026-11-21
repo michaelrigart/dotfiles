@@ -12,7 +12,7 @@ umask 077
 dir="$HOME/.local/state/ssh-agent"
 sock="$dir/agent.sock"
 log="$dir/error.log"
-keys="michael viumore_rsa michael_rsa"
+keys="michael viumore_rsa"
 
 mkdir -p "$dir" && chmod 700 "$dir" || exit 1
 
