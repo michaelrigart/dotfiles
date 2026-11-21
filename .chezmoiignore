@@ -24,6 +24,12 @@ docs/
 # Test suites for the managed scripts — versioned with them, never deployed.
 tests/
 
+# The weekly research schedule deploys only on the machine named research_host in
+# .chezmoidata/machines.toml; every other machine gets the script and does nothing by itself.
+{{ if ne .chezmoi.hostname .research_host -}}
+Library/LaunchAgents/be.netronix.weekly-research.plist
+{{ end -}}
+
 # Backgrounds directory (copied by configure.sh, not managed by chezmoi)
 .backgrounds/
 

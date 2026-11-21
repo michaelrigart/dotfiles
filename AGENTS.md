@@ -105,6 +105,14 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `command -v codex`. The daemon would update itself outside Homebrew, so it is pinned to the CLI's
   package with `codex app-server daemon update --from-cli`; Michael re-runs that after every
   `brew upgrade codex`, when no review is active, then runs the `live-codex-daemon` canary.
+- `weekly-research` (`~/.local/bin`, with `weekly-research-proxy`) is the weekly research job: a
+  sandboxed Claude Code run that reads `~/.config/weekly-research/sources.tsv` and
+  `prompt.md` and writes one note to the vault inbox (spec 2026-11-21-weekly-research). The list
+  and the prompt change only by commit. Its LaunchAgent deploys only on the machine named
+  `research_host` in `.chezmoidata/machines.toml` (the `.chezmoiignore` rule); loading it
+  (`launchctl bootstrap`, `kickstart`) is Michael's, and no agent loads it or runs the job for
+  real. Moving `research_host` also needs a `launchctl bootout` and the old plist deleted on the
+  old machine, because chezmoi never removes a target it starts to ignore.
 
 ## Layout
 
@@ -116,6 +124,7 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 .scripts/                 # provisioning helpers (ignored)
 tests/                    # test suites, `./tests/run.sh` runs them; tests/AGENTS.md (ignored)
 dot_config/               # → ~/.config (git, homebrew/Brewfile, mise, zsh, agents, …)
+dot_config/weekly-research/ # the weekly research job's sources list, prompt and network profile
 dot_claude/  dot_codex/   # agent harness config: settings/config templates, hooks, guards, agents, skills
 private_dot_ssh/          # SSH key templates (1Password)
 Library/…/Alfred/         # only the Relay snippet collection
@@ -176,6 +185,7 @@ the gate and also selects every `xreview-*` suite, which run beside it at no ext
 | `live-codex-daemon` | unsandboxed + live `herdr` + clean daemon | drives the real Codex daemon and a scratch tab; the canary for Codex protocol changes. Run from inside a herdr pane after `chezmoi apply` |
 | `live-deny-modes` | unsandboxed + model | spends model calls (four modes and a control, each capped by `--max-budget-usd`), and `claude` writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
 | `live-rm-denies` | unsandboxed + model | spends haiku calls (about 24 runs when no retry is needed, each capped by `--max-budget-usd`; a run the model did not send faithfully is retried once) against throwaway copies of the rm deny roots under `~/.cache`, and `claude` writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
+| `live-weekly-research` | unsandboxed + model | spends a few cents of model calls on the weekly research job's `sandbox-exec` profile and network proxy, and a `sandbox-exec` cannot start inside the sandbox; `claude` also writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary`, `live-write-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
 
 A new or moved file a suite loads gets its map row in the same commit; for a file a heavy suite

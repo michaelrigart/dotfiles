@@ -8,9 +8,9 @@
 #   loaded_by  comma list of every suite that sources, executes, renders, copies or greps the file; includes own_suite.
 # Non-goal suites are listed in loaded_by for completeness; the harness never runs them.
 # Files no suite loads are absent.
-.chezmoidata/machines.toml	data	provision	provision
+.chezmoidata/machines.toml	data	provision	provision,weekly-research-schedule
 .chezmoiexternal.toml	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,agent-instructions
-.chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,herdr-app,herdr-app-xreview
+.chezmoiignore	data	agent-skills	agent-skills,claude-settings,codex-config,live-feedback-skill,git-forge-guard,herdr-app,herdr-app-xreview,weekly-research-schedule
 .chezmoitemplates/agents/claude-code.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/codex.md	prose	agent-instructions	agent-instructions
 .chezmoitemplates/agents/global.md	prose	agent-instructions	agent-instructions,xreview-skill
@@ -37,6 +37,7 @@ Library/Application Support/Claude/modify_private_claude_desktop_config.json	bas
 Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl	data	codex-daemon	codex-daemon
 Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	codex-memory-share	codex-memory-share
 Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	herdr-phase	herdr-phase
+Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl	data	weekly-research-schedule	weekly-research-schedule
 dot_agents/skills/design-records/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills
 dot_agents/skills/merge-request/SKILL.md	prose	agent-skills	agent-skills
 dot_agents/skills/second-brain/SKILL.md	prose	agent-instructions	agent-instructions,agent-skills

@@ -101,6 +101,9 @@ missing weekly-research       dot_config/weekly-research/sources.tsv
 missing weekly-research       dot_config/weekly-research/network.sb
 missing weekly-research       tests/fixtures/weekly-research/init.json
 missing weekly-research-proxy dot_local/bin/executable_weekly-research-proxy
+missing weekly-research-schedule Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl
+missing weekly-research-schedule .chezmoiignore
+missing weekly-research-schedule .chezmoidata/machines.toml
 missing worktree-guard        dot_claude/executable_worktree-guard.sh
 missing xreview-skill         .chezmoitemplates/agents/global.md
 missing zshrc                 dot_config/zsh/zshenv

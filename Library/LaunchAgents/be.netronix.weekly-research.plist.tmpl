@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Run the weekly research job on Monday morning.
+
+  Managed by chezmoi (source: Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl), and
+  deployed only on the machine named research_host in .chezmoidata/machines.toml (.chezmoiignore).
+  Never loaded by chezmoi or by an agent; Michael loads it by hand after the merge:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.weekly-research.plist
+  First run under launchd, not from a terminal (a terminal has permissions a job may lack):
+    launchctl kickstart gui/$(id -u)/be.netronix.weekly-research
+  Unload it, and before moving research_host to another machine, on the old one, then delete
+  the old plist (chezmoi never removes a target it starts to ignore):
+    launchctl bootout gui/$(id -u)/be.netronix.weekly-research
+
+  weekly-research asks a sandboxed Claude Code session to read the sources list, and writes one
+  note to the Obsidian inbox. A Mac asleep at 07:30 runs the job on wake. Design: docs/superpowers/specs/2026-11-21-weekly-research-design.md.
+
+  The script pins its own PATH and keeps its own logs under ~/.local/state/weekly-research, so
+  launchd's output goes nowhere.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>be.netronix.weekly-research</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ .chezmoi.homeDir }}/.local/bin/weekly-research</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>
