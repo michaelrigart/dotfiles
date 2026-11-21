@@ -60,6 +60,15 @@ fetched=0; nrows=0
 sanitize() { printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '[:cntrl:]' | cut -c1-300; }
 last_get() { sed -n "s/^$1=//p" "$state/last-run" 2>/dev/null | head -n 1; }
 
+# The previous run's date and failure count, validated. Read once the lock is held, and by the one
+# failure that happens without it (a lock directory of an older format), so every fail_run counts
+# on top of them.
+read_previous() {
+  prev_date=$(last_get date); prev_fails=$(last_get failures_in_row)
+  [[ $prev_date =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || prev_date=""
+  [[ $prev_fails =~ ^[0-9]{1,6}$ ]] || prev_fails=0
+}
+
 write_last_run() { # write_last_run <result> <reason> <cost> <note> <failures in a row>
   { printf 'date=%s\nresult=%s\nreason=%s\ncost=%s\nnote=%s\nvault=%s\nfailures_in_row=%s\n' \
       "$today" "$1" "$2" "$3" "$4" "$vault_state" "$5"; } > "$state/last-run.tmp" \
@@ -161,14 +170,20 @@ cleanup() {
 # --- the lock ---------------------------------------------------------------------------
 # The lock is one symlink whose target is its holder's pid, created in one step: `ln -sn` fails
 # when the name exists (even as a link to a directory), so a lock never exists without its holder.
-# It is stale when its holder is dead, or when the link is older than a run can last (a pid reused
-# after a reboot would otherwise hold it for ever). A stale lock is taken over by renaming the
-# link, which only one racer can do.
+# It is stale when its holder is dead, or when the process holding that pid started after the link
+# was made (a pid reused after a reboot would otherwise hold it for ever); a holder that started
+# before its own link, however long ago, is live. If its start time cannot be read the holder counts
+# as live: not stealing is the safe error, and the dead-pid path still recovers. A stale lock is taken
+# over by renaming the link, which only one racer can do.
+lock_slack=5
 lock_is_stale() { # lock_is_stale <holder>
-  local mtime
+  local mtime started
+  [[ $1 =~ ^[1-9][0-9]*$ ]] || return 0
   kill -0 "$1" 2>/dev/null || return 0
   mtime=$(stat -f %m "$lock" 2>/dev/null) || return 1
-  [ "$(($(date +%s) - mtime))" -gt "$((timeout + kill_grace + 300))" ]
+  started=$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null) || return 1
+  started=$(LC_ALL=C /bin/date -j -f '%a %b %e %T %Y' "$started" +%s 2>/dev/null) || return 1
+  [ "$started" -gt "$((mtime + lock_slack))" ]
 }
 acquire_lock() { # returns 0 when this instance now holds the lock
   local holder moved=$lock.stale.$$ seen
@@ -194,6 +209,7 @@ if ! mkdir -p "$state"; then
   exit 1
 fi
 if [ -d "$lock" ] && [ ! -L "$lock" ]; then
+  read_previous
   mkdir -p "$state/failures" && fail_run "$lock is a lock directory of an older format; remove it"
   exit 1
 fi
@@ -203,9 +219,8 @@ if ! acquire_lock; then
 fi
 have_lock=1
 trap cleanup EXIT
+read_previous
 trap 'fail_run "interrupted by a signal"' INT TERM HUP
-prev_date=$(last_get date); prev_fails=$(last_get failures_in_row)
-[[ $prev_fails =~ ^[0-9]+$ ]] || prev_fails=0
 mkdir -p "$state/notes" "$state/failures" "$state/logs" || fail_run "cannot create the folders under $state"
 
 # --- the vault probe: the inbox must take a write before the model costs anything -------------
@@ -454,7 +469,7 @@ check_body() {
   if [ "$headings" != "$(printf '%s\n' '## Proposals' '## Evidence on settled questions' '## New this week, no change proposed' '## Pages that addressed the agent' '## Seen')" ]; then
     echo "the body's level-two headings are not the five fixed ones, once each, in order"; return 1
   fi
-  props=$(awk '/^## Proposals/ { in_p = 1; next } /^## / { in_p = 0 } in_p && /^ ? ? ?### / { n++ } END { print n + 0 }' "$f")
+  props=$(awk '/^## Proposals/ { in_p = 1; next } /^## / { in_p = 0 } in_p && /^ {0,3}###([ \t]|$)/ { n++ } END { print n + 0 }' "$f")
   [ "$props" -le "$max_proposals" ] || { echo "the body holds $props proposals, over $max_proposals"; return 1; }
   return 0
 }

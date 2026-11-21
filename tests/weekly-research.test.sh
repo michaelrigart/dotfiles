@@ -86,6 +86,13 @@ if [ -s "$D/mvhook" ] && [[ $1 == */lock ]]; then
 fi
 exec /bin/mv "$@"
 EOF
+cat > "$SD/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+# The sandbox cannot run the real ps; a case that needs a holder's start time writes it to psout (ps's lstart format).
+D=$(cd "$(dirname "$0")/.." && pwd)
+if [ -e "$D/psout" ]; then cat "$D/psout"; exit 0; fi
+exec /bin/ps "$@"
+EOF
 chmod 755 "$SD/bin/"*
 cp "$SD/bin/sandbox-exec" "$SD/bin/osascript" "$SD/nobin/"
 
@@ -239,7 +246,7 @@ run WEEKLY_RESEARCH_MODEL=sonnet WEEKLY_RESEARCH_BUDGET=2.5
 ok "the model and budget overrides reach claude" bash -c '[ "$(grep -x -A1 -- --model "$0" | tail -n 1)" = sonnet ] && [ "$(grep -x -A1 -- --max-budget-usd "$0" | tail -n 1)" = 2.5 ]' "$SD/claude.argv"
 
 echo "C. The prompt on stdin"
-awk '{ print } /^spec: / { print "spec: 2026-99-99-absent-design.md" }' "$CFGSRC/prompt.md" > "$T/prompt-absent.md"
+awk '{ print } /^spec: / { print "spec: 2026-99-99-absent-design.md"; print "spec: bad\"na\\me.md" }' "$CFGSRC/prompt.md" > "$T/prompt-absent.md"
 mkdir -p "$T/cfg-absent"; cp "$CFG/sources.tsv" "$CFG/network.sb" "$T/cfg-absent/"; cp "$T/prompt-absent.md" "$T/cfg-absent/prompt.md"
 stub_reset
 CFGD="$T/cfg-absent" run
@@ -260,7 +267,8 @@ ok "and closes it" is "$(grep -c '^````$' "$IN")" 2
 ok "the spec opens an ordinary fence" is "$(grep -A1 "^File $SPECNAME" "$IN" | tail -n 1)" '```'
 ok "a spec the front matter lists but the folder lacks is named" has "$IN" "2026-99-99-absent-design.md (missing)"
 ok "a present file is not reported missing" lacks "$IN" "$SPECNAME (missing)"
-ok "a missing spec is named in the front matter" has "$(note)" 'not_available: ["2026-99-99-absent-design.md"]'
+ok "a spec name that is no file name is named too" has "$IN" 'Not available this run: bad"na\me.md (not a file name)'
+ok "missing names are quoted, cleaned of quotes and backslashes, and joined in the front matter" is "$(grep '^not_available:' "$(note)")" 'not_available: ["2026-99-99-absent-design.md", "badname.md"]'
 rm "$HOME_D/.config/agents/GLOBAL.md"
 stub_reset; run
 ok "a missing GLOBAL.md is named" has "$SD/claude.stdin" "GLOBAL.md (missing)"
@@ -355,6 +363,15 @@ check_result "five proposals" "$T/b-five.md"
 ok "the proposal reason says so" has "$ST/failures/$TODAY.txt" "proposal"
 awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "   ### %d. Indented\n", i }' "$T/body.md" > "$T/b-five-indented.md"
 check_result "five proposals, four of them indented by three spaces" "$T/b-five-indented.md"
+awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "###\t%d. Tabbed\n", i }' "$T/body.md" > "$T/b-five-tab.md"
+check_result "five proposals, four of them with a tab after the ###" "$T/b-five-tab.md"
+awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "  ###\t%d. Tabbed\n", i }' "$T/body.md" > "$T/b-five-tab-indented.md"
+check_result "five proposals, four of them indented and tab-separated" "$T/b-five-tab-indented.md"
+awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "###\n" }' "$T/body.md" > "$T/b-five-bare.md"
+check_result "five proposals, four of them a bare ###" "$T/b-five-bare.md"
+awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "####\t%d. Deeper\n", i }' "$T/body.md" > "$T/b-deeper.md"
+stub_body "$T/b-deeper.md"; run
+ok "level-four headings are not proposals" is "$(lr result)" ok
 awk '{ print } /^### 1\./ { for (i = 2; i <= 5; i++) printf "    ### %d. Code\n", i }' "$T/body.md" > "$T/b-code.md"
 stub_body "$T/b-code.md"; run
 ok "headings indented by four spaces are code, not proposals" is "$(lr result)" ok
@@ -548,7 +565,8 @@ go
 ok "a lock left by a dead run is taken over" is "$(lr result)" ok
 ok "the lock is released after the takeover" nolock "$ST/lock"
 ok "no stale copy of the lock is left" test "$(find "$ST" -maxdepth 1 -name 'lock*' | wc -l | tr -d ' ')" = 0
-fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"
+PS_OLD="Wed Jan  1 00:00:00 2020    "
+fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; printf '%s\n' "$PS_OLD" > "$SD/psout"
 find "$ST" | sort > "$T/snap-before"
 go
 ok "a lock held by a live process is respected: exit 0" rc_is 0
@@ -556,6 +574,7 @@ find "$ST" | sort > "$T/snap-after"
 ok "and nothing changes" cmp -s "$T/snap-before" "$T/snap-after"
 ok "and claude never starts" absent "$SD/claude.argv"
 ok "and the lock still points at its holder" is "$(readlink "$ST/lock")" "$$"
+rm -f "$SD/psout"
 fresh; mkdir -p "$ST"; ln -s 99999999 "$ST/lock"; printf '%s\n' "$$" > "$SD/mvhook"
 go
 ok "a lock repointed at a live pid during the takeover is put back: exit 0" rc_is 0
@@ -564,10 +583,31 @@ ok "and no stale copy is left" test "$(find "$ST" -maxdepth 1 -name 'lock*' | wc
 ok "and claude never starts" absent "$SD/claude.argv"
 ok "and the hook ran" absent "$SD/mvhook"
 rm -f "$SD/mvhook"
-fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"
+# A live holder is stale only when it started after its link was made: its pid was reused.
+fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf '%s\n' "$PS_OLD" > "$SD/psout"
 go
-ok "a lock older than a run can last is taken over even with a live pid" is "$(lr result)" ok
-ok "and it is released" nolock "$ST/lock"
+ok "a live holder that started with its link is respected, however old the link" rc_is 0
+ok "and the old link is left alone" is "$(readlink "$ST/lock")" "$$"
+ok "and claude never starts" absent "$SD/claude.argv"
+fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf 'Wed Jan  1 00:00:03 2020\n' > "$SD/psout"
+go
+ok "a holder that started within the slack after its link is respected" rc_is 0
+ok "and claude never starts" absent "$SD/claude.argv"
+fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf 'Wed Jan  1 00:00:30 2020  \n' > "$SD/psout"
+go
+ok "a live pid that started well after its link was made is a reused pid: taken over" is "$(lr result)" ok
+ok "and the lock is released" nolock "$ST/lock"
+for ps_out in "" "not a date"; do
+  fresh; mkdir -p "$ST"; ln -s "$$" "$ST/lock"; touch -h -t 202001010000 "$ST/lock"; printf '%s\n' "$ps_out" > "$SD/psout"
+  go
+  ok "a holder whose start time cannot be read (\"$ps_out\") counts as live: exit 0" rc_is 0
+  ok "and claude never starts" absent "$SD/claude.argv"
+  ok "and the lock still points at its holder" is "$(readlink "$ST/lock")" "$$"
+done
+fresh; mkdir -p "$ST"; ln -s 0 "$ST/lock"; printf '%s\n' "$PS_OLD" > "$SD/psout"
+go
+ok "a lock that names pid 0 (a process group, never a holder) is taken over" is "$(lr result)" ok
+rm -f "$SD/psout"
 fresh; mkdir -p "$ST/target"; ln -s "$ST/target" "$ST/lock"
 go
 ok "a lock that is a link to a directory names no live pid: it is taken over" is "$(lr result)" ok
@@ -581,12 +621,16 @@ go
 ok "a run whose lock was replaced still finishes" is "$(lr result)" ok
 ok "its cleanup leaves a lock that points elsewhere alone" is "$(readlink "$ST/lock")" 12345
 rm -f "$SD/lockpath"
-fresh; mkdir -p "$ST/lock"
+fresh; mkdir -p "$ST/lock"; printf 'date=2026-11-16\nresult=failed\nfailures_in_row=1\n' > "$ST/last-run"
 go
 ok "a lock directory of the older format is a failed run: exit 1" rc_is 1
+ok "it counts on top of the previous failures in a row" is "$(lr failures_in_row)" 2
 ok "its reason names the path" has "$ST/failures/$TODAY.txt" "$ST/lock"
 ok "and the directory is left alone" test -d "$ST/lock"
 ok "and claude never starts" absent "$SD/claude.argv"
+fresh; mkdir -p "$ST/lock"; printf 'failures_in_row=junk\n' > "$ST/last-run"
+go
+ok "an unreadable failure count restarts at one" is "$(lr failures_in_row)" 1
 
 echo "I2. A state folder that cannot be created"
 stub_reset; : > "$T/not-a-folder"
