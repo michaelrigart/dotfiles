@@ -2,6 +2,7 @@
 
 **Status:** In progress
 **Signed off:** Michael, 2026-11-21, with the key list as proposed.
+**Amended:** 2026-11-21, after the final review: AddKeysToAgent step, the agent-contents probe, and the step corrections listed in the PR.
 **Size:** about 120 lines of non-test code: one LaunchAgent plist (mostly its header comment), one
 loader script of about 40 lines, about 10 lines in `dot_claude/modify_private_settings.json`,
 about 6 in `dot_config/zsh/zshenv`, 3 in `.scripts/preflight-ssh-agent.sh`, a subject-map row and a
@@ -139,8 +140,9 @@ The herdr proxy problem the current block solves is solved the same way: the fix
   `launchctl kickstart -k gui/$(id -u)/be.netronix.ssh-agent`. Accepted: denial of service only.
 - **Loses:** the borg and huginn keys. The 1Password agent offers every SSH key item in the Private
   vault by default (no `agent.toml` exists), so if the backup keys are SSH key items, as their
-  `ssh-format` references suggest, an approved process can use them today; the native agent never
-  holds them.
+  `ssh-format` references suggest, an approved process can use them today; the native agent holds
+  them only if something adds them, since `ssh-agent` accepts keys from any client. The
+  `AddKeysToAgent` step below and the live probe in `live-credential-boundary` keep it that way.
 - **Unchanged:** no agent can read or copy a private key (the `~/.ssh` read denial and
   `sandbox.credentials` stay); a non-agent process running as Michael could read the key files
   already, with or without this change.
@@ -149,26 +151,35 @@ The herdr proxy problem the current block solves is solved the same way: the fix
 
 On each machine (fenrir, then hercules):
 
-1. `chezmoi apply`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`
-   (or re-run `.scripts/configure.sh`).
+1. `chezmoi apply`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`.
 2. Check: `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh-add -l` lists the listed keys
-   present on that machine (three on fenrir, two on hercules).
-3. In his own terminal (not a Claude session), check that every forge host authenticates through
+   present on that machine (three on fenrir, two on hercules). A key that failed to load is named
+   in `~/.local/state/ssh-agent/error.log`.
+3. For each borg and huginn host, `ssh -G <host> | grep -i '^addkeystoagent'` must print
+   `addkeystoagent false`. If not, set `AddKeysToAgent no` in the ssh config (the 1Password note
+   "SSH config"): the loader now loads the keys agents need, so the directive has no use left, and
+   with `yes` Michael running ssh or borg by hand from any zsh would add a borg or huginn key to the
+   native agent, where every agent session could then use it.
+4. Lock 1Password. Locking clears its remembered approvals, so any request its agent still serves
+   prompts and is noticed; an `IdentityAgent` pin or a fallback to its socket then shows.
+5. In his own terminal (not a Claude session), check that every forge host authenticates through
    the native agent alone: `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh -T git@github.com`,
    the same for `git@gitlab.com` and `git@ssh.dev.azure.com`, and a `git ls-remote` against the
    remaining host. Each must authenticate without a 1Password prompt; one that prompts or fails
    names a missing key, or an `IdentityAgent` line in the ssh config (the 1Password note "SSH
    config") that pins a host to the 1Password socket and must go. The 1Password agent stays on
    until every host passes.
-4. Restart Claude Code sessions as convenient; in a fresh one (sandboxed, so git goes through
+6. Restart Claude Code sessions as convenient; in a fresh one (sandboxed, so git goes through
    `ssh-sandbox-proxy`), run `./tests/run.sh live-agent-signing live-credential-boundary
-   live-agent-auth`, which signs with `michael` and authenticates this repository's GitHub remote,
-   then `./tests/live-agent-auth.test.sh <repo>` once for a repository on each other forge.
-5. When no running session predates the apply: 1Password → Settings → Developer → turn off "Use
+   live-agent-auth`, which signs with `michael`, authenticates this repository's GitHub remote and
+   checks that the native agent holds no borg or huginn key, then `./tests/live-agent-auth.test.sh
+   <repo>` once for a repository on each other forge.
+7. When no running session predates the apply: 1Password → Settings → Developer → turn off "Use
    the SSH agent". From then on, no SSH or signing prompt should appear.
 
 An emptied or locked native agent is not a rollback: `launchctl kickstart -k
-gui/$(id -u)/be.netronix.ssh-agent` restarts it with its keys.
+gui/$(id -u)/be.netronix.ssh-agent` restarts it with its keys. Run it also after a key in `~/.ssh`
+changes, since a rotated key stays loaded in the running agent until it restarts.
 
 Rollback, on each machine:
 
@@ -194,7 +205,9 @@ Rollback, on each machine:
   in an SSH login; without it, today's behaviour holds.
 - `plutil -lint` on the rendered plist, wherever the existing plists are checked, or in the new suite.
 - `.scripts/test-audit/subjects.tsv`: rows for the plist and the script.
-- Acceptance after apply: Michael's steps 3 and 4.
+- `tests/live-credential-boundary.test.sh`: a probe that the native agent holds none of the borg or
+  huginn public keys (`AGENT_FOREIGN_KEYS`), and that its socket exists (`AGENT_NATIVE`).
+- Acceptance after apply: Michael's steps 5 and 6.
 
 ## Left to the builder
 

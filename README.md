@@ -210,20 +210,28 @@ Agents and shells sign and authenticate through a native `ssh-agent` on
 
 After merge, on each machine:
 
-1. `chezmoi apply`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`
-   (or re-run `.scripts/configure.sh`).
+1. `chezmoi apply`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`.
 2. `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh-add -l` lists the keys present on that
-   machine.
-3. In your own terminal, check that `git@github.com`, `git@gitlab.com` and `git@ssh.dev.azure.com`
+   machine (three on fenrir, two on hercules); a key that failed to load is named in
+   `~/.local/state/ssh-agent/error.log`.
+3. For each borg and huginn host, `ssh -G <host> | grep -i '^addkeystoagent'` must print
+   `addkeystoagent false`; if not, set `AddKeysToAgent no` in the "SSH config" 1Password note, or a
+   by-hand ssh or borg run would add a backup key to the agent every session can use.
+4. Lock 1Password, so any request its agent still serves prompts and is noticed.
+5. In your own terminal, check that `git@github.com`, `git@gitlab.com` and `git@ssh.dev.azure.com`
    authenticate with that `SSH_AUTH_SOCK` and no 1Password prompt (`ssh -T`), plus a `git ls-remote`
-   against any other host. Keep the 1Password agent on until every host passes.
-4. In a fresh Claude Code session, run `./tests/run.sh live-agent-signing live-credential-boundary
+   against any other host. A host that prompts or fails is missing a key, or has an `IdentityAgent`
+   line in the "SSH config" note that pins it to the 1Password socket and must go. Keep the
+   1Password agent on until every host passes.
+6. In a fresh Claude Code session, run `./tests/run.sh live-agent-signing live-credential-boundary
    live-agent-auth`, then `./tests/live-agent-auth.test.sh <repo>` once for a repository on each
    other forge.
-5. When no running session predates the apply, turn off 1Password → Settings → Developer → "Use the
+7. When no running session predates the apply, turn off 1Password → Settings → Developer → "Use the
    SSH agent".
 
-An emptied or locked agent is fixed by `launchctl kickstart -k gui/$(id -u)/be.netronix.ssh-agent`.
+An emptied or locked agent is fixed by `launchctl kickstart -k gui/$(id -u)/be.netronix.ssh-agent`;
+run it also after a key in `~/.ssh` changes, since a rotated key stays loaded until the agent
+restarts.
 
 Rollback, on each machine: turn the 1Password SSH agent back on; `launchctl bootout
 gui/$(id -u)/be.netronix.ssh-agent`; revert the PR, `chezmoi apply` and `rm
