@@ -10,6 +10,3 @@
 
 ; The one TCP destination: the fetch proxy on the loopback port the wrapper passes in.
 (allow network-outbound (remote ip (string-append "localhost:" (param "PROXY_PORT"))))
-
-; Local Unix sockets, which the system resolver and other system services use.
-(allow network-outbound (remote unix-socket))
