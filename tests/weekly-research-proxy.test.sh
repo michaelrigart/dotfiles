@@ -27,7 +27,7 @@ for row in "127.0.0.1 443" "10.0.0.1 443" "172.16.0.1 443" "192.168.1.1 443" \
   "fe80::1 443" "fc00::1 443" "::ffff:127.0.0.1 443" "localhost 443" \
   "93.184.216.34 8080" "no-such-host.invalid 443" \
   "64:ff9b::c0a8:101 443" "64:ff9b::7f00:1 443" "64:ff9b::5db8:d822 443" "64:ff9b:1::1 443" \
-  "2002:c0a8:0101::1 443" "2002:5db8:d822::1 443" "2001:0:4136:e378:8000:63bf:3fff:fdd2 443"; do
+  "fec0::1 443" "2002:c0a8:0101::1 443" "2002:5db8:d822::1 443" "2001:0:4136:e378:8000:63bf:3fff:fdd2 443"; do
   # shellcheck disable=SC2086
   is "denies $row" "$(verdict $row)" "deny 1"
 done
@@ -37,7 +37,7 @@ for row in "93.184.216.34 443" "2606:2800:220:1:248:1893:25c8:1946 443"; do
 done
 is "prints the address it allowed" "$("$PROXY" --check 93.184.216.34 443)" "allow 93.184.216.34"
 
-echo "B. check(): any bad address denies, the first good one is used, one lookup"
+echo "B. check(): any bad address denies, all checked addresses are returned, one lookup"
 out=$(/usr/bin/python3 -I - "$PROXY" <<'EOF' 2>&1
 import importlib.machinery, importlib.util, socket, sys
 loader = importlib.machinery.SourceFileLoader("proxy", sys.argv[1])
@@ -70,8 +70,8 @@ case "$(printf '%s\n' "$out" | sed -n 2p)" in
   "private-then-good ((False, "*"), 1)") _pass "denies [private, public]; one getaddrinfo call" ;;
   *) _fail "denies [private, public]; one getaddrinfo call" "$out" ;;
 esac
-is "allows [public, public] with the first address; one getaddrinfo call" \
-  "$(printf '%s\n' "$out" | sed -n 3p)" "all-good ((True, '93.184.216.34'), 1)"
+is "allows [public, public] with both addresses in order; one getaddrinfo call" \
+  "$(printf '%s\n' "$out" | sed -n 3p)" "all-good ((True, ['93.184.216.34', '93.184.216.35']), 1)"
 
 echo "C. the server refuses with 403 and logs each request"
 PORTFILE="$T/port"; LOG="$T/log"
@@ -81,10 +81,10 @@ PORT=$(cat "$PORTFILE" 2>/dev/null)
 case "$PORT" in ''|*[!0-9]*) _fail "writes the port number to the port file" "${PORT:-empty}" ;;
   *) _pass "writes the port number to the port file" ;; esac
 is "a CONNECT to localhost:443 answers 403" \
-  "$(curl -s -o /dev/null --noproxy '' -x "http://127.0.0.1:$PORT" -w '%{http_connect}' https://localhost/ 2>/dev/null)" 403
+  "$(curl -s --max-time 10 -o /dev/null --noproxy '' -x "http://127.0.0.1:$PORT" -w '%{http_connect}' https://localhost/ 2>/dev/null)" 403
 is "one deny line for it" "$(grep -c "	deny	localhost:443	" "$LOG" 2>/dev/null)" 1
 is "a plain request for http://127.0.0.1/ answers 403" \
-  "$(curl -s -o /dev/null --noproxy '' -x "http://127.0.0.1:$PORT" -w '%{http_code}' http://127.0.0.1/ 2>/dev/null)" 403
+  "$(curl -s --max-time 10 -o /dev/null --noproxy '' -x "http://127.0.0.1:$PORT" -w '%{http_code}' http://127.0.0.1/ 2>/dev/null)" 403
 is "one deny line for it" "$(grep -c "	deny	127.0.0.1:80	" "$LOG" 2>/dev/null)" 1
 is "the log holds exactly those two lines" "$(wc -l < "$LOG" | tr -d ' ')" 2
 case "$(sed -n 1p "$LOG")" in
@@ -97,74 +97,129 @@ is "TERM ends the process with exit 0" "$rc" 0
 
 echo "D. the relay, with the check faked to allow a local upstream"
 out=$(/usr/bin/python3 -I - "$PROXY" "$T/relay.log" <<'EOF' 2>&1
-import importlib.machinery, importlib.util, socket, sys, threading
+import importlib.machinery, importlib.util, io, socket, sys, threading, time
 loader = importlib.machinery.SourceFileLoader("proxy", sys.argv[1])
 spec = importlib.util.spec_from_loader("proxy", loader)
 mod = importlib.util.module_from_spec(spec)
 loader.exec_module(mod)
 
-# The upstream: echoes CONNECT bytes upper-cased; answers a plain request with what it saw.
+# The upstream: echoes CONNECT bytes upper-cased; answers a plain request with what it saw;
+# on b"burst" sends 8 MB and does not read again.
 up = socket.socket(); up.bind(("127.0.0.1", 0)); up.listen(5)
-def serve():
-    while True:
-        c, _ = up.accept()
+def talk(c):
+    try:
+        c.settimeout(10)
         data = c.recv(65536)
         if data.startswith((b"GET ", b"POST ")):
             body = data.split(b"\r\n\r\n")[0]
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
-            c.close()
+        elif data == b"burst":
+            for _ in range(128):
+                c.sendall(b"x" * 65536)
         else:
             while data:
                 c.sendall(data.upper())
                 data = c.recv(65536)
-            c.close()
+    except OSError:
+        pass
+    c.close()
+def serve():
+    while True:
+        c, _ = up.accept()
+        threading.Thread(target=talk, args=(c,), daemon=True).start()
 threading.Thread(target=serve, daemon=True).start()
 
-mod.check = lambda host, port: (True, "127.0.0.1")   # host never resolves: no DNS here
+answer = ["127.0.0.1"]
+mod.check = lambda host, port: (True, answer)   # host never resolves: no DNS here
 srv = mod.make_server(sys.argv[2])
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 pport, uport = srv.server_address[1], up.getsockname()[1]
+stderr, sys.stderr = sys.stderr, io.StringIO()   # a handler traceback lands here
 
-s = socket.create_connection(("127.0.0.1", pport), timeout=5)
-s.sendall(b"CONNECT x.example:%d HTTP/1.1\r\nHost: x.example\r\n\r\n" % uport)
-buf = b""
-while b"\r\n\r\n" not in buf:
-    buf += s.recv(65536)
+def conn():
+    return socket.create_connection(("127.0.0.1", pport), timeout=5)
+
+def read_until(s, done):
+    """Read until done(buf); an empty recv (the proxy closed) or a timeout raises."""
+    buf = b""
+    while not done(buf):
+        d = s.recv(65536)
+        if not d:
+            raise EOFError("closed after %r" % buf)
+        buf += d
+    return buf
+
+def read_all(s):
+    buf = b""
+    while True:
+        d = s.recv(65536)
+        if not d:
+            return buf
+        buf += d
+
+def tunnel(host, port):
+    s = conn()
+    s.sendall(b"CONNECT %s:%d HTTP/1.1\r\nHost: %s\r\n\r\n" % (host, port, host))
+    return s, read_until(s, lambda b: b"\r\n\r\n" in b)
+
+def plain(host):
+    s = conn()
+    s.sendall(b"GET http://%s:%d/p?q=1 HTTP/1.1\r\nHost: %s\r\nProxy-Connection: keep-alive\r\n\r\n"
+              % (host, uport, host))
+    return read_all(s)
+
+s, head = tunnel(b"x.example", uport)
 s.sendall(b"ping")
-echo = b""
-while len(echo) < 4:
-    echo += s.recv(65536)
-print("connect", buf.split(b"\r\n")[0].decode(), echo)
+echo = read_until(s, lambda b: len(b) >= 4)
+print("connect", head.split(b"\r\n")[0].decode(), echo)
 s.close()
 
-s = socket.create_connection(("127.0.0.1", pport), timeout=5)
-s.sendall(b"GET http://x.example:%d/p?q=1 HTTP/1.1\r\nHost: x.example\r\nProxy-Connection: keep-alive\r\n\r\n" % uport)
-buf = b""
-while True:
-    d = s.recv(65536)
-    if not d: break
-    buf += d
+buf = plain(b"x.example")
 seen = buf.split(b"\r\n\r\n", 1)[1].decode()
 print("plain", buf.split(b"\r\n")[0].decode())
 print("plain-line", seen.split("\r\n")[0])
 print("plain-close", "Connection: close" in seen, "Proxy-Connection" in seen)
+
 dead = socket.socket(); dead.bind(("127.0.0.1", 0)); dport = dead.getsockname()[1]; dead.close()
-s = socket.create_connection(("127.0.0.1", pport), timeout=5)
+s = conn()
 s.sendall(b"CONNECT x.example:%d HTTP/1.1\r\n\r\n" % dport)
-print("dead", s.recv(65536).split(b"\r\n")[0].decode(), dport)
+print("dead", read_until(s, lambda b: b"\r\n" in b).split(b"\r\n")[0].decode(), dport)
+
+# The first checked address refuses (nothing listens on [::1]:uport), the second serves.
+answer = ["::1", "127.0.0.1"]
+s, head = tunnel(b"retry.example", uport)
+print("retry", head.split(b"\r\n")[0].decode())
+s.close()
+answer = ["127.0.0.1"]
+
+# A client that vanishes while the upstream is still sending must not break the proxy.
+s, head = tunnel(b"burst.example", uport)
+s.sendall(b"burst")
+s.close()
+time.sleep(1)
+buf = plain(b"next.example")
+print("after-reset", buf.split(b"\r\n")[0].decode())
+print("stderr", repr(sys.stderr.getvalue()))
 srv.shutdown()
+sys.stderr = stderr
 EOF
 )
-is "an allowed CONNECT answers 200 and relays bytes" "$(printf '%s\n' "$out" | sed -n 1p)" "connect HTTP/1.1 200 Connection Established b'PING'"
-is "an allowed plain request is answered" "$(printf '%s\n' "$out" | sed -n 2p)" "plain HTTP/1.1 200 OK"
-is "it is forwarded in origin form" "$(printf '%s\n' "$out" | sed -n 3p)" "plain-line GET /p?q=1 HTTP/1.1"
-is "it carries Connection: close and no Proxy-Connection" "$(printf '%s\n' "$out" | sed -n 4p)" "plain-close True False"
+line() { printf '%s\n' "$out" | sed -n "$1p"; }
+is "an allowed CONNECT answers 200 and relays bytes" "$(line 1)" "connect HTTP/1.1 200 Connection Established b'PING'"
+is "an allowed plain request is answered" "$(line 2)" "plain HTTP/1.1 200 OK"
+is "it is forwarded in origin form" "$(line 3)" "plain-line GET /p?q=1 HTTP/1.1"
+is "it carries Connection: close and no Proxy-Connection" "$(line 4)" "plain-close True False"
 is "each allowed request logs an allow line with the address" \
   "$(grep -c "	allow	x.example:[0-9]*	127.0.0.1$" "$T/relay.log" 2>/dev/null)" 2
-DEAD=$(printf '%s\n' "$out" | sed -n 's/^dead HTTP\/1.1 502 Bad Gateway //p')
-is "an upstream connect failure answers 502" "$(printf '%s\n' "$out" | sed -n 5p | cut -d' ' -f1-4)" "dead HTTP/1.1 502 Bad"
+DEAD=$(line 5 | sed -n 's/^dead HTTP\/1.1 502 Bad Gateway //p')
+is "an upstream connect failure answers 502" "$(line 5 | cut -d' ' -f1-4)" "dead HTTP/1.1 502 Bad"
 is "and logs one error line, not deny" "$(grep -c "	error	x.example:$DEAD	connect failed" "$T/relay.log" 2>/dev/null)" 1
 is "and no deny line" "$(grep -c "	deny	" "$T/relay.log" 2>/dev/null)" 0
+is "a refused first address falls through to the next and answers 200" "$(line 6)" "retry HTTP/1.1 200 Connection Established"
+is "the log names the address that connected" \
+  "$(grep -c "	allow	retry.example:[0-9]*	127.0.0.1$" "$T/relay.log" 2>/dev/null)" 1
+is "a client reset mid-relay leaves the proxy serving the next request" "$(line 7)" "after-reset HTTP/1.1 200 OK"
+is "and writes nothing to stderr" "$(line 8)" "stderr ''"
 
 echo
 echo "RESULT: $pass passed, $fail failed"
