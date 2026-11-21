@@ -48,7 +48,8 @@ description: Use before opening any merge request, pull request or issue, with g
   and its notes are
   `glab api --paginate "projects/:id/issues/<n>/notes" | jq 'map(select(.author.username == "<login>" and (.system | not)) | .body)'`
   (`merge_requests` in place of `issues` for an MR). Azure DevOps: take `<name>` from
-  `az account show --query user.name -o tsv` and list with `az repos pr list --creator <name>`;
+  `az account show --query user.name -o tsv` and list with
+  `az repos pr list --creator <name> --query "[].{id:pullRequestId,title:title,description:description}"`;
   the CLI has no author filter for a pull request's threads, so tell Michael instead of
   reading them. Never read an unfiltered listing or thread to decide what to keep.
 - **Never check out or run a fork's pull request or merge request,** its branch or its
