@@ -59,7 +59,9 @@ Order: Tasks 1, 2 and 3 together (disjoint files except `subjects.tsv` and
 - Create: `tests/ssh-agent-run.test.sh` (mode 755: `git add --chmod=+x`)
 - Modify: `.scripts/test-audit/subjects.tsv` (rows for the script and the plist, both
   `own_suite`/`loaded_by` `ssh-agent-run`; lang `bash` and `data`)
-- Modify: `tests/missing-subject.test.sh` (one `missing ssh-agent-run dot_local/bin/executable_ssh-agent-run` row)
+- Modify: `tests/missing-subject.test.sh` (two rows: `missing ssh-agent-run
+  dot_local/bin/executable_ssh-agent-run` and `missing ssh-agent-run
+  Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl`)
 
 **Interfaces:**
 - Produces: `~/.local/bin/ssh-agent-run`, no arguments. Shebang `#!/bin/bash`;
@@ -70,13 +72,16 @@ Order: Tasks 1, 2 and 3 together (disjoint files except `subjects.tsv` and
   `<ISO-8601 UTC> <message>`; messages never include `ssh-add` output.
 - Produces: LaunchAgent label `be.netronix.ssh-agent`.
 
-- [ ] **Step 1: Write `tests/ssh-agent-run.test.sh`** (bash, prose `  PASS:`/`  FAIL:` idiom). It
-  exits 2 if the script is missing, or if no system socket exists under `/var/run` to symlink.
+- [ ] **Step 1: Write `tests/ssh-agent-run.test.sh`** (bash, prose `  PASS:`/`  FAIL:` idiom). Before
+  any assertion it exits 2 if the script or the plist is missing, or if no system socket exists
+  under `/var/run` to symlink.
   Each case gets a fresh temp `HOME` with `~/.ssh/{michael,viumore_rsa,borg,huginn}` (empty
-  files; no `michael_rsa`) and a stub directory on `PINNED_PATH` holding:
-  - `ssh-agent`: appends `agent $*` to `$STUB_LOG`; unless `STUB_NO_SOCKET=1`, symlinks the
-    `-a` path to the system socket; traps `TERM` (appends `agent-term`, exits 143); then sleeps in
-    a loop, or exits `$STUB_AGENT_RC` after `$STUB_AGENT_LIFE` seconds when that is set.
+  files; no `michael_rsa` unless the case says so) and a stub directory on `PINNED_PATH` holding:
+  - `ssh-agent`: appends `agent $*` to `$STUB_LOG`; like the real agent, exits 1 (appending
+    `agent-exists`) when the `-a` path already exists; unless `STUB_NO_SOCKET=1`, symlinks the
+    `-a` path to the system socket and exits 1 if that fails; traps `TERM` (appends
+    `agent-term`, exits 143); then sleeps in a loop, or exits `$STUB_AGENT_RC` after
+    `$STUB_AGENT_LIFE` seconds when that is set.
   - `ssh-add`: appends `add $SSH_AUTH_SOCK $*` to `$STUB_LOG`; when its last argument ends with
     `/$STUB_ADD_FAIL`, prints `STUBSECRET` to stderr and exits 1.
   - Plus `/bin/sleep`, `date`, `mkdir`, `chmod`, `rm`, `stat` reachable (append `/usr/bin:/bin`).
@@ -86,10 +91,14 @@ Order: Tasks 1, 2 and 3 together (disjoint files except `subjects.tsv` and
   - `loads exactly the listed keys that exist`: the `add` lines are exactly
     `add <sock> -q $HOME/.ssh/michael` then `… viumore_rsa`; none for `michael_rsa`, `borg`,
     `huginn`.
+  - `loads all three listed keys in order`: also create `~/.ssh/michael_rsa` → the `add` lines are
+    exactly `michael`, `viumore_rsa`, `michael_rsa`, in that order; still none for `borg`,
+    `huginn`.
   - `state directory is mode 700`: `stat -f %Lp` prints `700`.
   - `exits with the agent's status`: `STUB_AGENT_LIFE=1 STUB_AGENT_RC=7` → rc 7.
-  - `stale socket is removed`: pre-create the path as a symlink to the system socket → script
-    starts the agent (rc 7 as above).
+  - `stale socket is removed`: pre-create the path as a symlink to the system socket, with
+    `STUB_AGENT_LIFE=1 STUB_AGENT_RC=7` → rc 7 and no `agent-exists` line (the stub refuses an
+    existing path, so a loader that skips the removal exits 1).
   - `regular file at the socket path is refused and kept`: pre-create a regular file → rc 1, no
     `agent` line, the file still exists, `error.log` has one line.
   - `gives up when no socket appears`: `STUB_NO_SOCKET=1` → rc 1 within 8 s, `agent-term` logged.
@@ -173,15 +182,34 @@ Order: Tasks 1, 2 and 3 together (disjoint files except `subjects.tsv` and
 
 **Files:**
 - Modify: `.scripts/preflight-ssh-agent.sh` (candidate list)
+- Create: `tests/preflight-ssh-agent.test.sh` (mode 755)
+- Modify: `.scripts/test-audit/subjects.tsv` (row: `.scripts/preflight-ssh-agent.sh`, `bash`,
+  `preflight-ssh-agent`, `preflight-ssh-agent`)
+- Modify: `tests/missing-subject.test.sh` (row: `missing preflight-ssh-agent .scripts/preflight-ssh-agent.sh`)
 - Modify: `README.md` (feature line 22 and the SSH agent steps)
 - Modify: `docs/superpowers/specs/2026-11-21-native-ssh-agent-design.md` (Status)
 
-- [ ] **Step 1: Preflight.** Put `$HOME/.local/state/ssh-agent/agent.sock` first in the `for c in`
-  list. Check: `bash -n .scripts/preflight-ssh-agent.sh`.
-- [ ] **Step 2: README.** Feature line: keys and secrets come from 1Password; a native agent
+- [ ] **Step 1: Write `tests/preflight-ssh-agent.test.sh`** (bash, prose idiom). Exits 2 before
+  any assertion if the script is missing or no system socket exists under `/var/run`. Each case
+  runs the script with a temp `HOME`, `SSH_AUTH_SOCK` unset, and a stub `ssh-add` first on `PATH`
+  that exits 0 when `$SSH_AUTH_SOCK` is listed in `$STUB_GOOD` (colon-separated), else 1. The
+  native and 1Password paths under the temp `HOME` are symlinks to the system socket when a case
+  says "present". Cases:
+  - `native agent is chosen first`: both present and good → stdout is exactly the native path, rc 0.
+  - `1Password is the fallback when the native socket is absent`: only 1Password present and good
+    → its path, rc 0.
+  - `1Password is the fallback when the native agent holds no keys`: both present, only 1Password
+    good → the 1Password path, rc 0.
+  - `no usable agent fails closed`: neither present → empty stdout, rc 2.
+- [ ] **Step 2: Run** it. Expected: the first case FAILS (stdout is the 1Password path).
+- [ ] **Step 3: Preflight.** Put `$HOME/.local/state/ssh-agent/agent.sock` first in the `for c in`
+  list. Run the suite and `./tests/run.sh missing-subject run`. Expected: all pass.
+- [ ] **Step 4: Commit** the preflight script, its suite and both map rows, "Prefer the native
+  SSH agent in the preflight".
+- [ ] **Step 5: README.** Feature line: keys and secrets come from 1Password; a native agent
   serves the SSH keys. Add a short "SSH agent" section with the spec's "Michael's steps after
   merge" 1–5 and the rollback, pointing to the spec for the reasons.
-- [ ] **Step 3: Status.** Spec `**Status:** In progress`, plus the PR reference once it exists.
-- [ ] **Step 4: Full run.** `./tests/run.sh --changed`; report totals as passed/total and quote
+- [ ] **Step 6: Status.** Spec `**Status:** In progress`, plus the PR reference once it exists.
+- [ ] **Step 7: Commit** README and spec, "Document the native SSH agent".
+- [ ] **Step 8: Full run.** `./tests/run.sh --changed`; report totals as passed/total and quote
   the heavy-suite lines.
-- [ ] **Step 5: Commit**, "Document the native SSH agent".
