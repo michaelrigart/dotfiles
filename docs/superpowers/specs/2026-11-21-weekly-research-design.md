@@ -284,7 +284,9 @@ things are enforced outside the model. For this job:
   never using its result, unless the tools are exactly the two, the MCP servers, skills and commands
   it lists are empty, every plugin it lists is one built into the binary (path `builtin`),
   every agent is one of the binary's own, no memory path is loaded and the credential is the
-  login, not a key (the pattern `review` uses for its credential check). The check comes after
+  login, not a key (the pattern `review` uses for its credential check). CLI 2.1.327 reports no
+  memory paths, so the flags and the empty working directory are what keep memory out, and the
+  memory check is a tripwire for a field a later CLI may add. The check comes after
   the start, so it detects a drifted start rather than preventing one; the flags and the
   environment are what prevent it. Measured in the plan's
   Task 2 on CLI 2.1.327: the isolated start still lists six built-in plugins and six built-in
@@ -305,7 +307,7 @@ things are enforced outside the model. For this job:
   environment allowlist).
 - **The proxy is the only way out.** The wrapper starts `claude` under macOS's `sandbox-exec`
   with a profile that allows everything except outbound network, and allows outbound network
-  only to the proxy's loopback port (and the local Unix sockets the system libraries need). So
+  only to the proxy's loopback port; no Unix socket is allowed. So
   a connection that ignores the proxy settings, whichever part of `claude` makes it, fails in
   the kernel. This is the mechanism Claude Code's own Bash sandbox uses. The model has no tool
   that could start a process outside the profile. The proxy:

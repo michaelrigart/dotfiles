@@ -11,8 +11,8 @@
 #     directory of its own, with no settings, hooks, plugins, skills or MCP server;
 #   - the profile lets it connect only to weekly-research-proxy, which refuses the machine and
 #     the home network;
-#   - the system/init event is checked before the first model call, and the result must report
-#     no denied tool call.
+#   - the system/init event is checked as it arrives and the run is killed before its result is
+#     used, and the result must report no denied tool call.
 #
 # Overrides (tests and the live suite; launchd sets none): WEEKLY_RESEARCH_CONFIG, _STATE, _INBOX,
 # _TODAY (YYYY-MM-DD), _TIMEOUT (seconds), _MODEL, _BUDGET, _PATH.

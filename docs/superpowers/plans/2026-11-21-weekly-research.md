@@ -3,8 +3,7 @@
 > **For agentic workers:** run this with the `plan-run` skill (it overrides
 > superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax.
 
-**Status:** Completed 2026-11-21 (branch `feat/weekly-research`, its PR against `main`).
-Do not run it again; its execution notes bind that run only.
+**Status:** Implemented (completed 2026-11-21, branch `feat/weekly-research`, its PR against `main`; do not run it again — its execution notes bind that run only).
 **Goal:** a weekly launchd job that checks a fixed source list with `claude -p`, holding only the
 two web tools behind a kernel-enforced fetch proxy, and writes one dated note.
 **Architecture:** `weekly-research` (bash) builds the prompt, starts `weekly-research-proxy`

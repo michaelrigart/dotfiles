@@ -13,7 +13,8 @@
     launchctl bootout gui/$(id -u)/be.netronix.weekly-research
 
   weekly-research asks a sandboxed Claude Code session to read the sources list, and writes one
-  note to the Obsidian inbox. A Mac asleep at 07:30 runs the job on wake. Design: docs/superpowers/specs/2026-11-21-weekly-research-design.md.
+  note to its state folder; the vault inbox gets a copy only with a proposal or an upkeep entry, or
+  a failure note after two failed runs. A Mac asleep at 07:30 runs the job on wake. Design: docs/superpowers/specs/2026-11-21-weekly-research-design.md.
 
   The script pins its own PATH and keeps its own logs under ~/.local/state/weekly-research, so
   launchd's output goes nowhere.
