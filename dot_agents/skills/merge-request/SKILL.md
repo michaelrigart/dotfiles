@@ -90,7 +90,7 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
 - **`merge-state` writes the first three fields.** Run it in the checkout after the pre-merge
   review and the last suite run, with this command, and paste what it prints unchanged:
   ```
-  merge-state <destination> <head> --claude-review <type>:<commit> | none
+  merge-state <destination> <head> --claude-review <type>:<40-character commit id> | none
       --suite <passed>/<total> | none  --lint pass | fail | not-run | none
       --ci green | pending | failed | none
       --spec <path> | none  --boundary <what> | none  --check <what> | none
@@ -102,8 +102,8 @@ Every PR and MR an agent opens starts with this block, above the repository's ow
   `What and why` and `Evidence`.
 - **Every option is a fact you declare, and every one is required.** Give what is true, and
   `none` or `not-run` where nothing ran; never the value that reads best. `--claude-review`: the
-  type and the commit of an approving `sp-reviewer` or `sp-architect` run that read the whole
-  range, never the author session's own reading; a run on a later fix commit alone does not
+  type and the full commit id of an approving `sp-reviewer` or `sp-architect` run that read the
+  whole range, never the author session's own reading; a run on a later fix commit alone does not
   count. `--suite`: the totals of the repository's pre-merge suite on this head, from its own
   output. `--lint`: the linters' outcome on this head, `none` only where the repository has no
   linter outside its suite. `--ci`: the forge's state for this head, read with `gh pr checks`,
