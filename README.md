@@ -236,9 +236,14 @@ An emptied or locked agent is fixed by `launchctl kickstart -k gui/$(id -u)/be.n
 run it also after a key in `~/.ssh` changes, since a rotated key stays loaded until the agent
 restarts.
 
-Rollback, on each machine: turn the 1Password SSH agent back on; `launchctl bootout
-gui/$(id -u)/be.netronix.ssh-agent`; revert the PR, `chezmoi apply` and `rm
-~/Library/LaunchAgents/be.netronix.ssh-agent.plist`; restart shells and Claude Code sessions.
+Rollback, on each machine: turn the 1Password SSH agent back on; if step 5 pointed a catch-all
+`IdentityAgent` at the native socket, set it back to
+`"~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"` (quoted for the space) in the
+"SSH config" note and run
+`chezmoi apply` (this renders `~/.ssh/config` again) before booting the job out, so ssh never
+points at a missing socket; `launchctl bootout gui/$(id -u)/be.netronix.ssh-agent`; revert the PR,
+`chezmoi apply` and `rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`; restart shells and
+Claude Code sessions.
 
 ### Secrets in Config
 

@@ -190,11 +190,17 @@ changes, since a rotated key stays loaded in the running agent until it restarts
 Rollback, on each machine:
 
 1. Turn the 1Password SSH agent back on.
-2. `launchctl bootout gui/$(id -u)/be.netronix.ssh-agent`: the script removes the socket, so new
+2. If step 5 pointed a catch-all `IdentityAgent` at the native socket, set it back to the 1Password
+   socket (`IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"`,
+   quoted for the space) in the "SSH config"
+   note and run `chezmoi apply` (this renders `~/.ssh/config` again), before booting the job out, so
+   ssh never points at a missing socket (which would break sandboxed git authentication and GUI
+   clients).
+3. `launchctl bootout gui/$(id -u)/be.netronix.ssh-agent`: the script removes the socket, so new
    shells fall back to the 1Password socket at once.
-3. Revert the PR, `chezmoi apply`, and `rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`
+4. Revert the PR, `chezmoi apply`, and `rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`
    (chezmoi never deletes a file that left the source).
-4. Restart shells and Claude Code sessions: one started before step 3 still exports the native
+5. Restart shells and Claude Code sessions: one started before step 4 still exports the native
    socket path.
 
 ## Tests
