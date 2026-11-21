@@ -333,6 +333,33 @@ if managed=$(chezmoi --config "$T/empty.toml" --source "$shared" managed 2>"$T/m
   done
 else _fail "chezmoi managed runs" "$(head -n 2 "$T/managed.err")"; fi
 
+# --- ~/.claude/projects -----------------------------------------------------------
+# Claude Code keeps ~/.claude/projects at 700. chezmoi manages the directory only to place
+# .stignore in it, so its target mode must be 700 too: at 755 every apply stops to ask
+# whether to overwrite a directory that "has changed since chezmoi last wrote it".
+echo "claude projects: the directory Claude Code made is left alone, .stignore is placed"
+proj="$T/projects"
+mkdir -p "$proj/src/dot_claude" "$proj/home/.claude/projects/some-project"
+chmod 700 "$proj/home/.claude/projects"
+: > "$proj/home/.claude/projects/some-project/transcript.jsonl"
+cp "$SRC/.chezmoiignore" "$proj/src/.chezmoiignore"
+cp -R "$SRC"/dot_claude/*projects "$proj/src/dot_claude/" 2>/dev/null
+proj_cm() {
+  chezmoi --config "$T/empty.toml" --source "$proj/src" --destination "$proj/home" \
+    --cache "$proj/cache" --persistent-state "$proj/state.db" "$@" </dev/null 2>&1
+}
+if status=$(proj_cm status); then
+  if printf '%s\n' "$status" | grep -qE '^.. \.claude/projects$'; then
+    _fail "status reports no change to .claude/projects" "$status"
+  else _pass "status reports no change to .claude/projects"; fi
+  if printf '%s\n' "$status" | grep -qxF ' A .claude/projects/.stignore'; then
+    _pass "status adds .claude/projects/.stignore"
+  else _fail "status adds .claude/projects/.stignore" "$status"; fi
+  if [ "$(proj_cm managed --include=files)" = .claude/projects/.stignore ]; then
+    _pass ".stignore is the only managed file"
+  else _fail ".stignore is the only managed file" "$(proj_cm managed --include=files)"; fi
+else _fail "chezmoi status runs" "$(printf '%s\n' "$status" | head -n 2)"; fi
+
 # merge-request must tell agents to assign Michael to every PR, MR and issue they open, and
 # its description must name issues, or the skill never loads before `gh issue create`.
 echo "merge-request skill: assignee rule and issue trigger"
