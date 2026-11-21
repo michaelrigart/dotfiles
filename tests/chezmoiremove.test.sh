@@ -29,6 +29,7 @@ cp "$REMOVE" "$T/src/.chezmoiremove"
 echo retired >"$T/home/.local/bin/app-cleaner"
 echo retired >"$T/home/.config/ci-runner/lima.yaml"
 echo kept >"$T/home/.local/bin/unrelated"
+echo kept >"$T/home/.config/unrelated"
 
 if ! out=$(command chezmoi --config "$T/config.toml" --persistent-state "$T/state.boltdb" \
     --cache "$T/cache" --source "$T/src" --destination "$T/home" --no-tty --force apply 2>&1); then
@@ -48,10 +49,10 @@ else
   bad "apply removes the deployed CI runner config and its directory"
 fi
 
-if [ -e "$T/home/.local/bin/unrelated" ]; then
-  ok "apply leaves a file with no entry alone"
+if [ -e "$T/home/.local/bin/unrelated" ] && [ -e "$T/home/.config/unrelated" ]; then
+  ok "apply leaves files with no entry alone, beside each retired target"
 else
-  bad "apply leaves a file with no entry alone"
+  bad "apply leaves files with no entry alone, beside each retired target"
 fi
 
 if [ ! -e "$SRC/dot_local/bin/executable_app-cleaner" ]; then
