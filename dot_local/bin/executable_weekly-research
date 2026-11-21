@@ -82,11 +82,12 @@ notify() {
 # put_in_inbox <file>: stdin becomes <file>, never over one that exists (a dangling link counts).
 # Returns 0 when the file is written, 2 when it was already there (left as it is), 1 when it cannot be written.
 # The file is opened once, exclusively (noclobber makes the redirection O_CREAT|O_EXCL) and written through that
-# descriptor, so a file that appears or is replaced after the open is never truncated; a write that fails
-# removes only the file this call created.
+# descriptor, so a file that appears or is replaced after the open is never truncated. Nothing is ever
+# unlinked here: the path is shared with the vault's sync, so a write that fails leaves whatever is at the path
+# (at worst a partial note of this run, which a later run the same day sees and leaves alone).
 put_in_inbox() {
   { [ -e "$1" ] || [ -L "$1" ]; } && return 2
-  ( set -o noclobber; exec 3> "$1" || exit 3; cat >&3 || { rm -f "$1"; exit 1; } ) 2>/dev/null
+  ( set -o noclobber; exec 3> "$1" || exit 3; cat >&3 || exit 1 ) 2>/dev/null
   case $? in
     0) return 0 ;;
     3) if [ -e "$1" ] || [ -L "$1" ]; then return 2; fi; return 1 ;;

@@ -97,8 +97,10 @@ EOF
 cat > "$SD/bin/cat" <<'EOF'
 #!/usr/bin/env bash
 # A pass-through cat. When the caller set CAT_SWAP_FROM and CAT_SWAP_TO, the first call that reads its stdin (no
-# arguments) first renames FROM over TO, as a sync process replacing a placeholder would.
+# arguments) first renames FROM over TO, as a sync process replacing a placeholder would. With CAT_FAIL set, that
+# call then writes a few bytes and fails.
 if [ "$#" = 0 ] && [ -n "${CAT_SWAP_FROM:-}" ] && [ -e "$CAT_SWAP_FROM" ]; then /bin/mv "$CAT_SWAP_FROM" "$CAT_SWAP_TO"; fi
+if [ "$#" = 0 ] && [ -n "${CAT_FAIL:-}" ]; then printf 'PART'; exit 1; fi
 exec /bin/cat "$@"
 EOF
 cat > "$SD/bin/sleep" <<'EOF'
@@ -998,6 +1000,17 @@ fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1 CAT_SWAP_FROM="$T/theirs" CAT_S
 ok "a file that replaces the placeholder mid-write does not fail the run" is "$(lr result)" ok
 ok "and is left byte-identical, not truncated" is "$(cat "$INBOX/2026-11-23-weekly-research.md")" THEIRS
 ok "and the swap happened" absent "$T/theirs"
+rm -f "$INBOX/2026-11-23-weekly-research.md"
+# A write that fails after the exclusive create never unlinks the path: whatever is there stays.
+fresh; fill 1 10 2026-11-20 | mkrows; srun 2026-11-23 1 CAT_FAIL=1
+failed "a vault write that fails"
+ok "the vault is reported not writable" is "$(lr vault)" "not writable"
+ok "the partial note of the run stays where it was written" is "$(cat "$INBOX/2026-11-23-weekly-research.md")" PART
+rm -f "$INBOX/2026-11-23-weekly-research.md"
+fresh; printf 'THEIRS\n' > "$T/theirs"; fill 1 10 2026-11-20 | mkrows
+srun 2026-11-23 1 CAT_FAIL=1 CAT_SWAP_FROM="$T/theirs" CAT_SWAP_TO="$INBOX/2026-11-23-weekly-research.md"
+failed "a vault write that fails after a file replaced the placeholder"
+ok "the file a sync put there is left byte-identical" is "$(cat "$INBOX/2026-11-23-weekly-research.md")" THEIRS
 rm -f "$INBOX/2026-11-23-weekly-research.md"
 fresh
 { fill 1 1 2026-11-20 | sed 's/Item 1/FIRSTRUN/'; fill 2 10 2026-11-20; } | mkrows; srun 2026-11-23 1
