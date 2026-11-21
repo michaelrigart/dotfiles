@@ -290,11 +290,12 @@ things are enforced outside the model. For this job:
   - sees every redirect as a new request, so the same check applies;
   - is the system Python's standard library only, logs one line per request (host, verdict) to
     the run's log folder, and exits with the wrapper.
-- **Both halves are tested.** The suite tests the proxy by itself (a public name resolving to
-  loopback is refused, as is a redirect to one) and the profile by itself (under it, a direct
-  connection to a public address, to a LAN address and to another loopback port each fail,
-  and one to the proxy's port succeeds). A gated live suite (`live-weekly-research`,
-  unsandboxed + model, a few cents) shows that `claude` starts and stays logged in under the
+- **Both halves are tested.** The suite tests the proxy by itself (a name resolving to
+  loopback is refused, and every request is checked, a redirect's included). A gated live suite
+  (`live-weekly-research`, unsandboxed + model, a few cents) tests the profile by itself (under
+  it, a direct connection to a public address, to a LAN address and to another loopback port
+  each fail, and one to the proxy's port succeeds; a `sandbox-exec` cannot start inside the
+  sandbox the default suites run in, so this cannot be a default suite) and shows that `claude` starts and stays logged in under the
   profile, that a real `WebFetch` of a public page works through the proxy, and that one of a
   public name resolving to loopback is refused.
 - **If `claude` cannot run on the subscription login under the profile,** the builder stops and
@@ -327,10 +328,8 @@ things are enforced outside the model. For this job:
   path or an API-key credential ends in a failure and no note;
 - fetch failures: a result with a denied tool call, and a "Seen" table with under half the rows
   fetched, each end in a failure, no note and no moved watermark;
-- the proxy: each refused range, IPv4 and IPv6, a public name resolving to loopback, a redirect
-  to one, a refused port;
-- the sandbox profile: under it a direct connection to a public address, a LAN address and
-  another loopback port each fail, and one to the proxy's port succeeds;
+- the proxy: each refused range, IPv4 and IPv6, a name resolving to loopback, a refused port;
+- the `sandbox-exec` argument list the wrapper passes (the profile itself is tested live);
 - broken sources: three failures in a row do nothing, the fourth raises it, a fetch resets it;
 - the upkeep entry: twelve newly quiet rows give one entry of ten ids and leave two unreported
   for the next run; a body with five proposals is a failed run;
