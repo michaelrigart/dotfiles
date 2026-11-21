@@ -41,6 +41,11 @@ commit.
   `WEEKLY_RESEARCH_TODAY` (`YYYY-MM-DD`), `WEEKLY_RESEARCH_TIMEOUT` (seconds, default 1800),
   `WEEKLY_RESEARCH_MODEL` (default `opus`), `WEEKLY_RESEARCH_BUDGET` (default `5`),
   `WEEKLY_RESEARCH_PATH`.
+- The wrapper starts the proxy that sits beside it (`$(dirname "$0")/weekly-research-proxy`)
+  and reads `network.sb`, `prompt.md` and `sources.tsv` from the config folder. Every suite
+  stages the checkout's files under their deployed names: both scripts copied into a scratch
+  `bin/`, `dot_config/weekly-research/*` into a scratch config folder. No suite reads a
+  deployed copy.
 - Commits: small, imperative mood, no attribution lines.
 
 ## Review focus
@@ -125,7 +130,8 @@ steps.
   stub are built from this file's field names.
 
 - [ ] **Step 1: Write `network.sb`.**
-- [ ] **Step 2: Check the profile alone.** With the proxy running: under the profile,
+- [ ] **Step 2: Check the profile alone.** With the checkout's proxy running and the checkout's
+  `network.sb`: under the profile,
   `curl --noproxy '*' -m 5 https://1.1.1.1` fails, `curl --noproxy '*' -m 5 http://192.168.1.1`
   fails at once (not a timeout), a connection to another loopback listener fails, and
   `curl -x http://127.0.0.1:<port> https://example.com` succeeds.
@@ -163,7 +169,8 @@ steps.
   for" and the note's body shape. The body the model returns starts at `## Proposals` and holds,
   in order: `## Proposals`, `## Evidence on settled questions`, `## New this week, no change
   proposed`, `## Pages that addressed the agent`, `## Seen`. A proposal is a `### ` heading.
-  A "Seen" row is `| <id> | <YYYY-MM-DD or -> | <title or fetch failed> |`.
+  A "Seen" row is `| <id> | <YYYY-MM-DD or -> | <title or fetch failed> |`. A row is
+  **fetched** when its title is not `fetch failed`; its date is `-` when the page carries none.
 - Produces, in the state folder: `notes/<date>.md`, `failures/<date>.txt`, `logs/<date>.jsonl`,
   `logs/<date>.proxy.log`, `last-run` (lines `key=value`: `date`, `result=ok|failed`, `reason`,
   `cost`, `note`, `vault=writable|not writable`, `failures_in_row`), and a lock directory.
@@ -228,7 +235,7 @@ The pinned skills' releases are left out: the `skill-updates` workflow already r
   - the list: the real `sources.tsv` has at most 40 rows, the row format, unique ids, known
     kinds; a scratch list with 41 rows, a duplicate id or an unknown kind is a failed run;
   - argv equals Task 2's list with `opus` and `5`; `sandbox-exec` got `-D PROXY_PORT=<the port
-    file's number>` and the deployed `network.sb`; the working directory is empty and under the
+    file's number>` and the config folder's `network.sb`; the working directory is empty and under the
     state folder;
   - environment: with `GH_TOKEN`, `GITLAB_TOKEN`, `ANTHROPIC_API_KEY`, `SSH_AUTH_SOCK` and
     `NO_PROXY` set by the caller, the stub sees exactly `HOME`, `USER`, `PATH`, `TMPDIR`,
@@ -284,14 +291,15 @@ The pinned skills' releases are left out: the `skill-updates` workflow already r
 
 Rules, from the spec:
 
-- After a good run only: a "Seen" row with a date sets `checked` to today, the item fields, and
-  `fails` to 0 with `broken_reported` cleared; a `fetch failed` row or a listed id missing from
+- After a good run only: a fetched "Seen" row, dated or not, sets `checked` to today, the item
+  fields (`item_date` is `-` for an undated page), and `fails` to 0 with `broken_reported`
+  cleared; a `fetch failed` row or a listed id missing from
   "Seen" adds one to `fails` and keeps the rest; an id not in the list is ignored; a state row
   whose id left the list is dropped. A failed run changes nothing.
-- The fetch floor: when the rows with a date, times two, are fewer than the list's rows, the
-  run fails.
-- Quiet: `item_date` is more than 182 days before today. A row whose item is newer has
-  `quiet_reported` cleared.
+- The fetch floor: when the fetched rows, times two, are fewer than the list's rows, the run
+  fails.
+- Quiet: `item_date` is a date more than 182 days before today; a row without a date is never
+  quiet. A row whose item is newer has `quiet_reported` cleared.
 - Broken: `fails` is 4 or more.
 - Upkeep: the rows quiet or broken with their `*_reported` field empty, in list order, the
   first ten. If there are any, the note gets `## Source list upkeep` with one line, `Propose
@@ -303,15 +311,17 @@ Rules, from the spec:
   copy the note to `<inbox>/<date>-weekly-research.md` unless that file exists.
 - Failures: `failures_in_row` counts failed runs since the last good one. When it reaches
   exactly 2, write `<inbox>/<date>-weekly-research-failed.md` (the vault's front matter, the
-  reason, the log path) unless the inbox is not writable, in which case every such run calls
-  `osascript`.
+  reason, the log path) unless that file exists, which is left as it is. When the inbox is not
+  writable, every such run calls `osascript` instead.
 
 - [ ] **Step 1: Add the failing cases:**
-  - state: a fetched row moves, a `fetch failed` row and an omitted row do not and count a
+  - state: a fetched row moves, a fetched row with the date `-` moves too and stores `-`, a
+    `fetch failed` row and an omitted row do not and count a
     failure, an unknown id is ignored, a delisted row is dropped, a failed run leaves
     `state.tsv` byte-identical;
   - a title with `|`, a tab and an escape character leaves seven fields and one line;
-  - the floor: 4 of 10 fetched fails, 5 of 10 passes;
+  - the floor: 4 of 10 fetched fails, 5 of 10 passes, and 5 undated fetched rows of 10 pass;
+  - an undated row is never quiet;
   - quiet at 183 days and not at 182; reported once; cleared by a newer item;
   - broken: three failures do nothing, the fourth raises it, a fetch resets it, it is reported
     once;
@@ -320,7 +330,8 @@ Rules, from the spec:
   - the vault copy: none without a proposal or an upkeep entry, one with either, an existing
     file is left byte-identical, a second run on the same day replaces the state note;
   - failures: the first writes no vault note, the second one, the third none, a good run
-    resets the count; with an unwritable inbox each failure calls `osascript`;
+    resets the count; two failures, a good run and two more failures on one day leave the
+    first failure note byte-identical; with an unwritable inbox each failure calls `osascript`;
   - `--status` after a good run, after a failed one, and before any.
 - [ ] **Step 2: Run the suite.** Expected: the new cases fail, the Task 3 cases pass.
 - [ ] **Step 3: Implement** the state update, the upkeep and quiet sections, the copy, the
@@ -375,11 +386,14 @@ Rules, from the spec:
   `HOME` (the login).
 
 - [ ] **Step 1: Write the suite.**
-  - Guard: exit 2 with `INCONCLUSIVE:` when run sandboxed (a `sandbox-exec true` that fails),
-    or when `claude` or the wrapper is missing.
-  - Profile rows, no model: Task 2's four `curl` checks against the deployed `network.sb` and a
-    running proxy.
-  - Wrapper rows: a scratch config with the real `network.sb`, a two-row list
+  - Guard: exit 2 with `INCONCLUSIVE:` when `sandbox-exec -p '(version 1)(allow default)'
+    /usr/bin/true` fails (the suite is running sandboxed), or when `claude`, the wrapper, the
+    proxy or `network.sb` is missing from the checkout.
+  - Staging, as in Global constraints: the checkout's two scripts in a scratch `bin/`, its
+    `network.sb` in a scratch config folder.
+  - Profile rows, no model: Task 2's four `curl` checks against the staged `network.sb` and
+    the staged proxy.
+  - Wrapper rows: the staged wrapper, the scratch config with that `network.sb`, a two-row list
     (`https://example.com`, `http://localtest.me/`) and a short prompt that asks for both to be
     fetched and for the body shape. Expected: `last-run` says `result=ok`; the note exists;
     the proxy log has an `allow` for `example.com:443` and a `deny` for `localtest.me`; the
