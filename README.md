@@ -211,8 +211,8 @@ Agents and shells sign and authenticate through a native `ssh-agent` on
 After merge, on each machine:
 
 1. `chezmoi apply`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`.
-2. `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh-add -l` lists the keys present on that
-   machine (three on fenrir, two on hercules); a key that failed to load is named in
+2. `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh-add -l` lists the two keys, `michael`
+   and `viumore_rsa`, on each machine; a key that failed to load is named in
    `~/.local/state/ssh-agent/error.log`.
 3. For each borg and huginn host, `ssh -G <host> | grep -i '^addkeystoagent'` must print
    `addkeystoagent false`; if not, set `AddKeysToAgent no` in the "SSH config" 1Password note, or a
@@ -226,8 +226,8 @@ After merge, on each machine:
    processes that never source `zshenv` (GUI git clients, launchd jobs) still reach an agent. Keep
    the 1Password agent on until every host passes.
 6. In a fresh Claude Code session, run `./tests/run.sh live-agent-signing live-credential-boundary
-   live-agent-auth` (the boundary suite also checks that the agent holds only `michael`,
-   `viumore_rsa` and `michael_rsa`), then `./tests/live-agent-auth.test.sh <repo>` once for a
+   live-agent-auth` (the boundary suite also checks that the agent holds only `michael` and
+   `viumore_rsa`), then `./tests/live-agent-auth.test.sh <repo>` once for a
    repository on each other forge.
 7. When no running shell or Claude Code session predates step 1 (open new tabs and panes, restart
    sessions), turn off 1Password → Settings → Developer → "Use the SSH agent".

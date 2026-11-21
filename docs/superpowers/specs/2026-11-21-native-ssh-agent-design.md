@@ -3,6 +3,12 @@
 **Status:** Implemented — PR #40 (https://github.com/michaelrigart/dotfiles/pull/40)
 **Signed off:** Michael, 2026-11-21, with the key list as proposed.
 **Amended:** 2026-11-21, after the final review: AddKeysToAgent step, the agent-contents probe, and the step corrections listed in the PR.
+**Amended again:** 2026-11-21, after merge (branch `fix/ssh-agent-drop-michael-rsa`): `michael_rsa`
+is dropped from the key list. On fenrir it did not load (`could not load key michael_rsa` in
+`error.log`), no host in the ssh config names it, and github.com, gitlab.com and
+ssh.dev.azure.com authenticated through the native agent with `michael` and `viumore_rsa` alone.
+Loading it would only widen what agents can use without a prompt. The key file, its 1Password item
+and the ssh config are unchanged; removing the key is Michael's call.
 **Size:** about 120 lines of non-test code: one LaunchAgent plist (mostly its header comment), one
 loader script of about 40 lines, about 10 lines in `dot_claude/modify_private_settings.json`,
 about 6 in `dot_config/zsh/zshenv`, 3 in `.scripts/preflight-ssh-agent.sh`, a subject-map row and a
@@ -85,12 +91,12 @@ Errors go to `$HOME/.local/state/ssh-agent/error.log`, one dated line each, neve
 from `XDG_STATE_HOME`, because `settings.json` holds an absolute path and the two must agree. It is
 49 bytes for this home, well under macOS's 104-byte socket path limit.
 
-**Key list (Michael confirms at sign-off):** `michael`, `viumore_rsa`, `michael_rsa`. My call,
-from the remotes in `~/Code` (42 GitHub, 39 GitLab, 4 Azure DevOps, which accepts only RSA keys,
-1 other) and the key names; the ssh config that maps hosts to keys is private and was not read.
-`michael` and `viumore_rsa` are rendered by chezmoi on every machine. `michael_rsa` has no
-template: it exists on fenrir only, so on hercules it is skipped, and any host that needs it is
-unreachable from hercules until it gets a template (out of scope). Never `borg`,
+**Key list:** `michael`, `viumore_rsa`. Signed off as `michael`, `viumore_rsa`, `michael_rsa`, my
+call from the remotes in `~/Code` (42 GitHub, 39 GitLab, 4 Azure DevOps, which accepts only RSA
+keys, 1 other) and the key names; the ssh config that maps hosts to keys is private and was not
+read. `michael_rsa` was dropped after merge, when no host turned out to use it (the second
+amendment above). `michael` and `viumore_rsa` are rendered by chezmoi on every machine, so fenrir
+and hercules load the same two keys. Never `borg`,
 `borg-append-only`, `borg-append-only-fenrir`, `borg-fenrir`, `borg-hercules`, `borg-synology` or
 `huginn`. The list lives in the script, not in a config file: changing it is a reviewed change.
 
@@ -134,7 +140,7 @@ The herdr proxy problem the current block solves is solved the same way: the fix
 
 ## What changes for an attacker or a runaway agent
 
-- **Gains:** sign commits and authenticate to every host the three loaded keys open, at any time,
+- **Gains:** sign commits and authenticate to every host the two loaded keys open, at any time,
   with no approval and no lock gate. Today it can do the same after one approval per key, which a
   busy day always gives.
 - **Gains:** empty or lock the agent (`ssh-add -D`, `ssh-add -x`). Git then fails until the job
@@ -154,9 +160,9 @@ The herdr proxy problem the current block solves is solved the same way: the fix
 On each machine (fenrir, then hercules):
 
 1. `chezmoi apply`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`.
-2. Check: `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh-add -l` lists the listed keys
-   present on that machine (three on fenrir, two on hercules). A key that failed to load is named
-   in `~/.local/state/ssh-agent/error.log`.
+2. Check: `SSH_AUTH_SOCK=~/.local/state/ssh-agent/agent.sock ssh-add -l` lists the two listed
+   keys, `michael` and `viumore_rsa`, on each machine. A key that failed to load is named in
+   `~/.local/state/ssh-agent/error.log`.
 3. For each borg and huginn host, `ssh -G <host> | grep -i '^addkeystoagent'` must print
    `addkeystoagent false`. If not, set `AddKeysToAgent no` in the ssh config (the 1Password note
    "SSH config"): the loader now loads the keys agents need, so the directive has no use left, and
@@ -177,7 +183,7 @@ On each machine (fenrir, then hercules):
 6. Restart Claude Code sessions as convenient; in a fresh one (sandboxed, so git goes through
    `ssh-sandbox-proxy`), run `./tests/run.sh live-agent-signing live-credential-boundary
    live-agent-auth`, which signs with `michael`, authenticates this repository's GitHub remote and
-   checks that the native agent holds only `michael`, `viumore_rsa` and `michael_rsa`, then `./tests/live-agent-auth.test.sh
+   checks that the native agent holds only `michael` and `viumore_rsa`, then `./tests/live-agent-auth.test.sh
    <repo>` once for a repository on each other forge.
 7. When no running shell or Claude Code session predates step 1 (open new tabs and panes, restart
    sessions; a shell keeps the `SSH_AUTH_SOCK` it started with): 1Password → Settings → Developer →
@@ -208,9 +214,9 @@ Rollback, on each machine:
 - `tests/ssh-agent-run.test.sh` (new): stub `ssh-agent` and `ssh-add` on `PINNED_PATH`, since the
   sandbox forbids `bind()`. Pins: the directory is created mode 700; a stale socket is removed and
   a regular file at the path is refused; `SIGTERM` stops the agent and removes the socket;
-  `ssh-add` is called for exactly the listed keys that
-  exist, never a borg key or `huginn`, with the fixed socket; a failed add is logged without its
-  input; the script exits with the agent's status.
+  `ssh-add` is called for exactly the listed keys that exist, never `michael_rsa`, a borg key or
+  `huginn`, with the fixed socket; a failed add is logged without its input; the script exits with
+  the agent's status.
 - `tests/claude-settings.test.sh`: the socket pins move to the native path, `allowUnixSockets` is
   exactly `[native, 1Password]`, and the new `denyWrite` and `Edit` denies are present.
 - `tests/zshenv.test.sh`: the native socket wins over a herdr socket, over the 1Password socket and
@@ -218,7 +224,7 @@ Rollback, on each machine:
 - `plutil -lint` on the rendered plist, wherever the existing plists are checked, or in the new suite.
 - `.scripts/test-audit/subjects.tsv`: rows for the plist and the script.
 - `tests/live-credential-boundary.test.sh`: a probe that the native agent holds only the listed keys
-  (`michael`, `viumore_rsa`, `michael_rsa`; `AGENT_FOREIGN_KEYS`), and that its socket exists
+  (`michael`, `viumore_rsa`; `AGENT_FOREIGN_KEYS`), and that its socket exists
   (`AGENT_NATIVE`).
 - Acceptance after apply: Michael's steps 5 and 6.
 
