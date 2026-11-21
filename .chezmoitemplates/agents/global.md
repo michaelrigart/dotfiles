@@ -43,9 +43,8 @@ live, what is tracked and when each is committed never vary per repository.
   in task-sized commits. While work or review is active, set `**Status:** In progress`, plus the MR
   reference. In the final pre-merge commit, set `**Status:** Implemented` and cite the MR. A merge
   SHA can be added later; it never needs its own MR.
-- **Cross-repo work.** Open both MRs before merging either; merge the canonical spec's MR first.
 - Load the `design-records` skill when creating, updating, reviewing, completing, abandoning or
-  deleting a spec or plan, or setting its Status.
+  deleting a spec or plan, setting its Status, or working across repositories.
 
 ## How to work
 
@@ -100,6 +99,9 @@ specs and merges; in between, the driver proceeds on its own.
   migrations, a new dependency) skips the spec and plan: test first, implement, then a cold diff
   review and Codex's pre-merge review together. Every other change has a spec and a plan,
   versioned with the code. Unsure or outgrown: not small; say which.
+- **Increments.** A spec states its size and splits the work into increments that each merge on
+  their own: aim for a few hundred lines of non-test code, about 2,000 at most. Each is a line of
+  its own and may stack on the one before (the `design-records` and `wt-line` skills).
 - **Brainstorming.** Present the whole design in one message.
 - **Cross-review** runs at every checkpoint (spec sign-off, plan completion, pre-merge) unasked.
   Commits after the last pre-merge review need a new review before you report the work as done.

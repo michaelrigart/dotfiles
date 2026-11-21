@@ -296,7 +296,7 @@ SR="$SRC/dot_claude/agents/sp-reviewer.md"
 if [ -f "$SR" ] && awk '/^---$/{n++; next} n==1' "$SR" | grep -qx -- 'disallowedTools: Edit, Write, NotebookEdit'; then _pass "sp-reviewer frontmatter denies Edit, Write and NotebookEdit"
 else _fail "sp-reviewer frontmatter denies Edit, Write and NotebookEdit" "missing"; fi
 DR=dot_agents/skills/design-records/SKILL.md
-for line in 'name: design-records' 'description: Use when creating, updating, reviewing, completing, abandoning or deleting a spec or plan under `docs/superpowers/`, or setting its Status.'; do
+for line in 'name: design-records' 'description: Use when creating, updating, reviewing, completing, abandoning or deleting a spec or plan under `docs/superpowers/`, setting its Status, or working across repositories.'; do
   if [ -f "$SRC/$DR" ] && awk '/^---$/{n++; next} n==1' "$SRC/$DR" | grep -qxF -- "$line"; then _pass "design-records frontmatter has ${line%%:*}"
   else _fail "design-records frontmatter has ${line%%:*}" "missing: $line"; fi
 done

@@ -1,6 +1,6 @@
 ---
 name: design-records
-description: Use when creating, updating, reviewing, completing, abandoning or deleting a spec or plan under `docs/superpowers/`, or setting its Status.
+description: Use when creating, updating, reviewing, completing, abandoning or deleting a spec or plan under `docs/superpowers/`, setting its Status, or working across repositories.
 ---
 
 # Design records
@@ -8,6 +8,22 @@ description: Use when creating, updating, reviewing, completing, abandoning or d
 ## Records
 
 Every change except a small one (see Sizing) has a spec and a plan, versioned with the code.
+
+## Size and increments
+
+Every spec has a `**Size:**` line: the estimated lines of non-test code (added plus deleted; design records and other docs not counted) and what the estimate rests on, such as the files it expects to touch or a comparable earlier change. Michael never produces or checks the number; it is there so the split happens before the code exists.
+
+A spec whose estimate is over about 500 lines has an `## Increments` section. Each increment has a name, what it delivers, its own estimate, and one sentence on why the default branch works once it is merged alone. Aim for a few hundred lines per increment. About 2,000 is the ceiling: an increment estimated over it is split again. If one cannot be split (a generated file, a mechanical rename), the spec says why, and that exception is part of what Michael signs.
+
+Work that needs several pieces before anything works is still split: the early increments merge behind a flag, or unreferenced. The spec says which, and names the increment that turns it on.
+
+The spec covers the whole change; a plan covers one increment and lists its tasks. Later increments may be planned after earlier ones have merged, because the earlier ones show the real shape. A plan is still committed before its execution starts, and Codex still reviews every plan.
+
+If an increment's real size passes its estimate by half, or passes the ceiling, the line stops and reports it with a proposed split. That is a spec change, so it goes to Michael.
+
+The spec, and the first increment's plan, merge with the first increment. The spec's status stays `In progress` until the last increment's final commit sets `Implemented`. An increment that is dropped is recorded in the spec as dropped, with the reason, by the increment that turns out to be the last.
+
+A spec with no `**Size:**` line predates v2 and finishes without increments.
 
 ## Status
 
@@ -30,3 +46,5 @@ Don't rewrite point-in-time facts.
 ## Cross-repo work
 
 Keep one canonical spec, referenced by repository and path, preferably as a forge link and never as a bare path.
+
+Open both MRs before merging either; merge the canonical spec's MR first.
