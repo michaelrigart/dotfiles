@@ -171,8 +171,8 @@ finish_run() {
 # sleep starting and the wait on it is held by bash 3.2 until that wait returns, so the wait is one
 # second at a time (never a foreground sleep, which defers the trap until it ends).
 nap() {
-  local end=$((SECONDS + $1))
-  while [ "$SECONDS" -lt "$end" ]; do sleep 1 & s=$!; wait "$s"; done
+  local i=0
+  while [ "$i" -lt "$1" ]; do sleep 1 & s=$!; wait "$s"; i=$((i + 1)); done
 }
 
 # release_reader: the read loop opens the stream fifo and blocks there until a writer opens it. A writer
@@ -547,7 +547,7 @@ parse_seen() {
       # A failed fetch is spelled many ways: the whole title, once formatting and a closing . or : are
       # stripped, is "fetch failed"; an undated row may add detail after it ("fetch failed (403)"). A dated
       # row titled "Fetch failed: ..." is an item (an error message that is also a plausible headline).
-      low = tolower(title); gsub(/[`*]/, "", low); sub(/^ +/, "", low)
+      low = tolower(title); gsub(/[`*_]/, "", low); sub(/^ +/, "", low)
       while (low ~ /[ .:]$/) sub(/[ .:]$/, "", low)
       if (low == "fetch failed" || (d == "-" && low ~ /^fetch failed/)) title = "fetch failed"
       seen[id] = 1; rows++; out[rows] = id "\t" d "\t" title

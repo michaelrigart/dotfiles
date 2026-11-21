@@ -77,6 +77,7 @@ case "$(cat "$D/mode")" in
   stubborn) trap '' TERM; cat "$D/init.json"; echo "$asst"; while [ "$SECONDS" -lt 40 ]; do sleep 0.2; done ;;
   roinbox) chmod 555 "$(cat "$D/inbox-path")"; cat "$D/init.json"; echo "$asst"; cat "$D/result.json" ;;
   lockfail) chmod 555 "$(cat "$D/inbox-path")"; echo "stub: cannot start" >&2; exit 3 ;;
+  stubinit) trap '' TERM; cat "$D/init.json"; while [ "$SECONDS" -lt 40 ]; do sleep 0.2; done ;;
   badinit) cat "$D/init.json"; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done; : > "$D/survived"; cat "$D/result.json" ;;
 esac
 EOF
@@ -100,6 +101,12 @@ if [ -e "$D/psout" ]; then
   cat "$D/psout"; exit 0
 fi
 exec /bin/ps "$@"
+EOF
+cat > "$SD/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+# A pass-through sleep that logs its first argument to $SLEEP_LOG when the caller set one (the wrapper's environment only).
+[ -z "${SLEEP_LOG:-}" ] || printf '%s\n' "$1" >> "$SLEEP_LOG"
+exec /bin/sleep "$@"
 EOF
 chmod 755 "$SD/bin/"*
 cp "$SD/bin/sandbox-exec" "$SD/bin/osascript" "$SD/nobin/"
@@ -546,39 +553,30 @@ ok "the sleeper is gone" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/clau
 ok "no proxy after a timeout" port_closed "$(port_of)"
 printf '%s\n' stubborn > "$SD/mode"
 start=$SECONDS
-run WEEKLY_RESEARCH_TIMEOUT=1
+rm -f "$T/sleeps"
+run WEEKLY_RESEARCH_TIMEOUT=2 SLEEP_LOG="$T/sleeps"
 elapsed=$((SECONDS - start))
 failed "a stub that ignores TERM"
 ok "KILL follows TERM after ten seconds" test "$elapsed" -ge 10 -a "$elapsed" -lt 35
 ok "the TERM-proof stub is gone" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/claude.pid"
+# The clock (2 s) and the grace (10 s) ran in full here, so they slept in one-second steps, never in one long sleep
+# (a TERM that lands between a background sleep and its wait is held until that sleep ends).
+ok "the clock and the grace slept in at least twelve steps of one second" test "$(grep -cx 1 "$T/sleeps")" -ge 12
+ok "and no sleep of the run was longer than a second" test "$(awk '$1 + 0 > 1' "$T/sleeps" | wc -l | tr -d ' ')" = 0
+# The same for the watchdog: a refused init stops a stub that ignores TERM, and the grace before KILL is the watchdog's.
+stub_reset; stub_init '.tools += ["Bash"]'; printf '%s\n' stubinit > "$SD/mode"
+start=$SECONDS
+rm -f "$T/sleeps"
+run SLEEP_LOG="$T/sleeps"
+elapsed=$((SECONDS - start))
+failed "a refused init and a stub that ignores TERM"
+ok "the watchdog's KILL follows after ten seconds" test "$elapsed" -ge 10 -a "$elapsed" -lt 35
+ok "the stub is gone" bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$SD/claude.pid"
+ok "the watchdog's grace slept in at least ten steps of one second" test "$(grep -cx 1 "$T/sleeps")" -ge 10
+ok "and no sleep of the run was longer than a second" test "$(awk '$1 + 0 > 1' "$T/sleeps" | wc -l | tr -d ' ')" = 0
+stub_reset
 
-echo "H2. The timers and the stream"
-# The timer subshells wait in one-second steps (nap), because bash 3.2 holds a TERM that arrives between a
-# background sleep and its wait until that wait ends. The race window is microseconds, so this cannot fail
-# deterministically: it kills 40 timers right after their start and fails when one outlives 2 s, which a return to
-# one long sleep does in most iterations. The same function text the wrapper holds is run under /bin/bash.
-{ awk '/^nap\(\) \{/,/^\}/' "$WR"; cat <<'EOS'
-max=0
-for i in $(seq 40); do
-  ( s=""; trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM; nap 30 ) >/dev/null 2>&1 </dev/null &
-  tp=$!; t0=$SECONDS; kill "$tp" 2>/dev/null; wait "$tp" 2>/dev/null
-  d=$((SECONDS - t0)); [ "$d" -le "$max" ] || max=$d
-done
-echo "$max"
-EOS
-} > "$T/nap-loop.sh"
-ok "a timer killed right after its start is gone within 2 s, 40 times" test "$("$WRBASH" "$T/nap-loop.sh")" -le 1
-# The race itself is rarely reachable, so the step size is pinned too: nap 3 sleeps three times, one second each,
-# and the wrapper's long waits (the clock, the grace) all go through nap.
-{ awk '/^nap\(\) \{/,/^\}/' "$WR"; cat <<'EOS'
-sleep() { echo "$1" >> "$STEPS"; command sleep "$1"; }
-STEPS=$2
-nap 3
-EOS
-} > "$T/nap-steps.sh"
-rm -f "$T/steps"; "$WRBASH" "$T/nap-steps.sh" x "$T/steps" >/dev/null 2>&1
-ok "nap waits in one-second steps" is "$(tr '\n' ' ' < "$T/steps")" "1 1 1 "
-ok "no long wait of the clock or the grace bypasses nap" bash -c '! grep -qE "sleep \"[\$](timeout|kill_grace)\"" "$0"' "$WR"
+echo "H2. The stream"
 # A reader blocked in the fifo's open is released by release_reader, as when the writer died before its open.
 { awk '/^release_reader\(\)/' "$WR"; cat <<'EOS'
 fifo=$1
@@ -807,11 +805,15 @@ ok "five undated fetched rows of ten pass" is "$(lr result)" ok
 fresh; { for i in 1 2 3 4 5 6 7 8 9 10; do printf 'r%s - fetch failed\n' "$i"; done; } | mkrows; srun 2026-12-10 1
 failed "no row fetched"
 ok "a failed first run writes no state file" absent "$ST/state.tsv"
-for v in '`fetch failed`' 'Fetch failed' '**fetch failed**' 'fetch failed (403)' ' FETCH FAILED.' '`Fetch Failed`: timeout' '**Fetch failed:**'; do
-  fresh; { fill 1 4 2026-12-06; for i in 5 6 7 8 9 10; do printf 'r%s - %s\n' "$i" "$v"; done; } | mkrows; srun 2026-12-10 1
-  failed "four rows fetched and six marked '$v'"
-  ok "the floor counts '$v' as a failed fetch" has "$ST/failures/$TODAY.txt" "only 4 of 10"
-  ok "no state file for '$v'" absent "$ST/state.tsv"
+# Variants of a failed fetch: undated ones match the "fetch failed ..." prefix (or the whole title), dated ones only
+# the whole title once formatting, a closing . or : and surrounding spaces are stripped.
+for dv in '-|`fetch failed`' '-|Fetch failed' '-|**fetch failed**' '-|fetch failed (403)' '-|`Fetch Failed`: timeout' '-|_fetch failed_' \
+  '2026-12-06|**Fetch failed:**' '2026-12-06| FETCH FAILED.' '2026-12-06|_Fetch failed_'; do
+  d=${dv%%|*}; v=${dv#*|}
+  fresh; { fill 1 4 2026-12-06; for i in 5 6 7 8 9 10; do printf 'r%s %s %s\n' "$i" "$d" "$v"; done; } | mkrows; srun 2026-12-10 1
+  failed "four rows fetched and six marked '$v' (date $d)"
+  ok "the floor counts '$v' (date $d) as a failed fetch" has "$ST/failures/$TODAY.txt" "only 4 of 10"
+  ok "no state file for '$v' (date $d)" absent "$ST/state.tsv"
 done
 fresh; { fill 1 5 2026-12-06; printf 'r6 - `fetch failed`\nr7 - Fetch failed (403)\nr8 - **fetch failed**\nr9 - FETCH FAILED\nr10 - - fetch failed\n'; } | mkrows; srun 2026-12-10 1
 ok "five rows fetched pass when the rest are marked in other spellings" is "$(lr result)" ok
