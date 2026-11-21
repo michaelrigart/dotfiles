@@ -825,14 +825,15 @@ cannot be left out: a missing one is a usage error, never a quieter state. `--bo
 | code and test lines, test lines deleted, dependency lines | `change-facts origin/<destination>...<head>` |
 | the repository's `Checks` tier and whether CI is required | the `**Checks:**` line of `AGENTS.md` on the default branch as origin has it; no line, or a line it cannot parse, is `weak` |
 | whether the change adds, removes or edits a `**Checks:**` line | the change's own diff |
-| whether the change touches agent instruction text | the paths of the change: an `AGENTS.md` or `CLAUDE.md` anywhere, the instruction fragments (`.chezmoitemplates/agents/`), an agent definition (a file in an `agents` directory under `.claude`, `dot_claude`, `.codex` or `dot_codex`), any `SKILL.md`. Paths are compared by target name: chezmoi's source attributes (`dot_`, `private_`, `exact_`, a trailing `.tmpl` and the like) are stripped and the three file names are matched without case, so `dot_claude/CLAUDE.md.tmpl` counts; so does a file under `.config/agents/`, where the shared global instructions render (added after the task review, 2026-11-21) |
+| whether the change touches agent instruction text | the paths of the change: an `AGENTS.md` or `CLAUDE.md` anywhere, the instruction fragments (`.chezmoitemplates/agents/`), an agent definition (a file in an `agents` directory under `.claude`, `dot_claude`, `.codex` or `dot_codex`), any `SKILL.md`. Paths are compared by target name: chezmoi's source attributes (`dot_`, `private_`, `exact_`, a trailing `.tmpl` and the like) are stripped and the three file names are matched without case, so `dot_claude/CLAUDE.md.tmpl` counts; so does a file under `.config/agents/`, where the shared global instructions render (added after the task review, 2026-11-21); and a file under `.claude/hooks/` or `.codex/hooks/`, since a hook can put rule text into an agent's turn (added after the final review, Michael's ruling, 2026-11-21) |
+| whether the destination is origin's default branch | the target of `refs/remotes/origin/HEAD` (added after the final review, Michael's ruling, 2026-11-21) |
 
 **Facts the author declares**, because no tool on this machine records them. Each is printed in
 `Checked` as given, so Michael sees what was claimed:
 
 - `--claude-review`: the reviewer type (`sp-reviewer` or `sp-architect`) and the commit its
-  whole-range approving review read. The tool resolves that commit and prints it; a review of
-  any commit but the head does not count. This replaces the fixed text "on this head".
+  whole-range approving review read, as its full 40-character id. The tool resolves that commit
+  and prints it; a review of any commit but the head does not count. This replaces the fixed text "on this head".
 - `--suite`: the totals of the repository's pre-merge suite on this head, from the suite's own
   output.
 - `--lint`: the outcome of the repository's linters on this head: `pass`, `fail`, `not-run`, or
@@ -869,6 +870,7 @@ order, before the declared `--check` items. Otherwise `safe to merge`.
 | code lines over the limit: 2,000 with `--spec`, 150 without | the figure and the limit |
 | test lines deleted is not 0 | the count, and that each deleted line is to be looked at |
 | any `--check` | each as given |
+| no `--hold`, and the destination is not origin's default branch, or the default branch cannot be read | that a PR into another branch is stacked, so its state is `hold` |
 
 With `--ci pending` and nothing else in the table, the line reads `safe to merge once CI is
 green`. A tool the state depends on that cannot run (no ledger script, no `change-facts`, no

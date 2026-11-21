@@ -59,16 +59,19 @@ order. Otherwise it is `safe to merge`, or `safe to merge once CI is green` with
 11. code over the limit (2000 with --spec, 150 with --spec none), or size unknown
 12. test lines deleted not 0
 13. any --check but none
+14. no --hold, and the destination is not origin's default branch (or it cannot be read)
 
 The Checks line is read from origin's default branch, never from the change. Instruction text is
 a changed AGENTS.md, CLAUDE.md or SKILL.md (any case), a path under .chezmoitemplates/agents/ or
-.config/agents/, or a path under an `agents` directory directly inside .claude or .codex. Paths
+.config/agents/, or a path under an `agents` or `hooks` directory directly inside .claude or
+.codex. Paths
 are compared by the name chezmoi deploys: private_, exact_, executable_ and the other source
 attributes are dropped, dot_ becomes a dot, and a final .tmpl is dropped."""
 SINGLE = ("--claude-review", "--suite", "--lint", "--ci", "--spec", "--hold")
 REPEAT = ("--boundary", "--check")
 TYPES = ("sp-reviewer", "sp-architect")
 CHOICES = {"--lint": ("pass", "fail", "not-run", "none"), "--ci": ("green", "pending", "failed", "none")}
+REMOTE = "refs/remotes/origin/"
 SPEC_DIR = "docs/superpowers/specs/"
 CHECKS = re.compile(r"\*\*Checks:\*\* (strong|weak) — (.+); CI required to merge: (yes|no)$")
 NONCE = re.compile(r"xr-[A-Za-z0-9-]+")
@@ -216,14 +219,18 @@ def sizes(dest_id, head):
 
 
 def checks_line():
-    """(tier, CI required) from AGENTS.md on origin's default branch; weak, no CI when unreadable."""
+    """(tier, CI required, default branch) from origin's default branch; weak, no CI, None when unreadable."""
     try:
         ref = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").strip().decode()
+    except Fail:
+        return "weak", False, None
+    default = ref[len(REMOTE):] if ref.startswith(REMOTE) else None
+    try:
         text = git("cat-file", "blob", "%s:AGENTS.md" % ref).decode("utf-8", "replace")
     except Fail:
-        return "weak", False
+        return "weak", False, default
     found = [m for m in map(CHECKS.match, text.split("\n")) if m]
-    return (found[0].group(1), found[0].group(3) == "yes") if len(found) == 1 else ("weak", False)
+    return (found[0].group(1), found[0].group(3) == "yes", default) if len(found) == 1 else ("weak", False, default)
 
 
 def target_parts(path):
@@ -247,7 +254,7 @@ def instruction_text(parts):
         return True
     if len(parts) > 2 and (parts[0], parts[1]) in ((".chezmoitemplates", "agents"), (".config", "agents")):
         return True
-    return any(a in INSTRUCTION_PARENTS and b == "agents" for a, b in zip(parts[:-2], parts[1:-1]))
+    return any(a in INSTRUCTION_PARENTS and b in ("agents", "hooks") for a, b in zip(parts[:-2], parts[1:-1]))
 
 
 def edits_checks(span, path):
@@ -275,7 +282,7 @@ def change(dest_id, head):
 
 
 def items_of(dest, head, opts, facts):
-    nonce, reason, review, size, why, tier, ci_required, touched = facts
+    nonce, reason, review, size, why, tier, ci_required, default, touched = facts
     items = []
     suite = opts["--suite"]
     passed, _, total = suite.partition("/")
@@ -311,6 +318,9 @@ def items_of(dest, head, opts, facts):
     if size and size["deleted"]:
         items.append(("%d test lines deleted: look at each" % size["deleted"], []))
     items += [(c, []) for c in opts["--check"] if c != "none"]
+    if "--hold" not in opts and dest != default:
+        items.append(("destination %s is not the default branch %s; a stacked PR is hold" % (dest, default), []) if default
+                     else ("the default branch of origin cannot be read; a stacked PR is hold", []))
     return items
 
 
@@ -345,8 +355,8 @@ def main(argv):
         dest_id = None
     nonce, reason = codex(dest, dest_id, head)
     size, why = sizes(dest_id, head)
-    tier, ci_required = checks_line()
-    items = items_of(dest, head, opts, (nonce, reason, review, size, why, tier, ci_required, change(dest_id, head)))
+    tier, ci_required, default = checks_line()
+    items = items_of(dest, head, opts, (nonce, reason, review, size, why, tier, ci_required, default, change(dest_id, head)))
     boundaries = [b for b in opts["--boundary"] if b != "none"]
     if "--hold" in opts:
         state = "hold: " + opts["--hold"]

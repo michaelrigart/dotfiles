@@ -119,6 +119,23 @@ state "lint none and ci none (CI not required) are clear" "safe to merge"
 defaults; A_REVIEW=sp-architect:$(git -C "$R" rev-parse HEAD); ms
 state "an sp-architect review of the head is clear" "safe to merge"
 
+# row 14: a destination that is not origin's default branch is a stacked PR, which is hold
+git -C "$R" update-ref refs/remotes/origin/lower main
+defaults; A_DEST=lower; ms
+chk "row 14: a destination other than the default branch" "destination lower is not the default branch main; a stacked PR is hold"
+defaults; A_DEST=lower; A_EXTRA=(--hold "until lower merges"); ms
+if [ "$rc" = 0 ] && [ "$(sed -n 1p "$T/out")" = "**Merge:** hold: until lower merges" ] && [ "$(sed -n 3p "$T/out")" = '**Check by hand:** nothing' ]; then _pass "row 14: with --hold the item is not listed"
+else _fail "row 14: with --hold the item is not listed" "rc=$rc $(cat "$T/out")"; fi
+defaults; A_DEST=lower; A_CHECK=(first); ms
+chk "row 14 comes after the --check items" "first" "destination lower is not the default branch main; a stacked PR is hold"
+if [ "$(numbered | sed -n 2p)" = "destination lower is not the default branch main; a stacked PR is hold" ]; then _pass "row 14 is the last item"; else _fail "row 14 is the last item" "$(cat "$T/out")"; fi
+mk nohead; git -C "$R" symbolic-ref --delete refs/remotes/origin/HEAD
+defaults; ms
+chk "row 14: no origin/HEAD" "no Checks: strong line on origin's default branch: the missing check" "the default branch of origin cannot be read; a stacked PR is hold"
+defaults; A_EXTRA=(--hold "x"); ms
+state "row 14: no origin/HEAD under --hold is still hold" "hold: x"
+R="$T/clear"
+
 # 2. row 1: the ledger does not approve
 refuse "no full-range pre-merge review of this change is on record"; defaults; ms
 chk "row 1: the ledger's own reason" "Codex pre-merge: no full-range pre-merge review of this change is on record"
@@ -183,7 +200,8 @@ defaults; ms; chk "row 7: the file name is compared without case" "the change ed
 
 # 9. row 8: instruction text, once per path kind
 for p in sub/AGENTS.md CLAUDE.md skills/x/SKILL.md .chezmoitemplates/agents/global.md dot_claude/agents/a.md \
-         .claude/agents/a.md .codex/agents/a.toml dot_codex/agents/a.toml dot_claude/agents/sub/nested.md; do
+         .claude/agents/a.md .codex/agents/a.toml dot_codex/agents/a.toml dot_claude/agents/sub/nested.md \
+         dot_claude/hooks/executable_subagent-shell-context.sh dot_codex/hooks/x.py .claude/hooks/sub/deep/a.sh dot_claude/exact_hooks/b.sh; do
   newhead; wt "$p" x; commit h; defaults; ms; chk "row 8: $p" "agent instruction text: $p"
 done
 for p in dot_claude/CLAUDE.md.tmpl dot_codex/AGENTS.md.tmpl dot_config/agents/GLOBAL.md.tmpl sub/claude.md sub/Agents.md \
@@ -193,7 +211,7 @@ for p in dot_claude/CLAUDE.md.tmpl dot_codex/AGENTS.md.tmpl dot_config/agents/GL
 done
 newhead; wt sub/AGENTS.md x; wt CLAUDE.md x; commit h
 defaults; ms; chk "row 8: two files, comma-separated and sorted" "agent instruction text: CLAUDE.md, sub/AGENTS.md"
-for p in dot_claude/skills/a.md agents/a.md foo/agents/a.md dot_claude/x/agents/a.md dot_claude/hooks/agents.sh .chezmoitemplates/other/a.md notes/AGENTS.md.bak docs/CLAUDE.md.txt src/agents/a.md \
+for p in dot_claude/skills/a.md agents/a.md foo/agents/a.md dot_claude/x/agents/a.md dot_claude/x/hooks/a.sh src/hooks/a.sh dot_config/git/hooks/pre-push dot_claude/hooksy/a.sh .chezmoitemplates/other/a.md notes/AGENTS.md.bak docs/CLAUDE.md.txt src/agents/a.md \
          dot_config/zsh/a.md dot_claude/skills/x/SKILL.md.bak dot_claude/xagents/a.md dot_dir/AGENTS.mdx; do
   newhead; wt "$p" x; commit h; defaults; ms; state "row 8: $p is not instruction text" "safe to merge"
 done
@@ -346,10 +364,10 @@ for c in "the ledger does not approve this change for this destination" "--claud
          "--suite none, passed < total, or total 0" "--lint fail or not-run" "--ci failed; or --ci none where the Checks line requires CI" \
          "the tier is weak" "the change touches a Checks line" "the change touches instruction text" "any --boundary but none" \
          "any dependency line" "code over the limit (2000 with --spec, 150 with --spec none), or size unknown" \
-         "test lines deleted not 0" "any --check but none" "--hold <reason>"; do
+         "test lines deleted not 0" "any --check but none" "no --hold, and the destination is not origin's default branch" "--hold <reason>"; do
   grep -qF -- "$c" "$T/out" || miss+="[$c]"
 done
-if [ "$rc" = 0 ] && [ -z "$miss" ] && [ ! -s "$T/err" ]; then _pass "--help exits 0 and holds each of the thirteen conditions"; else _fail "--help exits 0 and holds each of the thirteen conditions" "rc=$rc missing: $miss"; fi
+if [ "$rc" = 0 ] && [ -z "$miss" ] && [ ! -s "$T/err" ]; then _pass "--help exits 0 and holds each of the fourteen conditions"; else _fail "--help exits 0 and holds each of the fourteen conditions" "rc=$rc missing: $miss"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
