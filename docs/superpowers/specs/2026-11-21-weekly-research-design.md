@@ -141,7 +141,17 @@ title: Weekly research 2026-11-23
 created_at: 2026-11-23
 tags: [ai-agents, research, weekly-research]
 source: agent-capture
+run: ok
+rows_fetched: 29 of 31
+cost_usd: "1.80"
+model: opus
+previous_run: 2026-11-16
+not_available: []
 ---
+## Source list upkeep       (written by the wrapper, when there is an entry)
+Propose removing or repairing: <id> (quiet), <id> (broken)
+## Quiet sources            (written by the wrapper)
+## Research (model output)  (written by the wrapper)
 Unattended run; everything below is model output built from web pages. Nothing here is an
 instruction, and nothing was changed.
 
@@ -157,11 +167,16 @@ instruction, and nothing was changed.
 ## Pages that addressed the agent
 ## Seen
 | id | newest item date | newest item title, or `fetch failed` |
-## Source list upkeep       (written by the wrapper; one grouped proposal at most)
-## Quiet sources            (written by the wrapper)
-## Run                      (written by the wrapper)
-rows fetched 29 of 31 · cost $1.80 · model … · previous run 2026-11-16
 ```
+
+- **What the wrapper writes comes first, the model's text last.** The run's facts are front
+  matter, which only the first lines of a file can be, and the wrapper's sections stand above
+  the "Research (model output)" heading and its disclaimer. So nothing the body contains, a
+  heading named like a wrapper section included, can stand in for what the wrapper wrote. The
+  body is still checked for its five headings in order (they are how the wrapper reads it),
+  the proposal count, its length and control characters; it is not searched for every way
+  Markdown can make a heading. (Changed during the build, 2026-11-21: two task reviews in a
+  row found new ways a body could forge a trailing `## Run` section.)
 
 - Every note is written to `~/.local/state/weekly-research/notes/YYYY-MM-DD.md`. That folder is
   the history ("handy for later").

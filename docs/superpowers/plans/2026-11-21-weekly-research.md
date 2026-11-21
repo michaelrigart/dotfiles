@@ -52,8 +52,9 @@ commit.
 
 1. A "Seen" title containing `|`, a tab or a control character: the state file stays one row
    per source with seven fields (Task 4 tests it).
-2. A model body that carries a wrapper heading (`## Run`, `## Quiet sources`, `## Source list
-   upkeep`) or front matter: a failed run, never a forged section (Task 3).
+2. A model body that carries a heading named like a wrapper section, or a leading `---`: it
+   stays below the "Research (model output)" heading, after everything the wrapper wrote
+   (Task 3; see the spec's "The note").
 3. A second run on the same day: the state note is replaced, an existing vault note is never
    overwritten (Task 4).
 4. The proxy gets a host with several addresses, one private: refused (Task 1).
@@ -316,8 +317,9 @@ Rules, from the spec:
   first ten. If there are any, the note gets `## Source list upkeep` with one line, `Propose
   removing or repairing: <ids>` (each id followed by `(quiet)` or `(broken)`), and those rows
   get today's date in the matching field.
-- The note ends with `## Source list upkeep` (when present), `## Quiet sources` (every quiet
-  id with its item date, or `none`) and `## Run`.
+- Between the front matter and the `## Research (model output)` heading the note has
+  `## Source list upkeep` (when present) and `## Quiet sources` (every quiet id with its item
+  date, or `none`); the run's facts are front matter (Task 3).
 - The vault copy: when the body has at least one proposal or the note has an upkeep entry,
   copy the note to `<inbox>/<date>-weekly-research.md` unless that file exists.
 - Failures: `failures_in_row` counts failed runs since the last good one. When it reaches
