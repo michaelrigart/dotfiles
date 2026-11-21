@@ -129,6 +129,26 @@ got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK" SSH_CO
 [ "$got" = "$HERDR_SOCK" ] && _pass "an SSH login keeps its forwarded SSH_AUTH_SOCK" \
   || _fail "an SSH login keeps its forwarded SSH_AUTH_SOCK" "${got:-unset}"
 
+# The native agent (ssh-agent-run) outranks 1Password in every shell, an SSH login included.
+NATIVE="$FAKE/.local/state/ssh-agent/agent.sock"
+mkdir -p "${NATIVE%/*}"
+: > "$NATIVE"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
+[ "$got" = "$OP_DIR/agent.sock" ] && _pass "a non-socket native path is ignored" \
+  || _fail "a non-socket native path is ignored" "${got:-unset}"
+rm "$NATIVE"
+ln -s "$target" "$NATIVE"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK")
+[ "$got" = "$NATIVE" ] && _pass "the native agent wins over the 1Password agent and a herdr socket" \
+  || _fail "the native agent wins over the 1Password agent and a herdr socket" "${got:-unset}"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK' SSH_AUTH_SOCK="$HERDR_SOCK" SSH_CONNECTION="10.0.0.1 50000 10.0.0.2 22")
+[ "$got" = "$NATIVE" ] && _pass "an SSH login uses the native agent" \
+  || _fail "an SSH login uses the native agent" "${got:-unset}"
+rm "$OP_DIR/agent.sock"
+got=$(probe '/usr/bin/printenv SSH_AUTH_SOCK')
+[ "$got" = "$NATIVE" ] && _pass "the native agent is used without 1Password" \
+  || _fail "the native agent is used without 1Password" "${got:-unset}"
+
 # Regression: an ssh login from Ghostty brings TERM=xterm-ghostty without Ghostty's terminfo,
 # and the line editor repeated every redraw (typing exit showed eexexiexit). These pin the
 # choice; tests/zshrc.test.sh drives the line editor itself on a pseudo-terminal.
