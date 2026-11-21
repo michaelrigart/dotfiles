@@ -7,8 +7,8 @@
 > **Completed 2026-11-21; do not run this plan again.** All four tasks ran; Task 3 took two fix
 > rounds, and a final-review fix wave reordered first-boot provisioning so the firewall gate
 > exists before the runner package is installed. Where the code differs from a task's text
-> (`Persistent=true`, `ExecReload=`, `After=cloud-final.service`, the IPv6 rule), the spec and
-> the PR's Rulings record why.
+> (`Persistent=true`, `ExecReload=`, `After=cloud-final.service`, the IPv6 rule, no `ExecStop=`
+> on the firewall unit), the spec and the PR's Rulings record why.
 
 **Goal:** Ship the Lima VM template, its safety-pin suite and the host wiring for a GitLab project
 runner on hercules; nothing is installed or registered by this plan.
