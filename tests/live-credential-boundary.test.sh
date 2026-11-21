@@ -45,6 +45,34 @@ else
   bad AGENT
 fi
 
+# The native agent must hold none of the backup keys: ssh-agent takes keys from any client, so an
+# AddKeysToAgent yes in the ssh config would put one there. Only the native socket is asked, never
+# 1Password's, and only the public-key blobs are compared; neither is printed.
+native="$HOME/.local/state/ssh-agent/agent.sock"
+if [ ! -S "$native" ]; then
+  echo "AGENT_NATIVE=ABSENT"
+  bad AGENT_NATIVE
+else
+  held=$(SSH_AUTH_SOCK="$native" ssh-add -L 2>/dev/null); rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+    foreign=NONE
+    if [ "$rc" -eq 0 ]; then
+      blobs=$(printf '%s\n' "$held" | while read -r _ blob _; do printf ' %s ' "$blob"; done)
+      for name in borg borg-append-only borg-append-only-fenrir borg-fenrir borg-hercules borg-synology huginn; do
+        pub=$(cat "$HOME/.ssh/$name.pub" 2>/dev/null) || continue
+        set -- $pub
+        [ -n "${2:-}" ] || continue
+        case "$blobs" in *" $2 "*) foreign=PRESENT ;; esac
+      done
+    fi
+    echo "AGENT_FOREIGN_KEYS=$foreign"
+    [ "$foreign" = PRESENT ] && bad AGENT_FOREIGN_KEYS
+  else
+    echo "AGENT_FOREIGN_KEYS=UNKNOWN"
+    bad AGENT_FOREIGN_KEYS
+  fi
+fi
+
 # tagteam can hold a login in plaintext in three places. A path that does not exist yet was
 # not measured (ABSENT); only a readable one is a failure. The sandbox answers ENOENT for a
 # missing path even under a deny, and EPERM for an existing denied one, so the error text
