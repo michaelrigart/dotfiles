@@ -36,13 +36,14 @@ this skill before it starts.
 - **Stacking.** The next increment may start before the one under it has merged. Its checkout is
   created from that branch (`wt --no-focus <branch> <lower-branch>`), its pre-merge review runs
   against that branch (`--diff origin/<lower>...<branch>`), and its PR targets that branch with the
-  merge state `hold until <lower PR> merges and this PR has a fresh review against the default
-  branch`. An approval is bound to its destination: the review
+  merge state run with `--hold "until <lower PR> merges and this PR has a fresh review against the
+  default branch"`. An approval is bound to its destination: the review
   against the lower branch never approves the default branch, even when the diff is the same. So
   once the lower one has merged and Michael has said so in one message, the line rebases onto the
   default branch if needed, runs a fresh full-range pre-merge round against
-  `origin/<default>...<branch>` first, and only after its approval retargets the PR and replaces
-  `hold` with `safe to merge` or `check first`, because nothing gates a retarget. Only the line
+  `origin/<default>...<branch>` first, and only after its approval retargets the PR and runs
+  `merge-state` again for the default branch, pasting its three fields, because nothing gates a
+  retarget. Only the line
   replaces `hold`; a forge that retargets the PR by itself changes nothing about it. The gate
   and `xreview` do not change. A stack is at most two deep: a third increment waits until the
   first has merged. The cost is named: every stacked increment needs one message from Michael and

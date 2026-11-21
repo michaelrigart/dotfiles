@@ -35,7 +35,7 @@ DIFF = [
 ]
 HERE = os.path.dirname(os.path.realpath(__file__))
 
-USAGE = """usage: merge-state <destination> <head> --claude-review <type>:<commit> | none
+USAGE = """usage: merge-state <destination> <head> --claude-review <type>:<40-character commit id> | none
     --suite <passed>/<total> | none  --lint pass | fail | not-run | none
     --ci green | pending | failed | none
     --spec <path> | none  --boundary <what> | none  --check <what> | none
@@ -160,8 +160,8 @@ def parse(argv):
     review = opts["--claude-review"]
     if review != "none":
         kind, _, commit = review.partition(":")
-        if kind not in TYPES or not commit:
-            raise Fail("--claude-review must be sp-reviewer:<commit>, sp-architect:<commit> or none")
+        if kind not in TYPES or not re.fullmatch(r"[0-9A-Fa-f]{40}", commit):
+            raise Fail("--claude-review must be sp-reviewer:<40-character commit id>, sp-architect:<id> or none")
     return pos[0], pos[1], opts
 
 
@@ -252,7 +252,7 @@ def instruction_text(parts):
 
 def edits_checks(span, path):
     body = False
-    for line in git("--literal-pathspecs", *DIFF, "-U0", span, "--", path).split(b"\n"):
+    for line in git(*DIFF, "-U0", span, "--", ":(top,literal)" + path).split(b"\n"):
         if line.startswith(b"@@"):
             body = True
         elif body and line[:1] in (b"+", b"-") and line[1:].startswith(b"**Checks:**"):
@@ -328,7 +328,7 @@ def main(argv):
         review = None
         if opts["--claude-review"] != "none":
             kind, _, commit = opts["--claude-review"].partition(":")
-            review = (kind, resolve(commit))
+            review = (kind, resolve(commit.lower()))
         spec = opts["--spec"]
         if spec != "none":
             try:

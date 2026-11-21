@@ -50,7 +50,7 @@ newhead() { git -C "$R" checkout -q -B feat main; }
 ms_in() { local d=$1; shift; ( CDPATH= cd -- "$d" && "$BIN/merge-state" "$@" ) >"$T/out" 2>"$T/err"; rc=$?; }
 # the declared facts of the all-clear case; a case changes one before it runs
 defaults() {
-  A_DEST=main; A_HEAD=HEAD; A_REVIEW=sp-reviewer:HEAD; A_SUITE=10/10; A_LINT=pass; A_CI=green
+  A_DEST=main; A_HEAD=HEAD; A_REVIEW=sp-reviewer:$(git -C "$R" rev-parse HEAD); A_SUITE=10/10; A_LINT=pass; A_CI=green
   A_SPEC=$SPEC; A_BOUNDARY=(none); A_CHECK=(none); A_SKIP=""; A_EXTRA=()
 }
 ms() {
@@ -106,9 +106,17 @@ if grep -qxF "decide . main refs/remotes/origin/main $H" "$T/ledger/args.log"; t
 else _fail "the ledger is asked about this destination, its remote-tracking ref and the head's commit id" "$(cat "$T/ledger/args.log")"; fi
 defaults; A_CI=pending; ms
 state "ci pending on the all-clear case" "safe to merge once CI is green"
+defaults; A_CI=pending; A_SUITE=none; ms
+chk "ci pending with an item that holds is check first, not once CI is green" "suite: none"
+defaults; A_REVIEW=sp-reviewer:$(printf '%s' "$H" | tr a-f A-F); ms
+if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "an upper-case review commit id is accepted and printed lower case"
+else _fail "an upper-case review commit id is accepted and printed lower case" "rc=$rc $(head -c 500 "$T/out") | $(cat "$T/err")"; fi
+R0=$R; R="$R0/app"; defaults; ms; R=$R0
+if [ "$rc" = 0 ] && cmp -s "$T/first" "$T/out"; then _pass "the all-clear block is the same from a subdirectory"
+else _fail "the all-clear block is the same from a subdirectory" "rc=$rc $(head -c 500 "$T/out") | $(cat "$T/err")"; fi
 defaults; A_LINT=none; A_CI=none; ms
 state "lint none and ci none (CI not required) are clear" "safe to merge"
-defaults; A_REVIEW=sp-architect:HEAD; ms
+defaults; A_REVIEW=sp-architect:$(git -C "$R" rev-parse HEAD); ms
 state "an sp-architect review of the head is clear" "safe to merge"
 
 # 2. row 1: the ledger does not approve
@@ -123,7 +131,7 @@ approve
 defaults; A_REVIEW=none; ms
 chk "row 2: none" "Claude review: none"
 P="$(git -C "$R" rev-parse HEAD~1)"
-defaults; A_REVIEW=sp-reviewer:HEAD~1; ms
+defaults; A_REVIEW=sp-reviewer:$P; ms
 chk "row 2: another commit than the head" "Claude review read $P, not the head"
 
 # 4. row 3: the suite
@@ -159,6 +167,8 @@ chk "row 6: a strong line only on the head, not on origin's main" \
 # 8. row 7: the change touches a Checks line
 mk edit; newhead; wt AGENTS.md '**Checks:** weak — none; CI required to merge: no'; commit h
 defaults; ms; chk "row 7: a Checks line edited" "the change edits a Checks line: AGENTS.md" "agent instruction text: AGENTS.md"
+R0=$R; R="$R0/spec"; defaults; ms; R=$R0
+chk "row 7: a Checks line edited, run from a subdirectory" "the change edits a Checks line: AGENTS.md" "agent instruction text: AGENTS.md"
 newhead; wt AGENTS.md '# a repository'; commit h
 defaults; ms; chk "row 7: a Checks line deleted" "the change edits a Checks line: AGENTS.md" "agent instruction text: AGENTS.md"
 newhead; wt sub/AGENTS.md "$STRONG"; commit h
@@ -241,7 +251,11 @@ defaults; A_BOUNDARY=(auth none); ms; usage_err "a --boundary value beside none"
 defaults; A_CHECK=(none x); ms; usage_err "none beside a --check value"
 defaults; A_REVIEW=sp-nope:HEAD; ms; usage_err "a bad reviewer type"
 defaults; A_REVIEW=sp-reviewer; ms; usage_err "a review with no commit"
-defaults; A_REVIEW=sp-reviewer:nope; ms; usage_err "a review commit that names no commit"
+defaults; A_REVIEW=sp-reviewer:nope; ms; usage_err "a review commit that is not an id"
+defaults; A_REVIEW=sp-reviewer:HEAD; ms; usage_err "a review of HEAD spelled as a revision"
+defaults; A_REVIEW=sp-reviewer:main; ms; usage_err "a review of a branch name"
+defaults; A_REVIEW=sp-reviewer:$(git -C "$R" rev-parse --short=12 HEAD); ms; usage_err "a review commit abbreviated"
+defaults; A_REVIEW=sp-reviewer:$(printf '0%.0s' $(seq 40)); ms; usage_err "a review commit id that names no commit"
 for v in 3 a/b -1/2 3/ 1/2/3 ""; do defaults; A_SUITE=$v; ms; usage_err "suite figure '$v'"; done
 defaults; A_SUITE=11/10; ms; usage_err "a passed count above the total"
 defaults; A_LINT=maybe; ms; usage_err "a bad lint outcome"
@@ -269,11 +283,11 @@ chk "a ledger that prints no JSON" "Codex pre-merge: the review ledger gave no u
 printf '["a"]\n' > "$T/ledger/answer"; defaults; ms
 chk "a ledger that prints another JSON shape" "Codex pre-merge: the review ledger gave no usable answer"
 approve
-defaults; ( CDPATH= cd -- "$R" && "$T/solo/merge-state" main HEAD --claude-review sp-reviewer:HEAD --suite 10/10 --lint pass --ci green --spec "$SPEC" --boundary none --check none ) >"$T/out" 2>"$T/err"; rc=$?
+defaults; ( CDPATH= cd -- "$R" && "$T/solo/merge-state" main HEAD --claude-review sp-reviewer:$(git -C "$R" rev-parse HEAD) --suite 10/10 --lint pass --ci green --spec "$SPEC" --boundary none --check none ) >"$T/out" 2>"$T/err"; rc=$?
 chk "no sibling change-facts" "size: unknown, change-facts is not beside merge-state (limit 2000)"
 mkdir "$T/stub"; cp "$MS" "$T/stub/merge-state"; chmod 755 "$T/stub/merge-state"
 stub_cf() { printf '#!/bin/sh\ncat <<EOF\n%s\nEOF\n' "$1" > "$T/stub/change-facts"; chmod 755 "$T/stub/change-facts"; }
-stub_run() { ( CDPATH= cd -- "$R" && "$T/stub/merge-state" main HEAD --claude-review sp-reviewer:HEAD --suite 10/10 --lint pass --ci green --spec "$SPEC" --boundary none --check none ) >"$T/out" 2>"$T/err"; rc=$?; }
+stub_run() { ( CDPATH= cd -- "$R" && "$T/stub/merge-state" main HEAD --claude-review sp-reviewer:$(git -C "$R" rev-parse HEAD) --suite 10/10 --lint pass --ci green --spec "$SPEC" --boundary none --check none ) >"$T/out" 2>"$T/err"; rc=$?; }
 REPORT='code: 5 lines (+5 -0)
 test: 0 lines (+0 -0)
 docs: 0 lines (+0 -0)
