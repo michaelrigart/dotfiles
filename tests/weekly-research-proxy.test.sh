@@ -134,7 +134,8 @@ mod.check = lambda host, port: (True, answer)   # host never resolves: no DNS he
 srv = mod.make_server(sys.argv[2])
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 pport, uport = srv.server_address[1], up.getsockname()[1]
-stderr, sys.stderr = sys.stderr, io.StringIO()   # a handler traceback lands here
+stderr, captured = sys.stderr, io.StringIO()
+sys.stderr = captured   # a handler traceback lands here
 
 def conn():
     return socket.create_connection(("127.0.0.1", pport), timeout=5)
@@ -168,40 +169,42 @@ def plain(host):
               % (host, uport, host))
     return read_all(s)
 
-s, head = tunnel(b"x.example", uport)
-s.sendall(b"ping")
-echo = read_until(s, lambda b: len(b) >= 4)
-print("connect", head.split(b"\r\n")[0].decode(), echo)
-s.close()
+try:
+    s, head = tunnel(b"x.example", uport)
+    s.sendall(b"ping")
+    echo = read_until(s, lambda b: len(b) >= 4)
+    print("connect", head.split(b"\r\n")[0].decode(), echo)
+    s.close()
 
-buf = plain(b"x.example")
-seen = buf.split(b"\r\n\r\n", 1)[1].decode()
-print("plain", buf.split(b"\r\n")[0].decode())
-print("plain-line", seen.split("\r\n")[0])
-print("plain-close", "Connection: close" in seen, "Proxy-Connection" in seen)
+    buf = plain(b"x.example")
+    seen = buf.split(b"\r\n\r\n", 1)[1].decode()
+    print("plain", buf.split(b"\r\n")[0].decode())
+    print("plain-line", seen.split("\r\n")[0])
+    print("plain-close", "Connection: close" in seen, "Proxy-Connection" in seen)
 
-dead = socket.socket(); dead.bind(("127.0.0.1", 0)); dport = dead.getsockname()[1]; dead.close()
-s = conn()
-s.sendall(b"CONNECT x.example:%d HTTP/1.1\r\n\r\n" % dport)
-print("dead", read_until(s, lambda b: b"\r\n" in b).split(b"\r\n")[0].decode(), dport)
+    dead = socket.socket(); dead.bind(("127.0.0.1", 0)); dport = dead.getsockname()[1]; dead.close()
+    s = conn()
+    s.sendall(b"CONNECT x.example:%d HTTP/1.1\r\n\r\n" % dport)
+    print("dead", read_until(s, lambda b: b"\r\n" in b).split(b"\r\n")[0].decode(), dport)
 
-# The first checked address refuses (nothing listens on [::1]:uport), the second serves.
-answer = ["::1", "127.0.0.1"]
-s, head = tunnel(b"retry.example", uport)
-print("retry", head.split(b"\r\n")[0].decode())
-s.close()
-answer = ["127.0.0.1"]
+    # The first checked address refuses (nothing listens on [::1]:uport), the second serves.
+    answer = ["::1", "127.0.0.1"]
+    s, head = tunnel(b"retry.example", uport)
+    print("retry", head.split(b"\r\n")[0].decode())
+    s.close()
+    answer = ["127.0.0.1"]
 
-# A client that vanishes while the upstream is still sending must not break the proxy.
-s, head = tunnel(b"burst.example", uport)
-s.sendall(b"burst")
-s.close()
-time.sleep(1)
-buf = plain(b"next.example")
-print("after-reset", buf.split(b"\r\n")[0].decode())
-print("stderr", repr(sys.stderr.getvalue()))
-srv.shutdown()
-sys.stderr = stderr
+    # A client that vanishes while the upstream is still sending must not break the proxy.
+    s, head = tunnel(b"burst.example", uport)
+    s.sendall(b"burst")
+    s.close()
+    time.sleep(1)
+    buf = plain(b"next.example")
+    print("after-reset", buf.split(b"\r\n")[0].decode())
+    print("stderr", repr(captured.getvalue()))
+finally:
+    srv.shutdown()
+    sys.stderr = stderr
 EOF
 )
 line() { printf '%s\n' "$out" | sed -n "$1p"; }
@@ -218,8 +221,18 @@ is "and no deny line" "$(grep -c "	deny	" "$T/relay.log" 2>/dev/null)" 0
 is "a refused first address falls through to the next and answers 200" "$(line 6)" "retry HTTP/1.1 200 Connection Established"
 is "the log names the address that connected" \
   "$(grep -c "	allow	retry.example:[0-9]*	127.0.0.1$" "$T/relay.log" 2>/dev/null)" 1
-is "a client reset mid-relay leaves the proxy serving the next request" "$(line 7)" "after-reset HTTP/1.1 200 OK"
-is "and writes nothing to stderr" "$(line 8)" "stderr ''"
+is "a client that vanishes mid-relay leaves the proxy serving, and nothing on stderr" \
+  "$(line 7) / $(line 8)" "after-reset HTTP/1.1 200 OK / stderr ''"
+case $out in *Traceback*) _fail "the section D snippet ran to its end" "$out" ;; esac
+
+echo "E. a log that cannot be written fails closed and says so"
+"$PROXY" --port-file "$T/port.e" --log "$T/no-such-dir/log" 2>"$T/stderr.e" & PID=$!
+for _ in $(seq 1 50); do [ -s "$T/port.e" ] && break; sleep 0.1; done
+is "a request whose log line cannot be written gets no reply" \
+  "$(curl -s --max-time 10 -o /dev/null --noproxy '' -x "http://127.0.0.1:$(cat "$T/port.e" 2>/dev/null)" -w '%{http_code}' http://127.0.0.1/ 2>/dev/null)" 000
+kill -TERM "$PID"; wait "$PID" 2>/dev/null; PID=""
+is "and stderr names the log path" "$(grep -c "cannot write the log $T/no-such-dir/log: " "$T/stderr.e")" 1
+is "and holds nothing else" "$(wc -l < "$T/stderr.e" | tr -d ' ')" 1
 
 echo
 echo "RESULT: $pass passed, $fail failed"

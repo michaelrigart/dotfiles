@@ -5,8 +5,9 @@
   weekly-research-proxy --check HOST PORT             print the verdict for one target
 
 It refuses the machine itself and the home network: a target is allowed only when its port
-is 80 or 443 and every address it resolves to is public. It connects to the first address it
-checked and never resolves again, so a name cannot change its answer between check and use.
+is 80 or 443 and every address it resolves to is public. It connects to the addresses it
+checked, in order, and never resolves again, so a name cannot change its answer between check
+and use.
 """
 import ipaddress
 import os
@@ -98,9 +99,14 @@ class Handler(socketserver.BaseRequestHandler):
         line = "%s\t%s\t%s:%s\t%s\n" % (
             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             verdict, clean(str(host)), port, clean(detail))
-        with self.server.log_lock:
-            with open(self.server.log_path, "a") as handle:
-                handle.write(line)
+        try:
+            with self.server.log_lock:
+                with open(self.server.log_path, "a") as handle:
+                    handle.write(line)
+        except OSError as err:
+            sys.stderr.write("weekly-research-proxy: cannot write the log %s: %s\n"
+                             % (self.server.log_path, err))
+            raise
 
     def refuse(self, host, port, reason):
         self.log("deny", host, port, reason)
