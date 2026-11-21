@@ -27,13 +27,16 @@ check() { # check <label> <got> <want>
 }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/ssh-agent-run.XXXXXX")" || exit 2
-trap 'rm -rf "$T"' EXIT
+# A stub agent a regressed loader leaves running (the SIGTERM case runs timeout --foreground)
+# is killed here by the pid it recorded.
+trap 'while read -r p; do kill "$p" 2>/dev/null; done <"$T/stub.pids" 2>/dev/null; rm -rf "$T"' EXIT
 
 STUBS="$T/stubs"
 mkdir "$STUBS"
 cat >"$STUBS/ssh-agent" <<STUB
 #!/bin/bash
 echo "agent \$*" >>"\$STUB_LOG"
+echo \$\$ >>"$T/stub.pids"
 sock=\${@: -1}
 if [ -e "\$sock" ] || [ -L "\$sock" ]; then echo agent-exists >>"\$STUB_LOG"; exit 1; fi
 if [ "\${STUB_NO_SOCKET:-}" != 1 ]; then ln -s "$target" "\$sock" || exit 1; fi
@@ -125,7 +128,7 @@ if grep -q 'STUBSECRET' "$LOGF" 2>/dev/null; then _fail "failed add does not lea
 check "failed add: the rest still load" "$(adds | tr '\n' ' ')" "michael viumore_rsa "
 
 fresh_home
-/usr/bin/timeout 20 env HOME="$H" XDG_STATE_HOME="$T/xdg" PINNED_PATH="$STUBS:/usr/bin:/bin" STUB_LOG="$STUB_LOG" /bin/bash "$SCRIPT" >/dev/null 2>&1 &
+/usr/bin/timeout --foreground 20 env HOME="$H" XDG_STATE_HOME="$T/xdg" PINNED_PATH="$STUBS:/usr/bin:/bin" STUB_LOG="$STUB_LOG" /bin/bash "$SCRIPT" >/dev/null 2>&1 &
 pid=$!
 i=0
 while [ "$i" -lt 100 ] && [ "$(grep -c '^add ' "$STUB_LOG")" -lt 2 ]; do /bin/sleep 0.1; i=$((i + 1)); done
