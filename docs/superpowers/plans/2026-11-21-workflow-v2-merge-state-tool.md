@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `feat/workflow-v2-switch`)
+**Status:** Implemented (completed 2026-11-21 on branch `feat/workflow-v2-switch`; do not run
+again)
 
 **Goal:** The first three fields of the merge state (`Merge`, `Checked`, `Check by hand`) are
 printed by a tool with a suite, and the `merge-request` skill only says to run it and paste its

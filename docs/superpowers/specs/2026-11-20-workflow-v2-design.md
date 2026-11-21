@@ -1,8 +1,7 @@
 # Workflow v2: smaller increments, shorter fix chains, a merge state, an input rule
 
-**Status:** In progress (increment 1 merged as PR #33 and #36, increment 2 as PR #35; increment 3
-with the queue on `feat/workflow-v2-switch`, reopened for the `merge-state` tool under
-Amendments)
+**Status:** Implemented (increment 1 merged as PR #33 and #36, increment 2 as PR #35; increment 3
+with the queue and the `merge-state` tool on `feat/workflow-v2-switch`)
 **Sign-off:** Michael, 2026-11-20, in the line's own pane, with the eight decisions under Decisions.
 Codex approved the spec in round 3 (xr-1795214348-4c57c9f3).
 **Date:** 2026-11-20
@@ -923,6 +922,13 @@ suite). That passes its estimate by more than half, which is the "Outgrown" case
 amendment is the spec change it calls for. The tool stays in increment 3 instead of a fourth
 increment because the skill text of the switch names it: merged alone, increment 3 would carry
 the prose conditions with their open findings.
+
+The build came out at 400 lines of code (`change-facts origin/main...feat/workflow-v2-switch`
+after the task review's fix round): the chezmoi path rules and the `--help` table took the
+script to 389 lines. That passes the 250 estimate by more than half again. A split was not
+proposed: the code is one script that the skill text names, so either half alone leaves the
+branch inconsistent. Michael accepted the real size on 2026-11-21, in this line's pane, when
+asked to choose between accepting it, trimming the script and splitting it.
 
 **Safety.** The tool reads only: git objects of the two commits, the ledger through its own
 script, `AGENTS.md` from origin's default branch. It writes nothing and calls no forge. A wrong
