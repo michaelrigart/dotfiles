@@ -10,6 +10,9 @@
 # which puts the server in local scope there and removes its user-scope entry; the
 # directory must be outside any git repository, and a name has one directory.
 #
+# --check: the same queries, no state change; prints "missing: <what>" or "differs: <what>"
+# per item and exits 1 when any (or when a query fails), 0 when none. An unknown option exits 2.
+#
 # Bash 3.2 compatible (macOS /bin/bash): no associative arrays, mapfile, or ${x,,}.
 # Exit status: 0 = every declared item is present/added; 1 = something could not be
 # reconciled (tool/jq absent, list query failed or returned an unexpected shape,
@@ -26,6 +29,7 @@ log_warn() { echo "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo "${RED}[ERROR]${NC} $1"; }
 
 status=0
+CHECK=0   # --check: report what would change, change nothing
 MANIFEST="${XDG_CONFIG_HOME:-$HOME/.config}/agents/plugins.conf"
 
 # Codex marketplaces whose plugins are provided by Codex itself — never flagged as drift.
@@ -146,6 +150,22 @@ parse_manifest() {
   done < "$MANIFEST"
 }
 
+# mutate <description> <command...>  -> the one way a state-changing call is made. Under
+# --check it prints the description ("missing: ..." or "differs: ..."), sets status=1 and
+# does not run the command; otherwise it runs it and returns its status.
+mutate() {
+  local __desc=$1; shift
+  if [ "$CHECK" -eq 1 ]; then
+    echo "$__desc"
+    status=1
+    return 0
+  fi
+  "$@"
+}
+
+# in_dir <dir> <command...>  -> run the command in <dir> (a subshell, so the caller stays put)
+in_dir() { local __d=$1; shift; ( cd "$__d" && "$@" ); }
+
 # run_json <outvar> <errmsg-prefix> <cmd...>  -> capture stdout JSON (stderr kept out of
 # it). On failure, re-run to surface a concise stderr line (these are read-only list
 # commands, safe to call twice) and set status=1. Returns non-zero on failure.
@@ -239,12 +259,13 @@ reconcile_claude_mcp() {
           log_info "claude mcp present: $name"; continue ;;
         differs)
           log_info "claude mcp replace: $name"
-          claude mcp remove "$name" --scope user || {
+          mutate "differs: claude mcp $name" claude mcp remove "$name" --scope user || {
             log_warn "failed to remove claude mcp: $name"; status=1; continue
-          } ;;
+          }
+          [ "$CHECK" -eq 1 ] && continue ;;
         *) log_info "claude mcp add: $name" ;;
       esac
-      claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
+      mutate "missing: claude mcp $name" claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
       continue
     fi
 
@@ -276,13 +297,14 @@ EOF
         log_info "claude mcp present: $name (local: $phys)" ;;
       differs)
         log_info "claude mcp replace: $name (local: $phys)"
-        ( cd "$phys" && claude mcp remove "$name" --scope local ) || {
+        mutate "differs: claude mcp $name (local: $phys)" in_dir "$phys" claude mcp remove "$name" --scope local || {
           log_warn "failed to remove claude mcp: $name"; status=1; continue
-        } ;;
+        }
+        [ "$CHECK" -eq 1 ] && continue ;;
       *) log_info "claude mcp add: $name (local: $phys)" ;;
     esac
     if [ "$state" != match ]; then
-      ( cd "$phys" && claude mcp add-json "$name" "$json" --scope local ) || {
+      mutate "missing: claude mcp $name (local: $phys)" in_dir "$phys" claude mcp add-json "$name" "$json" --scope local || {
         log_warn "failed to add claude mcp: $name"; status=1; continue
       }
     fi
@@ -292,7 +314,7 @@ EOF
     }
     if [ "$ustate" != absent ]; then
       log_info "claude mcp remove: $name (user scope)"
-      claude mcp remove "$name" --scope user || { log_warn "failed to remove claude mcp: $name"; status=1; }
+      mutate "differs: claude mcp $name (user-scope entry beside the local one)" claude mcp remove "$name" --scope user || { log_warn "failed to remove claude mcp: $name"; status=1; }
     fi
   done
 }
@@ -315,7 +337,7 @@ reconcile_claude() {
         log_info "claude marketplace present: $repo"
       else
         log_info "claude marketplace add: $repo"
-        claude plugin marketplace add "$repo" || { log_warn "failed to add claude marketplace: $repo"; status=1; }
+        mutate "missing: claude marketplace $repo" claude plugin marketplace add "$repo" || { log_warn "failed to add claude marketplace: $repo"; status=1; }
       fi
     done
   fi
@@ -339,7 +361,7 @@ reconcile_claude() {
         fi
       else
         log_info "claude plugin install: $id"
-        claude plugin install "$id" --scope user || { log_warn "failed to install claude plugin: $id"; status=1; }
+        mutate "missing: claude plugin $id" claude plugin install "$id" --scope user || { log_warn "failed to install claude plugin: $id"; status=1; }
       fi
     done
     # Drift: installed user-scope plugins not declared.
@@ -382,7 +404,7 @@ EOF
         log_info "codex marketplace present: $repo"
       else
         log_info "codex marketplace add: $repo"
-        codex plugin marketplace add "$repo" || { log_warn "failed to add codex marketplace: $repo"; status=1; }
+        mutate "missing: codex marketplace $repo" codex plugin marketplace add "$repo" || { log_warn "failed to add codex marketplace: $repo"; status=1; }
       fi
     done
   fi
@@ -404,7 +426,7 @@ EOF
         fi
       else
         log_info "codex plugin add: $pid"
-        codex plugin add "$pid" || { log_warn "failed to add codex plugin: $pid"; status=1; }
+        mutate "missing: codex plugin $pid" codex plugin add "$pid" || { log_warn "failed to add codex plugin: $pid"; status=1; }
       fi
     done
     # Drift: installed plugins not declared, excluding Codex system marketplaces.
@@ -421,6 +443,13 @@ EOF
 
 # ---------------------------------------------------------------------------
 main() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --check) CHECK=1 ;;
+      *) log_error "unknown option: $arg (usage: reconcile-agents.sh [--check])"; exit 2 ;;
+    esac
+  done
   if ! command -v jq >/dev/null 2>&1; then
     log_error "jq not found — cannot parse plugin state. Install jq and re-run."
     exit 1
