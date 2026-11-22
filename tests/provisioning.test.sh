@@ -59,6 +59,24 @@ forbid "launchctl change"  "${B}launchctl[[:space:]]+(load|unload|enable|disable
 forbid "defaults write"    "${B}defaults[[:space:]]+(-[A-Za-z]+[[:space:]]+)*(write|delete|import|rename)" 'defaults write com.x y 1'
 forbid "osascript"         "${B}osascript"                         'osascript -e x'
 forbid "open"              "${B}open[[:space:]]"                   'open -a Alfred'
+forbid "netbird change"    "${B}netbird[[:space:]]+(up|down|login|logout|service)" 'netbird up'
+forbid "netbird change"    "${B}netbird[[:space:]]+(up|down|login|logout|service)" 'netbird down'
+forbid "herdr plugin change" "${B}herdr[[:space:]]+plugin[[:space:]]+(link|unlink|install|uninstall|enable|disable|update)" 'herdr plugin link /x'
+forbid "herdr plugin change" "${B}herdr[[:space:]]+plugin[[:space:]]+(link|unlink|install|uninstall|enable|disable|update)" 'herdr plugin unlink dev.phase'
+forbid "mise change"       "${B}mise[[:space:]]+(install|use|trust|upgrade|uninstall|prune|set|unset|self-update)" 'mise install'
+forbid "mise change"       "${B}mise[[:space:]]+(install|use|trust|upgrade|uninstall|prune|set|unset|self-update)" 'mise use node@22'
+forbid "mise change"       "${B}mise[[:space:]]+(install|use|trust|upgrade|uninstall|prune|set|unset|self-update)" 'mise trust'
+forbid "daemon change"     "${B}daemon[[:space:]]+(update|start|stop|restart)" '"$real" app-server daemon update --from-cli'
+forbid "launchctl change"  "${B}launchctl[[:space:]]+(setenv|unsetenv|config)" 'launchctl setenv X y'
+forbid "launchctl change"  "${B}launchctl[[:space:]]+(setenv|unsetenv|config)" 'launchctl config user path /x'
+forbid "sed -i"            "${B}sed[[:space:]]+(-[A-Za-z-]+[[:space:]]+)*(-[A-Za-z]*i|--in-place)" "sed -i '' s/a/b/ x"
+forbid "sed -i"            "${B}sed[[:space:]]+(-[A-Za-z-]+[[:space:]]+)*(-[A-Za-z]*i|--in-place)" 'sed -n -i.bak p x'
+forbid "curl output file"  "${B}curl[[:space:]]+([^|;&]*[[:space:]])?(-[A-Za-z]*[oO]|--output|--remote-name)([[:space:]]|\$)" 'curl -fsSL -o /tmp/x https://x'
+forbid "curl output file"  "${B}curl[[:space:]]+([^|;&]*[[:space:]])?(-[A-Za-z]*[oO]|--output|--remote-name)([[:space:]]|\$)" 'curl --output /tmp/x https://x'
+forbid "xattr change"      "${B}xattr[[:space:]]+([^|;&]*[[:space:]])?-[A-Za-z]*[wdc]" 'xattr -w a b f'
+forbid "tccutil"           "${B}tccutil" 'tccutil reset All'
+forbid "security change"   "${B}security[[:space:]]+(add-|delete-|import|set-|create-|remove-|unlock-keychain)" 'security add-generic-password -a x'
+forbid "security change"   "${B}security[[:space:]]+(add-|delete-|import|set-|create-|remove-|unlock-keychain)" 'security delete-generic-password -a x'
 forbid "brew change"       "${B}brew[[:space:]]+(install|upgrade|update|uninstall|reinstall|cleanup|tap|untap|link|unlink|services|bundle[[:space:]]+(install|cleanup|dump))" 'brew bundle install'
 
 # lint <list>: one "line: problem" per finding on stdout; status 1 when there is one.
@@ -94,8 +112,13 @@ lint(){
       printf '%s' "$verify" | grep -Eq -- "${F_RE[$i]}" && p "verify contains ${F_NAME[$i]}"
       i=$((i + 1))
     done
+    # Every sqlite3 opens its database read-only: a bare one can create or journal a file.
+    if [ "$(printf '%s' "$verify" | grep -Eo "${B}sqlite3" | wc -l | tr -d ' ')" -ne \
+         "$(printf '%s' "$verify" | grep -Eo "${B}sqlite3[[:space:]]+(-[A-Za-z]+[[:space:]]+)*-readonly[[:space:]]" | wc -l | tr -d ' ')" ]; then
+      p "verify runs sqlite3 without -readonly"
+    fi
     # A redirect to anything but /dev/null; 2>&1 style duplications are allowed.
-    stripped=$(printf '%s' "$verify" | sed -E -e 's/[0-9&]*>[[:space:]]*\/dev\/null([^[:alnum:]_\/.-]|$)/\1/g' -e 's/[0-9]*>&[0-9-]//g')
+    stripped=$(printf '%s' "$verify" | sed -E -e 's/[0-9&]*>[[:space:]]*\/dev\/null([^[:alnum:]_\/.-]|$)/\1/g' -e 's/[0-9]*>&[0-9-]([^[:alnum:]_\/.-]|$)/\1/g')
     case "$stripped" in *">"*) p "verify redirects to a file (> or >>)" ;; esac
   done < "$list"
   return "$bad"
@@ -176,13 +199,21 @@ while [ "$i" -lt "${#F_NAME[@]}" ]; do
   i=$((i + 1))
 done
 # Words that merely contain a forbidden one are not that command.
-for v in 'perform=1; [ "$perform" = 1 ]' 'print -r -- "keep"' 'cmp -s a b' 'echo perform it; echo desktop stop' 'stop=1; true' 'brew bundle check --no-upgrade --file x' 'launchctl print gui/501/x' 'defaults read com.x y' 'xmllint --xpath "string(//a)" x'; do
+for v in 'perform=1; [ "$perform" = 1 ]' 'print -r -- "keep"' 'cmp -s a b' 'echo perform it; echo desktop stop' 'stop=1; true' 'brew bundle check --no-upgrade --file x' 'launchctl print gui/501/x' 'defaults read com.x y' 'xmllint --xpath "string(//a)" x' 'netbird status' 'herdr plugin list' 'mise ls --missing' '"$real" app-server daemon version' 'sqlite3 -readonly x.db "select 1"' 'sqlite3 -batch -readonly x.db "select 1"; sqlite3 -readonly y.db "select 2"' 'xattr -p a f' 'curl -sS --proto "=https" -w x https://x' 'sed -n "s/a/b/p" x' 'security find-generic-password -a x' 'launchctl print system/x'; do
   { printf '%s\n' "$GOOD"; row w1 all script "Fine" "$v"; } > "$fx"
   lint_of; rc_is 0 "'$v' is not flagged"
 done
 
+echo "== read-only: sqlite3 opens read-only"
+for v in 'sqlite3 x.db "select 1"' 'sqlite3 -readonly x.db "select 1"; sqlite3 y.db "select 2"' 'sqlite3 -batch x.db "select 1"' 'x=$(sqlite3 -readonlyx.db 1)'; do
+  { printf '%s\n' "$GOOD"; row q1 all script "Queries" "$v"; } > "$fx"
+  lint_of
+  rc_is 1 "'$v': the lint fails"
+  says "2: verify runs sqlite3 without -readonly" "'$v': the lint names it"
+done
+
 echo "== read-only: redirects"
-for v in 'true > out' 'true >out' 'true >> out' 'true 2> err' 'true &> out' 'true 1>out' 'true > /dev/nullx' 'true >/dev/null >out'; do
+for v in 'true > out' 'true >out' 'true >> out' 'true 2> err' 'true &> out' 'true 1>out' 'true > /dev/nullx' 'true >/dev/null >out' 'true >&2x' 'true 2>&1x' 'true >&2file'; do
   { printf '%s\n' "$GOOD"; row r1 all script "Redirects" "$v"; } > "$fx"
   lint_of
   rc_is 1 "'$v': the lint fails"

@@ -1,3 +1,3 @@
-.chezmoidata/machines.toml	data	-
-.scripts/machine-check.sh	zsh	-
+.chezmoidata/machines.toml	data	guard
+.scripts/machine-check.sh	zsh	guard
 .scripts/machine-checklist.tsv	data	own,guard
