@@ -41,6 +41,16 @@ if [ "$PROVISION_REF" != "main" ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/n
   exit 1
 fi
 
+# Recorded before anything installs: a cask, reconcile-agents.sh's codex plugin step or
+# configure.sh's LaunchAgent load can each create the package link, and only a machine that had
+# no daemon package at all when the run started is pinned (step 17). A set-up machine has it.
+DAEMON_CURRENT="${HOME}/.codex/packages/app-server-daemon/current"
+if [ -e "$DAEMON_CURRENT" ] || [ -L "$DAEMON_CURRENT" ]; then
+  CODEX_FRESH=0
+else
+  CODEX_FRESH=1
+fi
+
 echo ""
 log_info "========== Starting macOS Provision =========="
 echo ""
@@ -375,11 +385,11 @@ fi
 # 12b. Neovim plugins and Herdr plugin links
 # ============================================================================
 log_info "Installing Neovim plugins..."
-nvim --headless "+Lazy! sync" +qa </dev/null \
-  || warn "neovim plugins: sync failed — run: nvim --headless \"+Lazy! sync\" +qa"
+nvim --headless "+Lazy! install" +qa </dev/null \
+  || warn "neovim plugins: install failed — run: nvim --headless \"+Lazy! install\" +qa"
 
 # Herdr's TUI plugins are linked, not copied: ~/.config/herdr/plugin-* (chezmoi) and
-# smart-splits.nvim's bundled one (lazy.nvim, installed by the sync above). A plugin is
+# smart-splits.nvim's bundled one (lazy.nvim, installed by the install above). A plugin is
 # linked only when `herdr plugin list` does not already show its [local:<dir>].
 if HERDR_PLUGINS=$(herdr plugin list 2>&1 </dev/null); then
   for dir in "${XDG_CONFIG_HOME}"/herdr/plugin-*(N/) "${XDG_DATA_HOME}/nvim/lazy/smart-splits.nvim"; do
@@ -421,14 +431,6 @@ brew cleanup
 # ============================================================================
 # 16. Run macOS configuration
 # ============================================================================
-# Recorded before configure.sh, which loads the Codex daemon's LaunchAgent and so creates the
-# package link: only a machine with no daemon package at all is pinned below.
-DAEMON_CURRENT="${HOME}/.codex/packages/app-server-daemon/current"
-if [ -e "$DAEMON_CURRENT" ] || [ -L "$DAEMON_CURRENT" ]; then
-  CODEX_FRESH=0
-else
-  CODEX_FRESH=1
-fi
 if [ -f "${SRC_DIR}/.scripts/configure.sh" ]; then
   log_info "Running macOS configuration..."
   # --hostname: preflight already owns the identity, so configure.sh verifies instead
@@ -484,6 +486,7 @@ fi
 # The checklist replaces the old hard-coded next steps: Borg, Alfred, Herdr and the rest are
 # rows in it. Read-only; a row that is not done is not a failure of the run.
 "${SRC_DIR}/.scripts/machine-check.sh" --todo --machine "${MACHINE_NAME}" </dev/null || true
+log_info "Check again any time: ${SRC_DIR}/.scripts/machine-check.sh"
 echo ""
 log_info "Next steps:"
 log_info "  1. Restart your terminal or run: exec ${HOMEBREW_PREFIX}/bin/zsh"

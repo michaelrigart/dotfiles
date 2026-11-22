@@ -55,7 +55,7 @@ This will:
 11. Install development tools via mise
 12. Install the Neovim plugins and link the Herdr plugins
 13. Apply macOS system settings
-14. On a fresh machine only, pin the Codex daemon to the CLI's package
+14. Only if no Codex daemon package existed when the run started, pin the Codex daemon to the CLI's package
 15. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
 
 ---
@@ -167,8 +167,9 @@ sudo scutil --set HostName      <name>
 sudo scutil --set LocalHostName <name>
 
 # 5. Initialize and apply dotfiles
+#    DOTFILES_PROVISIONING=1 keeps the apply from loading LaunchAgents; step 9's configure.sh does.
 chezmoi init https://github.com/michaelrigart/dotfiles.git
-chezmoi apply --force
+DOTFILES_PROVISIONING=1 chezmoi apply --force
 
 # 6. Switch to SSH
 cd ~/.local/share/chezmoi
@@ -196,7 +197,7 @@ mise install
 
 # 11. NetBird daemon, then Neovim's plugins installed and Herdr's linked, then the Codex pin
 sudo netbird service install && sudo netbird service start
-nvim --headless "+Lazy! sync" +qa
+nvim --headless "+Lazy! install" +qa
 for dir in ~/.config/herdr/plugin-*(N/) ~/.local/share/nvim/lazy/smart-splits.nvim; do
   herdr plugin link "$dir"
 done
@@ -232,9 +233,10 @@ PROVISION_REF=$ref /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/m
 tart delete reinstall-test
 ```
 
-It passes when every `script` row of the final check is ✓ after one run, a second run prints
-the same machine-check result, reloads no LaunchAgent and adds no warning, and the `you` rows
-print in order.
+It passes when every `script` row of the final check is ✓ except the rows a VM cannot satisfy
+(`hercules-power` if `pmset` rejects a key, `little-snitch-extension`, and the `you` rows, which
+print ✗ until Michael does them) after one run, a second run prints the same machine-check
+result, reloads no LaunchAgent and adds no warning, and the `you` rows print in order.
 
 Then remove the VM's device from 1Password. Never run `netbird up`, pair Syncthing or start Borg
 inside the VM.
@@ -293,8 +295,8 @@ Rollback, on each machine: turn the 1Password SSH agent back on; if step 5 point
 "SSH config" note and run
 `chezmoi apply` (this renders `~/.ssh/config` again) before booting the job out, so ssh never
 points at a missing socket; `launchctl bootout gui/$(id -u)/be.netronix.ssh-agent`; revert the PR,
-`chezmoi apply` and `rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`; restart shells and
-Claude Code sessions.
+`rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`, then `chezmoi apply` (the plist goes
+first, so the apply hook cannot load it again); restart shells and Claude Code sessions.
 
 ### Secrets in Config
 

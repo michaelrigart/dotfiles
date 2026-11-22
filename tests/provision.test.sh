@@ -145,8 +145,10 @@ printf '#!/usr/bin/env bash\necho "codex $*" >> "%s"\n/usr/bin/env | sed "s/^/co
 # getconf is how the pin finds launchd's per-user TMPDIR; fail-getconf makes it print nothing.
 printf '#!/usr/bin/env bash\necho "getconf $*" >> "$CALLS"\n[ -e "$SBX_ROOT/fail-getconf" ] && exit 1\necho "$SBX_ROOT/darwin-tmp/"\n' > "$T/bin/getconf"
 # Scripts provision.sh calls BY PATH bypass $PATH, so stub them by path.
+# reconcile-agents.sh (step 9) is also where a codex plugin step could create the daemon's
+# package link, long before step 16: $T/mk-current-early makes the stub do that.
 for sc in reconcile-agents.sh; do
-  printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$sc" > "$T/src/.scripts/$sc"
+  printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nif [ -e "$SBX_ROOT/mk-current-early" ]; then mkdir -p "$HOME/.codex/packages/app-server-daemon"; ln -sfn local-early "$HOME/.codex/packages/app-server-daemon/current"; fi\nexit 0\n' "$sc" > "$T/src/.scripts/$sc"
 done
 # machine-check.sh also records whether its stdin was closed (read-stdin-machine-check).
 cat > "$T/src/.scripts/machine-check.sh" <<'MC'
@@ -402,28 +404,37 @@ hasnt "/Library/Application Support/ClaudeCode" "the refused run stays out of /L
 
 echo "L. configure.sh with and without LaunchAgents plists"
 # zsh's nomatch turns an empty be.netronix.*.plist glob into a fatal error under set -e.
+# The probe label is one this checkout has a template for: the loader skips any it lacks.
 mkdir -p "$T/home/Library/LaunchAgents"; rm -f "$T/home/Library/LaunchAgents"/be.netronix.*.plist
 cfg fenrir fenrir fenrir fenrir
 has   "macOS configuration complete" "no LaunchAgents plists: configure.sh still completes"
 hasnt "no matches found" "and the empty glob is not an error"
-: > "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; : > "$CALLS"
+: > "$T/home/Library/LaunchAgents/be.netronix.codex-memory-share.plist"; : > "$CALLS"
 cfg fenrir fenrir fenrir fenrir
 has    "macOS configuration complete" "a plist present: configure.sh completes"
 called "launchctl bootstrap gui/" "and the plist is bootstrapped through the stubbed launchctl"
-has    "loaded be.netronix.probe" "and reported loaded"
-grep -qx be.netronix.probe "$LAUNCHCTL_LOADED" && _pass "the file-backed launchctl now lists it" \
+has    "loaded be.netronix.codex-memory-share" "and reported loaded"
+grep -qx be.netronix.codex-memory-share "$LAUNCHCTL_LOADED" && _pass "the file-backed launchctl now lists it" \
   || _fail "the file-backed launchctl now lists it"
 : > "$CALLS"; cfg fenrir fenrir fenrir fenrir
-has    "unchanged be.netronix.probe" "a second run finds it unchanged"
+has    "unchanged be.netronix.codex-memory-share" "a second run finds it unchanged"
 not_called "launchctl bootout" "and boots nothing out"
 not_called "launchctl bootstrap" "and bootstraps nothing"
-rm -f "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; lc_reset
-: > "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; : > "$CALLS"
-LAUNCHCTL_FAIL=be.netronix.probe cfg fenrir fenrir fenrir fenrir
-has    "could not load be.netronix.probe" "a job that fails to load is reported by the loader"
+rm -f "$T/home/Library/LaunchAgents/be.netronix.codex-memory-share.plist"; lc_reset
+: > "$T/home/Library/LaunchAgents/be.netronix.codex-memory-share.plist"; : > "$CALLS"
+LAUNCHCTL_FAIL=be.netronix.codex-memory-share cfg fenrir fenrir fenrir fenrir
+has    "could not load be.netronix.codex-memory-share" "a job that fails to load is reported by the loader"
 has    "Some LaunchAgents did not load" "and configure.sh warns, naming what to re-run"
 has    "macOS configuration complete" "and still completes"
-rm -f "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; lc_reset
+rm -f "$T/home/Library/LaunchAgents/be.netronix.codex-memory-share.plist"; lc_reset
+# The loader loads only a plist the source (here this checkout) still has: chezmoi leaves a
+# removed template's deployed file behind.
+: > "$T/home/Library/LaunchAgents/be.netronix.removed-job.plist"; : > "$CALLS"
+cfg fenrir fenrir fenrir fenrir
+has    "skipped be.netronix.removed-job: not in the source" "a deployed plist the source does not have is reported skipped"
+not_called "launchctl bootstrap" "and is not bootstrapped"
+has    "macOS configuration complete" "and configure.sh completes"
+rm -f "$T/home/Library/LaunchAgents/be.netronix.removed-job.plist"; lc_reset
 
 echo "M. the unattended run sends no Apple Event; an attended one survives a refusal"
 # The wallpaper needs the chezmoi checkout's backgrounds; Alfred's block needs its prefs.json.
@@ -435,7 +446,7 @@ CFG_DATA="$T/home/.local/share"
 : > "$CALLS"; PGREP_RC=0 cfg fenrir fenrir fenrir fenrir
 rc_is 0 "--hostname with Alfred running completes"
 not_called "osascript" "--hostname: no osascript call, wallpaper or Alfred"
-has "Skipping the wallpaper: it needs Automation consent; run .scripts/configure.sh yourself to set it" "the wallpaper skip is announced"
+has "Skipping the wallpaper" "the wallpaper skip is announced"
 has "Skipping the Alfred toggle" "the Alfred skip is announced"
 called "pgrep -x Alfred" "the Alfred skip is decided by a running Alfred"
 : > "$CALLS"; cfg fenrir fenrir fenrir fenrir
@@ -477,13 +488,13 @@ mkdir -p "$CFG/herdr/plugin-a" "$CFG/herdr/plugin-b" "$CFG/herdr/plugin-c" "$NVL
 : > "$CFG/herdr/plugin-a/herdr-plugin.toml"; : > "$CFG/herdr/plugin-b/herdr-plugin.toml"; : > "$NVL/herdr-plugin.toml"
 printf '2 plugins installed:\n- b (B) enabled [local:%s/herdr/plugin-b]\n  config: x\n' "$CFG" > "$T/herdr-list"
 reset; run 'hercules\ny\n'
-called "nvim --headless +Lazy! sync +qa" "Neovim installs its plugins headless"
+called "nvim --headless +Lazy! install +qa" "Neovim installs its plugins headless"
 called "herdr plugin link $CFG/herdr/plugin-a" "an unlinked plugin folder is linked"
 called "herdr plugin link $NVL" "smart-splits.nvim's bundled plugin is linked"
 not_called "herdr plugin link $CFG/herdr/plugin-b" "a folder whose [local:<dir>] is already listed is not linked again"
 not_called "herdr plugin link $CFG/herdr/plugin-c" "a folder without a manifest is not linked"
 nl=$(grep -n '^nvim ' "$CALLS" | head -1 | cut -d: -f1); hl=$(grep -n '^herdr plugin link' "$CALLS" | head -1 | cut -d: -f1)
-{ [ -n "$nl" ] && [ -n "$hl" ] && [ "$nl" -lt "$hl" ]; } && _pass "Neovim syncs before the links" || _fail "Neovim syncs before the links"
+{ [ -n "$nl" ] && [ -n "$hl" ] && [ "$nl" -lt "$hl" ]; } && _pass "Neovim installs before the links" || _fail "Neovim installs before the links"
 ml=$(grep -n '^mise ' "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$ml" ] && [ "$ml" -lt "$nl" ]; } && _pass "and after mise" || _fail "and after mise"
 printf '3 plugins installed:\n- a (A) enabled [local:%s/herdr/plugin-a]\n- b (B) enabled [local:%s/herdr/plugin-b]\n- s (S) enabled [local:%s]\n' "$CFG" "$CFG" "$NVL" > "$T/herdr-list"
@@ -498,8 +509,8 @@ called "herdr plugin link $CFG/herdr/plugin-b" "and the next plugin is still tri
 not_called "herdr plugin link $NVL" "a smart-splits.nvim that was never installed is not linked"
 reset; : > "$T/fail-nvim"; run 'hercules\ny\n'
 rm -f "$T/fail-nvim"
-rc_is 0 "a failing Neovim sync does not end the run"
-has "Lazy! sync" "and the warning names the command"
+rc_is 0 "a failing Neovim install does not end the run"
+has "Lazy! install" "and the warning names the command"
 called "herdr plugin link $CFG/herdr/plugin-a" "and the links still happen"
 reset; : > "$T/fail-herdr-list"; run 'hercules\ny\n'
 rm -f "$T/fail-herdr-list"
@@ -532,7 +543,11 @@ rm -f "$T/fail-getconf"
 called "codex-env TMPDIR=$T/caller-tmp" "a getconf that prints nothing falls back to the caller's TMPDIR"
 rm -rf "$T/home/.codex"; : > "$T/mk-current"; reset; run 'hercules\ny\n'
 rm -f "$T/mk-current"
-called "$PIN" "a daemon package configure.sh itself created does not stop the pin: it is read before step 16"
+called "$PIN" "a daemon package configure.sh itself created does not stop the pin: it is read at the start"
+rm -rf "$T/home/.codex"; : > "$T/mk-current-early"; reset; run 'hercules\ny\n'
+rm -f "$T/mk-current-early"
+called "reconcile-agents.sh" "a package link made by step 9, long before step 16, is on disk by the time of the pin"
+called "$PIN" "and still does not stop the pin: a fresh machine is read before step 1"
 rm -rf "$T/home/.codex"; : > "$T/fail-codex"; reset; run 'hercules\ny\n'
 rm -f "$T/fail-codex"
 rc_is 0 "a failing pin does not end the run"
@@ -600,7 +615,7 @@ for t in netbird nvim herdr-link codex machine-check; do : > "$T/read-stdin-$t";
 reset; run "$SPARE"
 rc_is 0 "stdin read failures do not end the run"
 has "NetBird daemon not installed or started" "netbird service install and start read /dev/null"
-has "neovim plugins: sync failed" "nvim reads /dev/null"
+has "neovim plugins: install failed" "nvim reads /dev/null"
 has "herdr plugin not linked" "herdr plugin link reads /dev/null"
 has "codex daemon not pinned — run: $T/codexbin/codex" "the pin reads /dev/null"
 called "machine-check-stdin eof" "machine-check.sh reads /dev/null"
@@ -621,6 +636,7 @@ reset; run 'hercules\ny\n'
 called "machine-check.sh --todo --machine hercules" "the end calls machine-check.sh --todo for the machine"
 cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1); ml=$(grep -n 'machine-check.sh' "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$cl" ] && [ -n "$ml" ] && [ "$cl" -lt "$ml" ]; } && _pass "after configure.sh" || _fail "after configure.sh"
+has "Check again any time: $SBX_SRC/.scripts/machine-check.sh" "and says how to run the checklist again, by the source dir's path"
 hasnt "Borg: this machine" "the hard-coded Borg step is gone"
 hasnt "Alfred snippets" "the hard-coded Alfred steps are gone"
 hasnt "respaces" "the hard-coded Herdr step is gone"

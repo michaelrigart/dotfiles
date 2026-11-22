@@ -4,7 +4,8 @@
 
   Managed by chezmoi (source: Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl), and
   deployed only on the machine named research_host in .chezmoidata/machines.toml (.chezmoiignore).
-  Never loaded by chezmoi or by an agent; Michael loads it by hand after the merge:
+  Loaded by .scripts/load-launchagents.sh (run by configure.sh, and by the chezmoi apply hook
+  when this plist changes); load by hand with:
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.weekly-research.plist
   First run under launchd, not from a terminal (a terminal has permissions a job may lack):
     launchctl kickstart gui/$(id -u)/be.netronix.weekly-research

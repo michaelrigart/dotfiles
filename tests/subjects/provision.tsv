@@ -5,3 +5,4 @@
 .scripts/load-launchagents.sh	bash	-
 .scripts/provision.sh	zsh	own
 dot_config/homebrew/Brewfile.tmpl	data	own
+Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	-

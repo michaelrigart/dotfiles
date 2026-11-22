@@ -23,6 +23,10 @@ T=$(cd "$T" && pwd -P)
 [ -n "$T" ] && [ -d "$T" ] || { echo "REFUSING: temp root did not resolve"; exit 2; }
 case "$T" in "$HOME"|"$HOME"/*) echo "REFUSING: temp root is inside the real HOME"; exit 2;; esac
 mkdir -p "$T/bin" "$T/home/Library/LaunchAgents"
+# The loader runs from a copy inside a source tree of its own: it loads only a plist whose
+# Library/LaunchAgents/<label>.plist(.tmpl) exists in the tree two levels up from itself.
+LS="$T/loadersrc"; mkdir -p "$LS/.scripts" "$LS/Library/LaunchAgents"
+cp "$SUT" "$LS/.scripts/load-launchagents.sh"; SUT="$LS/.scripts/load-launchagents.sh"
 CALLS="$T/calls"; LOADED="$T/loaded"; : > "$CALLS"; : > "$LOADED"
 LA="$T/home/Library/LaunchAgents"
 REC="$T/home/.local/state/launchagents"
@@ -57,11 +61,12 @@ exit 0
 L
 chmod +x "$T/bin/launchctl"
 
-plist(){ printf '<plist>%s</plist>\n' "$2" > "$LA/$1.plist"; }
+plist(){ printf '<plist>%s</plist>\n' "$2" > "$LA/$1.plist"; : > "$LS/Library/LaunchAgents/$1.plist.tmpl"; }
+plist_nosrc(){ printf '<plist>%s</plist>\n' "$2" > "$LA/$1.plist"; }
 load(){ OUT=$(env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" CALLS="$CALLS" LOADED="$LOADED" \
     FAIL_BOOTSTRAP="${FAIL_BOOTSTRAP:-}" FAIL_FIRST="${FAIL_FIRST:-}" LINGER="${LINGER:-}" \
     /bin/bash "$SUT" 2>&1); RC=$?; }
-reset(){ : > "$CALLS"; : > "$LOADED"; rm -f "$LOADED.linger" "$LOADED.failed1" "$LA"/*.plist
+reset(){ : > "$CALLS"; : > "$LOADED"; rm -f "$LOADED.linger" "$LOADED.failed1" "$LA"/*.plist "$LS"/Library/LaunchAgents/*
   [ -d "$REC" ] && chmod -R u+w "$REC"; rm -rf "$T/home/.local"; }
 
 echo "A. no plists"
@@ -154,6 +159,19 @@ echo "J. other plists are ignored"
 reset; plist com.example.other v1; load
 rc_is 0 "exit 0"
 not_called "launchctl bootstrap" "only be.netronix.* is loaded"
+
+echo "J2. a deployed plist the source no longer has is skipped, not bootstrapped"
+reset; plist be.netronix.kept v1; plist_nosrc be.netronix.removed v1; load
+rc_is 0 "exit 0"
+has "  skipped be.netronix.removed: not in the source" "the orphan is reported"
+not_called "launchctl bootstrap gui/$UID_NOW $LA/be.netronix.removed.plist" "and not bootstrapped"
+grep -qx be.netronix.removed "$LOADED" && _fail "and not loaded" || _pass "and not loaded"
+[ -e "$REC/be.netronix.removed.plist" ] && _fail "and not recorded" || _pass "and not recorded"
+has "  loaded be.netronix.kept" "a plist the source has still loads"
+: > "$CALLS"; echo be.netronix.removed >> "$LOADED"; load
+not_called "launchctl bootout" "an orphan that is already loaded is not booted out either"
+rm -f "$LS/Library/LaunchAgents/be.netronix.kept.plist.tmpl"; printf '<plist>v1</plist>\n' > "$LS/Library/LaunchAgents/be.netronix.kept.plist"; : > "$CALLS"; load
+has "  unchanged be.netronix.kept" "a non-template source plist counts as in the source"
 
 echo "K. chezmoi reruns the loader when a plist, as rendered for this machine, changes"
 # The run_onchange_ script carries one hash line per plist template, of the template RENDERED

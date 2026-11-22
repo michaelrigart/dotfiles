@@ -3,7 +3,8 @@
   Repaint the Herdr space phase badges on a timer.
 
   Managed by chezmoi (source: Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist).
-  Bootstrapped by .scripts/configure.sh; load by hand with:
+  Loaded by .scripts/load-launchagents.sh (run by configure.sh, and by the chezmoi apply hook
+  when this plist changes); load by hand with:
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist
 
   The dev.phase plugin's event hooks cannot keep an MR badge current on their own: the

@@ -3,7 +3,8 @@
   Run our own ssh-agent on a fixed socket and load the fixed key list into it.
 
   Managed by chezmoi (source: Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl).
-  Bootstrapped by .scripts/configure.sh; load by hand with:
+  Loaded by .scripts/load-launchagents.sh (run by configure.sh, and by the chezmoi apply hook
+  when this plist changes); load by hand with:
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.ssh-agent.plist
 
   ssh-agent-run starts /usr/bin/ssh-agent in the foreground on

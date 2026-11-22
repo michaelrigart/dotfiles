@@ -2,10 +2,14 @@
 # Loads the be.netronix.* LaunchAgents chezmoi wrote, safe to re-run: a job is bootstrapped
 # when it is not loaded, and a loaded one is reloaded only when its plist differs from the
 # copy recorded at its last load. be.netronix.codex-app-server is never reloaded: a reload
-# disconnects every Codex session. macOS /bin/bash is 3.2: no associative arrays, no ${x,,}.
+# disconnects every Codex session. A deployed plist whose source (Library/LaunchAgents/<label>.plist
+# or .plist.tmpl in this script's own source tree) is gone is skipped: chezmoi leaves a removed
+# file deployed, and it must not be bootstrapped again. macOS /bin/bash is 3.2: no associative
+# arrays, no ${x,,}.
 set -u
 
 uid=$(id -u)
+src=$(cd "$(dirname "$0")/.." && pwd)
 state="${XDG_STATE_HOME:-$HOME/.local/state}/launchagents"
 failed=0
 
@@ -29,6 +33,10 @@ bootstrap() {
 for plist in "$HOME/Library/LaunchAgents"/be.netronix.*.plist; do
   [ -f "$plist" ] || continue
   label=$(basename "$plist" .plist)
+  if [ ! -f "$src/Library/LaunchAgents/$label.plist" ] && [ ! -f "$src/Library/LaunchAgents/$label.plist.tmpl" ]; then
+    echo "  skipped $label: not in the source"
+    continue
+  fi
   record="$state/$label.plist"
 
   if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
