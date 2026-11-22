@@ -103,15 +103,30 @@ hasnt "Still to do" "--todo with nothing open prints no header"
 
 echo "== the environment of a verify"
 ENVOUT="$T/src/env.out"
+FIDELITY=$(cat <<'V'
+print -r -- 'a\b|$x"q' > "$DOTFILES/v.out"
+V
+)
+ZSHISMS=$(cat <<'V'
+p=(/nonexistent-machine-check*(N)); [ ${#p} -eq 0 ] && f=/a/b/c.tar.gz && [ ${f:t:r} = c.tar ]
+V
+)
 {
   row env-check all script "Env" 'env > "$DOTFILES/env.out"'
   row stdin-check all script "Stdin" '! read x'
+  row cwd-check all script "Cwd" '[ "$PWD" = "$HOME" ]'
+  row fidelity all script "Fidelity" "$FIDELITY"
+  row zshisms all script "Zsh -f" "$ZSHISMS"
 } > "$LIST"
-rm -f "$ENVOUT"
+rm -f "$ENVOUT" "$T/src/v.out"
 # stdin carries data here: a verify that inherited it would read it and fail.
 OUT=$(printf 'data\n' | env PATH="$T/bin:$PATH" HOME="$T/home" LEAKME=leaked "$SCRIPT" --machine alpha 2>&1); RC=$?
-rc_is 0 "the env row and the stdin row pass"
+rc_is 0 "the env, stdin, cwd, fidelity and zsh rows pass"
 line_is "✓ stdin-check" "stdin is /dev/null: read fails at once"
+line_is "✓ cwd-check" "a verify runs with its working directory set to HOME"
+line_is "✓ zshisms" "a (N) glob qualifier and \${p:t:r} work under zsh -f"
+if [ "$(cat "$T/src/v.out" 2>/dev/null)" = 'a\b|$x"q' ]; then _pass "a verify reaches zsh byte for byte (backslash, pipe, dollar, quote)"
+else _fail "a verify reaches zsh byte for byte (backslash, pipe, dollar, quote)"; fi
 if [ -f "$ENVOUT" ]; then
   seen(){ grep -qxF -- "$1" "$ENVOUT" && _pass "verify sees $1" || _fail "verify sees $1"; }
   seen "MACHINE=alpha"
@@ -140,6 +155,14 @@ line_is "✗ hangs: Hangs" "a hanging verify is a cross"
 line_is "✓ fine" "the next row still runs"
 [ "$took" -lt 5 ] && _pass "the hang was cut within 5 s (took ${took} s)" || _fail "the hang was cut within 5 s (took ${took} s)"
 rc_is 1 "a timeout exits 1"
+
+# A verify that ignores SIGTERM: only the kill after the grace period ends it.
+row term-proof all script "Ignores TERM" 'trap "" TERM; sleep 10' > "$LIST"
+SECONDS=0
+OUT=$(env PATH="$T/bin:$PATH" HOME="$T/home" MACHINE_CHECK_TIMEOUT=1 "$SCRIPT" --machine alpha </dev/null 2>&1); RC=$?
+took=$SECONDS
+line_is "✗ term-proof: Ignores TERM" "a verify that ignores SIGTERM is a cross"
+[ "$took" -lt 8 ] && _pass "and is killed within 8 s (took ${took} s)" || _fail "and is killed within 8 s (took ${took} s)"
 
 echo "== the machine"
 row ok-one all script "One" true > "$LIST"
@@ -175,8 +198,16 @@ bad "by not script or you" 2 "by must be script or you" "$(row x1 all robot Step
 bad "machines not known" 2 "machines must be all, research_host or a known machine" "$(row x1 gamma script Step true)"
 bad "a duplicate id" 2 "duplicate id first" "$(row first all script Step true)"
 bad "an id with a capital" 2 "id must match [a-z0-9-]+" "$(row Bad_Id all script Step true)"
+bad "an empty step" 2 "empty step" "$(row x1 all script '' true)"
+bad "a whitespace-only step" 2 "empty step" "$(row x1 all script '   ' true)"
+bad "'-' with whitespace on a script row" 2 "a script row needs a verify command" "$(row x1 all script Step ' - ')"
 bad "an empty verify" 2 "empty verify" "$(printf 'x1\tall\tscript\tStep\t')"
 bad "'-' on a script row" 2 "a script row needs a verify command" "$(row x1 all script Step -)"
+{ row a1 all you 'Tab\tstays' -; row a2 all you "Trimmed" ' - '; row a3 all script 'Back\nslash' false; } > "$LIST"
+run --machine alpha
+line_is '· a1: Tab\tstays' "a backslash in a step prints as written"
+line_is "· a2: Trimmed" "a '-' with stray whitespace is a no-check row"
+line_is '✗ a3: Back\nslash' "a backslash in a failing step prints as written"
 { printf '# a comment\n\n'; row ok-one all you "Fine" -; printf '\n'; } > "$LIST"
 run --machine alpha
 rc_is 0 "comments and blank lines are skipped"

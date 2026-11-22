@@ -6,6 +6,7 @@
 # Exit 0 every check passes, 1 one fails, 2 usage, unknown machine or malformed list.
 # MACHINE_CHECK_TIMEOUT (seconds, default 30) bounds each verify command.
 set -u
+setopt extended_glob
 
 DOTFILES=${0:A:h:h}
 LIST="$DOTFILES/.scripts/machine-checklist.tsv"
@@ -25,6 +26,8 @@ done
 
 t=${MACHINE_CHECK_TIMEOUT:-30}
 [[ $t == <1-> ]] || { print -u2 "machine-check: MACHINE_CHECK_TIMEOUT must be a positive integer"; exit 2; }
+
+[[ -x /usr/bin/timeout ]] || { print -u2 "machine-check: /usr/bin/timeout not found"; exit 2; }
 
 [[ -r $TOML ]] || { print -u2 "machine-check: cannot read $TOML"; exit 2; }
 known=$(sed -n 's/^known_hostnames *= *\[\(.*\)\]/\1/p' "$TOML" | tr -d '" ' | tr ',' ' ')
@@ -49,15 +52,17 @@ while IFS= read -r line || [[ -n $line ]]; do
   [[ -z ${line//[[:space:]]/} || $line == \#* ]] && continue
   f=("${(@ps:\t:)line}")
   (( ${#f} == 5 )) || bad "expected 5 tab-separated fields, found ${#f}"
-  id=$f[1]; mach=$f[2]; by=$f[3]; step=$f[4]; verify=$f[5]
+  id=$f[1]; mach=$f[2]; by=$f[3]; step=$f[4]
+  verify=${${f[5]##[[:space:]]#}%%[[:space:]]#}
   [[ $id =~ '^[a-z0-9-]+$' ]] || bad "id must match [a-z0-9-]+"
   (( ${seen[(Ie)$id]} )) && bad "duplicate id $id"
   [[ $mach == all || $mach == research_host ]] || (( ${known_list[(Ie)$mach]} )) \
     || bad "machines must be all, research_host or a known machine"
   [[ $by == script || $by == you ]] || bad "by must be script or you"
-  [[ -n ${verify//[[:space:]]/} ]] || bad "empty verify"
+  [[ -n ${step//[[:space:]]/} ]] || bad "empty step"
+  [[ -n $verify ]] || bad "empty verify"
   [[ $by == script && $verify == - ]] && bad "a script row needs a verify command"
-  seen+=($id); ids+=($id); machs+=($mach); steps+=($step); verifs+=($verify)
+  seen+=("$id"); ids+=("$id"); machs+=("$mach"); steps+=("$step"); verifs+=("$verify")
 done < "$LIST"
 
 applies() {
@@ -73,29 +78,29 @@ for (( i = 1; i <= ${#ids}; i++ )); do
   if [[ $verifs[i] == - ]]; then
     none_n=$((none_n + 1))
     open+=("${steps[i]} [${ids[i]}] (no check)")
-    (( todo )) || print "· ${ids[i]}: ${steps[i]}"
+    (( todo )) || print -r -- "· ${ids[i]}: ${steps[i]}"
     continue
   fi
-  if env -i MACHINE=$machine DOTFILES=$DOTFILES KNOWN_HOSTNAMES="${known_list[*]}" \
+  if (cd "$HOME" && env -i MACHINE=$machine DOTFILES=$DOTFILES KNOWN_HOSTNAMES="${known_list[*]}" \
        USER=$user LOGNAME=$user HOME=$HOME XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share \
        XDG_CACHE_HOME=$HOME/.cache XDG_STATE_HOME=$HOME/.local/state \
        PATH=$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
-       /usr/bin/timeout "$t" /bin/zsh -f -c "$verifs[i]" </dev/null >/dev/null 2>&1; then
+       /usr/bin/timeout -k 5 "$t" /bin/zsh -f -c "$verifs[i]" </dev/null >/dev/null 2>&1); then
     done_n=$((done_n + 1))
-    (( todo )) || print "✓ ${ids[i]}"
+    (( todo )) || print -r -- "✓ ${ids[i]}"
   else
     todo_n=$((todo_n + 1))
     open+=("${steps[i]} [${ids[i]}]")
-    (( todo )) || print "✗ ${ids[i]}: ${steps[i]}"
+    (( todo )) || print -r -- "✗ ${ids[i]}: ${steps[i]}"
   fi
 done
 
 if (( todo )); then
   if (( ${#open} )); then
-    print "Still to do on $machine:"
-    for (( k = 1; k <= ${#open}; k++ )); do print "  $k. ${open[k]}"; done
+    print -r -- "Still to do on $machine:"
+    for (( k = 1; k <= ${#open}; k++ )); do print -r -- "  $k. ${open[k]}"; done
   else
-    print "Nothing left to do on $machine."
+    print -r -- "Nothing left to do on $machine."
   fi
 else
   print "$done_n done, $todo_n to do, $none_n without a check"
