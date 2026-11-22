@@ -342,7 +342,8 @@ checks)
     (`forge-protection.sh`, `skill-updates.sh`, `measure-interventions.py`, `preflight-ssh-agent.sh`,
     each with its reason).
   - 4: each `Library/LaunchAgents/*.plist*` has a `<key>Label</key>` whose string starts
-    `be.netronix.`.
+    `be.netronix.` and equals the file name without `.plist` and `.tmpl` (the loader takes the
+    label from the file name).
   - 5: each `dot_config/herdr/plugin-*/herdr-plugin.toml` sits in a folder `provision.sh`'s
     `plugin-*` glob reaches (the glob is in `provision.sh` and the folder name matches it).
 - [ ] **Step 2: Run** `./tests/provisioning.test.sh`: passes against the repository, each negative
