@@ -194,12 +194,15 @@ mise install
 #     (it builds the michael-spaces and michael-menu mods from Herdr's), then pick the
 #     michael layout (cmd-shift-L).
 
-# 11. NetBird daemon, then the Neovim and Herdr plugin links, then the Codex pin
-#     (the pin only on a machine with no Codex daemon package yet, from a plain terminal,
-#     not a Herdr pane)
+# 11. NetBird daemon, then Neovim's plugins installed and Herdr's linked, then the Codex pin
 sudo netbird service install && sudo netbird service start
-#     the plugin links: the plugin-link step in .scripts/provision.sh lists the exact commands
-codex app-server daemon update --from-cli
+nvim --headless "+Lazy! sync" +qa
+for dir in ~/.config/herdr/plugin-*(N/) ~/.local/share/nvim/lazy/smart-splits.nvim; do
+  herdr plugin link "$dir"
+done
+#     the pin only on a machine with no Codex daemon package yet, from a plain terminal,
+#     not a Herdr pane
+"$(codex-daemon real-bin)" app-server daemon update --from-cli --yes
 
 # 12. What is left to do
 ~/.local/share/chezmoi/.scripts/machine-check.sh --todo
