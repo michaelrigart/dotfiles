@@ -1,6 +1,6 @@
 # Complete provisioning: a reinstalled Mac ends up as it is today
 
-**Status:** Approved
+**Status:** In progress (branch `feat/complete-provisioning`; its PR against `main` once opened)
 **Date:** 2026-11-22
 **Branch:** `feat/complete-provisioning`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-complete-provisioning`
