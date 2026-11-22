@@ -24,6 +24,8 @@ case "$T" in "$HOME"|"$HOME"/*) echo "REFUSING: temp root is inside the real HOM
 mkdir -p "$T"/{bin,home,src/.chezmoidata,src/.scripts,brew/bin}
 mkdir -m 755 "$T/managed"                    # not umask-dependent: the installer's walk refuses a 775 root
 CALLS="$T/calls"; IDDB="$T/identity"; MUTLOG="$T/refused"; SBX_ROOT="$T"
+LAUNCHCTL_LOADED="$T/launchctl-loaded"; : > "$LAUNCHCTL_LOADED"
+lc_reset(){ : > "$LAUNCHCTL_LOADED"; rm -rf "$T/home/.local/state/launchagents"; }
 cp "$SRC/.chezmoidata/machines.toml" "$T/src/.chezmoidata/"
 mkdir -p "$T/src/.git"
 
@@ -67,9 +69,30 @@ cp "$T/brew/bin/brew" "$T/bin/brew"
 printf '#!/usr/bin/env bash\necho "fdesetup $*" >> "$CALLS"\necho "FileVault is ${FV:-Off}."\n' > "$T/bin/fdesetup"
 printf '#!/usr/bin/env bash\necho "pmset $*" >> "$CALLS"\nexit 0\n' > "$T/bin/pmset"
 printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/csrutil"
-for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall osascript tee launchctl; do
+for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall tee; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
 done
+# osascript and pgrep answer from the environment, so a case can make the Apple Event fail
+# ($OSA_RC) or Alfred look running ($PGREP_RC=0; the default is not running).
+printf '#!/usr/bin/env bash\necho "osascript $*" >> "$CALLS"\nexit "${OSA_RC:-0}"\n' > "$T/bin/osascript"
+printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"\nexit "${PGREP_RC:-1}"\n' > "$T/bin/pgrep"
+# REUSABLE launchctl stub (the loader and any later case read it): a file of loaded labels
+# ($LAUNCHCTL_LOADED, one per line). `print` exits 0 iff the label is listed, `bootstrap` adds
+# it unless $LAUNCHCTL_FAIL names it, `bootout` removes it, and every call is logged to
+# $CALLS. Nothing reaches the host's launchd. Clear it with lc_reset.
+cat > "$T/bin/launchctl" <<'L'
+#!/usr/bin/env bash
+echo "launchctl $*" >> "$CALLS"
+verb=$1; target=$2
+case "$verb" in
+  print)     grep -qx "${target##*/}" "$LAUNCHCTL_LOADED" ;;
+  bootstrap) label=$(basename "$3" .plist)
+             [ "${LAUNCHCTL_FAIL:-}" = "$label" ] && exit 5
+             echo "$label" >> "$LAUNCHCTL_LOADED" ;;
+  bootout)   label=${target##*/}
+             grep -vx "$label" "$LAUNCHCTL_LOADED" > "$LAUNCHCTL_LOADED.n"; mv "$LAUNCHCTL_LOADED.n" "$LAUNCHCTL_LOADED" ;;
+esac
+L
 # op also logs the app-integration switch it was started with (see section B).
 printf '#!/usr/bin/env bash\necho "op $*" >> "$CALLS"\necho "op-env OP_BIOMETRIC_UNLOCK_ENABLED=${OP_BIOMETRIC_UNLOCK_ENABLED:-unset}" >> "$CALLS"\nexit 0\n' > "$T/bin/op"
 # A fresh machine has no checkout: `git clone` copies the fixture source into the target, so
@@ -233,11 +256,19 @@ echo "G. configure.sh identity validation (the real script, not a stub)"
 # The only thing keeping this real configure.sh run away from /Library and the REAL sudo is
 # CLAUDE_MANAGED_SETTINGS_TEST_ROOT in the env -i list below. The sudo stub never sees the
 # installer, which calls /usr/bin/sudo by absolute path; section K asserts the redirect.
-cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
-  OUT=$(cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
-        FV="${FV:-Off}" \
+# cfg_run feeds stdin ($1) and the configure.sh arguments after it. $CFG_DATA, when set, is
+# XDG_DATA_HOME (where configure.sh looks for the chezmoi checkout's backgrounds).
+cfg_run(){ local ans=$1; shift
+  OUT=$(cd "$T" && printf '%b' "$ans" | env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
+        FV="${FV:-Off}" OSA_RC="${OSA_RC:-0}" PGREP_RC="${PGREP_RC:-1}" \
+        LAUNCHCTL_LOADED="$LAUNCHCTL_LOADED" LAUNCHCTL_FAIL="${LAUNCHCTL_FAIL:-}" XDG_DATA_HOME="${CFG_DATA:-}" \
         CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$T/managed" \
-        zsh "$SRC/.scripts/configure.sh" --hostname "$4" 2>&1); RC=$?; }
+        zsh "$SRC/.scripts/configure.sh" "$@" 2>&1); RC=$?; }
+cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
+  cfg_run '' --hostname "$4"; }
+# An attended run: no --hostname, so configure.sh asks for the name on stdin.
+cfg_attended(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$1" "$1" > "$IDDB"
+  cfg_run "$1\ny\n"; }
 cfg fenrir fenrir fenrir fenrir
 has "identity verified" "matching identity passes validation"
 # `rc_is 1` alone is NOT discriminating here: configure.sh exits 1 for plenty of
@@ -280,9 +311,9 @@ has   "FileVault is ON on hercules" "hercules WITH FileVault is flagged"
 has   "fdesetup disable"            "and the remedy is named"
 FV=Off
 : > "$CALLS"; cfg hercules hercules hercules hercules
-called "pmset -a autorestart 1" "hercules enables restart-after-power-loss"
+called "pmset -a autorestart 1 sleep 0 womp 1" "hercules enables restart-after-power-loss, no sleep and wake-on-network"
 : > "$CALLS"; cfg fenrir fenrir fenrir fenrir
-not_called "pmset -a autorestart" "fenrir does not (it has a battery and a lid)"
+not_called "pmset" "fenrir sets no power setting (it has a battery and a lid)"
 
 echo "K. configure.sh installs the Claude Code managed policy"
 rm -rf "$T/managed/ClaudeCode"; cfg fenrir fenrir fenrir fenrir
@@ -310,7 +341,36 @@ cfg fenrir fenrir fenrir fenrir
 has    "macOS configuration complete" "a plist present: configure.sh completes"
 called "launchctl bootstrap gui/" "and the plist is bootstrapped through the stubbed launchctl"
 has    "loaded be.netronix.probe" "and reported loaded"
-rm -f "$T/home/Library/LaunchAgents/be.netronix.probe.plist"
+grep -qx be.netronix.probe "$LAUNCHCTL_LOADED" && _pass "the file-backed launchctl now lists it" \
+  || _fail "the file-backed launchctl now lists it"
+: > "$CALLS"; cfg fenrir fenrir fenrir fenrir
+has    "unchanged be.netronix.probe" "a second run finds it unchanged"
+not_called "launchctl bootout" "and boots nothing out"
+not_called "launchctl bootstrap" "and bootstraps nothing"
+rm -f "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; lc_reset
+
+echo "M. the unattended run sends no Apple Event; an attended one survives a refusal"
+# The wallpaper needs the chezmoi checkout's backgrounds; Alfred's block needs its prefs.json.
+# Both exist, so only the unattended skip keeps osascript out of the log.
+mkdir -p "$T/home/.local/share/chezmoi/.backgrounds" "$T/home/Library/Application Support/Alfred"
+: > "$T/home/.local/share/chezmoi/.backgrounds/skyline-appartment.png"
+printf '{"localhash": "abc123"}\n' > "$T/home/Library/Application Support/Alfred/prefs.json"
+CFG_DATA="$T/home/.local/share"
+: > "$CALLS"; PGREP_RC=0 cfg fenrir fenrir fenrir fenrir
+rc_is 0 "--hostname with Alfred running completes"
+not_called "osascript" "--hostname: no osascript call, wallpaper or Alfred"
+has "Skipping the wallpaper: it needs Automation consent; run .scripts/configure.sh yourself to set it" "the wallpaper skip is announced"
+has "Skipping the Alfred toggle" "the Alfred skip is announced"
+called "pgrep -x Alfred" "the Alfred skip is decided by a running Alfred"
+: > "$CALLS"; cfg fenrir fenrir fenrir fenrir
+not_called "osascript" "--hostname with Alfred not running: still no osascript call"
+: > "$CALLS"; OSA_RC=1 cfg_attended fenrir
+rc_is 0 "an attended run whose wallpaper Apple Event fails still exits 0"
+called "osascript -e tell application \"System Events\"" "the attended run does try the wallpaper"
+has "macOS configuration complete" "and still completes"
+has "Could not set the desktop wallpaper" "and warns about the wallpaper"
+hasnt "Skipping the wallpaper" "and does not claim to have skipped it"
+CFG_DATA=; rm -rf "$T/home/.local/share/chezmoi" "$T/home/Library/Application Support"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
