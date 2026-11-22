@@ -100,7 +100,9 @@ D1 yes, D2 both, D3 fallback until Michael names the 1Password items).
 
 ### Task 2: The checklist and its lint
 
-**Depends on:** Task 1 (its format and `machine-check.sh` to measure the rows)
+**Depends on:** Task 1 (its format and `machine-check.sh` to measure the rows), Task 3 (the
+`agent-plugins` row runs `reconcile-agents.sh --check`; before Task 3 that flag is ignored and the
+script installs, so Step 3's live run must not happen earlier)
 
 **Files:**
 - Create: `.scripts/machine-checklist.tsv`
@@ -218,6 +220,8 @@ D1 yes, D2 both, D3 fallback until Michael names the 1Password items).
   `launchctl` stub with the file-backed one (Task 6 reuses it); section L asserts the loader runs
   through it (`loaded be.netronix.probe`, then `unchanged` on a second `cfg`); a new case: with
   `--hostname` no `osascript` call is logged even with Alfred "running" (stub `pgrep` to succeed);
+  an attended run (no `--hostname`, stdin `fenrir\ny\n` for the name prompt) whose `osascript` stub
+  exits 1 for the wallpaper still prints `macOS configuration complete` and a wallpaper warning;
   section J: hercules logs `pmset -a autorestart 1 sleep 0 womp 1`, fenrir no `pmset`. The
   existing "survives an empty glob" case stays.
 - [ ] **Step 6: Run** `./tests/load-launchagents.test.sh` and `./tests/provision.test.sh`: pass.
@@ -244,7 +248,9 @@ D1 yes, D2 both, D3 fallback until Michael names the 1Password items).
   on a temporary copy of the source tree (only `.scripts/`, `Library/LaunchAgents/`, the template):
   one hash line per plist template; editing one plist template changes the output; with
   `DOTFILES_PROVISIONING=1` the rendered script exits 0 and a stub loader in the copy is not called;
-  without it the stub is called.
+  without it the stub is called. Changing only a data value a plist uses (`is_arm` true to false,
+  which moves the codex-app-server plist's Homebrew paths) with no template edited also changes
+  the output, so a hash of the raw template files fails the suite.
 - [ ] **Step 2: Run it**: fails.
 - [ ] **Step 3: Write the template.** Hash each template's rendered output (`includeTemplate` or
   `include` plus `tmpl` as chezmoi allows; the test decides), not the raw file, so a data change
