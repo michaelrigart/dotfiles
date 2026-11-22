@@ -9,6 +9,23 @@ uid=$(id -u)
 state="${XDG_STATE_HOME:-$HOME/.local/state}/launchagents"
 failed=0
 
+# launchd tears a job down asynchronously: right after a bootout the label can still
+# answer print, and a bootstrap then fails. Poll up to about 5 s for it to go.
+wait_unloaded() {
+  local i=0
+  while [ "$i" -lt 25 ] && launchctl print "gui/$uid/$1" >/dev/null 2>&1; do
+    sleep 0.2
+    i=$((i + 1))
+  done
+}
+
+# One retry after 1 s: a bootstrap straight after a bootout can still lose that race.
+bootstrap() {
+  launchctl bootstrap "gui/$uid" "$1" >/dev/null 2>&1 && return 0
+  sleep 1
+  launchctl bootstrap "gui/$uid" "$1" >/dev/null 2>&1
+}
+
 for plist in "$HOME/Library/LaunchAgents"/be.netronix.*.plist; do
   [ -f "$plist" ] || continue
   label=$(basename "$plist" .plist)
@@ -24,14 +41,19 @@ for plist in "$HOME/Library/LaunchAgents"/be.netronix.*.plist; do
       continue
     fi
     launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+    wait_unloaded "$label"
     verb=reloaded
   else
     verb=loaded
   fi
 
-  if launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1; then
-    mkdir -p "$state" && cp "$plist" "$record"
+  if bootstrap "$plist"; then
     echo "  $verb $label"
+    # Without the record every later run would reload this job (ssh-agent loses its keys).
+    if ! { mkdir -p "$state" && cp "$plist" "$record"; } 2>/dev/null; then
+      echo "  could not record $label in $state"
+      failed=1
+    fi
   else
     echo "  could not load $label — run: launchctl bootstrap gui/$uid $plist"
     failed=1

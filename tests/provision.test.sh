@@ -67,7 +67,7 @@ cp "$T/brew/bin/brew" "$T/bin/brew"
 # temp roots needs a stub here — that is the whole isolation boundary.
 # fdesetup is controllable via $FV so both FileVault branches can be exercised.
 printf '#!/usr/bin/env bash\necho "fdesetup $*" >> "$CALLS"\necho "FileVault is ${FV:-Off}."\n' > "$T/bin/fdesetup"
-printf '#!/usr/bin/env bash\necho "pmset $*" >> "$CALLS"\nexit 0\n' > "$T/bin/pmset"
+printf '#!/usr/bin/env bash\necho "pmset $*" >> "$CALLS"\nexit "${PMSET_RC:-0}"\n' > "$T/bin/pmset"
 printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/csrutil"
 for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall tee; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
@@ -79,14 +79,19 @@ printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"\nexit "${PGREP_RC:-1}"\
 # REUSABLE launchctl stub (the loader and any later case read it): a file of loaded labels
 # ($LAUNCHCTL_LOADED, one per line). `print` exits 0 iff the label is listed, `bootstrap` adds
 # it unless $LAUNCHCTL_FAIL names it, `bootout` removes it, and every call is logged to
-# $CALLS. Nothing reaches the host's launchd. Clear it with lc_reset.
+# $CALLS. Like launchd, bootstrap of a loaded label fails with 5, and a run that does not
+# pass $LAUNCHCTL_LOADED fails loudly (99) instead of answering from nothing. Nothing reaches
+# the host's launchd. Pass it to a run with LAUNCHCTL_LOADED/LAUNCHCTL_FAIL (see run and
+# cfg_run); clear it with lc_reset.
 cat > "$T/bin/launchctl" <<'L'
 #!/usr/bin/env bash
 echo "launchctl $*" >> "$CALLS"
+[ -n "${LAUNCHCTL_LOADED:-}" ] || { echo "launchctl stub: LAUNCHCTL_LOADED unset" >&2; exit 99; }
 verb=$1; target=$2
 case "$verb" in
   print)     grep -qx "${target##*/}" "$LAUNCHCTL_LOADED" ;;
   bootstrap) label=$(basename "$3" .plist)
+             grep -qx "$label" "$LAUNCHCTL_LOADED" && exit 5
              [ "${LAUNCHCTL_FAIL:-}" = "$label" ] && exit 5
              echo "$label" >> "$LAUNCHCTL_LOADED" ;;
   bootout)   label=${target##*/}
@@ -146,6 +151,7 @@ run(){ local ans=$1; shift
     XDG_DATA_HOME="$T/home/.local/share" XDG_STATE_HOME="$T/home/.local/state" \
     XDG_BIN_HOME="$T/home/.local/bin" CALLS="$CALLS" IDDB="$IDDB" \
     MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
+    LAUNCHCTL_LOADED="$LAUNCHCTL_LOADED" LAUNCHCTL_FAIL="${LAUNCHCTL_FAIL:-}" \
     PROVISION_SRC_OVERRIDE="$SBX_SRC" PROVISION_BREW_BIN="$SBX_BREW" \
     zsh "$SRC/.scripts/provision.sh" "$@" 2>&1); RC=$?; }
 
@@ -260,7 +266,7 @@ echo "G. configure.sh identity validation (the real script, not a stub)"
 # XDG_DATA_HOME (where configure.sh looks for the chezmoi checkout's backgrounds).
 cfg_run(){ local ans=$1; shift
   OUT=$(cd "$T" && printf '%b' "$ans" | env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
-        FV="${FV:-Off}" OSA_RC="${OSA_RC:-0}" PGREP_RC="${PGREP_RC:-1}" \
+        FV="${FV:-Off}" PMSET_RC="${PMSET_RC:-0}" OSA_RC="${OSA_RC:-0}" PGREP_RC="${PGREP_RC:-1}" \
         LAUNCHCTL_LOADED="$LAUNCHCTL_LOADED" LAUNCHCTL_FAIL="${LAUNCHCTL_FAIL:-}" XDG_DATA_HOME="${CFG_DATA:-}" \
         CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" CLAUDE_MANAGED_SETTINGS_TEST_ROOT="$T/managed" \
         zsh "$SRC/.scripts/configure.sh" "$@" 2>&1); RC=$?; }
@@ -314,6 +320,11 @@ FV=Off
 called "pmset -a autorestart 1 sleep 0 womp 1" "hercules enables restart-after-power-loss, no sleep and wake-on-network"
 : > "$CALLS"; cfg fenrir fenrir fenrir fenrir
 not_called "pmset" "fenrir sets no power setting (it has a battery and a lid)"
+# A VM can reject a pmset key; under set -e that must not end configure.sh.
+: > "$CALLS"; PMSET_RC=1 cfg hercules hercules hercules hercules
+called "pmset -a autorestart 1 sleep 0 womp 1" "a failing pmset is still attempted"
+has "pmset -a autorestart 1 sleep 0 womp 1 failed" "and the warning names the command"
+has "macOS configuration complete" "and configure.sh still completes"
 
 echo "K. configure.sh installs the Claude Code managed policy"
 rm -rf "$T/managed/ClaudeCode"; cfg fenrir fenrir fenrir fenrir
@@ -347,6 +358,12 @@ grep -qx be.netronix.probe "$LAUNCHCTL_LOADED" && _pass "the file-backed launchc
 has    "unchanged be.netronix.probe" "a second run finds it unchanged"
 not_called "launchctl bootout" "and boots nothing out"
 not_called "launchctl bootstrap" "and bootstraps nothing"
+rm -f "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; lc_reset
+: > "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; : > "$CALLS"
+LAUNCHCTL_FAIL=be.netronix.probe cfg fenrir fenrir fenrir fenrir
+has    "could not load be.netronix.probe" "a job that fails to load is reported by the loader"
+has    "Some LaunchAgents did not load" "and configure.sh warns, naming what to re-run"
+has    "macOS configuration complete" "and still completes"
 rm -f "$T/home/Library/LaunchAgents/be.netronix.probe.plist"; lc_reset
 
 echo "M. the unattended run sends no Apple Event; an attended one survives a refusal"

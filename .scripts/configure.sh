@@ -234,8 +234,11 @@ log_info "✓ Trackpad configured"
 # that has a battery and a lid.
 if [ "$HOSTNAME" != "fenrir" ]; then
   log_info "Enabling automatic restart after power loss, no sleep, wake for network access..."
-  sudo pmset -a autorestart 1 sleep 0 womp 1
-  log_info "✓ autorestart, no sleep and wake-on-network set (a smart plug can now power this machine on)"
+  if sudo pmset -a autorestart 1 sleep 0 womp 1; then
+    log_info "✓ autorestart, no sleep and wake-on-network set (a smart plug can now power this machine on)"
+  else
+    log_warn "sudo pmset -a autorestart 1 sleep 0 womp 1 failed (a VM can reject a key) — run it yourself on a real machine"
+  fi
 fi
 
 # ============================================================================
