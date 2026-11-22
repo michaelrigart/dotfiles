@@ -192,7 +192,9 @@ holds them in full):
   `~/.local/bin`, Homebrew and the system directories, and `MACHINE` and `DOTFILES` (the source
   checkout the script lives in) exported. It prints one line per row: `✓`, `✗` (with the step), or
   `·` for a row with no check (with the step).
-- `--todo` prints only the `✗` and `·` rows, numbered, in file order: the end-of-run checklist.
+- `--todo` prints only the `✗` and `·` rows, numbered, in file order: the end-of-run checklist. Each
+  `✗` row is followed by an indented line `check: <verify>`, so the list names the command that
+  verifies it; a `·` row ends `(no check)` and has none.
 - Exit 0 when every check passes, 1 when one fails, 2 on a usage or checklist error.
 - It is read-only by construction (the suite lints the verify column, §5). It runs outside the
   sandbox: sandboxed, `launchctl`, `herdr`, the firewall and the extension list misreport (measured

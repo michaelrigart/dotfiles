@@ -81,7 +81,7 @@ hasnt "r-alpha" "beta: an alpha row does not appear"
 echo "== --todo"
 {
   row ok-one all script "Done thing" true
-  row bad-one all script "Broken thing" false
+  row bad-one all script "Broken thing" '[ "${NOPE:-x}" = '"'"'a|b'"'"' ] || [ "$HOME" = nowhere ]'
   row you-one all you "Manual thing" -
   row bad-beta beta script "Not here" false
   row bad-two alpha you "Second broken" false
@@ -92,6 +92,12 @@ line_is "Still to do on alpha:" "--todo prints its header"
 line_is "  1. Broken thing [bad-one]" "--todo numbers a cross row and ends it with its id"
 line_is "  2. Manual thing [you-one] (no check)" "--todo marks a no-check row"
 line_is "  3. Second broken [bad-two]" "--todo numbers in file order"
+line_is '     check: [ "${NOPE:-x}" = '"'"'a|b'"'"' ] || [ "$HOME" = nowhere ]' "--todo shows a cross row's check command exactly (quotes, pipe, dollar)"
+line_is "     check: false" "--todo shows the check of the next cross row"
+[ "$(printf '%s\n' "$OUT" | grep -c 'check:')" -eq 2 ] && _pass "--todo prints a check line for the two cross rows only, none for the no-check row" \
+  || _fail "--todo prints a check line for the two cross rows only, none for the no-check row"
+printf '%s\n' "$OUT" | grep -A1 -xF "  2. Manual thing [you-one] (no check)" | grep -q 'check:' \
+  && _fail "a no-check row is not followed by a check line" || _pass "a no-check row is not followed by a check line"
 hasnt "Done thing" "--todo hides a passing row"
 hasnt "Not here" "--todo hides another machine's row"
 hasnt "done," "--todo prints no summary"

@@ -72,12 +72,12 @@ applies() {
 
 user=$(id -un)
 done_n=0; todo_n=0; none_n=0
-open=()
+open=(); open_check=()
 for (( i = 1; i <= ${#ids}; i++ )); do
   applies $machs[i] || continue
   if [[ $verifs[i] == - ]]; then
     none_n=$((none_n + 1))
-    open+=("${steps[i]} [${ids[i]}] (no check)")
+    open+=("${steps[i]} [${ids[i]}] (no check)"); open_check+=("")
     (( todo )) || print -r -- "· ${ids[i]}: ${steps[i]}"
     continue
   fi
@@ -90,7 +90,7 @@ for (( i = 1; i <= ${#ids}; i++ )); do
     (( todo )) || print -r -- "✓ ${ids[i]}"
   else
     todo_n=$((todo_n + 1))
-    open+=("${steps[i]} [${ids[i]}]")
+    open+=("${steps[i]} [${ids[i]}]"); open_check+=("$verifs[i]")
     (( todo )) || print -r -- "✗ ${ids[i]}: ${steps[i]}"
   fi
 done
@@ -98,7 +98,10 @@ done
 if (( todo )); then
   if (( ${#open} )); then
     print -r -- "Still to do on $machine:"
-    for (( k = 1; k <= ${#open}; k++ )); do print -r -- "  $k. ${open[k]}"; done
+    for (( k = 1; k <= ${#open}; k++ )); do
+      print -r -- "  $k. ${open[k]}"
+      [[ -n ${open_check[k]} ]] && print -r -- "     check: ${open_check[k]}"
+    done
   else
     print -r -- "Nothing left to do on $machine."
   fi
