@@ -49,12 +49,14 @@ This will:
 5. Generate the chezmoi config and apply the dotfiles
 6. Switch the chezmoi remote to SSH
 7. Install all packages from [Brewfile](dot_config/homebrew/Brewfile.tmpl)
-8. Reconcile the AI agent plugins, then set Homebrew zsh as the default shell
-9. Install Oh My Zsh
-10. Install development tools via mise
-11. Apply macOS system settings
-12. Install the NetBird daemon, link the Neovim and Herdr plugins, and pin the Codex daemon to the CLI's package (a fresh machine only)
-13. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
+8. Install the NetBird daemon
+9. Reconcile the AI agent plugins, then set Homebrew zsh as the default shell
+10. Install Oh My Zsh
+11. Install development tools via mise
+12. Install the Neovim plugins and link the Herdr plugins
+13. Apply macOS system settings
+14. On a fresh machine only, pin the Codex daemon to the CLI's package
+15. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
 
 ---
 
@@ -193,7 +195,8 @@ mise install
 #     michael layout (cmd-shift-L).
 
 # 11. NetBird daemon, then the Neovim and Herdr plugin links, then the Codex pin
-#     (the pin only on a machine with no Codex daemon package yet)
+#     (the pin only on a machine with no Codex daemon package yet, from a plain terminal,
+#     not a Herdr pane)
 sudo netbird service install && sudo netbird service start
 #     the plugin links: the plugin-link step in .scripts/provision.sh lists the exact commands
 codex app-server daemon update --from-cli
@@ -207,7 +210,8 @@ codex app-server daemon update --from-cli
 ## 🧪 Testing a reinstall
 
 Run the whole provisioning in a throwaway macOS VM on fenrir with [Tart](https://tart.run)
-(`openai/tools/tart`, installed by the Brewfile there):
+(`openai/tools/tart`). After `chezmoi apply`, `brew bundle install --file ~/.config/homebrew/Brewfile`
+installs it on fenrir.
 
 ```bash
 # Pull the image (about 33 GB), clone it and give the clone room
@@ -215,13 +219,19 @@ tart clone ghcr.io/cirruslabs/macos-golden-gate-vanilla reinstall-test
 tart set reinstall-test --disk-size 80
 tart run reinstall-test
 
-# In the VM, as hercules: sign in to 1Password, then run the branch's script.
+# In the VM: run the branch's script. It installs the 1Password app; when it asks, sign in
+# there and turn on the CLI integration. Answer `hercules` when it asks for the machine name.
 # PROVISION_REF is honoured only inside a VM and picks the branch the clone checks out.
-PROVISION_REF=feat/complete-provisioning /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/feat/complete-provisioning/.scripts/provision.sh)"
+ref=<branch>
+PROVISION_REF=$ref /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/$ref/.scripts/provision.sh)"
 
 # Afterwards, on fenrir
 tart delete reinstall-test
 ```
+
+It passes when every `script` row of the final check is ✓ after one run, a second run prints
+the same machine-check result, reloads no LaunchAgent and adds no warning, and the `you` rows
+print in order.
 
 Then remove the VM's device from 1Password. Never run `netbird up`, pair Syncthing or start Borg
 inside the VM.
