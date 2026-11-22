@@ -209,7 +209,7 @@ New steps, each skipped when already done, none asking anything:
   names it. Failures are warnings; the `herdr-plugins` row shows them.
 - **After `configure.sh` (step 16):** the Codex pin, `"$(codex-daemon real-bin)" app-server daemon
   update --from-cli --yes`, only on a fresh machine: when `~/.codex/packages/app-server-daemon/current`
-  did not exist before `configure.sh` first loaded the daemon's LaunchAgent in this run. It runs with
+  did not exist when the run started (read before step 1, so no earlier step can hide it). It runs with
   a clean environment like the LaunchAgent's (`HOME`, its `PATH` and the XDG variables, no
   `HERDR_*`), because the pin restarts the daemon and a daemon that inherits a Herdr pane's variables
   fails `codex-daemon check` (security-locks-2 §4). Any machine that already had a daemon package,
@@ -235,7 +235,9 @@ New steps, each skipped when already done, none asking anything:
   under `~/.local/state/launchagents/`. `be.netronix.codex-app-server` is bootstrapped when absent
   and never reloaded, because a reload disconnects every Codex TUI; a change to its plist keeps
   shipping with its own after-merge step, as today. On the first run after this change no copies
-  exist, so the other jobs reload once.
+  exist, so the other jobs reload once. A deployed plist whose `<label>.plist[.tmpl]` is gone from
+  the loader's own source tree is skipped and reported (`not in the source`), never loaded, so a
+  retired LaunchAgent left behind by chezmoi is not started again at the next apply.
 - **No Apple Events in the unattended run.** The wallpaper (`osascript` to System Events) and
   Alfred's quit and relaunch send Apple Events, which on a fresh machine open an Automation consent
   dialog: that is a question after the preflight, and, unanswered or refused, the `osascript` fails

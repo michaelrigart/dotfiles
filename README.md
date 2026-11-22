@@ -201,8 +201,8 @@ nvim --headless "+Lazy! install" +qa
 for dir in ~/.config/herdr/plugin-*(N/) ~/.local/share/nvim/lazy/smart-splits.nvim; do
   herdr plugin link "$dir"
 done
-#     the pin only on a machine with no Codex daemon package yet, from a plain terminal,
-#     not a Herdr pane
+#     the pin only if ~/.codex/packages/app-server-daemon/current did not exist before step 9,
+#     from a plain terminal, not a Herdr pane
 "$(codex-daemon real-bin)" app-server daemon update --from-cli --yes
 
 # 12. What is left to do
@@ -234,8 +234,8 @@ tart delete reinstall-test
 ```
 
 It passes when every `script` row of the final check is ✓ except the rows a VM cannot satisfy
-(`hercules-power` if `pmset` rejects a key, `little-snitch-extension`, and the `you` rows, which
-print ✗ until Michael does them) after one run, a second run prints the same machine-check
+(`hercules-power` if `pmset` rejects a key); the `you` rows, Little Snitch's extension among them,
+print ✗ until Michael does them after one run, a second run prints the same machine-check
 result, reloads no LaunchAgent and adds no warning, and the `you` rows print in order.
 
 Then remove the VM's device from 1Password. Never run `netbird up`, pair Syncthing or start Borg
