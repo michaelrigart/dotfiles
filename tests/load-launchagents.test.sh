@@ -5,7 +5,9 @@
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SRC/.scripts/load-launchagents.sh"
-[ -f "$SUT" ] || { echo "MISSING SUBJECT: $SUT"; exit 2; }
+HOOK="$SRC/run_onchange_after_load-launchagents.sh.tmpl"
+for f in "$SUT" "$HOOK"; do [ -f "$f" ] || { echo "MISSING SUBJECT: $f"; exit 2; }; done
+command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 2; }
 pass=0; fail=0; OUT=""; RC=0
 _pass(){ echo "  PASS: $1"; pass=$((pass+1)); }
 _fail(){ echo "  FAIL: $1"; fail=$((fail+1)); }
@@ -152,6 +154,67 @@ echo "J. other plists are ignored"
 reset; plist com.example.other v1; load
 rc_is 0 "exit 0"
 not_called "launchctl bootstrap" "only be.netronix.* is loaded"
+
+echo "K. chezmoi reruns the loader when a plist, as rendered for this machine, changes"
+# The run_onchange_ script carries one hash line per plist template, of the template RENDERED
+# with the current data, so a data value a plist uses moves the hash with no template edited.
+CP="$T/src"; mkdir -p "$CP/.scripts" "$CP/Library/LaunchAgents"
+cp "$HOOK" "$CP/"; cp "$SRC"/Library/LaunchAgents/*.plist.tmpl "$CP/Library/LaunchAgents/"
+printf '#!/bin/sh\necho loader-ran >> "$LOADER_MARK"\n' > "$CP/.scripts/load-launchagents.sh"
+chmod +x "$CP/.scripts/load-launchagents.sh"
+cfg(){ printf '[data]\n  is_arm = %s\n  name = "n"\n  email = "e@example.com"\n' "$1" > "$T/chezmoi-$1.toml"; }
+cfg true; cfg false
+render(){ OUT=$(chezmoi --source "$CP" --config "$T/chezmoi-$1.toml" --config-format toml \
+    execute-template --file "$CP/run_onchange_after_load-launchagents.sh.tmpl" 2>&1); RC=$?; }
+run_hook(){ printf '%s\n' "$SCRIPT" > "$T/hook.sh"
+  OUT=$(env -i PATH=/usr/bin:/bin LOADER_MARK="$T/loader-mark" "$@" /bin/sh "$T/hook.sh" 2>&1); RC=$?; }
+render true
+rc_is 0 "the hook renders"
+# apply may run from a fresh clone at a new path each time: the text must not carry the path
+CP2="$T/other/clone-2"; mkdir -p "$CP2"; cp -R "$CP/." "$CP2/"
+OUT1="$OUT"; OUT2=$(chezmoi --source "$CP2" --config "$T/chezmoi-true.toml" --config-format toml \
+    execute-template --file "$CP2/run_onchange_after_load-launchagents.sh.tmpl" 2>&1); OUT="$OUT1"
+[ "$OUT1" = "$OUT2" ] && _pass "rendering from two source paths gives byte-identical text" \
+  || _fail "rendering from two source paths gives byte-identical text"
+case "$OUT1" in *"$T"*) _fail "and the text names no source path";; *) _pass "and the text names no source path";; esac
+n_plists=$(ls "$SRC"/Library/LaunchAgents/*.plist.tmpl | wc -l | tr -d ' ')
+n=$(printf '%s\n' "$OUT" | grep -cE '^# be\.netronix\.[a-z-]+\.plist\.tmpl [0-9a-f]{64}$' || true)
+[ "$n_plists" -ge 1 ] && [ "$n" = "$n_plists" ] \
+  && _pass "one hash line per plist template ($n)" || _fail "one hash line per plist template ($n of $n_plists)"
+case "$OUT" in "#!/bin/sh"*) _pass "a /bin/sh script";; *) _fail "a /bin/sh script";; esac
+printf '%s\n' "$OUT" | sh -n && _pass "that parses" || _fail "that parses"
+BASE="$OUT"; SCRIPT="$OUT"
+render true
+[ "$OUT" = "$BASE" ] && _pass "rendering twice gives the same script" || _fail "rendering twice gives the same script"
+printf '<!-- edited -->\n' >> "$CP/Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl"
+render true
+[ "$OUT" != "$BASE" ] && _pass "editing a plist template changes the script" || _fail "editing a plist template changes the script"
+cp "$SRC/Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl" "$CP/Library/LaunchAgents/"
+render false
+[ "$OUT" != "$BASE" ] && _pass "changing only is_arm (no template edited) changes the script" \
+  || _fail "changing only is_arm (no template edited) changes the script"
+: > "$T/loader-mark"
+run_hook DOTFILES_PROVISIONING=1 CHEZMOI_SOURCE_DIR="$CP"
+rc_is 0 "DOTFILES_PROVISIONING=1: exit 0"
+[ ! -s "$T/loader-mark" ] && _pass "and the loader is not called" || _fail "and the loader is not called"
+run_hook DOTFILES_PROVISIONING=1
+rc_is 0 "DOTFILES_PROVISIONING=1 exits 0 before reading CHEZMOI_SOURCE_DIR"
+run_hook CHEZMOI_SOURCE_DIR="$CP"
+rc_is 0 "otherwise: exit 0 with a quiet loader"
+[ -s "$T/loader-mark" ] && _pass "the loader under CHEZMOI_SOURCE_DIR/.scripts is called" || _fail "the loader under CHEZMOI_SOURCE_DIR/.scripts is called"
+: > "$T/loader-mark"
+run_hook DOTFILES_PROVISIONING=0 CHEZMOI_SOURCE_DIR="$CP"
+[ -s "$T/loader-mark" ] && _pass "DOTFILES_PROVISIONING=0 does not skip it" || _fail "DOTFILES_PROVISIONING=0 does not skip it"
+: > "$T/loader-mark"
+run_hook
+rc_is 1 "CHEZMOI_SOURCE_DIR unset: exit 1"
+has "CHEZMOI_SOURCE_DIR is unset or has no .scripts/load-launchagents.sh" "with a clear message"
+[ ! -s "$T/loader-mark" ] && _pass "and nothing is called" || _fail "and nothing is called"
+run_hook CHEZMOI_SOURCE_DIR="$T/nowhere"
+rc_is 1 "CHEZMOI_SOURCE_DIR without a loader: exit 1"
+printf '#!/bin/sh\nexit 7\n' > "$CP/.scripts/load-launchagents.sh"
+run_hook CHEZMOI_SOURCE_DIR="$CP"
+rc_is 7 "a failing loader fails the script"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
