@@ -1963,9 +1963,12 @@ else
   grep -q '{{ .chezmoi.homeDir }}/.config/herdr/phase.sh' "$PLIST" \
     && _pass "the program path is templated, not hard-coded" \
     || _fail "the program path is templated, not hard-coded"
-  # configure.sh is the only thing that tells launchd the plist exists.
-  grep -q 'launchctl bootstrap' "$ROOT/.scripts/configure.sh" \
-    && _pass "configure.sh loads the LaunchAgents" || _fail "configure.sh loads the LaunchAgents"
+  # configure.sh, through load-launchagents.sh, tells launchd the plist exists (a chezmoi apply
+  # hook runs the loader too).
+  grep -q 'load-launchagents.sh' "$ROOT/.scripts/configure.sh" \
+    && _pass "configure.sh calls the LaunchAgent loader" || _fail "configure.sh calls the LaunchAgent loader"
+  grep -q 'launchctl bootstrap' "$ROOT/.scripts/load-launchagents.sh" \
+    && _pass "the loader runs launchctl bootstrap" || _fail "the loader runs launchctl bootstrap"
 fi
 
 echo
