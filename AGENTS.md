@@ -64,18 +64,20 @@ every agent: Claude Code and Codex both load it natively.
   <number> --merge --admin --match-head-commit <sha>`, then `git -C ~/.local/share/chezmoi pull
   --ff-only`, then `chezmoi apply`.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`, `reconcile-agents.sh`,
-  `preflight-ssh-agent.sh`), deliberately not `run_once_` scripts: they change system settings and
-  need interaction. `install-claude-managed-settings.sh` installs `claude-managed-settings.json`,
-  the Claude Code mods lock, into `/Library/Application Support/ClaudeCode/`, and refuses a
-  `managed-settings.d` beside it. `configure.sh` runs it; `chezmoi apply` never does. Running it for
-  real (sudo, `--replace` to overwrite a different policy) is Michael's; agents run it only in test
-  mode, through its suite and `tests/provision.test.sh`. `forge-protection.sh check` is read-only
-  (GET calls only): it walks `~/Code` to three levels and reads each repository's forge protection,
-  skipping the ones listed in the owner's `~/.config/forge-protection/exceptions`. Its output names
-  repositories and is never committed; agents run it only through its mocked suite, never with a
-  write verb. The scripts are mode `755` (not the 644 policy file, nor a module a script imports,
-  such as `test-audit/mutators.py`) — git stores only the exec bit, so a clone yields 755, never
-  700.
+  `machine-check.sh`, `load-launchagents.sh`, `preflight-ssh-agent.sh`). Those that change system
+  settings (provisioning and the installer) are deliberately not `run_once_` scripts: they need
+  interaction. The one exception, `run_onchange_after_load-launchagents.sh`, reloads a changed
+  `be.netronix.*` plist at apply (never codex-app-server, not in provisioning's first apply).
+  **Lasting machine setup reaches provisioning in the same change:** a `provision.sh` or
+  `configure.sh` step where a script can do it, always a row in `machine-checklist.tsv` with a
+  verify where one exists. A spec with after-merge steps carries a `**Provisioning:**` line (row
+  ids, or `none — <reason>`); after-merge commands are for machines already set up;
+  `tests/provisioning.test.sh` holds it. `install-claude-managed-settings.sh` installs the Claude
+  Code mods lock into `/Library/Application Support/ClaudeCode/` and refuses a `managed-settings.d`
+  beside it; only `configure.sh` runs it, never `chezmoi apply`; running it for real (sudo,
+  `--replace`) is Michael's: agents use its suite and `tests/provision.test.sh`.
+  `forge-protection.sh check` is read-only, its output (repository names) never committed; agents
+  run only its mocked suite. Scripts are mode `755` (not the 644 policy file or an imported module).
 - The global pre-push hook and its secret scan live in `dot_config/git/hooks/` and deploy to
   `~/.config/git/hooks` (`core.hooksPath`, which replaces each repository's `.git/hooks`; the hook
   runs the repository's own one after its scan). Edit the source; never the deployed copy.
@@ -102,8 +104,8 @@ every agent: Claude Code and Codex both load it natively.
   codex`. The daemon would update itself outside Homebrew, so it is pinned to the CLI's package with
   `codex app-server daemon update --from-cli`; Michael re-runs that after every `brew upgrade
   codex`, when no review is active, then runs the `live-codex-daemon` canary.
-- `weekly-research` (spec 2026-11-21-weekly-research): its LaunchAgent deploys only on
-  `research_host`; loading it and running the job for real are Michael's, never an agent's.
+- `weekly-research` (spec 2026-11-21-weekly-research): its LaunchAgent loads at Michael's apply on
+  `research_host`; running the job for real is his, never an agent's.
 
 ## Layout
 

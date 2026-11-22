@@ -5,6 +5,8 @@
 # per rule, so each check is shown able to fail. The structural rules are the ones machine-check.sh
 # enforces: the fixtures that break them must also make machine-check.sh exit 2, and the real list
 # (every verify swapped for `true`) must pass it. No verify command of the real list ever runs here.
+# Sections 2 to 5 check the repository's coverage: new specs name their provisioning, every setup
+# script, LaunchAgent and Herdr plugin is reached by it; each against the real tree and a throwaway one.
 # Run: ./tests/provisioning.test.sh
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -223,6 +225,188 @@ for v in 'true >/dev/null' 'true > /dev/null' 'true 2>/dev/null' 'true &>/dev/nu
   { printf '%s\n' "$GOOD"; row r1 all script "Redirects" "$v"; } > "$fx"
   lint_of; rc_is 0 "'$v' is allowed"
 done
+
+# ---- Sections 2 to 5: provisioning coverage. Each check is a function of a source root, run against
+# the real repository and against a throwaway tree with one negative fixture.
+IDS=$(grep -v '^#' "$LISTFILE" | cut -f1 | grep -v '^[[:space:]]*$')
+
+echo "== 2: new specs declare their provisioning"
+# check_specs <root>: one "<spec>: problem" per finding; status 1 when there is one. A spec dated
+# 2026-11-22 or later with an after-merge style heading needs a **Provisioning:** line: `none — <reason>`
+# or only backticked ids that are in the checklist (the line runs to the next blank line).
+check_specs(){
+  local root=$1 bad=0 f name block rest ids id
+  for f in "$root"/docs/superpowers/specs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f")
+    [[ "${name:0:10}" < "2026-11-22" ]] && continue
+    grep -Eiq '^#{2,4}[[:space:]].*(michael.{1,3}s steps|after[- ]merge|rollout|migration|activation|acceptance)' "$f" || continue
+    block=$(awk 'f && /^[[:space:]]*$/ { exit } /^\*\*Provisioning:\*\*/ { f = 1; sub(/^\*\*Provisioning:\*\*[[:space:]]*/, "") } f { printf "%s ", $0 }' "$f")
+    if [ -z "$(printf '%s' "$block" | tr -d '[:space:]')" ]; then echo "$name: no **Provisioning:** line"; bad=1; continue; fi
+    case "$block" in
+      "none — "*)
+        [ -n "$(printf '%s' "${block#none — }" | tr -d '[:space:]')" ] || { echo "$name: none needs a reason"; bad=1; } ;;
+      *)
+        ids=$(printf '%s' "$block" | grep -Eo '`[^`]*`' | tr -d '`')
+        rest=$(printf '%s' "$block" | sed -E 's/`[^`]*`//g')
+        if [ -z "$ids" ] || [ -n "$(printf '%s' "$rest" | tr -d '[:space:],')" ]; then
+          echo "$name: **Provisioning:** is none — <reason> or backticked ids"; bad=1; continue
+        fi
+        for id in $ids; do
+          case $'\n'"$IDS"$'\n' in *$'\n'"$id"$'\n'*) ;; *) echo "$name: $id is not in the checklist"; bad=1 ;; esac
+        done ;;
+    esac
+  done
+  return "$bad"
+}
+OUT=$(check_specs "$SRC"); RC=$?
+rc_is 0 "the real specs declare their provisioning"
+[ -z "$OUT" ] && _pass "the check reports nothing for them" || _fail "the check reports nothing for them (got: $OUT)"
+[ -n "$(find "$SRC/docs/superpowers/specs" -name '2026-11-22-*.md' 2>/dev/null)" ] && _pass "a spec from the cutoff day is among them" || _fail "a spec from the cutoff day is among them"
+FIRST_ID=${IDS%%$'\n'*}
+spec_fx(){ # spec_fx <file name> <body>: a one-spec tree at $T/specs
+  rm -rf "$T/specs"; mkdir -p "$T/specs/docs/superpowers/specs"; printf '%s\n' "$2" > "$T/specs/docs/superpowers/specs/$1"
+}
+spec_case(){ # spec_case <description> <name> <body> <expected rc> <expected text>
+  spec_fx "$2" "$3"; OUT=$(check_specs "$T/specs"); RC=$?
+  rc_is "$4" "$1"
+  [ -z "$5" ] || says "$5" "$1: and names it"
+}
+H=$'# T\n\n## Michael\'s steps after merge\n\nDo it.'
+spec_case "a new spec with steps and no line fails" 2026-11-22-x-design.md "$H" 1 "no **Provisioning:** line"
+spec_case "a bare none fails" 2026-11-22-x-design.md $'# T\n**Provisioning:** none —\n\n## Rollout\nx' 1 "none needs a reason"
+spec_case "none with a hyphen fails" 2026-11-22-x-design.md $'# T\n**Provisioning:** none - nothing\n\n## Rollout\nx' 1 "none — <reason> or backticked ids"
+spec_case "an unknown id fails" 2026-11-22-x-design.md $'# T\n**Provisioning:** `no-such-row-xyz`\n\n## Rollout\nx' 1 "no-such-row-xyz is not in the checklist"
+spec_case "ids with prose around them fail" 2026-11-22-x-design.md "$(printf '# T\n**Provisioning:** `%s` and more\n\n## Rollout\nx' "$FIRST_ID")" 1 "none — <reason> or backticked ids"
+spec_case "a heading of the activation kind needs it too" 2026-12-01-x-design.md $'# T\n\n### Activation\nx' 1 "no **Provisioning:** line"
+spec_case "a known id passes" 2026-11-22-x-design.md "$(printf '# T\n**Provisioning:** `%s`\n\n## Rollout\nx' "$FIRST_ID")" 0 ""
+spec_case "a line that continues on the next line passes" 2026-11-22-x-design.md "$(printf '# T\n**Provisioning:** `%s`,\n`%s`\n\n## Rollout\nx' "$FIRST_ID" "$FIRST_ID")" 0 ""
+spec_case "none with a reason passes" 2026-11-22-x-design.md $'# T\n**Provisioning:** none — no machine setup\n\n## Rollout\nx' 0 ""
+spec_case "a spec without such a heading needs no line" 2026-11-22-x-design.md $'# T\n\n## Design\nx' 0 ""
+spec_case "an older spec is exempt" 2026-11-21-x-design.md "$H" 0 ""
+
+echo "== 3: every setup script is reachable"
+ADHOC=(forge-protection.sh skill-updates.sh measure-interventions.py preflight-ssh-agent.sh)
+ADHOC_WHY=("read-only forge audit, run by Michael" "weekly skill-update workflow" "workflow metrics, run by Michael" "preflight of the ssh agent, run by Michael")
+# check_scripts <root>: each executable file directly in .scripts/ other than provision.sh is named
+# on a non-comment line of provision.sh or configure.sh, or is in the ad-hoc table.
+check_scripts(){
+  local root=$1 bad=0 f name a hit
+  local text; text=$(grep -hv '^[[:space:]]*#' "$root/.scripts/provision.sh" "$root/.scripts/configure.sh" 2>/dev/null)
+  for f in "$root"/.scripts/*; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    name=$(basename "$f")
+    [ "$name" = provision.sh ] && continue
+    hit=0
+    for a in "${ADHOC[@]}"; do [ "$a" = "$name" ] && hit=1; done
+    printf '%s\n' "$text" | grep -Fq -- "$name" && hit=1
+    [ "$hit" -eq 1 ] || { echo "$name is called by neither provision.sh nor configure.sh, and is not ad hoc"; bad=1; }
+  done
+  for a in "${ADHOC[@]}"; do [ -x "$root/.scripts/$a" ] || { echo "ad-hoc entry $a is not an executable in .scripts/"; bad=1; }; done
+  return "$bad"
+}
+OUT=$(check_scripts "$SRC"); RC=$?
+rc_is 0 "every executable in .scripts/ is reachable or ad hoc"
+[ -z "$OUT" ] && _pass "the check reports nothing for the real directory" || _fail "the check reports nothing for the real directory (got: $OUT)"
+[ "${#ADHOC[@]}" -eq "${#ADHOC_WHY[@]}" ] && _pass "each ad-hoc script has its reason" || _fail "each ad-hoc script has its reason"
+scripts_fx(){ # a copy of the real .scripts/ top level: the two entry points, the called ones, the ad-hoc ones
+  rm -rf "$T/sc"; mkdir -p "$T/sc/.scripts"
+  for f in "$SRC"/.scripts/*; do [ -f "$f" ] && cp -p "$f" "$T/sc/.scripts/"; done
+}
+scripts_fx; OUT=$(check_scripts "$T/sc"); RC=$?
+rc_is 0 "a copy of the directory passes"
+printf '#!/bin/sh\n' > "$T/sc/.scripts/stray-helper.sh"; chmod 755 "$T/sc/.scripts/stray-helper.sh"
+OUT=$(check_scripts "$T/sc"); RC=$?
+rc_is 1 "an executable nothing calls fails"
+says "stray-helper.sh is called by neither" "an executable nothing calls: the check names it"
+chmod 644 "$T/sc/.scripts/stray-helper.sh"; OUT=$(check_scripts "$T/sc"); RC=$?
+rc_is 0 "a data file (not executable) is not a script"
+rm -f "$T/sc/.scripts/stray-helper.sh"
+sed -i.bak 's/load-launchagents\.sh/loader-gone/g' "$T/sc/.scripts/configure.sh"; OUT=$(check_scripts "$T/sc"); RC=$?
+rc_is 1 "a script configure.sh no longer names fails"
+says "load-launchagents.sh is called by neither" "a script no longer named: the check names it"
+scripts_fx; { printf '# machine-check.sh\n'; sed 's/machine-check\.sh/gone-check/g' "$SRC/.scripts/provision.sh"; } > "$T/sc/.scripts/provision.sh"
+sed -i.bak 's/machine-check\.sh/gone-check/g' "$T/sc/.scripts/configure.sh"
+OUT=$(check_scripts "$T/sc"); RC=$?
+rc_is 1 "a name that only a comment mentions fails"
+says "machine-check.sh is called by neither" "a name only in a comment: the check names it"
+scripts_fx; rm -f "$T/sc/.scripts/skill-updates.sh"; OUT=$(check_scripts "$T/sc"); RC=$?
+rc_is 1 "an ad-hoc entry whose script is gone fails"
+says "ad-hoc entry skill-updates.sh" "an ad-hoc entry gone: the check names it"
+
+echo "== 4: every LaunchAgent label is the loader's"
+# check_labels <root>: each Library/LaunchAgents/*.plist* has a Label that starts be.netronix. and
+# equals the file name without .tmpl and .plist (the loader takes the label from the file name).
+check_labels(){
+  local root=$1 bad=0 f name want label n=0
+  for f in "$root"/Library/LaunchAgents/*.plist*; do
+    [ -f "$f" ] || continue
+    n=$((n + 1)); name=$(basename "$f"); want=${name%.tmpl}; want=${want%.plist}
+    label=$(tr '\n' ' ' < "$f" | sed -n 's/.*<key>Label<\/key>[[:space:]]*<string>\([^<]*\)<\/string>.*/\1/p')
+    case "$label" in be.netronix.*) ;; *) echo "$name: Label is not be.netronix.* (got: ${label:-none})"; bad=1; continue ;; esac
+    [ "$label" = "$want" ] || { echo "$name: Label $label is not $want"; bad=1; }
+  done
+  [ "$n" -gt 0 ] || { echo "no LaunchAgent found"; bad=1; }
+  return "$bad"
+}
+OUT=$(check_labels "$SRC"); RC=$?
+rc_is 0 "every real LaunchAgent label is be.netronix.<file name>"
+[ -z "$OUT" ] && _pass "the check reports nothing for them" || _fail "the check reports nothing for them (got: $OUT)"
+plist_fx(){ # plist_fx <file name> <label>
+  rm -rf "$T/la"; mkdir -p "$T/la/Library/LaunchAgents"
+  printf '<plist><dict>\n    <key>Label</key>\n    <string>%s</string>\n</dict></plist>\n' "$2" > "$T/la/Library/LaunchAgents/$1"
+}
+plist_fx be.netronix.a.plist.tmpl be.netronix.a; OUT=$(check_labels "$T/la"); RC=$?
+rc_is 0 "a .plist.tmpl whose label matches passes"
+plist_fx be.netronix.a.plist be.netronix.a; OUT=$(check_labels "$T/la"); RC=$?
+rc_is 0 "a plain .plist whose label matches passes"
+plist_fx be.netronix.a.plist.tmpl com.example.a; OUT=$(check_labels "$T/la"); RC=$?
+rc_is 1 "a label outside be.netronix. fails"
+says "Label is not be.netronix.*" "a foreign label: the check names it"
+plist_fx be.netronix.a.plist.tmpl be.netronix.b; OUT=$(check_labels "$T/la"); RC=$?
+rc_is 1 "a label that differs from the file name fails"
+says "Label be.netronix.b is not be.netronix.a" "a differing label: the check names both"
+plist_fx be.netronix.a.plist.tmpl ''; OUT=$(check_labels "$T/la"); RC=$?
+rc_is 1 "an empty label fails"
+rm -rf "$T/la"; mkdir -p "$T/la/Library/LaunchAgents"; printf '<plist><dict></dict></plist>\n' > "$T/la/Library/LaunchAgents/be.netronix.a.plist"
+OUT=$(check_labels "$T/la"); RC=$?
+rc_is 1 "a plist with no label fails"
+rm -rf "$T/la"; mkdir -p "$T/la/Library/LaunchAgents"; OUT=$(check_labels "$T/la"); RC=$?
+rc_is 1 "an empty directory fails (not a vacuous pass)"
+
+echo "== 5: every Herdr plugin is linked by provisioning"
+# check_plugins <root>: provision.sh links the folders its non-comment `herdr/plugin-*` glob reaches;
+# each dot_config/herdr/*/herdr-plugin.toml must sit in a folder that matches that glob.
+check_plugins(){
+  local root=$1 bad=0 f dir name n=0
+  grep -v '^[[:space:]]*#' "$root/.scripts/provision.sh" | grep -Fq 'herdr/plugin-*' \
+    || { echo "provision.sh has no herdr/plugin-* glob"; bad=1; }
+  for f in "$root"/dot_config/herdr/*/herdr-plugin.toml; do
+    [ -f "$f" ] || continue
+    n=$((n + 1)); dir=$(dirname "$f"); name=$(basename "$dir")
+    case "$name" in plugin-*) ;; *) echo "$name is not reached by provision.sh's plugin-* glob"; bad=1 ;; esac
+  done
+  [ "$n" -gt 0 ] || { echo "no Herdr plugin found"; bad=1; }
+  return "$bad"
+}
+OUT=$(check_plugins "$SRC"); RC=$?
+rc_is 0 "every real plugin sits in a folder provision.sh links"
+[ -z "$OUT" ] && _pass "the check reports nothing for them" || _fail "the check reports nothing for them (got: $OUT)"
+plug_fx(){ # plug_fx <folder>: a tree with provision.sh and one plugin
+  rm -rf "$T/pl"; mkdir -p "$T/pl/.scripts" "$T/pl/dot_config/herdr/$1"
+  cp "$SRC/.scripts/provision.sh" "$T/pl/.scripts/provision.sh"; : > "$T/pl/dot_config/herdr/$1/herdr-plugin.toml"
+}
+plug_fx plugin-x; OUT=$(check_plugins "$T/pl"); RC=$?
+rc_is 0 "a plugin-* folder passes"
+plug_fx other-x; OUT=$(check_plugins "$T/pl"); RC=$?
+rc_is 1 "a plugin in a folder the glob does not reach fails"
+says "other-x is not reached" "a folder outside the glob: the check names it"
+plug_fx plugin-x; sed -i.bak 's#herdr/plugin-\*#herdr/gone-*#g' "$T/pl/.scripts/provision.sh"; OUT=$(check_plugins "$T/pl"); RC=$?
+rc_is 1 "a provision.sh without the glob fails"
+says "no herdr/plugin-* glob" "no glob: the check names it"
+rm -rf "$T/pl"; mkdir -p "$T/pl/.scripts" "$T/pl/dot_config/herdr"; cp "$SRC/.scripts/provision.sh" "$T/pl/.scripts/provision.sh"
+OUT=$(check_plugins "$T/pl"); RC=$?
+rc_is 1 "no plugin at all fails (not a vacuous pass)"
 
 echo
 echo "Passed: $pass / $((pass + fail))"
