@@ -89,7 +89,8 @@ echo "launchctl $*" >> "$CALLS"
 [ -n "${LAUNCHCTL_LOADED:-}" ] || { echo "launchctl stub: LAUNCHCTL_LOADED unset" >&2; exit 99; }
 verb=$1; target=$2
 case "$verb" in
-  print)     grep -qx "${target##*/}" "$LAUNCHCTL_LOADED" ;;
+  print)     grep -qx "${target##*/}" "$LAUNCHCTL_LOADED" || exit 1
+             if [ -e "$SBX_ROOT/lc-stopped" ]; then echo "state = not running"; else echo "state = running"; fi ;;
   bootstrap) label=$(basename "$3" .plist)
              grep -qx "$label" "$LAUNCHCTL_LOADED" && exit 5
              [ "${LAUNCHCTL_FAIL:-}" = "$label" ] && exit 5
@@ -105,6 +106,7 @@ printf '#!/usr/bin/env bash\necho "op $*" >> "$CALLS"\necho "op-env OP_BIOMETRIC
 cat > "$T/bin/git" <<'G'
 #!/usr/bin/env bash
 echo "git $*" >> "$CALLS"
+case "$*" in *"branch --show-current"*) cat "$SBX_ROOT/branch" 2>/dev/null ;; esac
 if [ "$1" = clone ]; then
   for last; do :; done
   mkdir -p "$last" && cp -R "$SBX_ROOT/src/." "$last"
@@ -112,17 +114,21 @@ fi
 exit 0
 G
 # Provisioning's own tools. A file named fail-<tool> in $T makes that stub exit 1, so a case can
-# make a step fail without a new env var; the stubs read $SBX_ROOT, which every run passes.
+# make a step fail without a new env var; the stubs read $SBX_ROOT, which every run passes. A file
+# named read-stdin-<tool> makes the stub read one line of stdin and fail on EOF: the run feeds
+# spare lines, so a step that does not close its stdin gets one and succeeds.
 for t in netbird nvim; do
-  printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -e "$SBX_ROOT/fail-%s" ] && exit 1\nexit 0\n' "$t" "$t" > "$T/bin/$t"
+  printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -e "$SBX_ROOT/read-stdin-%s" ] && { read -r _ || exit 1; }\n[ -e "$SBX_ROOT/fail-%s" ] && exit 1\nexit 0\n' "$t" "$t" "$t" > "$T/bin/$t"
 done
 # `herdr plugin list` prints the file $T/herdr-list (the linked plugins); `plugin link` can fail.
 cat > "$T/bin/herdr" <<'H'
 #!/usr/bin/env bash
 echo "herdr $*" >> "$CALLS"
 case "$1 $2" in
-  "plugin list") [ -e "$SBX_ROOT/fail-herdr-list" ] && exit 1; cat "$SBX_ROOT/herdr-list" 2>/dev/null; exit 0 ;;
-  "plugin link") [ -e "$SBX_ROOT/fail-herdr-link" ] && exit 1; exit 0 ;;
+  "plugin list") [ -e "$SBX_ROOT/read-stdin-herdr-list" ] && { read -r _ || exit 1; }
+                 [ -e "$SBX_ROOT/fail-herdr-list" ] && exit 1; cat "$SBX_ROOT/herdr-list" 2>/dev/null; exit 0 ;;
+  "plugin link") [ -e "$SBX_ROOT/read-stdin-herdr-link" ] && { read -r _ || exit 1; }
+                 [ -e "$SBX_ROOT/fail-herdr-link" ] && exit 1; exit 0 ;;
 esac
 exit 0
 H
@@ -134,12 +140,23 @@ printf '#!/usr/bin/env bash\necho "chezmoi $*" >> "$CALLS"\necho "chezmoi-env DO
 # cannot read $CALLS from the environment, so its path is baked in, and it logs its whole
 # environment (that is what the pin's clean-environment assertions read).
 mkdir -p "$T/home/.local/bin" "$T/codexbin"
-printf '#!/usr/bin/env bash\necho "codex-daemon $*" >> "$CALLS"\ncase "$1" in real-bin) echo "%s/codexbin/codex";; esac\nexit 0\n' "$T" > "$T/home/.local/bin/codex-daemon"
-printf '#!/usr/bin/env bash\necho "codex $*" >> "%s"\n/usr/bin/env | sed "s/^/codex-env /" >> "%s"\n[ -e "%s/fail-codex" ] && exit 1\nexit 0\n' "$CALLS" "$CALLS" "$T" > "$T/codexbin/codex"
+printf '#!/usr/bin/env bash\necho "codex-daemon $*" >> "$CALLS"\n[ -e "$SBX_ROOT/read-stdin-codex-daemon" ] && { read -r _ || exit 1; }\ncase "$1" in real-bin) echo "%s/codexbin/codex";; esac\nexit 0\n' "$T" > "$T/home/.local/bin/codex-daemon"
+printf '#!/usr/bin/env bash\necho "codex $*" >> "%s"\n/usr/bin/env | sed "s/^/codex-env /" >> "%s"\n[ -e "%s/read-stdin-codex" ] && { read -r _ || exit 1; }\n[ -e "%s/fail-codex" ] && exit 1\nexit 0\n' "$CALLS" "$CALLS" "$T" "$T" > "$T/codexbin/codex"
+# getconf is how the pin finds launchd's per-user TMPDIR; fail-getconf makes it print nothing.
+printf '#!/usr/bin/env bash\necho "getconf $*" >> "$CALLS"\n[ -e "$SBX_ROOT/fail-getconf" ] && exit 1\necho "$SBX_ROOT/darwin-tmp/"\n' > "$T/bin/getconf"
 # Scripts provision.sh calls BY PATH bypass $PATH, so stub them by path.
-for sc in reconcile-agents.sh machine-check.sh; do
+for sc in reconcile-agents.sh; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$sc" > "$T/src/.scripts/$sc"
 done
+# machine-check.sh also records whether its stdin was closed (read-stdin-machine-check).
+cat > "$T/src/.scripts/machine-check.sh" <<'MC'
+#!/usr/bin/env bash
+echo "machine-check.sh $*" >> "$CALLS"
+if [ -e "$SBX_ROOT/read-stdin-machine-check" ]; then
+  if read -r _; then echo "machine-check-stdin got-input" >> "$CALLS"; else echo "machine-check-stdin eof" >> "$CALLS"; fi
+fi
+exit 0
+MC
 # configure.sh is what first loads the Codex daemon's LaunchAgent, which creates its package
 # link; $T/mk-current makes the stub do that, so a case can tell "before" from "after".
 cat > "$T/src/.scripts/configure.sh" <<'C'
@@ -189,7 +206,7 @@ run(){ local ans=$1; shift
     XDG_BIN_HOME="$T/home/.local/bin" CALLS="$CALLS" IDDB="$IDDB" \
     MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
     LAUNCHCTL_LOADED="$LAUNCHCTL_LOADED" LAUNCHCTL_FAIL="${LAUNCHCTL_FAIL:-}" \
-    PROVISION_REF="${PROVISION_REF:-}" HV="${HV:-0}" HERDR_PANE_ID=pane-test HERDR_SOCKET_PATH="$T/herdr.sock" \
+    PROVISION_REF="${PROVISION_REF:-}" HV="${HV:-0}" HERDR_PANE_ID=pane-test HERDR_SOCKET_PATH="$T/herdr.sock" TMPDIR="$T/caller-tmp" \
     PROVISION_SRC_OVERRIDE="$SBX_SRC" PROVISION_BREW_BIN="$SBX_BREW" \
     zsh "$SRC/.scripts/provision.sh" "$@" 2>&1); RC=$?; }
 
@@ -440,6 +457,15 @@ called "launchctl print system/netbird" "absence is read from launchd"
 reset; echo netbird > "$LAUNCHCTL_LOADED"; run 'hercules\ny\n'
 not_called "netbird service" "a NetBird daemon launchd already lists is left alone"
 lc_reset
+reset; echo netbird > "$LAUNCHCTL_LOADED"; : > "$T/lc-stopped"; run 'hercules\ny\n'
+rm -f "$T/lc-stopped"; lc_reset
+rc_is 0 "a NetBird daemon installed but not running finishes"
+called "sudo netbird service start" "is started"
+not_called "netbird service install" "and not installed again"
+reset; echo netbird > "$LAUNCHCTL_LOADED"; : > "$T/lc-stopped"; : > "$T/fail-netbird"; run 'hercules\ny\n'
+rm -f "$T/lc-stopped" "$T/fail-netbird"; lc_reset
+rc_is 0 "a failing NetBird start does not end the run"
+has "run: sudo netbird service start" "and the warning names the command"
 reset; : > "$T/fail-netbird"; run 'hercules\ny\n'
 rm -f "$T/fail-netbird"
 rc_is 0 "a failing NetBird install does not end the run"
@@ -492,11 +518,18 @@ cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1); pl=$(g
 { [ -n "$cl" ] && [ -n "$pl" ] && [ "$cl" -lt "$pl" ]; } && _pass "after configure.sh" || _fail "after configure.sh"
 called "codex-env HOME=$T/home" "the pin has HOME"
 called "codex-env PATH=$T/home/.local/share/mise/shims:$T/home/.local/bin:$T/brew/bin:$T/brew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "and the LaunchAgent's PATH"
+called "codex-env USER=tester" "and USER"
+called "codex-env LOGNAME=" "and LOGNAME (zsh fills one in for a caller that had none)"
+called "codex-env SHELL=/bin/zsh" "and SHELL"
+called "codex-env TMPDIR=$T/darwin-tmp/" "and launchd's per-user TMPDIR from getconf"
 for v in CONFIG:.config DATA:.local/share STATE:.local/state CACHE:.cache; do
   called "codex-env XDG_${v%%:*}_HOME=$T/home/${v#*:}" "and XDG_${v%%:*}_HOME"
 done
 not_called "codex-env HERDR_" "and no HERDR_* variable, though the caller's pane set some"
 not_called "codex-env CALLS=" "and nothing else of the caller's environment"
+rm -rf "$T/home/.codex"; : > "$T/fail-getconf"; reset; run 'hercules\ny\n'
+rm -f "$T/fail-getconf"
+called "codex-env TMPDIR=$T/caller-tmp" "a getconf that prints nothing falls back to the caller's TMPDIR"
 rm -rf "$T/home/.codex"; : > "$T/mk-current"; reset; run 'hercules\ny\n'
 rm -f "$T/mk-current"
 called "$PIN" "a daemon package configure.sh itself created does not stop the pin: it is read before step 16"
@@ -548,6 +581,40 @@ rc_is 0 "PROVISION_REF=main is allowed outside a VM"
 called "git clone --branch main" "and clones main"
 hasnt "Branch ....." "with no branch line"
 SBX_SRC="$T/src"
+echo "other-branch" > "$T/branch"
+reset; PROVISION_REF=feat/x HV=1 run 'hercules\ny\n'
+rm -f "$T/branch"
+rc_is 0 "a branch ref over an existing checkout (in a VM) finishes"
+has "Branch ............. other-branch (existing checkout, used as is)" "the summary names the branch the checkout is on, as used"
+hasnt "feat/x" "and not the ref it ignored"
+not_called "git clone" "nothing is cloned"
+
+echo "T. no new step can hang the unattended run on stdin"
+# Each stub below reads a line of stdin and fails on EOF; the run is fed spare lines, so a step
+# that left stdin open would read one and succeed, and its warning would be missing.
+SPARE='hercules\ny\nx\nx\nx\nx\nx\nx\n'
+CFG="$T/home/.config"; mkdir -p "$CFG/herdr/plugin-a"; : > "$CFG/herdr/plugin-a/herdr-plugin.toml"
+printf '0 plugins installed\n' > "$T/herdr-list"
+rm -rf "$T/home/.codex"
+for t in netbird nvim herdr-link codex machine-check; do : > "$T/read-stdin-$t"; done
+reset; run "$SPARE"
+rc_is 0 "stdin read failures do not end the run"
+has "NetBird daemon not installed or started" "netbird service install and start read /dev/null"
+has "neovim plugins: sync failed" "nvim reads /dev/null"
+has "herdr plugin not linked" "herdr plugin link reads /dev/null"
+has "codex daemon not pinned — run: $T/codexbin/codex" "the pin reads /dev/null"
+called "machine-check-stdin eof" "machine-check.sh reads /dev/null"
+for t in netbird nvim herdr-link codex machine-check; do rm -f "$T/read-stdin-$t"; done
+rm -rf "$T/home/.codex"
+for t in herdr-list codex-daemon netbird; do : > "$T/read-stdin-$t"; done
+echo netbird > "$LAUNCHCTL_LOADED"; : > "$T/lc-stopped"
+reset; run "$SPARE"
+rc_is 0 "and neither do the list, real-bin and start reads"
+has "herdr plugins: could not list them" "herdr plugin list reads /dev/null"
+has "codex-daemon real-bin found no codex" "codex-daemon real-bin reads /dev/null"
+has "NetBird daemon installed but not started" "the NetBird start reads /dev/null"
+for t in herdr-list codex-daemon netbird; do rm -f "$T/read-stdin-$t"; done
+rm -f "$T/lc-stopped"; lc_reset; rm -rf "$CFG/herdr" "$T/herdr-list" "$T/home/.codex"
 
 echo "S. the end of the run points at the checklist"
 reset; run 'hercules\ny\n'

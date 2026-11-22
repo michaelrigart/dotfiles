@@ -199,7 +199,15 @@ echo ""
 echo "══ Provision: ${MACHINE_NAME} ═══════════════════"
 echo "  Machine name ....... ${MACHINE_NAME}"
 echo "  Dotfiles source .... ${SRC_DIR}"
-[ "$PROVISION_REF" != "main" ] && echo "  Branch ............. ${PROVISION_REF}"
+if [ "$PROVISION_REF" != "main" ]; then
+  if [ "$SRC_PRESENT" -eq 1 ]; then
+    # An existing checkout is never switched: say what provisioning really uses.
+    CHECKOUT_BRANCH=$(git -C "${SRC_DIR}" branch --show-current 2>/dev/null || true)
+    echo "  Branch ............. ${CHECKOUT_BRANCH:-detached HEAD} (existing checkout, used as is)"
+  else
+    echo "  Branch ............. ${PROVISION_REF}"
+  fi
+fi
 echo "  1Password .......... authenticated"
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "
@@ -293,11 +301,19 @@ fi
 # ============================================================================
 # The cask installs the binary; the system daemon is a separate step. Skipped when launchd
 # already lists it. The sudo credential is the one step 0 cached.
-if launchctl print system/netbird &>/dev/null; then
-  log_info "✓ NetBird daemon already installed"
+# Every external command below reads /dev/null, so an unexpected prompt fails into its warning
+# instead of hanging the unattended run.
+if NETBIRD_STATE=$(launchctl print system/netbird 2>/dev/null </dev/null); then
+  # Installed is not running: a daemon launchd lists without `state = running` is started.
+  case "$NETBIRD_STATE" in
+    *"state = running"*) log_info "✓ NetBird daemon already installed and running" ;;
+    *) log_info "Starting the NetBird daemon..."
+       sudo netbird service start </dev/null \
+         || warn "NetBird daemon installed but not started — run: sudo netbird service start" ;;
+  esac
 else
   log_info "Installing the NetBird daemon..."
-  { sudo netbird service install && sudo netbird service start; } \
+  { sudo netbird service install && sudo netbird service start; } </dev/null \
     || warn "NetBird daemon not installed or started — run: sudo netbird service install && sudo netbird service start"
 fi
 
@@ -359,18 +375,18 @@ fi
 # 12b. Neovim plugins and Herdr plugin links
 # ============================================================================
 log_info "Installing Neovim plugins..."
-nvim --headless "+Lazy! sync" +qa \
+nvim --headless "+Lazy! sync" +qa </dev/null \
   || warn "neovim plugins: sync failed — run: nvim --headless \"+Lazy! sync\" +qa"
 
 # Herdr's TUI plugins are linked, not copied: ~/.config/herdr/plugin-* (chezmoi) and
 # smart-splits.nvim's bundled one (lazy.nvim, installed by the sync above). A plugin is
 # linked only when `herdr plugin list` does not already show its [local:<dir>].
-if HERDR_PLUGINS=$(herdr plugin list 2>&1); then
+if HERDR_PLUGINS=$(herdr plugin list 2>&1 </dev/null); then
   for dir in "${XDG_CONFIG_HOME}"/herdr/plugin-*(N/) "${XDG_DATA_HOME}/nvim/lazy/smart-splits.nvim"; do
     [ -f "${dir}/herdr-plugin.toml" ] || continue
     case "$HERDR_PLUGINS" in
       *"[local:${dir}]"*) log_info "✓ herdr plugin already linked: ${dir}" ;;
-      *) herdr plugin link "${dir}" || warn "herdr plugin not linked — run: herdr plugin link ${dir}" ;;
+      *) herdr plugin link "${dir}" </dev/null || warn "herdr plugin not linked — run: herdr plugin link ${dir}" ;;
     esac
   done
 else
@@ -433,12 +449,15 @@ fi
 if [ "$CODEX_FRESH" -eq 1 ]; then
   log_info "Pinning the Codex daemon to the CLI's package..."
   CODEX_PIN_CMD='codex app-server daemon update --from-cli --yes'
-  if CODEX_BIN=$("${HOME}/.local/bin/codex-daemon" real-bin 2>/dev/null) && [ -n "$CODEX_BIN" ]; then
-    env -i HOME="${HOME}" \
+  if CODEX_BIN=$("${HOME}/.local/bin/codex-daemon" real-bin 2>/dev/null </dev/null) && [ -n "$CODEX_BIN" ]; then
+    # TMPDIR as launchd gives a daemon: the per-user temp directory, else the caller's.
+    PIN_TMPDIR=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null </dev/null) || PIN_TMPDIR=""
+    [ -n "$PIN_TMPDIR" ] || PIN_TMPDIR="${TMPDIR:-/tmp}"
+    env -i HOME="${HOME}" USER="${USER}" LOGNAME="${LOGNAME:-${USER}}" SHELL="${SHELL}" TMPDIR="${PIN_TMPDIR}" \
       PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
       XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" XDG_DATA_HOME="${XDG_DATA_HOME}" \
       XDG_STATE_HOME="${XDG_STATE_HOME}" XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
-      "$CODEX_BIN" app-server daemon update --from-cli --yes \
+      "$CODEX_BIN" app-server daemon update --from-cli --yes </dev/null \
       || warn "codex daemon not pinned — run: ${CODEX_BIN} app-server daemon update --from-cli --yes (from a shell outside Herdr)"
   else
     warn "codex daemon not pinned: codex-daemon real-bin found no codex — run: ${CODEX_PIN_CMD} (with the real codex, from a shell outside Herdr)"
@@ -464,7 +483,7 @@ if [ ${#WARNINGS[@]} -gt 0 ]; then
 fi
 # The checklist replaces the old hard-coded next steps: Borg, Alfred, Herdr and the rest are
 # rows in it. Read-only; a row that is not done is not a failure of the run.
-"${SRC_DIR}/.scripts/machine-check.sh" --todo --machine "${MACHINE_NAME}" || true
+"${SRC_DIR}/.scripts/machine-check.sh" --todo --machine "${MACHINE_NAME}" </dev/null || true
 echo ""
 log_info "Next steps:"
 log_info "  1. Restart your terminal or run: exec ${HOMEBREW_PREFIX}/bin/zsh"
