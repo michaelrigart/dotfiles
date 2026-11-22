@@ -148,6 +148,7 @@ holds them in full):
 | `herdr-plugins` | all | script | `dev.phase`, `dev.agent-rows`, `smart-splits.nvim` are linked | `herdr plugin list` |
 | `codex-daemon-pin` | all | script | the Codex daemon runs a pinned copy of the CLI's package. Provisioning pins a fresh machine only; otherwise, when no review is active: `codex app-server daemon update --from-cli`, then the canary (AGENTS.md) | `current` links to `releases/local-*`, and when the daemon runs, `daemon version` has equal `cliVersion` and `appServerVersion` |
 | `hercules-power` | hercules | script | no system sleep, wake for network access, restart after power loss | `pmset -g`: `sleep 0`, `womp 1`, `autorestart 1` |
+| `borg-key-hercules` | hercules | script | chezmoi renders hercules' Borg key, `~/.ssh/borg-hercules` | the file exists |
 | `op-ssh-agent-off` | all | you | leave 1Password → Settings → Developer → "Use the SSH agent" off; the native agent serves ssh | `ssh-add -l` on 1Password's socket cannot connect |
 | `claude-login` | all | you | start `claude` once and sign in | `claude auth status` |
 | `agent-plugins` | all | you | then run `.scripts/reconcile-agents.sh` again (its run during provisioning fails until Claude Code has started once) | `reconcile-agents.sh --check` (new: queries, installs nothing) |
@@ -162,10 +163,11 @@ holds them in full):
 | `netbird-up` | all | you | `netbird up` and finish the SSO login | `netbird status` shows `Management: Connected` |
 | `netbird-session-expiry` | hercules | you | NetBird dashboard → Peers → hercules → Session Expiration off (§8 B3) | `-` |
 | `syncthing-settings` | all | you | Syncthing.app: a GUI user and password; Global Discovery, Relaying and NAT traversal off, Local Discovery on (§8 E1) | `config.xml` has a GUI user and those four options |
-| `syncthing-folders` | all | you | a reinstalled machine has a new device ID: remove the old one on the peer, pair again, add the three folders of §8 E3–E5; `claude-memory` Receive Only until Up to Date, then Send & Receive | the final state of §8 E3–E5 in `config.xml` (read with `xmllint --xpath`): `claude-memory` at `~/.claude/projects`, `sendreceive`, staggered versioning; this machine's `codex-memory-<name>` at the outbox, `sendonly`; the peer's at `inbox/<peer>`, `receiveonly`; each shared with a device besides this one. So the row stays open while `claude-memory` is still Receive Only |
+| `syncthing-old-device` | all | you | on a reinstalled machine, remove this machine's old device ID on the peer (it has a new one); no check sees the peer | `-` |
+| `syncthing-folders` | all | you | pair with the peer again, add the three folders of §8 E3–E5; `claude-memory` Receive Only until Up to Date, then Send & Receive | the final state of §8 E3–E5 in `config.xml` (read with `xmllint --xpath`): `claude-memory` at `~/.claude/projects`, `sendreceive`, staggered versioning; this machine's `codex-memory-<name>` at the outbox, `sendonly`; the peer's at `inbox/<peer>`, `receiveonly`; each shared with a device besides this one. So the row stays open while `claude-memory` is still Receive Only |
 | `herdr-app` | all | you | open the Herdr app, run `~/.config/herdr-app/bin/respaces` with its window open, pick the michael layout (cmd-shift-L) | the `michael-spaces` and `michael-menu` mods exist and the app's layout is `michael` |
 | `vorta` | all | you | Vorta: this machine's own BorgBase repository (its existing one on a reinstall) and a schedule | Vorta's database has a profile with a repository and a schedule other than `off` |
-| `borg-key` | all | see D3 | this machine's Borg key in `~/.ssh` | the key file exists |
+| `borg-key-fenrir` | fenrir | you | restore `borg-fenrir`, `borg-append-only-fenrir` and `huginn` into `~/.ssh` from wherever they are kept (the repository does not render them; D3) | the three files exist |
 | `login-items` | all | you | turn on Open at Login for Syncthing, Alfred, Vorta and the menu-bar apps | `-` |
 | `privacy-and-sign-ins` | all | you | grant each app the permission it asks for at first launch, and sign in to the apps that need an account | `-` |
 | `filevault-on` | fenrir | you | turn FileVault on (it travels) | `fdesetup status` |
@@ -201,7 +203,7 @@ New steps, each skipped when already done, none asking anything:
 - **After the Brewfile (step 8):** NetBird's daemon, `sudo netbird service install` and
   `sudo netbird service start`, when `launchctl print system/netbird` fails. The sudo credential is
   the one cached at step 0.
-- **After mise (step 12):** Neovim installs its plugins headless (`nvim --headless "+Lazy! sync" +qa`),
+- **After mise (step 12):** Neovim installs its plugins headless (`nvim --headless "+Lazy! install" +qa`),
   then `herdr plugin link` runs for each `~/.config/herdr/plugin-*` folder holding a
   `herdr-plugin.toml`, and for lazy.nvim's `smart-splits.nvim`, unless `herdr plugin list` already
   names it. Failures are warnings; the `herdr-plugins` row shows them.
@@ -262,12 +264,13 @@ rule replaces wording in the `.scripts/` bullet it extends rather than adding li
    `you` rows, each verify command parses (`zsh -n`), and none contains `sudo`, `op read`,
    `op inject`, `op run`, `rm `, `kickstart`, `bootstrap` or `bootout` (it must stay read-only).
 2. **New specs declare their provisioning:** every spec dated 2026-11-22 or later with a heading
-   matching Michael's steps, after merge, rollout, migration, activation or acceptance carries a
-   `**Provisioning:**` line, either `none — <reason>` or ids that exist in the checklist. Older specs
+   matching Michael's steps, after the merge, after Michael's apply, post-merge, rollout, migration,
+   activation or acceptance carries a `**Provisioning:**` line (which ends at the next blank line or
+   `**Header:**` line), either `none — <reason>` or ids that exist in the checklist. Older specs
    are exempt (this spec's inventory covered them).
 3. **Every setup script is reachable:** each executable directly in `.scripts/` (not its
-   subfolders) other than the entry point `provision.sh` is called by `provision.sh` or
-   `configure.sh`, or appears in the suite's ad-hoc table with its reason (`forge-protection.sh`,
+   subfolders) other than the entry point `provision.sh` is called by name (the whole file name, not a part of a
+   longer one) in `provision.sh` or `configure.sh`, or appears in the suite's ad-hoc table with its reason (`forge-protection.sh`,
    `skill-updates.sh`, `measure-interventions.py`, `preflight-ssh-agent.sh`).
 4. **Every LaunchAgent is loaded by provisioning:** each plist under `Library/LaunchAgents/` in the
    source has a `be.netronix.` label, the prefix `configure.sh` and the `launchagents` row load.
@@ -344,10 +347,10 @@ check the key. A wrong `op://` path fails every `chezmoi apply`, so the item and
 come from Michael. If they are not in 1Password, the `borg` row says where they come from instead.
 Which is it, and what are the item names? And which host uses `huginn`?
 
-**Decided at sign-off:** D1 yes, D2 both. D3: the item names were not given, so the `borg-key` row
-is a `you` row (put this machine's Borg keys in `~/.ssh`, checked by the files existing) unless
+**Decided at sign-off:** D1 yes, D2 both. D3: the item names were not given, so `borg-key-fenrir`
+is a `you` row (restore this machine's Borg keys into `~/.ssh`, checked by the files existing) unless
 Michael names the items before that task runs; then the keys are templated and the row becomes
-`script`.
+`script`, as `borg-key-hercules` already is.
 
 ## Michael's steps after merge
 

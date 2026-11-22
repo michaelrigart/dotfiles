@@ -233,15 +233,16 @@ IDS=$(grep -v '^#' "$LISTFILE" | cut -f1 | grep -v '^[[:space:]]*$')
 echo "== 2: new specs declare their provisioning"
 # check_specs <root>: one "<spec>: problem" per finding; status 1 when there is one. A spec dated
 # 2026-11-22 or later with an after-merge style heading needs a **Provisioning:** line: `none — <reason>`
-# or only backticked ids that are in the checklist (the line runs to the next blank line).
+# or only backticked ids that are in the checklist (the line runs to the next blank line or the next
+# **Header:** line).
 check_specs(){
   local root=$1 bad=0 f name block rest ids id
   for f in "$root"/docs/superpowers/specs/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md; do
     [ -f "$f" ] || continue
     name=$(basename "$f")
     [[ "${name:0:10}" < "2026-11-22" ]] && continue
-    grep -Eiq '^#{2,4}[[:space:]].*(michael.{1,3}s steps|after[- ]merge|rollout|migration|activation|acceptance)' "$f" || continue
-    block=$(awk 'f && /^[[:space:]]*$/ { exit } /^\*\*Provisioning:\*\*/ { f = 1; sub(/^\*\*Provisioning:\*\*[[:space:]]*/, "") } f { printf "%s ", $0 }' "$f")
+    grep -Eiq '^#{2,4}[[:space:]].*(michael.{1,3}s steps|after[- ](the )?merg|post-merge|after .{0,25}apply|rollout|migration|activation|acceptance)' "$f" || continue
+    block=$(awk 'f && /^[[:space:]]*$/ { exit } /^\*\*Provisioning:\*\*/ { f = 1; sub(/^\*\*Provisioning:\*\*[[:space:]]*/, "") } f && /^\*\*[A-Z][^*]*:\*\*/ { exit } f { printf "%s ", $0 }' "$f")
     if [ -z "$(printf '%s' "$block" | tr -d '[:space:]')" ]; then echo "$name: no **Provisioning:** line"; bad=1; continue; fi
     case "$block" in
       "none — "*)
@@ -279,9 +280,15 @@ spec_case "none with a hyphen fails" 2026-11-22-x-design.md $'# T\n**Provisionin
 spec_case "an unknown id fails" 2026-11-22-x-design.md $'# T\n**Provisioning:** `no-such-row-xyz`\n\n## Rollout\nx' 1 "no-such-row-xyz is not in the checklist"
 spec_case "ids with prose around them fail" 2026-11-22-x-design.md "$(printf '# T\n**Provisioning:** `%s` and more\n\n## Rollout\nx' "$FIRST_ID")" 1 "none — <reason> or backticked ids"
 spec_case "a heading of the activation kind needs it too" 2026-12-01-x-design.md $'# T\n\n### Activation\nx' 1 "no **Provisioning:** line"
+for h in "After the merge" "After Michael's apply" "After merging" "Post-merge steps"; do
+  spec_case "a heading '$h' needs it too" 2026-12-01-x-design.md "$(printf '# T\n\n## %s\nx' "$h")" 1 "no **Provisioning:** line"
+done
 spec_case "a known id passes" 2026-11-22-x-design.md "$(printf '# T\n**Provisioning:** `%s`\n\n## Rollout\nx' "$FIRST_ID")" 0 ""
 spec_case "a line that continues on the next line passes" 2026-11-22-x-design.md "$(printf '# T\n**Provisioning:** `%s`,\n`%s`\n\n## Rollout\nx' "$FIRST_ID" "$FIRST_ID")" 0 ""
 spec_case "none with a reason passes" 2026-11-22-x-design.md $'# T\n**Provisioning:** none — no machine setup\n\n## Rollout\nx' 0 ""
+spec_case "a valid id list directly followed by another header passes" 2026-11-22-x-design.md "$(printf '# T\n**Provisioning:** `%s`\n**Status:** In progress\n\n## Rollout\nx' "$FIRST_ID")" 0 ""
+spec_case "none with a reason directly followed by another header passes" 2026-11-22-x-design.md $'# T\n**Provisioning:** none — no machine setup\n**Status:** In progress\n\n## Rollout\nx' 0 ""
+spec_case "a bare none directly followed by a header still fails" 2026-11-22-x-design.md $'# T\n**Provisioning:** none —\n**Status:** In progress\n\n## Rollout\nx' 1 "none needs a reason"
 spec_case "a spec without such a heading needs no line" 2026-11-22-x-design.md $'# T\n\n## Design\nx' 0 ""
 spec_case "an older spec is exempt" 2026-11-21-x-design.md "$H" 0 ""
 
@@ -299,7 +306,8 @@ check_scripts(){
     [ "$name" = provision.sh ] && continue
     hit=0
     for a in "${ADHOC[@]}"; do [ "$a" = "$name" ] && hit=1; done
-    printf '%s\n' "$text" | grep -Fq -- "$name" && hit=1
+    # The whole name: not part of a longer one (agents.sh inside reconcile-agents.sh).
+    printf '%s\n' "$text" | grep -Eq -- "(^|[^[:alnum:]_.-])${name//./\\.}([^[:alnum:]_.-]|\$)" && hit=1
     [ "$hit" -eq 1 ] || { echo "$name is called by neither provision.sh nor configure.sh, and is not ad hoc"; bad=1; }
   done
   for a in "${ADHOC[@]}"; do [ -x "$root/.scripts/$a" ] || { echo "ad-hoc entry $a is not an executable in .scripts/"; bad=1; }; done
@@ -330,6 +338,13 @@ sed -i.bak 's/machine-check\.sh/gone-check/g' "$T/sc/.scripts/configure.sh"
 OUT=$(check_scripts "$T/sc"); RC=$?
 rc_is 1 "a name that only a comment mentions fails"
 says "machine-check.sh is called by neither" "a name only in a comment: the check names it"
+scripts_fx; printf '#!/bin/sh\n' > "$T/sc/.scripts/agents.sh"; chmod 755 "$T/sc/.scripts/agents.sh"; OUT=$(check_scripts "$T/sc"); RC=$?
+rc_is 1 "an executable whose name is only part of a called one fails"
+says "agents.sh is called by neither" "a name inside reconcile-agents.sh: the check names it"
+for n in check.sh settings.sh launchagents.sh; do
+  printf '#!/bin/sh\n' > "$T/sc/.scripts/$n"; chmod 755 "$T/sc/.scripts/$n"; OUT=$(check_scripts "$T/sc"); RC=$?
+  rc_is 1 "$n inside a longer called name fails"; says "$n is called by neither" "$n: the check names it"
+done
 scripts_fx; rm -f "$T/sc/.scripts/skill-updates.sh"; OUT=$(check_scripts "$T/sc"); RC=$?
 rc_is 1 "an ad-hoc entry whose script is gone fails"
 says "ad-hoc entry skill-updates.sh" "an ad-hoc entry gone: the check names it"
