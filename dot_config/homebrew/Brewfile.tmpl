@@ -30,6 +30,10 @@
 tap "basecamp/tap", trusted: true
 tap "michaelrigart/tap", trusted: true
 tap "skyhook-io/tap", trusted: true
+{{ if eq $live "fenrir" -}}
+tap "openai/tools", trusted: true
+brew "openai/tools/tart"               # the reinstall test VM (spec 2026-11-22-complete-provisioning, D2)
+{{ end -}}
 
 # ansible: managed by mise (~/.config/mise/config.toml), not Homebrew, so provisioning
 # repos can pin their own version via a project mise.toml.

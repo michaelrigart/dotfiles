@@ -53,6 +53,8 @@ This will:
 9. Install Oh My Zsh
 10. Install development tools via mise
 11. Apply macOS system settings
+12. Install the NetBird daemon, link the Neovim and Herdr plugins, and pin the Codex daemon to the CLI's package (a fresh machine only)
+13. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
 
 ---
 
@@ -130,6 +132,9 @@ brew bundle install --file ~/.config/homebrew/Brewfile
 
 # Update development tools
 mise install
+
+# Print what is still to do on this machine
+~/.local/share/chezmoi/.scripts/machine-check.sh --todo
 ```
 
 ---
@@ -186,7 +191,40 @@ mise install
 # 10. Herdr app: open it once, run `~/.config/herdr-app/bin/respaces` with its window open
 #     (it builds the michael-spaces and michael-menu mods from Herdr's), then pick the
 #     michael layout (cmd-shift-L).
+
+# 11. NetBird daemon, then the Neovim and Herdr plugin links, then the Codex pin
+#     (the pin only on a machine with no Codex daemon package yet)
+sudo netbird service install && sudo netbird service start
+#     the plugin links: the plugin-link step in .scripts/provision.sh lists the exact commands
+codex app-server daemon update --from-cli
+
+# 12. What is left to do
+~/.local/share/chezmoi/.scripts/machine-check.sh --todo
 ```
+
+---
+
+## 🧪 Testing a reinstall
+
+Run the whole provisioning in a throwaway macOS VM on fenrir with [Tart](https://tart.run)
+(`openai/tools/tart`, installed by the Brewfile there):
+
+```bash
+# Pull the image (about 33 GB), clone it and give the clone room
+tart clone ghcr.io/cirruslabs/macos-golden-gate-vanilla reinstall-test
+tart set reinstall-test --disk-size 80
+tart run reinstall-test
+
+# In the VM, as hercules: sign in to 1Password, then run the branch's script.
+# PROVISION_REF is honoured only inside a VM and picks the branch the clone checks out.
+PROVISION_REF=feat/complete-provisioning /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/feat/complete-provisioning/.scripts/provision.sh)"
+
+# Afterwards, on fenrir
+tart delete reinstall-test
+```
+
+Then remove the VM's device from 1Password. Never run `netbird up`, pair Syncthing or start Borg
+inside the VM.
 
 ---
 

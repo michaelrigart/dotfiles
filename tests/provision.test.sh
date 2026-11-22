@@ -239,8 +239,12 @@ render fenrir fenrir
 rc_is 0 "matching identity renders"
 has 'cask "elgato-control-center"' "fenrir gets the peripheral casks"
 has 'cask "herdr-app"' "fenrir gets the Herdr app"
+has 'tap "openai/tools", trusted: true' "fenrir taps the Tart formula's repository"
+has 'brew "openai/tools/tart"' "fenrir gets Tart for the reinstall test VM"
 render hercules hercules
 rc_is 0 "the other machine renders"
+hasnt 'tap "openai/tools"' "hercules does not tap the Tart repository"
+hasnt 'brew "openai/tools/tart"' "hercules does not get Tart"
 hasnt 'cask "elgato-control-center"' "hercules does not get the peripheral casks"
 has 'cask "herdr-app"' "hercules gets the Herdr app"
 has 'cask "azure-cli"' "azure-cli is a cask (homebrew-core dropped the formula)"
