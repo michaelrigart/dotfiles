@@ -32,6 +32,15 @@ export XDG_BIN_HOME="${HOME}/.local/bin"
 # group-container settings, which macOS 27.2 may refuse the terminal (see zshenv).
 export OP_BIOMETRIC_UNLOCK_ENABLED=true
 
+# PROVISION_REF (a test knob for a VM run, see the spec) makes the clone check out a branch.
+# Checked before anything else, sudo included: on a real Mac provisioning deploys only
+# reviewed main, so any other ref is refused unless this is a VM.
+PROVISION_REF="${PROVISION_REF:-main}"
+if [ "$PROVISION_REF" != "main" ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" != "1" ]; then
+  log_error "PROVISION_REF=${PROVISION_REF} is refused outside a VM: provisioning a real Mac deploys main only."
+  exit 1
+fi
+
 echo ""
 log_info "========== Starting macOS Provision =========="
 echo ""
@@ -120,7 +129,7 @@ if [ -d "${SRC_DIR}/.git" ]; then
   log_info "✓ dotfiles source already present"
 else
   log_info "Cloning dotfiles source..."
-  git clone https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
+  git clone --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
 fi
 
 # ============================================================================
@@ -190,6 +199,7 @@ echo ""
 echo "══ Provision: ${MACHINE_NAME} ═══════════════════"
 echo "  Machine name ....... ${MACHINE_NAME}"
 echo "  Dotfiles source .... ${SRC_DIR}"
+[ "$PROVISION_REF" != "main" ] && echo "  Branch ............. ${PROVISION_REF}"
 echo "  1Password .......... authenticated"
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "
@@ -228,8 +238,10 @@ else
   log_info "Generating chezmoi config..."
   chezmoi init
   log_info "Applying dotfiles with chezmoi..."
-  # Force apply to overwrite any local changes
-  chezmoi apply --force
+  # Force apply to overwrite any local changes. DOTFILES_PROVISIONING=1 is set on this one
+  # command and never exported: a value that leaked to a later apply would make the
+  # run_onchange_ script skip its work and chezmoi record that version as run.
+  DOTFILES_PROVISIONING=1 chezmoi apply --force
 fi
 
 # ============================================================================
@@ -274,6 +286,19 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
   fi
 else
   log_error "Brewfile not found at ${XDG_CONFIG_HOME}/homebrew/Brewfile"
+fi
+
+# ============================================================================
+# 8b. NetBird's daemon
+# ============================================================================
+# The cask installs the binary; the system daemon is a separate step. Skipped when launchd
+# already lists it. The sudo credential is the one step 0 cached.
+if launchctl print system/netbird &>/dev/null; then
+  log_info "✓ NetBird daemon already installed"
+else
+  log_info "Installing the NetBird daemon..."
+  { sudo netbird service install && sudo netbird service start; } \
+    || warn "NetBird daemon not installed or started — run: sudo netbird service install && sudo netbird service start"
 fi
 
 # ============================================================================
@@ -331,6 +356,28 @@ else
 fi
 
 # ============================================================================
+# 12b. Neovim plugins and Herdr plugin links
+# ============================================================================
+log_info "Installing Neovim plugins..."
+nvim --headless "+Lazy! sync" +qa \
+  || warn "neovim plugins: sync failed — run: nvim --headless \"+Lazy! sync\" +qa"
+
+# Herdr's TUI plugins are linked, not copied: ~/.config/herdr/plugin-* (chezmoi) and
+# smart-splits.nvim's bundled one (lazy.nvim, installed by the sync above). A plugin is
+# linked only when `herdr plugin list` does not already show its [local:<dir>].
+if HERDR_PLUGINS=$(herdr plugin list 2>&1); then
+  for dir in "${XDG_CONFIG_HOME}"/herdr/plugin-*(N/) "${XDG_DATA_HOME}/nvim/lazy/smart-splits.nvim"; do
+    [ -f "${dir}/herdr-plugin.toml" ] || continue
+    case "$HERDR_PLUGINS" in
+      *"[local:${dir}]"*) log_info "✓ herdr plugin already linked: ${dir}" ;;
+      *) herdr plugin link "${dir}" || warn "herdr plugin not linked — run: herdr plugin link ${dir}" ;;
+    esac
+  done
+else
+  warn "herdr plugins: could not list them — run: herdr plugin list, then herdr plugin link <folder> for each ~/.config/herdr/plugin-* and ~/.local/share/nvim/lazy/smart-splits.nvim"
+fi
+
+# ============================================================================
 # 13. Create necessary cache directories
 # ============================================================================
 log_info "Creating cache directories..."
@@ -358,6 +405,14 @@ brew cleanup
 # ============================================================================
 # 16. Run macOS configuration
 # ============================================================================
+# Recorded before configure.sh, which loads the Codex daemon's LaunchAgent and so creates the
+# package link: only a machine with no daemon package at all is pinned below.
+DAEMON_CURRENT="${HOME}/.codex/packages/app-server-daemon/current"
+if [ -e "$DAEMON_CURRENT" ] || [ -L "$DAEMON_CURRENT" ]; then
+  CODEX_FRESH=0
+else
+  CODEX_FRESH=1
+fi
 if [ -f "${SRC_DIR}/.scripts/configure.sh" ]; then
   log_info "Running macOS configuration..."
   # --hostname: preflight already owns the identity, so configure.sh verifies instead
@@ -366,6 +421,30 @@ if [ -f "${SRC_DIR}/.scripts/configure.sh" ]; then
     || warn "macOS configuration reported problems"
 else
   log_warn "macOS configuration script not found at ${SRC_DIR}/.scripts/configure.sh"
+fi
+
+# ============================================================================
+# 17. Pin the Codex daemon to the CLI's package (fresh machines only)
+# ============================================================================
+# A pin restarts the daemon, which would interrupt a running review on a machine that has
+# one, so only a machine with no daemon package is pinned; `codex-daemon-pin` in the
+# checklist reports the rest. env -i, with the LaunchAgent's PATH and XDG variables: a
+# daemon restarted from a Herdr pane keeps its HERDR_* variables and fails `codex-daemon check`.
+if [ "$CODEX_FRESH" -eq 1 ]; then
+  log_info "Pinning the Codex daemon to the CLI's package..."
+  CODEX_PIN_CMD='codex app-server daemon update --from-cli --yes'
+  if CODEX_BIN=$("${HOME}/.local/bin/codex-daemon" real-bin 2>/dev/null) && [ -n "$CODEX_BIN" ]; then
+    env -i HOME="${HOME}" \
+      PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" XDG_DATA_HOME="${XDG_DATA_HOME}" \
+      XDG_STATE_HOME="${XDG_STATE_HOME}" XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
+      "$CODEX_BIN" app-server daemon update --from-cli --yes \
+      || warn "codex daemon not pinned — run: ${CODEX_BIN} app-server daemon update --from-cli --yes (from a shell outside Herdr)"
+  else
+    warn "codex daemon not pinned: codex-daemon real-bin found no codex — run: ${CODEX_PIN_CMD} (with the real codex, from a shell outside Herdr)"
+  fi
+else
+  log_info "✓ Codex daemon package already present, not pinning"
 fi
 
 # ============================================================================
@@ -383,22 +462,13 @@ if [ ${#WARNINGS[@]} -gt 0 ]; then
   done
   echo ""
 fi
+# The checklist replaces the old hard-coded next steps: Borg, Alfred, Herdr and the rest are
+# rows in it. Read-only; a row that is not done is not a failure of the run.
+"${SRC_DIR}/.scripts/machine-check.sh" --todo --machine "${MACHINE_NAME}" || true
+echo ""
 log_info "Next steps:"
-log_info "  0. Borg: this machine needs its OWN BorgBase repo and keypair — archives are"
-log_info "     named from the hostname, so sharing a repo interleaves two machines."
 log_info "  1. Restart your terminal or run: exec ${HOMEBREW_PREFIX}/bin/zsh"
 log_info "  2. Verify chezmoi is using SSH: cd ~/.local/share/chezmoi && git remote -v"
 log_info "  3. Test making changes: chezmoi edit ~/.zshrc"
 log_info "  4. Some macOS settings may require a logout/restart to take effect"
-log_info "  5. The ;codex / ;claude relay snippets are Alfred snippets. Two steps remain:"
-log_info "       a. System Settings > Privacy & Security > Accessibility > add Alfred."
-log_info "          Without it Alfred runs and shows the snippets in its UI while expanding"
-log_info "          nothing — it never sees the keystrokes."
-log_info "       b. Run .scripts/configure.sh, which enables snippet auto-expansion and"
-log_info "          restarts Alfred so it indexes the collection (a NEW collection is only"
-log_info "          discovered at launch, so a bare 'chezmoi apply' is not enough)."
-log_info "       Verify with: ./tests/alfred-relay.test.sh"
-log_info "  6. Herdr app: open it once, run ~/.config/herdr-app/bin/respaces with its window open"
-log_info "     (it builds the michael-spaces and michael-menu mods from Herdr's), then pick the"
-log_info "     michael layout (cmd-shift-L)."
 echo ""

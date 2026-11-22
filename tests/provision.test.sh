@@ -111,10 +111,47 @@ if [ "$1" = clone ]; then
 fi
 exit 0
 G
+# Provisioning's own tools. A file named fail-<tool> in $T makes that stub exit 1, so a case can
+# make a step fail without a new env var; the stubs read $SBX_ROOT, which every run passes.
+for t in netbird nvim; do
+  printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -e "$SBX_ROOT/fail-%s" ] && exit 1\nexit 0\n' "$t" "$t" > "$T/bin/$t"
+done
+# `herdr plugin list` prints the file $T/herdr-list (the linked plugins); `plugin link` can fail.
+cat > "$T/bin/herdr" <<'H'
+#!/usr/bin/env bash
+echo "herdr $*" >> "$CALLS"
+case "$1 $2" in
+  "plugin list") [ -e "$SBX_ROOT/fail-herdr-list" ] && exit 1; cat "$SBX_ROOT/herdr-list" 2>/dev/null; exit 0 ;;
+  "plugin link") [ -e "$SBX_ROOT/fail-herdr-link" ] && exit 1; exit 0 ;;
+esac
+exit 0
+H
+# kern.hv_vmm_present is 1 inside a VM; $HV chooses.
+printf '#!/usr/bin/env bash\necho "sysctl $*" >> "$CALLS"\necho "${HV:-0}"\n' > "$T/bin/sysctl"
+# chezmoi also logs the marker provisioning sets for its apply.
+printf '#!/usr/bin/env bash\necho "chezmoi $*" >> "$CALLS"\necho "chezmoi-env DOTFILES_PROVISIONING=${DOTFILES_PROVISIONING:-unset}" >> "$CALLS"\nexit 0\n' > "$T/bin/chezmoi"
+# The pin runs the real codex through `codex-daemon real-bin`, under env -i: the stub codex
+# cannot read $CALLS from the environment, so its path is baked in, and it logs its whole
+# environment (that is what the pin's clean-environment assertions read).
+mkdir -p "$T/home/.local/bin" "$T/codexbin"
+printf '#!/usr/bin/env bash\necho "codex-daemon $*" >> "$CALLS"\ncase "$1" in real-bin) echo "%s/codexbin/codex";; esac\nexit 0\n' "$T" > "$T/home/.local/bin/codex-daemon"
+printf '#!/usr/bin/env bash\necho "codex $*" >> "%s"\n/usr/bin/env | sed "s/^/codex-env /" >> "%s"\n[ -e "%s/fail-codex" ] && exit 1\nexit 0\n' "$CALLS" "$CALLS" "$T" > "$T/codexbin/codex"
 # Scripts provision.sh calls BY PATH bypass $PATH, so stub them by path.
-for sc in configure.sh reconcile-agents.sh; do
+for sc in reconcile-agents.sh machine-check.sh; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$sc" > "$T/src/.scripts/$sc"
 done
+# configure.sh is what first loads the Codex daemon's LaunchAgent, which creates its package
+# link; $T/mk-current makes the stub do that, so a case can tell "before" from "after".
+cat > "$T/src/.scripts/configure.sh" <<'C'
+#!/usr/bin/env bash
+echo "configure.sh $*" >> "$CALLS"
+echo "configure-env DOTFILES_PROVISIONING=${DOTFILES_PROVISIONING:-unset}" >> "$CALLS"
+if [ -e "$SBX_ROOT/mk-current" ]; then
+  mkdir -p "$HOME/.codex/packages/app-server-daemon"
+  ln -sfn local-created "$HOME/.codex/packages/app-server-daemon/current"
+fi
+exit 0
+C
 # Mutators are wrapped, not merely logged: they delegate inside the temp root and
 # refuse outside it. Logging alone is fail-open -- an unstubbed rm simply runs.
 cat > "$T/bin/_mut" <<'M'
@@ -132,7 +169,7 @@ chmod +x "$T/bin/_mut"
 for t in rm chmod find; do
   printf '#!/usr/bin/env bash\nexec "%s/bin/_mut" %s "$@"\n' "$T" "$t" > "$T/bin/$t"
 done
-chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/src/.scripts/*
+chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex"
 
 # Guard the harness against itself. Verifying that a containment assertion CAN fail
 # must never be done by pointing an override at the real binary -- that executes it.
@@ -152,6 +189,7 @@ run(){ local ans=$1; shift
     XDG_BIN_HOME="$T/home/.local/bin" CALLS="$CALLS" IDDB="$IDDB" \
     MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
     LAUNCHCTL_LOADED="$LAUNCHCTL_LOADED" LAUNCHCTL_FAIL="${LAUNCHCTL_FAIL:-}" \
+    PROVISION_REF="${PROVISION_REF:-}" HV="${HV:-0}" HERDR_PANE_ID=pane-test HERDR_SOCKET_PATH="$T/herdr.sock" \
     PROVISION_SRC_OVERRIDE="$SBX_SRC" PROVISION_BREW_BIN="$SBX_BREW" \
     zsh "$SRC/.scripts/provision.sh" "$@" 2>&1); RC=$?; }
 
@@ -392,6 +430,135 @@ has "macOS configuration complete" "and still completes"
 has "Could not set the desktop wallpaper" "and warns about the wallpaper"
 hasnt "Skipping the wallpaper" "and does not claim to have skipped it"
 CFG_DATA=; rm -rf "$T/home/.local/share/chezmoi" "$T/home/Library/Application Support"
+
+echo "N. NetBird's daemon is installed once"
+reset; lc_reset; run 'hercules\ny\n'
+rc_is 0 "a run with no NetBird daemon finishes"
+called "sudo netbird service install" "an absent NetBird daemon is installed through the cached sudo credential"
+called "sudo netbird service start" "and started"
+called "launchctl print system/netbird" "absence is read from launchd"
+reset; echo netbird > "$LAUNCHCTL_LOADED"; run 'hercules\ny\n'
+not_called "netbird service" "a NetBird daemon launchd already lists is left alone"
+lc_reset
+reset; : > "$T/fail-netbird"; run 'hercules\ny\n'
+rm -f "$T/fail-netbird"
+rc_is 0 "a failing NetBird install does not end the run"
+has "sudo netbird service install && sudo netbird service start" "and the warning names the two commands"
+
+echo "O. Neovim plugins and Herdr plugin links"
+CFG="$T/home/.config"; NVL="$T/home/.local/share/nvim/lazy/smart-splits.nvim"
+mkdir -p "$CFG/herdr/plugin-a" "$CFG/herdr/plugin-b" "$CFG/herdr/plugin-c" "$NVL"
+: > "$CFG/herdr/plugin-a/herdr-plugin.toml"; : > "$CFG/herdr/plugin-b/herdr-plugin.toml"; : > "$NVL/herdr-plugin.toml"
+printf '2 plugins installed:\n- b (B) enabled [local:%s/herdr/plugin-b]\n  config: x\n' "$CFG" > "$T/herdr-list"
+reset; run 'hercules\ny\n'
+called "nvim --headless +Lazy! sync +qa" "Neovim installs its plugins headless"
+called "herdr plugin link $CFG/herdr/plugin-a" "an unlinked plugin folder is linked"
+called "herdr plugin link $NVL" "smart-splits.nvim's bundled plugin is linked"
+not_called "herdr plugin link $CFG/herdr/plugin-b" "a folder whose [local:<dir>] is already listed is not linked again"
+not_called "herdr plugin link $CFG/herdr/plugin-c" "a folder without a manifest is not linked"
+nl=$(grep -n '^nvim ' "$CALLS" | head -1 | cut -d: -f1); hl=$(grep -n '^herdr plugin link' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$nl" ] && [ -n "$hl" ] && [ "$nl" -lt "$hl" ]; } && _pass "Neovim syncs before the links" || _fail "Neovim syncs before the links"
+ml=$(grep -n '^mise ' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$ml" ] && [ "$ml" -lt "$nl" ]; } && _pass "and after mise" || _fail "and after mise"
+printf '3 plugins installed:\n- a (A) enabled [local:%s/herdr/plugin-a]\n- b (B) enabled [local:%s/herdr/plugin-b]\n- s (S) enabled [local:%s]\n' "$CFG" "$CFG" "$NVL" > "$T/herdr-list"
+reset; run 'hercules\ny\n'
+not_called "herdr plugin link" "every plugin already listed: no link at all"
+printf '0 plugins installed\n' > "$T/herdr-list"; rm -rf "$NVL"
+reset; : > "$T/fail-herdr-link"; run 'hercules\ny\n'
+rm -f "$T/fail-herdr-link"
+rc_is 0 "a failing link does not end the run"
+has "herdr plugin link $CFG/herdr/plugin-a" "and the warning names the command to re-run"
+called "herdr plugin link $CFG/herdr/plugin-b" "and the next plugin is still tried"
+not_called "herdr plugin link $NVL" "a smart-splits.nvim that was never installed is not linked"
+reset; : > "$T/fail-nvim"; run 'hercules\ny\n'
+rm -f "$T/fail-nvim"
+rc_is 0 "a failing Neovim sync does not end the run"
+has "Lazy! sync" "and the warning names the command"
+called "herdr plugin link $CFG/herdr/plugin-a" "and the links still happen"
+reset; : > "$T/fail-herdr-list"; run 'hercules\ny\n'
+rm -f "$T/fail-herdr-list"
+rc_is 0 "a herdr that cannot list plugins does not end the run"
+not_called "herdr plugin link" "and links nothing it cannot check"
+rm -rf "$CFG/herdr" "$T/herdr-list" "$T/home/.local/share/nvim"
+
+echo "P. the Codex pin runs only on a machine with no daemon package"
+PKG="$T/home/.codex/packages/app-server-daemon"
+PIN="codex app-server daemon update --from-cli --yes"
+rm -rf "$T/home/.codex"; reset; run 'hercules\ny\n'
+rc_is 0 "a fresh machine finishes"
+called "$PIN" "a machine with no daemon package is pinned to the CLI's package"
+called "codex-daemon real-bin" "through the real binary codex-daemon names, not a bare codex"
+cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1); pl=$(grep -n "^$PIN" "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$cl" ] && [ -n "$pl" ] && [ "$cl" -lt "$pl" ]; } && _pass "after configure.sh" || _fail "after configure.sh"
+called "codex-env HOME=$T/home" "the pin has HOME"
+called "codex-env PATH=$T/home/.local/share/mise/shims:$T/home/.local/bin:$T/brew/bin:$T/brew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "and the LaunchAgent's PATH"
+for v in CONFIG:.config DATA:.local/share STATE:.local/state CACHE:.cache; do
+  called "codex-env XDG_${v%%:*}_HOME=$T/home/${v#*:}" "and XDG_${v%%:*}_HOME"
+done
+not_called "codex-env HERDR_" "and no HERDR_* variable, though the caller's pane set some"
+not_called "codex-env CALLS=" "and nothing else of the caller's environment"
+rm -rf "$T/home/.codex"; : > "$T/mk-current"; reset; run 'hercules\ny\n'
+rm -f "$T/mk-current"
+called "$PIN" "a daemon package configure.sh itself created does not stop the pin: it is read before step 16"
+rm -rf "$T/home/.codex"; : > "$T/fail-codex"; reset; run 'hercules\ny\n'
+rm -f "$T/fail-codex"
+rc_is 0 "a failing pin does not end the run"
+has "codex app-server daemon update --from-cli --yes" "and the warning names the manual command"
+mkdir -p "$PKG"; ln -s local-20261101 "$PKG/current"
+reset; run 'hercules\ny\n'
+not_called "$PIN" "a local- package link (dangling) means no pin"
+rm -rf "$T/home/.codex"; mkdir -p "$PKG/releases/0.1.0"; ln -s releases/0.1.0 "$PKG/current"
+reset; run 'hercules\ny\n'
+not_called "$PIN" "a releases/0.1.0 package link means no pin"
+not_called "codex-daemon real-bin" "and codex-daemon is not asked"
+rm -rf "$T/home/.codex"
+
+echo "Q. chezmoi apply knows it is provisioning"
+SBX_SRC="$T/fresh2"; rm -rf "$SBX_SRC"; reset; run 'hercules\ny\n'
+called "chezmoi-env DOTFILES_PROVISIONING=1" "chezmoi apply --force runs with DOTFILES_PROVISIONING=1"
+al=$(grep -n '^chezmoi apply' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$al" ] && [ "$(sed -n "$((al+1))p" "$CALLS")" = "chezmoi-env DOTFILES_PROVISIONING=1" ]; } \
+  && _pass "the marker is on the apply itself" || _fail "the marker is on the apply itself"
+il=$(grep -n '^chezmoi init' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$il" ] && [ "$(sed -n "$((il+1))p" "$CALLS")" = "chezmoi-env DOTFILES_PROVISIONING=unset" ]; } \
+  && _pass "chezmoi init does not get it" || _fail "chezmoi init does not get it"
+called "configure-env DOTFILES_PROVISIONING=unset" "the marker is not exported: a later script (configure.sh) never sees it"
+not_called "configure-env DOTFILES_PROVISIONING=1" "and no later script sees it set"
+called "git clone --branch main" "an unset PROVISION_REF clones main"
+hasnt "Branch ....." "and the summary shows no branch line"
+SBX_SRC="$T/src"
+
+echo "R. PROVISION_REF"
+SBX_SRC="$T/fresh3"; rm -rf "$SBX_SRC"
+reset; PROVISION_REF=feat/x HV=1 run 'hercules\ny\n'
+rc_is 0 "a branch ref inside a VM provisions"
+called "sysctl -n kern.hv_vmm_present" "the VM is read from kern.hv_vmm_present"
+called "git clone --branch feat/x" "the clone checks the ref out"
+has "Branch ............. feat/x" "and the summary shows it"
+SBX_SRC="$T/fresh4"; rm -rf "$SBX_SRC"
+reset; PROVISION_REF=feat/x HV=0 run 'hercules\ny\n'
+rc_is 1 "a branch ref outside a VM is refused"
+not_called "sudo -v" "before sudo is asked"
+not_called "git clone" "nothing is cloned"
+not_called "brew" "and nothing is installed"
+has "PROVISION_REF" "and the refusal names the variable"
+[ -e "$SBX_SRC" ] && _fail "and no checkout exists" || _pass "and no checkout exists"
+reset; PROVISION_REF=main HV=0 run 'hercules\ny\n'
+rc_is 0 "PROVISION_REF=main is allowed outside a VM"
+called "git clone --branch main" "and clones main"
+hasnt "Branch ....." "with no branch line"
+SBX_SRC="$T/src"
+
+echo "S. the end of the run points at the checklist"
+reset; run 'hercules\ny\n'
+called "machine-check.sh --todo --machine hercules" "the end calls machine-check.sh --todo for the machine"
+cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1); ml=$(grep -n 'machine-check.sh' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$cl" ] && [ -n "$ml" ] && [ "$cl" -lt "$ml" ]; } && _pass "after configure.sh" || _fail "after configure.sh"
+hasnt "Borg: this machine" "the hard-coded Borg step is gone"
+hasnt "Alfred snippets" "the hard-coded Alfred steps are gone"
+hasnt "respaces" "the hard-coded Herdr step is gone"
+has "Restart your terminal" "the restart line stays"
+has "logout/restart" "and the logout line"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
