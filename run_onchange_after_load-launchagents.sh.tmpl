@@ -1,9 +1,13 @@
 #!/bin/sh
 # Loads or reloads the be.netronix.* LaunchAgents after chezmoi wrote them. chezmoi runs this
 # script again whenever its rendered text changes, so each line below is the sha256 of one plist
-# template rendered with this machine's data: a data change that alters a plist reloads it too.
-{{ range glob (joinPath .chezmoi.sourceDir "Library/LaunchAgents/*.plist.tmpl") -}}
-# {{ base . }} {{ includeTemplate (printf "Library/LaunchAgents/%s" (base .)) $ | sha256sum }}
+# source as chezmoi deploys it: a template rendered with this machine's data (a data change that
+# alters a plist reloads it too), a plain file as is.
+{{ range glob (joinPath .chezmoi.sourceDir "Library/LaunchAgents/*.plist*") -}}
+{{ $src := printf "Library/LaunchAgents/%s" (base .) -}}
+{{ $body := "" -}}
+{{ if hasSuffix ".tmpl" . }}{{ $body = includeTemplate $src $ }}{{ else }}{{ $body = include $src }}{{ end -}}
+# {{ base . }} {{ sha256sum $body }}
 {{ end -}}
 # provision.sh sets DOTFILES_PROVISIONING=1 for its apply; configure.sh runs the loader itself.
 [ "${DOTFILES_PROVISIONING:-}" = 1 ] && exit 0

@@ -177,10 +177,10 @@ OUT1="$OUT"; OUT2=$(chezmoi --source "$CP2" --config "$T/chezmoi-true.toml" --co
 [ "$OUT1" = "$OUT2" ] && _pass "rendering from two source paths gives byte-identical text" \
   || _fail "rendering from two source paths gives byte-identical text"
 case "$OUT1" in *"$T"*) _fail "and the text names no source path";; *) _pass "and the text names no source path";; esac
-n_plists=$(ls "$SRC"/Library/LaunchAgents/*.plist.tmpl | wc -l | tr -d ' ')
-n=$(printf '%s\n' "$OUT" | grep -cE '^# be\.netronix\.[a-z-]+\.plist\.tmpl [0-9a-f]{64}$' || true)
+n_plists=$(ls "$SRC"/Library/LaunchAgents | wc -l | tr -d ' ')
+n=$(printf '%s\n' "$OUT" | grep -cE '^# be\.netronix\.[a-z-]+\.plist(\.tmpl)? [0-9a-f]{64}$' || true)
 [ "$n_plists" -ge 1 ] && [ "$n" = "$n_plists" ] \
-  && _pass "one hash line per plist template ($n)" || _fail "one hash line per plist template ($n of $n_plists)"
+  && _pass "one hash line per file under Library/LaunchAgents ($n)" || _fail "one hash line per file under Library/LaunchAgents ($n of $n_plists)"
 case "$OUT" in "#!/bin/sh"*) _pass "a /bin/sh script";; *) _fail "a /bin/sh script";; esac
 printf '%s\n' "$OUT" | sh -n && _pass "that parses" || _fail "that parses"
 BASE="$OUT"; SCRIPT="$OUT"
@@ -193,6 +193,14 @@ cp "$SRC/Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl" "$CP/Library/Lau
 render false
 [ "$OUT" != "$BASE" ] && _pass "changing only is_arm (no template edited) changes the script" \
   || _fail "changing only is_arm (no template edited) changes the script"
+printf '<plist>v1</plist>\n' > "$CP/Library/LaunchAgents/be.netronix.static.plist"
+render true; STATIC="$OUT"
+printf '%s\n' "$OUT" | grep -qE '^# be\.netronix\.static\.plist [0-9a-f]{64}$' \
+  && _pass "a static (non-template) plist gets its own hash line" || _fail "a static (non-template) plist gets its own hash line"
+printf '<plist>v2</plist>\n' > "$CP/Library/LaunchAgents/be.netronix.static.plist"
+render true
+[ "$OUT" != "$STATIC" ] && _pass "editing a static plist changes the script" || _fail "editing a static plist changes the script"
+rm -f "$CP/Library/LaunchAgents/be.netronix.static.plist"
 : > "$T/loader-mark"
 run_hook DOTFILES_PROVISIONING=1 CHEZMOI_SOURCE_DIR="$CP"
 rc_is 0 "DOTFILES_PROVISIONING=1: exit 0"
@@ -208,7 +216,7 @@ run_hook DOTFILES_PROVISIONING=0 CHEZMOI_SOURCE_DIR="$CP"
 : > "$T/loader-mark"
 run_hook
 rc_is 1 "CHEZMOI_SOURCE_DIR unset: exit 1"
-has "CHEZMOI_SOURCE_DIR is unset or has no .scripts/load-launchagents.sh" "with a clear message"
+has "CHEZMOI_SOURCE_DIR" "and names the variable"
 [ ! -s "$T/loader-mark" ] && _pass "and nothing is called" || _fail "and nothing is called"
 run_hook CHEZMOI_SOURCE_DIR="$T/nowhere"
 rc_is 1 "CHEZMOI_SOURCE_DIR without a loader: exit 1"
