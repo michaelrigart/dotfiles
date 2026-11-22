@@ -30,6 +30,7 @@ log_error() { echo "${RED}[ERROR]${NC} $1"; }
 
 status=0
 CHECK=0   # --check: report what would change, change nothing
+pending=0 # --check: how many items it reported
 MANIFEST="${XDG_CONFIG_HOME:-$HOME/.config}/agents/plugins.conf"
 
 # Codex marketplaces whose plugins are provided by Codex itself — never flagged as drift.
@@ -150,16 +151,18 @@ parse_manifest() {
   done < "$MANIFEST"
 }
 
-# mutate <description> <command...>  -> the one way a state-changing call is made. Under
-# --check it prints the description ("missing: ..." or "differs: ..."), sets status=1 and
-# does not run the command; otherwise it runs it and returns its status.
+# mutate <check-line> <info> <command...>  -> the one way a state-changing call is made, and
+# the one place it is announced. Under --check it prints <check-line> ("missing: ..." or
+# "differs: ..."; an empty one prints nothing, for a step another line already covers), counts
+# it, sets status=1 and does not run the command. Otherwise it prints <info> (when not empty)
+# and runs the command, returning its status.
 mutate() {
-  local __desc=$1; shift
+  local __line=$1 __info=$2; shift 2
   if [ "$CHECK" -eq 1 ]; then
-    echo "$__desc"
-    status=1
+    if [ -n "$__line" ]; then echo "$__line"; pending=$((pending + 1)); status=1; fi
     return 0
   fi
+  [ -n "$__info" ] && log_info "$__info"
   "$@"
 }
 
@@ -258,14 +261,13 @@ reconcile_claude_mcp() {
         match)
           log_info "claude mcp present: $name"; continue ;;
         differs)
-          log_info "claude mcp replace: $name"
-          mutate "differs: claude mcp $name" claude mcp remove "$name" --scope user || {
+          mutate "differs: claude mcp $name" "claude mcp replace: $name" claude mcp remove "$name" --scope user || {
             log_warn "failed to remove claude mcp: $name"; status=1; continue
           }
-          [ "$CHECK" -eq 1 ] && continue ;;
-        *) log_info "claude mcp add: $name" ;;
+          addline=""; addinfo="" ;;
+        *) addline="missing: claude mcp $name"; addinfo="claude mcp add: $name" ;;
       esac
-      mutate "missing: claude mcp $name" claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
+      mutate "$addline" "$addinfo" claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
       continue
     fi
 
@@ -296,15 +298,14 @@ EOF
       match)
         log_info "claude mcp present: $name (local: $phys)" ;;
       differs)
-        log_info "claude mcp replace: $name (local: $phys)"
-        mutate "differs: claude mcp $name (local: $phys)" in_dir "$phys" claude mcp remove "$name" --scope local || {
+        mutate "differs: claude mcp $name (local: $phys)" "claude mcp replace: $name (local: $phys)" in_dir "$phys" claude mcp remove "$name" --scope local || {
           log_warn "failed to remove claude mcp: $name"; status=1; continue
         }
-        [ "$CHECK" -eq 1 ] && continue ;;
-      *) log_info "claude mcp add: $name (local: $phys)" ;;
+        addline=""; addinfo="" ;;
+      *) addline="missing: claude mcp $name (local: $phys)"; addinfo="claude mcp add: $name (local: $phys)" ;;
     esac
     if [ "$state" != match ]; then
-      mutate "missing: claude mcp $name (local: $phys)" in_dir "$phys" claude mcp add-json "$name" "$json" --scope local || {
+      mutate "$addline" "$addinfo" in_dir "$phys" claude mcp add-json "$name" "$json" --scope local || {
         log_warn "failed to add claude mcp: $name"; status=1; continue
       }
     fi
@@ -313,8 +314,7 @@ EOF
       log_warn "claude mcp: could not read $cfg — leaving the user-scope entry of $name"; status=1; continue
     }
     if [ "$ustate" != absent ]; then
-      log_info "claude mcp remove: $name (user scope)"
-      mutate "differs: claude mcp $name (user-scope entry beside the local one)" claude mcp remove "$name" --scope user || { log_warn "failed to remove claude mcp: $name"; status=1; }
+      mutate "differs: claude mcp $name (user-scope entry beside the local one)" "claude mcp remove: $name (user scope)" claude mcp remove "$name" --scope user || { log_warn "failed to remove claude mcp: $name"; status=1; }
     fi
   done
 }
@@ -336,8 +336,7 @@ reconcile_claude() {
       if printf '%s\n' "$have" | grep -qxF "$repo"; then
         log_info "claude marketplace present: $repo"
       else
-        log_info "claude marketplace add: $repo"
-        mutate "missing: claude marketplace $repo" claude plugin marketplace add "$repo" || { log_warn "failed to add claude marketplace: $repo"; status=1; }
+        mutate "missing: claude marketplace $repo" "claude marketplace add: $repo" claude plugin marketplace add "$repo" || { log_warn "failed to add claude marketplace: $repo"; status=1; }
       fi
     done
   fi
@@ -360,8 +359,7 @@ reconcile_claude() {
           log_info "claude plugin present: $id"
         fi
       else
-        log_info "claude plugin install: $id"
-        mutate "missing: claude plugin $id" claude plugin install "$id" --scope user || { log_warn "failed to install claude plugin: $id"; status=1; }
+        mutate "missing: claude plugin $id" "claude plugin install: $id" claude plugin install "$id" --scope user || { log_warn "failed to install claude plugin: $id"; status=1; }
       fi
     done
     # Drift: installed user-scope plugins not declared.
@@ -403,8 +401,7 @@ EOF
       if in_list "$repo" "${have_norm[@]}"; then
         log_info "codex marketplace present: $repo"
       else
-        log_info "codex marketplace add: $repo"
-        mutate "missing: codex marketplace $repo" codex plugin marketplace add "$repo" || { log_warn "failed to add codex marketplace: $repo"; status=1; }
+        mutate "missing: codex marketplace $repo" "codex marketplace add: $repo" codex plugin marketplace add "$repo" || { log_warn "failed to add codex marketplace: $repo"; status=1; }
       fi
     done
   fi
@@ -425,8 +422,7 @@ EOF
           log_info "codex plugin present: $pid"
         fi
       else
-        log_info "codex plugin add: $pid"
-        mutate "missing: codex plugin $pid" codex plugin add "$pid" || { log_warn "failed to add codex plugin: $pid"; status=1; }
+        mutate "missing: codex plugin $pid" "codex plugin add: $pid" codex plugin add "$pid" || { log_warn "failed to add codex plugin: $pid"; status=1; }
       fi
     done
     # Drift: installed plugins not declared, excluding Codex system marketplaces.
@@ -458,7 +454,14 @@ main() {
   parse_manifest
   reconcile_claude
   reconcile_codex
-  if [ "$status" -eq 0 ]; then
+  if [ "$CHECK" -eq 1 ]; then
+    if [ "$pending" -gt 0 ]; then
+      log_warn "check: $pending item(s) missing or different."
+    elif [ "$status" -eq 0 ]; then
+      log_info "check: all declared items present."
+    fi
+    [ "$status" -ne 0 ] && [ "$pending" -eq 0 ] && log_warn "check: finished with issues (see warnings above)."
+  elif [ "$status" -eq 0 ]; then
     log_info "Agent plugin reconcile complete — all declared items present."
   else
     log_warn "Agent plugin reconcile finished with issues (see warnings above)."

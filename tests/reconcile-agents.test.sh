@@ -513,6 +513,27 @@ has "missing: codex marketplace owner/cx"     "--check: missing codex marketplac
 has "missing: codex plugin bar@cx"            "--check: missing codex plugin reported"
 rc_is 1                                       "--check with items missing: exit 1"
 if [ ! -s "$CALLS" ]; then _pass "--check with items missing: no state-changing call"; else _fail "--check with items missing: no state-changing call"; fi
+hasnt "claude plugin install: foo@m"          "--check: no action announced as if taken"
+hasnt "claude mcp add: absent-mcp"            "--check: no mcp action announced as if taken"
+has "check: 6 item(s) missing or different"   "--check: summary counts the items"
+hasnt "see warnings above"                    "--check: summary does not blame warnings"
+
+reset_mocks
+USR > "$CFG/.claude.json"
+RECON_ARGS=--check run "claude_mcp ha-mcp ~"
+has "missing: claude mcp ha-mcp (local: $CFGP)"   "--check scoped: missing local entry reported"
+has "differs: claude mcp ha-mcp (user-scope entry beside the local one)" "--check scoped: user-scope entry reported"
+rc_is 1                                           "--check scoped: exit 1"
+if [ ! -s "$CALLS" ] && [ ! -s "$MCPCWD" ]; then _pass "--check scoped: no mcp call in any directory"; else _fail "--check scoped: no mcp call in any directory"; fi
+
+reset_mocks
+jq -c --argjson t "$TOK" '. + {mcpServers:{"ha-mcp":$t}}' <<< "$(jq -nc --arg d "$CFGP" '{projects:{($d):{mcpServers:{"ha-mcp":{type:"stdio",command:"uvx",args:[],env:{}}}}}}')" > "$CFG/.claude.json"
+RECON_ARGS=--check run "claude_mcp ha-mcp ~"
+has "differs: claude mcp ha-mcp (local: $CFGP)"   "--check scoped: differing local entry reported"
+has "differs: claude mcp ha-mcp (user-scope entry beside the local one)" "--check scoped: user-scope entry reported beside a differing local one"
+hasnt "missing: claude mcp ha-mcp"                "--check scoped: a differing local entry is not also missing"
+rc_is 1                                           "--check scoped, differing: exit 1"
+if [ ! -s "$CALLS" ] && [ ! -s "$MCPCWD" ]; then _pass "--check scoped, differing: no mcp call in any directory"; else _fail "--check scoped, differing: no mcp call in any directory"; fi
 
 reset_mocks; export MOCK_CL_MKT='[{"name":"a","source":"github","repo":"owner/repo"}]'
 export MOCK_CL_PLUGINS='[{"id":"foo@m","scope":"user","enabled":true}]'
