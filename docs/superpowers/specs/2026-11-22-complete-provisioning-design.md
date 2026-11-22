@@ -1,6 +1,6 @@
 # Complete provisioning: a reinstalled Mac ends up as it is today
 
-**Status:** In progress (branch `feat/complete-provisioning`; its PR against `main` once opened)
+**Status:** Implemented (branch `feat/complete-provisioning`, its PR against `main`)
 **Date:** 2026-11-22
 **Branch:** `feat/complete-provisioning`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-complete-provisioning`
@@ -18,6 +18,9 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
+**Real size:** 532 lines of non-test code (+458 −74), 1.13 times the estimate; 1,336 lines of test
+code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
+and source check, and the checklist lint's wider rules. One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
