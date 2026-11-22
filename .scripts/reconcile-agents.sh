@@ -154,12 +154,12 @@ parse_manifest() {
 # mutate <check-line> <info> <command...>  -> the one way a state-changing call is made, and
 # the one place it is announced. Under --check it prints <check-line> ("missing: ..." or
 # "differs: ..."; an empty one prints nothing, for a step another line already covers), counts
-# it, sets status=1 and does not run the command. Otherwise it prints <info> (when not empty)
+# it and does not run the command (main turns a non-zero count into exit 1). Otherwise it prints <info> (when not empty)
 # and runs the command, returning its status.
 mutate() {
   local __line=$1 __info=$2; shift 2
   if [ "$CHECK" -eq 1 ]; then
-    if [ -n "$__line" ]; then echo "$__line"; pending=$((pending + 1)); status=1; fi
+    if [ -n "$__line" ]; then echo "$__line"; pending=$((pending + 1)); fi
     return 0
   fi
   [ -n "$__info" ] && log_info "$__info"
@@ -241,7 +241,7 @@ mcp_entry_state() {
 # only if the local one succeeded or already matched.
 reconcile_claude_mcp() {
   [ "${#claude_mcps[@]}" -eq 0 ] && return
-  local cfg="$HOME/.claude.json" i name dir phys cmd json state ustate other
+  local cfg="$HOME/.claude.json" i name dir phys cmd json state ustate other addline addinfo
   if [ -e "$cfg" ] && ! jq -e 'type == "object"' "$cfg" >/dev/null 2>&1; then
     log_warn "claude mcp: $cfg is not a JSON object — skipping MCP reconcile"
     status=1; return
@@ -455,12 +455,16 @@ main() {
   reconcile_claude
   reconcile_codex
   if [ "$CHECK" -eq 1 ]; then
-    if [ "$pending" -gt 0 ]; then
+    if [ "$pending" -gt 0 ] && [ "$status" -ne 0 ]; then
+      log_warn "check: $pending item(s) missing or different; some queries failed (see warnings above)."
+    elif [ "$pending" -gt 0 ]; then
       log_warn "check: $pending item(s) missing or different."
-    elif [ "$status" -eq 0 ]; then
+    elif [ "$status" -ne 0 ]; then
+      log_warn "check: finished with issues (see warnings above)."
+    else
       log_info "check: all declared items present."
     fi
-    [ "$status" -ne 0 ] && [ "$pending" -eq 0 ] && log_warn "check: finished with issues (see warnings above)."
+    [ "$pending" -gt 0 ] && status=1
   elif [ "$status" -eq 0 ]; then
     log_info "Agent plugin reconcile complete — all declared items present."
   else

@@ -545,8 +545,10 @@ if printf '%s\n' "$OUT" | grep -q '^\(missing\|differs\):'; then _fail "--check 
 rc_is 0                                       "--check with everything present: exit 0"
 
 reset_mocks; export MOCK_CL_PLUGINS='[]' MOCK_CL_PLUGINS_RC=1
-RECON_ARGS=--check run "claude_plugin foo@m"
+RECON_ARGS=--check run "claude_plugin foo@m\ncodex_plugin bar@cx"
 has "claude plugin list failed"               "--check: a failed query is surfaced"
+has "missing: codex plugin bar@cx"            "--check: a failed query does not hide a pending item"
+has "check: 1 item(s) missing or different; some queries failed (see warnings above)" "--check: summary names both the pending item and the failed query"
 rc_is 1                                       "--check: a failed query still exits 1"
 
 reset_mocks
