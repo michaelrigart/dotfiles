@@ -157,8 +157,8 @@ holds them in full):
 | `alfred-powerpack` | all | you | open Alfred and enter the Powerpack licence | Alfred's `powerpack.*.dat` exists |
 | `alfred-accessibility` | all | you | System Settings → Privacy & Security → Accessibility → add Alfred (without it the snippets expand nothing) | `-` |
 | `alfred-snippets` | all | you | run `.scripts/configure.sh` from your terminal: it turns on snippet expansion and restarts Alfred to index the relay snippets (it may ask for Automation consent) | `autoExpandSnippets` is 1 under the machine's localhash, and Alfred's snippet index (`Databases/snippets.alfdb`) holds the `Relay` collection |
-| `little-snitch-extension` | all | you | open Little Snitch, allow its network extension, enter the licence | `systemextensionsctl list` shows it `activated enabled` |
-| `little-snitch-rules` | all | you | add the rules of hercules-agent-machine §8 G (netbird, Syncthing, hercules' sshd) | `-` |
+| `little-snitch-extension` | all | you | open Little Snitch and allow its network extension | `systemextensionsctl list` shows it `activated enabled` |
+| `little-snitch-rules` | all | you | enter the licence and add the rules of hercules-agent-machine §8 G (netbird, Syncthing, hercules' sshd); neither has a check | `-` |
 | `netbird-up` | all | you | `netbird up` and finish the SSO login | `netbird status` shows `Management: Connected` |
 | `netbird-session-expiry` | hercules | you | NetBird dashboard → Peers → hercules → Session Expiration off (§8 B3) | `-` |
 | `syncthing-settings` | all | you | Syncthing.app: a GUI user and password; Global Discovery, Relaying and NAT traversal off, Local Discovery on (§8 E1) | `config.xml` has a GUI user and those four options |
@@ -173,7 +173,7 @@ holds them in full):
 | `hercules-sharing` | hercules | you | turn on Remote Login and Screen Sharing (System Settings → General → Sharing) | `print-disabled system` shows sshd and screensharing enabled |
 | `sshd-key-only` | all | you | Remote Login off, or on and key-only per security-locks-2 §7 (the key in `~/.ssh/authorized_keys`, a key login from the other Mac, then the `000-hardening.conf` drop-in) | sshd disabled, or the effective config (`sshd -G`) has `passwordauthentication no`, `kbdinteractiveauthentication no` and `permitrootlogin no` |
 | `hercules-autologin` | hercules | you | automatic login, so the LaunchAgents run after a remote power-on | `autoLoginUser` is set |
-| `hercules-host-key` | fenrir | you | `ssh hercules true` once, comparing the host key with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on hercules (§8 C) | `ssh -o BatchMode=yes hercules true` |
+| `hercules-host-key` | fenrir | you | `ssh hercules true` once, comparing the host key with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on hercules (§8 C); hercules must be reachable | `ssh` with `BatchMode`, `StrictHostKeyChecking=yes` and no authentication method reaches hercules' auth step, so a changed host key reads ✗ and nothing prompts |
 | `herdr-machine` | fenrir | you | `hc machine add hercules` (§8 D) | `hc machine ls --json` lists hercules |
 | `weekly-research` | research_host | you | first run under launchd: `launchctl kickstart gui/$(id -u)/be.netronix.weekly-research`, then read the note | `weekly-research --status` says `vault inbox: writable` |
 | `acceptance` | all | you | in a fresh Claude Code session `./tests/run.sh live-agent-signing live-credential-boundary live-agent-auth`; start `codex` once in a Herdr pane and clear its first-run screens, then, unsandboxed, `./tests/run.sh live-codex-daemon`; with Remote Login on, `ssh -o PubkeyAuthentication=no <this Mac>` from the other Mac is refused | `-` |
@@ -351,12 +351,12 @@ Michael names the items before that task runs; then the keys are templated and t
 
 ## Michael's steps after merge
 
-1. `chezmoi apply`, then `brew bundle install --file ~/.config/homebrew/Brewfile` (D2's Tart, if
-   chosen).
-2. On fenrir and on hercules, from his own terminal: `~/.local/share/chezmoi/.scripts/configure.sh`
-   once (it records the LaunchAgent copies; the jobs other than codex-app-server reload once),
-   then `~/.local/share/chezmoi/.scripts/machine-check.sh`, and work down its `✗` lines. On fenrir
-   that includes the Codex re-pin (`codex-daemon-pin`).
+1. `chezmoi apply` (D1: its first run loads the LaunchAgent loader, which reloads every loaded
+   job except codex-app-server once, because no records exist yet; the ssh-agent is without keys
+   for about a second), then `brew bundle install --file ~/.config/homebrew/Brewfile` (fenrir:
+   Tart).
+2. On fenrir and on hercules, from his own terminal: `~/.local/share/chezmoi/.scripts/machine-check.sh`,
+   and work down its `✗` lines. On fenrir that includes the Codex re-pin (`codex-daemon-pin`).
 
 ## Left to the builder
 
