@@ -160,6 +160,18 @@ else
   git clone --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
   : > "${UNAPPLIED}"
 fi
+# The scripts this run executes outside the sandbox (steps 9, 12b and 16, and the closing check)
+# come from this run's own clone. A checkout that already existed may have been written by the
+# sandbox, so they then come from a fresh clone of the same ref, removed when the run ends.
+SCRIPTS_DIR="${SRC_DIR}/.scripts"
+if [ "$SRC_PRESENT" -eq 1 ]; then
+  mkdir -p -m 700 "${XDG_CACHE_HOME}/dotfiles-run"
+  SCRIPTS_CLONE=$(mktemp -d "${XDG_CACHE_HOME}/dotfiles-run/provision.XXXXXX")
+  trap 'rm -rf "${SCRIPTS_CLONE}"' EXIT
+  git clone -q --depth 1 --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SCRIPTS_CLONE}/src" \
+    || { log_error "Could not clone the dotfiles source to run its scripts from"; exit 1; }
+  SCRIPTS_DIR="${SCRIPTS_CLONE}/src/.scripts"
+fi
 
 # ============================================================================
 # 5. Preflight — every question is asked here, and nowhere else
@@ -363,9 +375,9 @@ fi
 # ============================================================================
 # 9. Reconcile AI agent plugins (Claude Code + Codex)
 # ============================================================================
-if [ -x "${SRC_DIR}/.scripts/reconcile-agents.sh" ]; then
+if [ -x "${SCRIPTS_DIR}/reconcile-agents.sh" ]; then
   log_info "Reconciling AI agent plugins..."
-  "${SRC_DIR}/.scripts/reconcile-agents.sh" \
+  "${SCRIPTS_DIR}/reconcile-agents.sh" \
     || warn "agent plugins: reconcile incomplete (its warnings are above) — re-run dotfiles-run reconcile-agents"
 else
   log_warn "reconcile-agents.sh not found, skipping agent plugin setup"
@@ -425,7 +437,7 @@ log_info "Installing Neovim plugins, Mason's tools and the treesitter parsers...
 # nvim-finish-install.lua waits for them. Mason's Ruby tools need mise's Ruby, not macOS's,
 # and the shims are on PATH only once zshenv is.
 PATH="${XDG_DATA_HOME}/mise/shims:${PATH}" nvim --headless "+Lazy! install" \
-  "+luafile ${SRC_DIR}/.scripts/nvim-finish-install.lua" "+cq 2" </dev/null \
+  "+luafile ${SCRIPTS_DIR}/nvim-finish-install.lua" "+cq 2" </dev/null \
   || warn "neovim: not everything installed (named above) — open nvim once: LazyVim installs what is missing at start"
 
 # Herdr's TUI plugins are linked, not copied: ~/.config/herdr/plugin-* (chezmoi) and
@@ -471,14 +483,14 @@ brew cleanup
 # ============================================================================
 # 16. Run macOS configuration
 # ============================================================================
-if [ -f "${SRC_DIR}/.scripts/configure.sh" ]; then
+if [ -f "${SCRIPTS_DIR}/configure.sh" ]; then
   log_info "Running macOS configuration..."
   # --hostname: preflight already owns the identity, so configure.sh verifies instead
   # of prompting. It never renames in this mode.
-  "${SRC_DIR}/.scripts/configure.sh" --hostname "${MACHINE_NAME}" \
+  "${SCRIPTS_DIR}/configure.sh" --hostname "${MACHINE_NAME}" \
     || warn "macOS configuration reported problems"
 else
-  log_warn "macOS configuration script not found at ${SRC_DIR}/.scripts/configure.sh"
+  log_warn "macOS configuration script not found at ${SCRIPTS_DIR}/configure.sh"
 fi
 
 # ============================================================================
@@ -536,7 +548,7 @@ if [ ${#WARNINGS[@]} -gt 0 ]; then
 fi
 # The checklist replaces the old hard-coded next steps: Borg, Alfred, Herdr and the rest are
 # rows in it. Read-only; a row that is not done is not a failure of the run.
-"${SRC_DIR}/.scripts/machine-check.sh" --todo --machine "${MACHINE_NAME}" </dev/null || true
+"${SCRIPTS_DIR}/machine-check.sh" --todo --machine "${MACHINE_NAME}" </dev/null || true
 log_info "Check again any time, from a new shell: dotfiles-run machine-check"
 echo ""
 log_info "Next steps:"

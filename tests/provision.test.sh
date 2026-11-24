@@ -202,6 +202,7 @@ done
 cat > "$T/src/.scripts/machine-check.sh" <<'MC'
 #!/usr/bin/env bash
 echo "machine-check.sh $*" >> "$CALLS"
+echo "machine-check-from $(cd "$(dirname "$0")/.." && pwd)" >> "$CALLS"
 if [ -e "$SBX_ROOT/read-stdin-machine-check" ]; then
   if read -r _; then echo "machine-check-stdin got-input" >> "$CALLS"; else echo "machine-check-stdin eof" >> "$CALLS"; fi
 fi
@@ -213,6 +214,7 @@ MC
 cat > "$T/src/.scripts/configure.sh" <<'C'
 #!/usr/bin/env bash
 echo "configure.sh $*" >> "$CALLS"
+echo "configure-from $(cd "$(dirname "$0")/.." && pwd)" >> "$CALLS"
 echo "configure-env DOTFILES_PROVISIONING=${DOTFILES_PROVISIONING:-unset}" >> "$CALLS"
 if [ ! -e "$SBX_ROOT/no-daemon-package" ]; then
   mkdir -p "$HOME/.codex/packages/app-server-daemon"
@@ -308,10 +310,19 @@ lj=$(grep -nE '^brew\[[^]]*\] install( [^ ]+)* jq( |$)' "$CALLS" | head -1 | cut
 lp=$(grep -n '^chezmoi apply' "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$lj" ] && [ -n "$lp" ] && [ "$lj" -lt "$lp" ]; } && _pass "Homebrew's jq is installed before the first apply" || _fail "Homebrew's jq is installed before the first apply"
 hasnt "already provisioned" "a fresh machine is not told it is already provisioned"
+called "configure-from $SBX_SRC" "a fresh machine runs configure.sh from its own clone"
 SBX_SRC="$T/src"
 reset; run 'hercules\ny\n'
 rc_is 0 "a machine with an existing checkout still finishes"
-not_called "git clone" "an existing checkout is not cloned again"
+not_called "michaelrigart/dotfiles.git $SBX_SRC" "an existing checkout is not cloned again"
+# The sandbox can write that checkout, and these scripts run outside it (spec §2).
+CLONE="$T/home/.cache/dotfiles-run/provision."
+called "git clone -q --depth 1 --branch main https://github.com/michaelrigart/dotfiles.git $CLONE" "the scripts come from a fresh clone of the ref instead"
+called "configure-from $CLONE" "configure.sh runs from it"
+not_called "configure-from $SBX_SRC" "never from the checkout"
+called "machine-check-from $CLONE" "so does the closing machine-check.sh"
+called "+luafile $CLONE" "and the Neovim step's script"
+[ -z "$(ls -A "$T/home/.cache/dotfiles-run" 2>/dev/null)" ] && _pass "the clone is removed when the run ends" || _fail "the clone is removed when the run ends"
 not_called "chezmoi init" "an existing checkout is not initialised from the working tree"
 not_called "chezmoi apply" "an existing checkout is not applied from the working tree"
 has "already provisioned" "the skip is announced"
@@ -345,7 +356,7 @@ rm -rf "$T/left" "$T"/left.earlier-*
 cp -R "$T/src" "$T/left"; : > "$T/home/.config/chezmoi/chezmoistate.boltdb"
 reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml"; run 'hercules\ny\n'
 ls -d "$T"/left.earlier-* >/dev/null 2>&1 && _fail "an applied machine without its config keeps its checkout" || _pass "an applied machine without its config keeps its checkout"
-not_called "git clone" "and nothing is cloned over it"
+not_called "michaelrigart/dotfiles.git $SBX_SRC" "and nothing is cloned over it"
 rm -rf "$T/left" "$T"/left.earlier-* "$T/home/.config/chezmoi/chezmoistate.boltdb"
 SBX_SRC="$T/src"
 
@@ -376,7 +387,7 @@ rm -rf "$SBX_SRC" "$T"/failed.earlier-*
 cp -R "$T/src" "$SBX_SRC"; : > "$SBX_SRC/.git/provision-unapplied"; mkdir -p "$SBX_SRC/.git/worktrees/failed-feat-x"
 reset; run 'hercules\ny\n'
 ls -d "$T"/failed.earlier-* >/dev/null 2>&1 && _fail "a marked checkout with wt siblings stays where it is" || _pass "a marked checkout with wt siblings stays where it is"
-not_called "git clone" "and nothing is cloned over it"
+not_called "michaelrigart/dotfiles.git $SBX_SRC" "and nothing is cloned over it"
 reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml" "$T/home/.config/chezmoi/chezmoistate.boltdb"; run 'hercules\ny\n'
 ls -d "$T"/failed.earlier-* >/dev/null 2>&1 && _fail "so does one without chezmoi's config and state" || _pass "so does one without chezmoi's config and state"
 rm -rf "$SBX_SRC" "$T"/failed.earlier-* "$T/home/.config/chezmoi/chezmoistate.boltdb"
@@ -676,7 +687,8 @@ mkdir -p "$CFG/herdr/plugin-a" "$CFG/herdr/plugin-b" "$CFG/herdr/plugin-c" "$NVL
 : > "$CFG/herdr/plugin-a/herdr-plugin.toml"; : > "$CFG/herdr/plugin-b/herdr-plugin.toml"; : > "$NVL/herdr-plugin.toml"
 printf '2 plugins installed:\n- b (B) enabled [local:%s/herdr/plugin-b]\n  config: x\n' "$CFG" > "$T/herdr-list"
 reset; run 'hercules\ny\n'
-called "nvim --headless +Lazy! install +luafile $T/src/.scripts/nvim-finish-install.lua +cq 2" "Neovim installs its plugins headless, then waits for Mason's tools and the parsers"
+called "nvim --headless +Lazy! install +luafile $T/home/.cache/dotfiles-run/provision." "Neovim installs its plugins headless (on this provisioned machine, the script from a fresh clone)"
+called "/src/.scripts/nvim-finish-install.lua +cq 2" "then waits for Mason's tools and the parsers"
 called "nvim-path-head $T/home/.local/share/mise/shims" "with mise's shims first on PATH, so Mason's Ruby tools get mise's Ruby"
 called "herdr plugin link $CFG/herdr/plugin-a" "an unlinked plugin folder is linked"
 called "herdr plugin link $NVL" "smart-splits.nvim's bundled plugin is linked"
@@ -808,7 +820,7 @@ rm -f "$T/branch"
 rc_is 0 "a branch ref over an existing checkout (in a VM) finishes"
 has "Branch ............. other-branch (existing checkout, used as is)" "the summary names the branch the checkout is on, as used"
 hasnt "feat/x" "and not the ref it ignored"
-not_called "git clone" "nothing is cloned"
+not_called "michaelrigart/dotfiles.git $SBX_SRC" "nothing is cloned over it"
 
 echo "T. no new step can hang the unattended run on stdin"
 # Each stub below reads a line of stdin and fails on EOF; the run is fed spare lines, so a step
