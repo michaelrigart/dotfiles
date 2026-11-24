@@ -6,7 +6,7 @@
 # under /usr/bin/timeout -k 5 30 /bin/zsh -f -c, with the working directory $HOME and stdin /dev/null. tests/provisioning.test.sh lints this file.
 identity	all	script	ComputerName and HostName are the machine's name (the preflight sets them)	[ "$(scutil --get ComputerName)" = "$MACHINE" ] && [ "$(scutil --get HostName)" = "$MACHINE" ]
 brewfile	all	script	Everything in the Brewfile is installed	HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_API_AUTO_UPDATE_SECS=31536000 brew bundle check --no-upgrade --file "$HOME/.config/homebrew/Brewfile"
-agent-plugins	all	script	Every marketplace and plugin in ~/.config/agents/plugins.conf is installed (re-run .scripts/reconcile-agents.sh when not)	"$DOTFILES/.scripts/reconcile-agents.sh" --check
+agent-plugins	all	script	Every marketplace and plugin in ~/.config/agents/plugins.conf is installed (re-run dotfiles-run reconcile-agents when not)	"$DOTFILES/.scripts/reconcile-agents.sh" --check
 login-shell	all	script	Homebrew zsh is the login shell	[ "$(dscl . -read "/Users/$USER" UserShell | awk '{print $2}')" = /opt/homebrew/bin/zsh ]
 oh-my-zsh	all	script	Oh My Zsh is in the XDG data folder	[ -f "$XDG_DATA_HOME/oh-my-zsh/oh-my-zsh.sh" ]
 mise-tools	all	script	Every mise tool is installed	m=$(mise ls --missing 2>/dev/null) && [ -z "$m" ]
@@ -28,7 +28,7 @@ forge-logins	all	you	gh auth login, glab auth login and az login	/usr/bin/timeou
 orbstack	all	you	Open OrbStack once, so it installs its helper	[ -f /Library/LaunchDaemons/dev.orbstack.OrbStack.privhelper.plist ]
 alfred-powerpack	all	you	Open Alfred and enter the Powerpack licence	p=("$HOME/Library/Application Support/Alfred"/powerpack.*.dat(N)); (( $#p ))
 alfred-accessibility	all	you	System Settings, Privacy and Security, Accessibility: add Alfred (without it the snippets expand nothing)	-
-alfred-snippets	all	you	Run .scripts/configure.sh from your terminal: it turns on snippet expansion and restarts Alfred to index the relay snippets (it may ask for Automation consent)	A="$HOME/Library/Application Support/Alfred"; h=$(/usr/bin/jq -r .localhash "$A/prefs.json") && [ -n "$h" ] && [ "$(defaults read "$A/Alfred.alfredpreferences/preferences/local/$h/features/clipboard/prefs" autoExpandSnippets)" = 1 ] && [ "$(sqlite3 -readonly "$A/Databases/snippets.alfdb" "select count(*) from snippets where collection='Relay'")" -ge 1 ]
+alfred-snippets	all	you	Run dotfiles-run configure from your terminal: it turns on snippet expansion and restarts Alfred to index the relay snippets (it may ask for Automation consent)	A="$HOME/Library/Application Support/Alfred"; h=$(/usr/bin/jq -r .localhash "$A/prefs.json") && [ -n "$h" ] && [ "$(defaults read "$A/Alfred.alfredpreferences/preferences/local/$h/features/clipboard/prefs" autoExpandSnippets)" = 1 ] && [ "$(sqlite3 -readonly "$A/Databases/snippets.alfdb" "select count(*) from snippets where collection='Relay'")" -ge 1 ]
 little-snitch-extension	all	you	Open Little Snitch and allow its network extension	systemextensionsctl list | grep -i littlesnitch | grep -q 'activated enabled'
 little-snitch-rules	all	you	Enter the Little Snitch licence, then add the rules of hercules-agent-machine section 8 G (netbird, Syncthing, hercules' sshd)	-
 netbird-up	all	you	Run netbird up and finish the SSO login	netbird status | grep -q 'Management: Connected'

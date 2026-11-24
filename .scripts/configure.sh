@@ -344,11 +344,11 @@ if [ -d "${XDG_DATA_HOME}/chezmoi/.backgrounds" ]; then
   # This sets it for the current desktop space
   if [ -f "${HOME}/Pictures/Backgrounds/skyline-appartment.png" ]; then
     if [ "$UNATTENDED" = true ]; then
-      log_info "Skipping the wallpaper: it needs Automation consent; run .scripts/configure.sh yourself to set it"
+      log_info "Skipping the wallpaper: it needs Automation consent; run dotfiles-run configure yourself to set it"
     elif osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"${HOME}/Pictures/Backgrounds/skyline-appartment.png\""; then
       log_info "✓ Desktop wallpaper set to skyline-appartment.png"
     else
-      log_warn "Could not set the desktop wallpaper (System Events needs Automation consent) — re-run .scripts/configure.sh after granting it"
+      log_warn "Could not set the desktop wallpaper (System Events needs Automation consent) — re-run dotfiles-run configure after granting it"
     fi
   fi
 else
@@ -367,7 +367,7 @@ log_info "Configuring Alfred snippet auto-expansion..."
 # land, the toggle would not, and `;codex` would quietly do nothing. So it is computed here.
 alfred_prefs_json="${HOME}/Library/Application Support/Alfred/prefs.json"
 if [ "$UNATTENDED" = true ] && pgrep -x "Alfred" &> /dev/null; then
-  log_info "Skipping the Alfred toggle: it needs Alfred quit, by an Apple Event; run .scripts/configure.sh yourself to set it"
+  log_info "Skipping the Alfred toggle: it needs Alfred quit, by an Apple Event; run dotfiles-run configure yourself to set it"
 elif [ "$UNATTENDED" = true ] && [[ ! -f "$alfred_prefs_json" ]]; then
   log_info "Skipping the Alfred toggle: Alfred has not been launched yet; the alfred-snippets step in the list covers it"
 elif [[ -f "$alfred_prefs_json" ]]; then
@@ -419,7 +419,7 @@ log_info "=========================================="
 log_info "✓ macOS configuration complete!"
 log_info "=========================================="
 echo ""
-log_warn "What is still open on this machine: run .scripts/machine-check.sh --todo --machine ${HOSTNAME}"
+log_warn "What is still open on this machine: run dotfiles-run machine-check --todo --machine ${HOSTNAME}"
 echo ""
 log_info "Consider restarting your Mac to ensure all settings are applied."
 echo ""

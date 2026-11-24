@@ -366,7 +366,7 @@ fi
 if [ -x "${SRC_DIR}/.scripts/reconcile-agents.sh" ]; then
   log_info "Reconciling AI agent plugins..."
   "${SRC_DIR}/.scripts/reconcile-agents.sh" \
-    || warn "agent plugins: reconcile incomplete (its warnings are above) — re-run .scripts/reconcile-agents.sh"
+    || warn "agent plugins: reconcile incomplete (its warnings are above) — re-run dotfiles-run reconcile-agents"
 else
   log_warn "reconcile-agents.sh not found, skipping agent plugin setup"
 fi
@@ -537,7 +537,7 @@ fi
 # The checklist replaces the old hard-coded next steps: Borg, Alfred, Herdr and the rest are
 # rows in it. Read-only; a row that is not done is not a failure of the run.
 "${SRC_DIR}/.scripts/machine-check.sh" --todo --machine "${MACHINE_NAME}" </dev/null || true
-log_info "Check again any time: ${SRC_DIR}/.scripts/machine-check.sh"
+log_info "Check again any time, from a new shell: dotfiles-run machine-check"
 echo ""
 log_info "Next steps:"
 if [ -x "${HOMEBREW_PREFIX}/bin/zsh" ]; then

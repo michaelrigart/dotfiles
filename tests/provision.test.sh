@@ -842,7 +842,7 @@ reset; run 'hercules\ny\n'
 called "machine-check.sh --todo --machine hercules" "the end calls machine-check.sh --todo for the machine"
 cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1); ml=$(grep -n 'machine-check.sh' "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$cl" ] && [ -n "$ml" ] && [ "$cl" -lt "$ml" ]; } && _pass "after configure.sh" || _fail "after configure.sh"
-has "Check again any time: $SBX_SRC/.scripts/machine-check.sh" "and says how to run the checklist again, by the source dir's path"
+has "Check again any time, from a new shell: dotfiles-run machine-check" "and says how to run the checklist again, from a fresh clone of origin's main"
 hasnt "Borg: this machine" "the hard-coded Borg step is gone"
 hasnt "Alfred snippets" "the hard-coded Alfred steps are gone"
 hasnt "respaces" "the hard-coded Herdr step is gone"

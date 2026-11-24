@@ -64,10 +64,10 @@ every agent: Claude Code and Codex both load it natively.
   <number> --merge --admin --match-head-commit <sha>`, then `git -C ~/.local/share/chezmoi pull
   --ff-only`, then `chezmoi apply`.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`, `reconcile-agents.sh`,
-  `machine-check.sh`, `load-launchagents.sh`, `preflight-ssh-agent.sh`). Those that change system
-  settings (provisioning and the installer) are deliberately not `run_once_` scripts: they need
-  interaction. The one exception, `run_onchange_after_load-launchagents.sh`, runs the loader when a
-  `be.netronix.*` plist changes (never reloading codex-app-server; not in provisioning's first run).
+  `machine-check.sh`, `load-launchagents.sh`, `preflight-ssh-agent.sh`); outside provisioning,
+  Michael runs them with `dotfiles-run <name>`, from a fresh clone of origin's main. Those that
+  change settings need interaction, so are not `run_once_` scripts, except one: the loader runs at
+  apply when a `be.netronix.*` plist changes (`run_onchange_after_load-launchagents.sh`).
   **Lasting machine setup reaches provisioning in the same change:** a `provision.sh` or
   `configure.sh` step where a script can do it, always a row in `machine-checklist.tsv` with a
   verify where one exists. A spec with after-merge steps carries a `**Provisioning:**` line (row

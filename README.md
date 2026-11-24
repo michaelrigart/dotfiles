@@ -126,8 +126,9 @@ chezmoi apply
 ### Re-running Scripts
 
 ```bash
+# These run from a fresh clone of origin's main, never from the checkout an agent can write
 # Re-apply macOS system settings
-~/.local/share/chezmoi/.scripts/configure.sh
+dotfiles-run configure
 
 # Update all Homebrew packages
 brew bundle install --file ~/.config/homebrew/Brewfile
@@ -136,7 +137,7 @@ brew bundle install --file ~/.config/homebrew/Brewfile
 mise install
 
 # Print what is still to do on this machine
-~/.local/share/chezmoi/.scripts/machine-check.sh --todo
+dotfiles-run machine-check --todo
 ```
 
 ---
