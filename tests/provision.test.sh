@@ -164,7 +164,21 @@ printf '#!/usr/bin/env bash\necho "chezmoi $*" >> "$CALLS"\necho "chezmoi-env DO
 # environment (that is what the pin's clean-environment assertions read).
 mkdir -p "$T/home/.local/bin" "$T/codexbin"
 printf '#!/usr/bin/env bash\necho "codex-daemon $*" >> "$CALLS"\n[ -e "$SBX_ROOT/read-stdin-codex-daemon" ] && { read -r _ || exit 1; }\ncase "$1" in real-bin) echo "%s/codexbin/codex";; esac\nexit 0\n' "$T" > "$T/home/.local/bin/codex-daemon"
-printf '#!/usr/bin/env bash\necho "codex $*" >> "%s"\n/usr/bin/env | sed "s/^/codex-env /" >> "%s"\n[ -e "%s/read-stdin-codex" ] && { read -r _ || exit 1; }\n[ -e "%s/fail-codex" ] && exit 1\nexit 0\n' "$CALLS" "$CALLS" "$T" "$T" > "$T/codexbin/codex"
+# Like the real one, `daemon update` fails until the daemon has selected a package (its link).
+printf '#!/usr/bin/env bash\necho "codex $*" >> "%s"\n/usr/bin/env | sed "s/^/codex-env /" >> "%s"\n[ -e "%s/read-stdin-codex" ] && { read -r _ || exit 1; }\n[ -e "%s/fail-codex" ] && exit 1\ncase "$*" in "app-server daemon update"*) [ -L "$HOME/.codex/packages/app-server-daemon/current" ] || { echo "Error: no daemon package is selected" >&2; exit 1; };; esac\nexit 0\n' "$CALLS" "$CALLS" "$T" "$T" > "$T/codexbin/codex"
+# sleep returns at once with $T/fast-sleep, except the sudo keep-alive's 60, and with
+# $T/mk-current-at-sleep the daemon selects its package (the link) during the first one.
+cat > "$T/bin/sleep" <<'SL'
+#!/usr/bin/env bash
+if [ -e "$SBX_ROOT/fast-sleep" ] && [ "$1" != 60 ]; then
+  echo "sleep $*" >> "$CALLS"
+  if [ -e "$SBX_ROOT/mk-current-at-sleep" ]; then
+    mkdir -p "$HOME/.codex/packages/app-server-daemon"; ln -sfn local-late "$HOME/.codex/packages/app-server-daemon/current"
+  fi
+  exit 0
+fi
+exec /bin/sleep "$@"
+SL
 # getconf is how the pin finds launchd's per-user TMPDIR; fail-getconf makes it print nothing.
 printf '#!/usr/bin/env bash\necho "getconf $*" >> "$CALLS"\n[ -e "$SBX_ROOT/fail-getconf" ] && exit 1\necho "$SBX_ROOT/darwin-tmp/"\n' > "$T/bin/getconf"
 # Scripts provision.sh calls BY PATH bypass $PATH, so stub them by path.
@@ -182,13 +196,14 @@ if [ -e "$SBX_ROOT/read-stdin-machine-check" ]; then
 fi
 exit 0
 MC
-# configure.sh is what first loads the Codex daemon's LaunchAgent, which creates its package
-# link; $T/mk-current makes the stub do that, so a case can tell "before" from "after".
+# configure.sh is what first loads the Codex daemon's LaunchAgent, whose daemon selects a package
+# (its link): the stub makes the link unless $T/no-daemon-package, so a case can tell "before"
+# from "after".
 cat > "$T/src/.scripts/configure.sh" <<'C'
 #!/usr/bin/env bash
 echo "configure.sh $*" >> "$CALLS"
 echo "configure-env DOTFILES_PROVISIONING=${DOTFILES_PROVISIONING:-unset}" >> "$CALLS"
-if [ -e "$SBX_ROOT/mk-current" ]; then
+if [ ! -e "$SBX_ROOT/no-daemon-package" ]; then
   mkdir -p "$HOME/.codex/packages/app-server-daemon"
   ln -sfn local-created "$HOME/.codex/packages/app-server-daemon/current"
 fi
@@ -683,8 +698,7 @@ not_called "codex-env CALLS=" "and nothing else of the caller's environment"
 rm -rf "$T/home/.codex"; : > "$T/fail-getconf"; reset; run 'hercules\ny\n'
 rm -f "$T/fail-getconf"
 called "codex-env TMPDIR=$T/caller-tmp" "a getconf that prints nothing falls back to the caller's TMPDIR"
-rm -rf "$T/home/.codex"; : > "$T/mk-current"; reset; run 'hercules\ny\n'
-rm -f "$T/mk-current"
+rm -rf "$T/home/.codex"; reset; run 'hercules\ny\n'
 called "$PIN" "a daemon package configure.sh itself created does not stop the pin: it is read at the start"
 rm -rf "$T/home/.codex"; : > "$T/mk-current-early"; reset; run 'hercules\ny\n'
 rm -f "$T/mk-current-early"
@@ -694,6 +708,18 @@ rm -rf "$T/home/.codex"; : > "$T/fail-codex"; reset; run 'hercules\ny\n'
 rm -f "$T/fail-codex"
 rc_is 0 "a failing pin does not end the run"
 has "codex app-server daemon update --from-cli --yes" "and the warning names the manual command"
+# The third VM run: the daemon launchd had just started selected its package only after the pin
+# had run, and "no daemon package is selected" left the machine unpinned for good.
+rm -rf "$T/home/.codex"; : > "$T/no-daemon-package"; : > "$T/fast-sleep"; : > "$T/mk-current-at-sleep"
+reset; run 'hercules\ny\n'
+rm -f "$T/mk-current-at-sleep"
+called "$PIN" "the pin waits until the daemon has selected its package"
+hasnt "codex daemon not pinned" "and then pins it"
+rm -rf "$T/home/.codex"; reset; run 'hercules\ny\n'
+rm -f "$T/fast-sleep" "$T/no-daemon-package"
+rc_is 0 "a daemon that never selects a package does not end the run"
+not_called "$PIN" "and is not pinned"
+has "codex daemon not pinned: it selected no package" "the warning says why"
 mkdir -p "$PKG"; ln -s local-20261101 "$PKG/current"
 reset; run 'hercules\ny\n'
 not_called "$PIN" "a local- package link (dangling) means no pin"

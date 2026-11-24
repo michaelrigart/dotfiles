@@ -483,7 +483,16 @@ fi
 if [ "$CODEX_FRESH" -eq 1 ]; then
   log_info "Pinning the Codex daemon to the CLI's package..."
   CODEX_PIN_CMD='codex app-server daemon update --from-cli --yes'
-  if CODEX_BIN=$("${HOME}/.local/bin/codex-daemon" real-bin 2>/dev/null </dev/null) && [ -n "$CODEX_BIN" ]; then
+  # The update needs a selected package, which the daemon configure.sh's LaunchAgent started
+  # selects on its own time (the third VM run pinned too early and failed).
+  waited=0
+  until [ -e "$DAEMON_CURRENT" ] || [ -L "$DAEMON_CURRENT" ] || [ "$waited" -ge 300 ]; do
+    sleep 5; waited=$((waited + 5))
+    [ $((waited % 60)) -eq 0 ] && log_info "  still waiting for the Codex daemon to select its package (${waited}s)"
+  done
+  if [ ! -e "$DAEMON_CURRENT" ] && [ ! -L "$DAEMON_CURRENT" ]; then
+    warn "codex daemon not pinned: it selected no package within 5 minutes — check ~/.local/state/codex-daemon.log, then run: ${CODEX_PIN_CMD} (with the real codex, from a shell outside Herdr)"
+  elif CODEX_BIN=$("${HOME}/.local/bin/codex-daemon" real-bin 2>/dev/null </dev/null) && [ -n "$CODEX_BIN" ]; then
     # TMPDIR as launchd gives a daemon: the per-user temp directory, else the caller's.
     PIN_TMPDIR=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null </dev/null) || PIN_TMPDIR=""
     [ -n "$PIN_TMPDIR" ] || PIN_TMPDIR="${TMPDIR:-/tmp}"
