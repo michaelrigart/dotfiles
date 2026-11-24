@@ -20,10 +20,10 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 579 lines of non-test code (+495 −84), 1.23 times the estimate; 1,441 lines of test
+**Real size:** 581 lines of non-test code (+497 −84), 1.24 times the estimate; 1,449 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
-`provision.sh` fixes in §3 (44 lines). One increment.
+`provision.sh` fixes in §3 (46 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -249,7 +249,8 @@ change kept a fresh machine from being provisioned at all:
 - **A checkout an earlier run left.** Any existing checkout counted as "already provisioned", so a
   run that stopped after its clone (at the 1Password wait, say) skipped `chezmoi init` and `apply`
   on every retry, and nothing was deployed. Now step 4 moves a checkout that chezmoi never ran
-  from (no `~/.config/chezmoi/chezmoi.toml`) aside, to `<source>.earlier-<time>`, and clones
+  from (neither `~/.config/chezmoi/chezmoi.toml` nor its `chezmoistate.boltdb` exists) aside, to
+  `<source>.earlier-<time>`, and clones
   afresh, so step 6 applies only the run's own clone; the closing list names the old checkout for
   Michael to delete. A machine with a chezmoi config keeps today's skip and its pointer to the
   wrapper. Michael approved a gate instead (apply the left checkout when it is clean and at

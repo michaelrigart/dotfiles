@@ -308,6 +308,13 @@ has "⚠ An earlier run's checkout, which chezmoi never applied, is now $moved" 
 gl=$(grep -n '^git clone' "$CALLS" | head -1 | cut -d: -f1); ml=$(grep -n "^mv $T/left " "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$ml" ] && [ -n "$gl" ] && [ "$ml" -lt "$gl" ]; } && _pass "moved before the clone" || _fail "moved before the clone"
 rm -rf "$T/left" "$T"/left.earlier-*
+# chezmoi's state shows it applied here even when its config was deleted: the checkout, and the
+# wt siblings whose .git files point into it, stay where they are.
+cp -R "$T/src" "$T/left"; : > "$T/home/.config/chezmoi/chezmoistate.boltdb"
+reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml"; run 'hercules\ny\n'
+ls -d "$T"/left.earlier-* >/dev/null 2>&1 && _fail "an applied machine without its config keeps its checkout" || _pass "an applied machine without its config keeps its checkout"
+not_called "git clone" "and nothing is cloned over it"
+rm -rf "$T/left" "$T"/left.earlier-* "$T/home/.config/chezmoi/chezmoistate.boltdb"
 SBX_SRC="$T/src"
 
 echo "B3. 1Password: the run signs the CLI in, in its own terminal session"
@@ -730,6 +737,7 @@ hasnt "Borg: this machine" "the hard-coded Borg step is gone"
 hasnt "Alfred snippets" "the hard-coded Alfred steps are gone"
 hasnt "respaces" "the hard-coded Herdr step is gone"
 has "Restart your terminal" "the restart line stays"
+has "exec $T/brew/bin/zsh" "with the exec hint while Homebrew's zsh exists"
 has "logout/restart" "and the logout line"
 
 echo; echo "RESULT: $pass passed, $fail failed"
