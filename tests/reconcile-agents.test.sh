@@ -3,11 +3,12 @@
 # asserts the review-fix behaviour — exact field matching, explicit JSON-schema validation
 # (empty stdout / {} / [{}] rejected), disabled/failed-install handling, and Codex source
 # normalization + reconciliation. Run: ./tests/reconcile-agents.test.sh
-# test-requires: unsandboxed  # writes a temp XDG config dir; sandboxed it reports ~18 false failures
+# test-requires: unsandboxed  # writes temp dirs and an XDG config dir; sandboxed, mktemp is denied (exit 2)
 set -u
 RECON="$(cd "$(dirname "$0")/.." && pwd)/.scripts/reconcile-agents.sh"
 [ -f "$RECON" ] || { echo "missing script under test: $RECON" >&2; exit 2; }
-BIN=$(mktemp -d); CFG=$(mktemp -d); CALLS="$BIN/calls.log"; MCPCWD="$BIN/mcp-cwd.log"
+BIN=$(mktemp -d) && CFG=$(mktemp -d) || { echo "mktemp -d failed (this suite needs: unsandboxed)" >&2; exit 2; }
+CALLS="$BIN/calls.log"; MCPCWD="$BIN/mcp-cwd.log"
 CX_LIST_ARGS="$BIN/cx-list-args"
 mkdir -p "$CFG/agents"
 trap 'rm -rf "$BIN" "$CFG"' EXIT   # clean temp dirs even on interrupt
@@ -28,9 +29,10 @@ case "$*" in
   *) exit 0 ;;
 esac
 STUB
-# The codex stub models Codex's remote plugin catalog: with MOCK_CX_REMOTE_HANG set, a
+# The codex stub models Codex's remote plugin service: with MOCK_CX_REMOTE_HANG set, a
 # `plugin list` that leaves the remote_plugin feature on waits that many seconds without
-# answering, as the real one does unsandboxed. It records each plugin list call's arguments
+# answering, as the real one does unsandboxed; MOCK_CX_LIST_HANG makes every `plugin list`
+# wait, for a stall the flag cannot prevent. It records each plugin list call's arguments
 # in $CX_LIST_ARGS, which section I replays against the real codex.
 cat > "$BIN/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -38,6 +40,7 @@ case "$*" in
   "plugin marketplace list --json") printf '%s' "$MOCK_CX_MKT" ;;
   "plugin list --json"*)
     printf '%s\n' "${*:3}" > "$CX_LIST_ARGS"
+    [ -n "${MOCK_CX_LIST_HANG:-}" ] && exec sleep "$MOCK_CX_LIST_HANG"
     case " $* " in
       *" --disable remote_plugin "*|*" -c features.remote_plugin=false "*) ;;
       *) [ -n "${MOCK_CX_REMOTE_HANG:-}" ] && exec sleep "$MOCK_CX_REMOTE_HANG" ;;
@@ -54,7 +57,7 @@ reset_mocks() {  # sane valid-empty defaults; scenarios override specific ones
   export MOCK_CL_MKT='[]' MOCK_CL_PLUGINS='[]' MOCK_CL_INSTALL_RC=0
   export MOCK_CL_MKT_RC=0 MOCK_CL_PLUGINS_RC=0
   export MOCK_CX_MKT='{"marketplaces":[]}' MOCK_CX_PLUGINS='{"installed":[]}'
-  export MOCK_CL_MCP_RC=0 MOCK_CX_REMOTE_HANG=
+  export MOCK_CL_MCP_RC=0 MOCK_CX_REMOTE_HANG='' MOCK_CX_LIST_HANG=''
   rm -rf "$CFG/.claude.json" "$CFG/.local"   # HOME is $CFG: no MCP state leaks between scenarios
 }
 run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC; resets the call log
@@ -574,6 +577,12 @@ RUN_TIMEOUT=10 run "codex_marketplace owner/cx\ncodex_plugin bar@cx"
 has "codex plugin present: bar@cx"            "reconcile: the installed codex plugin is found without waiting on the remote catalog"
 rc_is 0                                       "reconcile with everything present: exit 0"
 
+reset_mocks; export MOCK_CX_LIST_HANG=30
+RECONCILE_CODEX_TIMEOUT=2 RUN_TIMEOUT=10 run "codex_plugin bar@cx"
+has "codex plugin list: no answer within 2 s" "a codex plugin list that never answers is cut off and named"
+not_called "codex plugin add"                 "a codex plugin list that never answers is not read as none installed"
+rc_is 1                                       "a codex plugin list that never answers: exit 1"
+
 reset_mocks; export MOCK_CL_PLUGINS='[]' MOCK_CL_PLUGINS_RC=1
 RECON_ARGS=--check run "claude_plugin foo@m\ncodex_plugin bar@cx"
 has "claude plugin list failed"               "--check: a failed query is surfaced"
@@ -586,6 +595,9 @@ RECON_ARGS=--bogus run "claude_plugin foo@m"
 rc_is 2                                       "unknown option: exit 2"
 not_called "plugin"                           "unknown option: nothing ran"
 RECON_ARGS=
+RECONCILE_CODEX_TIMEOUT=0 run "claude_plugin foo@m"
+rc_is 2                                       "a time bound that is not a positive integer: exit 2"
+not_called "plugin"                           "a time bound that is not a positive integer: nothing ran"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

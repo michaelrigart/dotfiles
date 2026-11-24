@@ -169,7 +169,7 @@ suite, which run beside it at no extra wall time):
 | Suite | Needs | Why |
 |---|---|---|
 | `xreview`, `git-forge-guard`, `wt-functions`, `test-audit` | `heavy`: 508 s, 142 s, 149 s, 103 s | skipped by default for their length. Before every pre-merge review run `./tests/run.sh --changed`: it runs each one whose subject (its file in `tests/subjects/`, its own file, `tests/run.sh`) changed against main, committed or not, and runs it whenever it cannot tell. An exact name or `--all` runs one regardless. After a tool upgrade that could reach them (`brew upgrade`), run all four by name, since no diff shows that: `./tests/run.sh xreview git-forge-guard wt-functions test-audit` |
-| `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
+| `reconcile-agents` | unsandboxed | writes temp dirs and an XDG config dir; sandboxed, mktemp is denied and it exits 2 |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `zshrc` | unsandboxed | drives a real zsh on a pseudo-terminal (Alt-k and SIGURG), and the sandbox has no pty devices; it then exits 2 (INCONCLUSIVE) |
 | `dev-topology` | unsandboxed + live `herdr` | drives the real binary, whose socket the sandbox denies |
