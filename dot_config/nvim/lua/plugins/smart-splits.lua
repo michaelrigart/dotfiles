@@ -7,6 +7,9 @@
 -- verify with `:verbose map <C-h>` — it should resolve to smart-splits, not LazyVim.
 return {
   "mrjones2014/smart-splits.nvim",
+  -- v3 moved the bundled Herdr plugin (herdr-plugin.toml, which provisioning links) out of
+  -- this repository; v2.1.1-final is the last release that ships it.
+  tag = "v2.1.1-final",
   lazy = false,
   keys = {
     { "<C-h>", function() require("smart-splits").move_cursor_left() end, desc = "Move to left split/pane" },

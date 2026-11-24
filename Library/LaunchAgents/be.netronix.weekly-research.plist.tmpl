@@ -4,13 +4,16 @@
 
   Managed by chezmoi (source: Library/LaunchAgents/be.netronix.weekly-research.plist.tmpl), and
   deployed only on the machine named research_host in .chezmoidata/machines.toml (.chezmoiignore).
-  Never loaded by chezmoi or by an agent; Michael loads it by hand after the merge:
+  Loaded by .scripts/load-launchagents.sh (run by configure.sh, and by the chezmoi apply hook
+  when this plist changes); load by hand with:
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.weekly-research.plist
   First run under launchd, not from a terminal (a terminal has permissions a job may lack):
     launchctl kickstart gui/$(id -u)/be.netronix.weekly-research
   Unload it, and before moving research_host to another machine, on the old one, then delete
   the old plist (chezmoi never removes a target it starts to ignore):
     launchctl bootout gui/$(id -u)/be.netronix.weekly-research
+  To keep it off, disable it too (a bootout alone lasts until the next login or loader run):
+    launchctl disable gui/$(id -u)/be.netronix.weekly-research
 
   weekly-research asks a sandboxed Claude Code session to read the sources list, and writes one
   note to its state folder; the vault inbox gets a copy only with a proposal or an upkeep entry, or

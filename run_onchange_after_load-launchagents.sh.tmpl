@@ -1,0 +1,19 @@
+#!/bin/sh
+# Loads or reloads the be.netronix.* LaunchAgents after chezmoi wrote them. chezmoi runs this
+# script again whenever its rendered text changes, so each line below is the sha256 of one plist
+# source as chezmoi deploys it: a template rendered with this machine's data (a data change that
+# alters a plist reloads it too), a plain file as is.
+{{ range glob (joinPath .chezmoi.sourceDir "Library/LaunchAgents/*.plist*") -}}
+{{ $src := printf "Library/LaunchAgents/%s" (base .) -}}
+{{ $body := "" -}}
+{{ if hasSuffix ".tmpl" . }}{{ $body = includeTemplate $src $ }}{{ else }}{{ $body = include $src }}{{ end -}}
+# {{ base . }} {{ sha256sum $body }}
+{{ end -}}
+# provision.sh sets DOTFILES_PROVISIONING=1 for its apply; configure.sh runs the loader itself.
+[ "${DOTFILES_PROVISIONING:-}" = 1 ] && exit 0
+# The source dir is read at run time, never rendered: apply may use a fresh clone each time, and
+# a path in the text would make chezmoi run this script on every apply.
+loader="${CHEZMOI_SOURCE_DIR:-}/.scripts/load-launchagents.sh"
+[ -n "${CHEZMOI_SOURCE_DIR:-}" ] && [ -x "$loader" ] \
+  || { echo "load-launchagents: CHEZMOI_SOURCE_DIR is unset or has no .scripts/load-launchagents.sh" >&2; exit 1; }
+exec "$loader"

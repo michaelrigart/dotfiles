@@ -2037,3 +2037,30 @@ chezmoi() {
     rm -rf -- "$tmp"
   }
 }
+
+# dotfiles-run <script> [args]: runs .scripts/<script>.sh from a fresh clone of origin's main.
+# machine-check.sh, configure.sh and reconcile-agents.sh run outside the sandbox, and the sandbox
+# can write the main checkout, so they never run from it (spec 2026-11-22-complete-provisioning,
+# §2). Origin and where the clone lives follow the chezmoi wrapper above.
+dotfiles-run() {
+  emulate -L zsh
+  local name=${1:-} url base tmp
+  if [[ -z $name || $name == *[^a-z0-9-]* ]]; then
+    print -u2 "usage: dotfiles-run <script> [args]   (runs .scripts/<script>.sh of origin's main)"
+    return 2
+  fi
+  shift
+  url=${CHEZMOI_REVIEWED_ORIGIN:-git@github.com:michaelrigart/dotfiles.git}
+  base=${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-run
+  mkdir -p -m 700 "$base" && tmp=$(mktemp -d "$base/run.XXXXXX") || return
+  {
+    git -C / clone -q --depth 1 --branch main --template= -- "$url" "$tmp/src" \
+      || { print -u2 "dotfiles-run: cannot clone origin's main"; return 1 }
+    [[ -x $tmp/src/.scripts/$name.sh ]] \
+      || { print -u2 "dotfiles-run: origin's main has no .scripts/$name.sh"; return 2 }
+    print -u2 "dotfiles-run: running $name.sh from origin's main $(git -C "$tmp/src" rev-parse --short=12 HEAD), a fresh clone"
+    "$tmp/src/.scripts/$name.sh" "$@"
+  } always {
+    rm -rf -- "$tmp"
+  }
+}

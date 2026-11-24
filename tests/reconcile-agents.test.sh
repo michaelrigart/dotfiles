@@ -49,7 +49,8 @@ reset_mocks() {  # sane valid-empty defaults; scenarios override specific ones
 run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC; resets the call log
   printf '%b\n' "$1" > "$CFG/agents/plugins.conf"
   : > "$CALLS"; : > "$MCPCWD"
-  OUT=$(CALLS="$CALLS" MCPCWD="$MCPCWD" PATH="$BIN:$PATH" HOME="$CFG" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" 2>&1); RC=$?
+  # shellcheck disable=SC2086  # RECON_ARGS is empty or one option
+  OUT=$(CALLS="$CALLS" MCPCWD="$MCPCWD" PATH="$BIN:$PATH" HOME="$CFG" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" ${RECON_ARGS:-} 2>&1); RC=$?
 }
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fail=$((fail + 1)); }
@@ -499,6 +500,62 @@ has   "install: foo@mkt"            "a declared plugin is installed on a fresh m
 called "plugin marketplace add owner/repo"   "marketplace add reached the CLI"
 called "plugin install foo@mkt --scope user" "plugin install reached the CLI"
 rc_is 0                             "a fresh machine reconciles cleanly"
+
+echo "K. --check reports what reconcile would change and changes nothing"
+reset_mocks
+printf '%s' '{"mcpServers":{"stale":{"type":"stdio","command":"uvx","args":["x"],"env":{}}}}' > "$CFG/.claude.json"
+RECON_ARGS=--check run "claude_marketplace owner/repo\nclaude_plugin foo@m\nclaude_mcp absent-mcp\nclaude_mcp stale\ncodex_marketplace owner/cx\ncodex_plugin bar@cx"
+has "missing: claude marketplace owner/repo"  "--check: missing claude marketplace reported"
+has "missing: claude plugin foo@m"            "--check: missing claude plugin reported"
+has "missing: claude mcp absent-mcp"          "--check: missing claude mcp server reported"
+has "differs: claude mcp stale"               "--check: differing claude mcp entry reported"
+has "missing: codex marketplace owner/cx"     "--check: missing codex marketplace reported"
+has "missing: codex plugin bar@cx"            "--check: missing codex plugin reported"
+rc_is 1                                       "--check with items missing: exit 1"
+if [ ! -s "$CALLS" ]; then _pass "--check with items missing: no state-changing call"; else _fail "--check with items missing: no state-changing call"; fi
+hasnt "claude plugin install: foo@m"          "--check: no action announced as if taken"
+hasnt "claude mcp add: absent-mcp"            "--check: no mcp action announced as if taken"
+has "check: 6 item(s) missing or different"   "--check: summary counts the items"
+hasnt "see warnings above"                    "--check: summary does not blame warnings"
+
+reset_mocks
+USR > "$CFG/.claude.json"
+RECON_ARGS=--check run "claude_mcp ha-mcp ~"
+has "missing: claude mcp ha-mcp (local: $CFGP)"   "--check scoped: missing local entry reported"
+has "differs: claude mcp ha-mcp (user-scope entry beside the local one)" "--check scoped: user-scope entry reported"
+rc_is 1                                           "--check scoped: exit 1"
+if [ ! -s "$CALLS" ] && [ ! -s "$MCPCWD" ]; then _pass "--check scoped: no mcp call in any directory"; else _fail "--check scoped: no mcp call in any directory"; fi
+
+reset_mocks
+jq -c --argjson t "$TOK" '. + {mcpServers:{"ha-mcp":$t}}' <<< "$(jq -nc --arg d "$CFGP" '{projects:{($d):{mcpServers:{"ha-mcp":{type:"stdio",command:"uvx",args:[],env:{}}}}}}')" > "$CFG/.claude.json"
+RECON_ARGS=--check run "claude_mcp ha-mcp ~"
+has "differs: claude mcp ha-mcp (local: $CFGP)"   "--check scoped: differing local entry reported"
+has "differs: claude mcp ha-mcp (user-scope entry beside the local one)" "--check scoped: user-scope entry reported beside a differing local one"
+hasnt "missing: claude mcp ha-mcp"                "--check scoped: a differing local entry is not also missing"
+rc_is 1                                           "--check scoped, differing: exit 1"
+if [ ! -s "$CALLS" ] && [ ! -s "$MCPCWD" ]; then _pass "--check scoped, differing: no mcp call in any directory"; else _fail "--check scoped, differing: no mcp call in any directory"; fi
+
+reset_mocks; export MOCK_CL_MKT='[{"name":"a","source":"github","repo":"owner/repo"}]'
+export MOCK_CL_PLUGINS='[{"id":"foo@m","scope":"user","enabled":true}]'
+export MOCK_CX_MKT='{"marketplaces":[{"name":"a","marketplaceSource":{"source":"https://github.com/owner/cx.git"}}]}'
+export MOCK_CX_PLUGINS='{"installed":[{"pluginId":"bar@cx","enabled":true,"marketplaceName":"cx"}]}'
+printf '%s' '{"mcpServers":{"ha-mcp":'"$J"'}}' > "$CFG/.claude.json"
+RECON_ARGS=--check run "claude_marketplace owner/repo\nclaude_plugin foo@m\nclaude_mcp ha-mcp\ncodex_marketplace owner/cx\ncodex_plugin bar@cx"
+if printf '%s\n' "$OUT" | grep -q '^\(missing\|differs\):'; then _fail "--check with everything present: no missing/differs line"; else _pass "--check with everything present: no missing/differs line"; fi
+rc_is 0                                       "--check with everything present: exit 0"
+
+reset_mocks; export MOCK_CL_PLUGINS='[]' MOCK_CL_PLUGINS_RC=1
+RECON_ARGS=--check run "claude_plugin foo@m\ncodex_plugin bar@cx"
+has "claude plugin list failed"               "--check: a failed query is surfaced"
+has "missing: codex plugin bar@cx"            "--check: a failed query does not hide a pending item"
+has "check: 1 item(s) missing or different; some queries failed (see warnings above)" "--check: summary names both the pending item and the failed query"
+rc_is 1                                       "--check: a failed query still exits 1"
+
+reset_mocks
+RECON_ARGS=--bogus run "claude_plugin foo@m"
+rc_is 2                                       "unknown option: exit 2"
+not_called "plugin"                           "unknown option: nothing ran"
+RECON_ARGS=
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

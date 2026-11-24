@@ -22,10 +22,13 @@ echo ""
 # --hostname <name>: driven by provision.sh, which already owns the identity. In that
 # mode this script VERIFIES and never renames — it is invoked after preflight, so a
 # rename here would be a machine change nobody confirmed.
+# --hostname also means unattended: nothing after provision's preflight may open a dialog,
+# and an Apple Event on a fresh machine opens an Automation consent one.
 HOSTNAME_ARG=""
+UNATTENDED=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    --hostname) shift; HOSTNAME_ARG="$1" ;;
+    --hostname) shift; HOSTNAME_ARG="$1"; UNATTENDED=true ;;
     *) log_error "unknown option: $1"; exit 2 ;;
   esac
   shift
@@ -121,6 +124,16 @@ if "${0:A:h}/install-claude-managed-settings.sh"; then
 else
   log_warn "Claude Code managed policy NOT installed — fix what the output above names, then re-run .scripts/install-claude-managed-settings.sh (--replace only overwrites a different policy file)"
 fi
+
+# ============================================================================
+# LaunchAgents
+# ============================================================================
+# Before the Apple Event steps (wallpaper, Alfred): an Automation refusal must not keep
+# the jobs from loading. chezmoi writes the plists; the loader tells launchd, reloading
+# only a changed one and never the Codex daemon's.
+log_info "Loading LaunchAgents..."
+"${0:A:h}/load-launchagents.sh" \
+  || log_warn "Some LaunchAgents did not load — fix what the output above names, then re-run .scripts/load-launchagents.sh"
 
 # ============================================================================
 # Keyboard Settings
@@ -220,9 +233,12 @@ log_info "✓ Trackpad configured"
 # remote power button a machine under a desk otherwise lacks. Pointless on a laptop
 # that has a battery and a lid.
 if [ "$HOSTNAME" != "fenrir" ]; then
-  log_info "Enabling automatic restart after power loss..."
-  sudo pmset -a autorestart 1
-  log_info "✓ autorestart enabled (a smart plug can now power this machine on)"
+  log_info "Enabling automatic restart after power loss, no sleep, wake for network access..."
+  if sudo pmset -a autorestart 1 sleep 0 womp 1; then
+    log_info "✓ autorestart, no sleep and wake-on-network set (a smart plug can now power this machine on)"
+  else
+    log_warn "sudo pmset -a autorestart 1 sleep 0 womp 1 failed (a VM can reject a key) — run it yourself on a real machine"
+  fi
 fi
 
 # ============================================================================
@@ -327,8 +343,13 @@ if [ -d "${XDG_DATA_HOME}/chezmoi/.backgrounds" ]; then
   # Set desktop wallpaper (you can change which image to use)
   # This sets it for the current desktop space
   if [ -f "${HOME}/Pictures/Backgrounds/skyline-appartment.png" ]; then
-    osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"${HOME}/Pictures/Backgrounds/skyline-appartment.png\""
-    log_info "✓ Desktop wallpaper set to skyline-appartment.png"
+    if [ "$UNATTENDED" = true ]; then
+      log_info "Skipping the wallpaper: it needs Automation consent; run dotfiles-run configure yourself to set it"
+    elif osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"${HOME}/Pictures/Backgrounds/skyline-appartment.png\""; then
+      log_info "✓ Desktop wallpaper set to skyline-appartment.png"
+    else
+      log_warn "Could not set the desktop wallpaper (System Events needs Automation consent) — re-run dotfiles-run configure after granting it"
+    fi
   fi
 else
   log_warn "Backgrounds directory not found in chezmoi repo"
@@ -345,7 +366,11 @@ log_info "Configuring Alfred snippet auto-expansion..."
 # literally would apply on this Mac and silently no-op on the next one — the snippets would
 # land, the toggle would not, and `;codex` would quietly do nothing. So it is computed here.
 alfred_prefs_json="${HOME}/Library/Application Support/Alfred/prefs.json"
-if [[ -f "$alfred_prefs_json" ]]; then
+if [ "$UNATTENDED" = true ] && pgrep -x "Alfred" &> /dev/null; then
+  log_info "Skipping the Alfred toggle: it needs Alfred quit, by an Apple Event; run dotfiles-run configure yourself to set it"
+elif [ "$UNATTENDED" = true ] && [[ ! -f "$alfred_prefs_json" ]]; then
+  log_info "Skipping the Alfred toggle: Alfred has not been launched yet; the alfred-snippets step in the list covers it"
+elif [[ -f "$alfred_prefs_json" ]]; then
   alfred_localhash=$(sed -n 's/.*"localhash" *: *"\([^"]*\)".*/\1/p' "$alfred_prefs_json")
   if [[ -n "$alfred_localhash" ]]; then
     alfred_clip_prefs="${HOME}/Library/Application Support/Alfred/Alfred.alfredpreferences/preferences/local/${alfred_localhash}/features/clipboard/prefs.plist"
@@ -380,25 +405,6 @@ else
 fi
 
 # ============================================================================
-# LaunchAgents
-# ============================================================================
-log_info "Loading LaunchAgents..."
-
-# chezmoi writes the plists; launchd has to be told about them. bootout-then-bootstrap
-# rather than a bare bootstrap, so re-running this picks up an edited plist instead of
-# failing with "service already loaded".
-for plist in "${HOME}/Library/LaunchAgents"/be.netronix.*.plist(N); do
-  [ -f "$plist" ] || continue
-  label="$(basename "$plist" .plist)"
-  launchctl bootout "gui/$(id -u)/${label}" &> /dev/null || true
-  if launchctl bootstrap "gui/$(id -u)" "$plist" &> /dev/null; then
-    log_info "  loaded ${label}"
-  else
-    log_warn "  could not load ${label} — run: launchctl bootstrap gui/\$(id -u) $plist"
-  fi
-done
-
-# ============================================================================
 # Apply Changes
 # ============================================================================
 log_info "Applying changes..."
@@ -413,12 +419,7 @@ log_info "=========================================="
 log_info "✓ macOS configuration complete!"
 log_info "=========================================="
 echo ""
-log_warn "Manual tasks still required:"
-log_warn "  1. Configure Spotlight privacy settings (System Settings > Siri & Spotlight)"
-log_warn "  2. Review Privacy & Security settings (System Settings > Privacy & Security)"
-log_warn "  3. Configure Little Snitch rules"
-log_warn "  4. Sign in to applications (1Password, browsers, etc.)"
-log_warn "  5. Some settings may require a logout/restart to take full effect"
+log_warn "What is still open on this machine: run dotfiles-run machine-check --todo --machine ${HOSTNAME}"
 echo ""
 log_info "Consider restarting your Mac to ensure all settings are applied."
 echo ""

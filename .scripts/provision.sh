@@ -32,6 +32,25 @@ export XDG_BIN_HOME="${HOME}/.local/bin"
 # group-container settings, which macOS 27.2 may refuse the terminal (see zshenv).
 export OP_BIOMETRIC_UNLOCK_ENABLED=true
 
+# PROVISION_REF (a test knob for a VM run, see the spec) makes the clone check out a branch.
+# Checked before anything else, sudo included: on a real Mac provisioning deploys only
+# reviewed main, so any other ref is refused unless this is a VM.
+PROVISION_REF="${PROVISION_REF:-main}"
+if [ "$PROVISION_REF" != "main" ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" != "1" ]; then
+  log_error "PROVISION_REF=${PROVISION_REF} is refused outside a VM: provisioning a real Mac deploys main only."
+  exit 1
+fi
+
+# Recorded before anything installs: a cask, reconcile-agents.sh's codex plugin step or
+# configure.sh's LaunchAgent load can each create the package link, and only a machine that had
+# no daemon package at all when the run started is pinned (step 17). A set-up machine has it.
+DAEMON_CURRENT="${HOME}/.codex/packages/app-server-daemon/current"
+if [ -e "$DAEMON_CURRENT" ] || [ -L "$DAEMON_CURRENT" ]; then
+  CODEX_FRESH=0
+else
+  CODEX_FRESH=1
+fi
+
 echo ""
 log_info "========== Starting macOS Provision =========="
 echo ""
@@ -98,7 +117,8 @@ fi
 # 3. Install essential tools for bootstrap
 # ============================================================================
 log_info "Installing essential bootstrap tools..."
-brew install chezmoi 1password-cli git
+# jq: the first apply (step 6) runs modify_ scripts whose jq programs the system jq rejects.
+brew install chezmoi 1password-cli git jq
 # The desktop app supplies CLI integration, so it is bootstrap work, not Brewfile work:
 # step 6 renders op:// templates and cannot wait for step 8.
 # NOT optional, so not a warning: every op:// template depends on it, and without the
@@ -114,13 +134,43 @@ fi
 # capturing the machine's CURRENT name — but the name is not chosen until preflight,
 # below. Cloning first also makes the machine allowlist readable before we prompt.
 SRC_DIR="${PROVISION_SRC_OVERRIDE:-${XDG_DATA_HOME}/chezmoi}"
+# An earlier run that stopped after its clone left a checkout chezmoi never finished applying:
+# chezmoi never ran from it (neither its config nor its state yet), or its clone still carries
+# UNAPPLIED, which step 6 removes only once its apply has succeeded. Step 6 applies only this run's
+# own clone, so such a checkout is moved aside, never deleted, and cloned afresh: git status cannot
+# vouch for it, because chezmoi applies the files themselves (ignored ones too), which is why the
+# chezmoi wrapper applies a fresh clone as well. A machine chezmoi has applied keeps its checkout,
+# and so does one with wt siblings, whose links into its .git a move would break (an apply by
+# hand leaves the mark in place).
+UNAPPLIED="${SRC_DIR}/.git/provision-unapplied"
+LINKED_WORKTREES=( "${SRC_DIR}"/.git/worktrees/*(DN) )
+if [ -d "${SRC_DIR}/.git" ] && (( ${#LINKED_WORKTREES} == 0 )) \
+   && { [ -e "${UNAPPLIED}" ] || { [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ] \
+   && [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoistate.boltdb" ]; }; }; then
+  EARLIER_SRC="${SRC_DIR}.earlier-$(date +%Y%m%d-%H%M%S)"
+  mv "${SRC_DIR}" "${EARLIER_SRC}"
+  warn "An earlier run's checkout, which chezmoi never finished applying, is now ${EARLIER_SRC}; delete it once nothing in it is needed"
+fi
 SRC_PRESENT=0
 if [ -d "${SRC_DIR}/.git" ]; then
   SRC_PRESENT=1
   log_info "✓ dotfiles source already present"
 else
   log_info "Cloning dotfiles source..."
-  git clone https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
+  git clone --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
+  : > "${UNAPPLIED}"
+fi
+# The scripts this run executes outside the sandbox (steps 9, 12b and 16, and the closing check)
+# come from this run's own clone. A checkout that already existed may have been written by the
+# sandbox, so they then come from a fresh clone of the same ref, removed when the run ends.
+SCRIPTS_DIR="${SRC_DIR}/.scripts"
+if [ "$SRC_PRESENT" -eq 1 ]; then
+  mkdir -p -m 700 "${XDG_CACHE_HOME}/dotfiles-run"
+  SCRIPTS_CLONE=$(mktemp -d "${XDG_CACHE_HOME}/dotfiles-run/provision.XXXXXX")
+  trap 'rm -rf "${SCRIPTS_CLONE}"' EXIT
+  git clone -q --depth 1 --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SCRIPTS_CLONE}/src" \
+    || { log_error "Could not clone the dotfiles source to run its scripts from"; exit 1; }
+  SCRIPTS_DIR="${SCRIPTS_CLONE}/src/.scripts"
 fi
 
 # ============================================================================
@@ -130,8 +180,10 @@ fi
 # stopped for input four separate times, potentially hours apart.
 
 # 5a. 1Password. The desktop app's CLI integration means no Secret Key is typed, which
-# matters because the Emergency Kit is deliberately stored off this machine.
-if op whoami &>/dev/null; then
+# matters because the Emergency Kit is deliberately stored off this machine. 1Password
+# authorizes each terminal session, and `op whoami` only reports that, never asks for it: so
+# the run waits until op sees an account, then signs in itself, in this session.
+if op whoami &>/dev/null </dev/null; then
   log_info "✓ 1Password CLI already authenticated"
 else
   open -a "1Password" 2>/dev/null || true
@@ -141,6 +193,7 @@ else
   echo "    2. Settings → Developer → ☑ Integrate with 1Password CLI"
   echo "    3. Quit the app fully (⌘Q) and reopen it — the CLI link is established"
   echo "       at launch, so enabling it in a running app often does not take."
+  echo "    4. Approve 1Password's request to let this terminal use the CLI."
   echo ""
   echo "  To check from another terminal:  ${HOMEBREW_PREFIX}/bin/op account list"
   echo "  (Homebrew was just installed, so plain \`op\` is not on PATH in any tab you"
@@ -152,13 +205,18 @@ else
   echo "    ${HOMEBREW_PREFIX}/bin/op account add --address my.1password.com --email <you>"
   echo ""
   waited=0
-  until op whoami &>/dev/null; do
+  until op account list --format=json 2>/dev/null </dev/null | grep -q '"url"'; do
     if [ "$waited" -ge 900 ]; then
-      log_error "1Password CLI still unavailable after 15 minutes."
+      log_error "1Password CLI still sees no account after 15 minutes."
       exit 1
     fi
     sleep 3; waited=$((waited + 3))
+    [ $((waited % 60)) -eq 0 ] && log_info "  still waiting for the 1Password app (${waited}s)"
   done
+  # The output is empty with the app integration; an account added with `op account add`
+  # prints its session variable instead.
+  OP_SIGNIN=$(op signin) && eval "$OP_SIGNIN" && op whoami &>/dev/null </dev/null \
+    || { log_error "1Password CLI sign-in failed — run provision.sh again"; exit 1; }
   log_info "✓ 1Password CLI authenticated"
 fi
 
@@ -190,6 +248,15 @@ echo ""
 echo "══ Provision: ${MACHINE_NAME} ═══════════════════"
 echo "  Machine name ....... ${MACHINE_NAME}"
 echo "  Dotfiles source .... ${SRC_DIR}"
+if [ "$PROVISION_REF" != "main" ]; then
+  if [ "$SRC_PRESENT" -eq 1 ]; then
+    # An existing checkout is never switched: say what provisioning really uses.
+    CHECKOUT_BRANCH=$(git -C "${SRC_DIR}" branch --show-current 2>/dev/null || true)
+    echo "  Branch ............. ${CHECKOUT_BRANCH:-detached HEAD} (existing checkout, used as is)"
+  else
+    echo "  Branch ............. ${PROVISION_REF}"
+  fi
+fi
 echo "  1Password .......... authenticated"
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "
@@ -219,17 +286,20 @@ log_info "✓ identity set to ${MACHINE_NAME}"
 # 6. Generate the chezmoi config, then apply
 # ============================================================================
 # Only now, with the identity settled, does chezmoi capture it.
-# Only on a fresh clone. This runs in zsh as a script, so the chezmoi wrapper that deploys
-# only origin's main is not loaded: on a machine whose checkout already existed, init and
-# apply would deploy the working tree, which the checkout cannot prove was reviewed.
+# Only on this run's own clone (step 4). This runs in zsh as a script, so the chezmoi wrapper
+# that deploys only origin's main is not loaded: on a machine whose checkout already existed,
+# init and apply would deploy the working tree, which the checkout cannot prove was reviewed.
 if [ "$SRC_PRESENT" -eq 1 ]; then
   warn "Machine already provisioned: chezmoi init and apply are skipped. Run chezmoi apply --init from zsh, which deploys origin's main."
 else
   log_info "Generating chezmoi config..."
   chezmoi init
   log_info "Applying dotfiles with chezmoi..."
-  # Force apply to overwrite any local changes
-  chezmoi apply --force
+  # Force apply to overwrite any local changes. DOTFILES_PROVISIONING=1 is set on this one
+  # command and never exported: a value that leaked to a later apply would make the
+  # run_onchange_ script skip its work and chezmoi record that version as run.
+  DOTFILES_PROVISIONING=1 chezmoi apply --force
+  rm -f "${UNAPPLIED}"
 fi
 
 # ============================================================================
@@ -253,36 +323,62 @@ fi
 # 8. Install Homebrew packages from Brewfile
 # ============================================================================
 if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
-  log_info "Installing packages from Brewfile..."
+  log_info "Installing packages from Brewfile (Homebrew downloads several at once and can print nothing for many minutes)..."
   export HOMEBREW_BUNDLE_FILE="${XDG_CONFIG_HOME}/homebrew/Brewfile"
 
   # A licence-gated cask must not end the run — the remaining steps still matter.
   # `brew bundle` fails for the whole file, so ask `check` which items actually missed.
-  # A single retry absorbs transient download failures.
+  # A single retry absorbs transient download failures. --no-upgrade, like the brewfile row:
+  # a release published during the run leaves an item outdated, not missing.
+  BUNDLE_FAILED=0
   if ! brew bundle install --file "${HOMEBREW_BUNDLE_FILE}"; then
     log_warn "brew bundle had failures — retrying once"
-    brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || true
+    brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || BUNDLE_FAILED=1
   fi
-  if ! brew bundle check --file "${HOMEBREW_BUNDLE_FILE}" >/dev/null 2>&1; then
+  if ! brew bundle check --no-upgrade --file "${HOMEBREW_BUNDLE_FILE}" >/dev/null 2>&1; then
     # Process substitution, not a pipeline: `cmd | while read` runs the loop in a
     # subshell, so every warn() inside it appends to a WARNINGS array that is thrown
     # away when the subshell exits. The end-of-run summary silently lost every item.
+    # Homebrew writes the missed items to stderr.
     while read -r item; do
       [ -n "$item" ] && warn "brewfile: ${item}"
-    done < <(brew bundle check --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>/dev/null | sed -n 's/^→ *//p')
+    done < <(brew bundle check --no-upgrade --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>&1 | sed -n 's/^→ *//p')
     warn "brew bundle did not complete — see the items above"
+  elif [ "$BUNDLE_FAILED" -eq 1 ]; then
+    warn "brew bundle failed although every Brewfile item is installed (an upgrade, most likely) — see its output above"
   fi
 else
-  log_error "Brewfile not found at ${XDG_CONFIG_HOME}/homebrew/Brewfile"
+  warn "Brewfile not found at ${XDG_CONFIG_HOME}/homebrew/Brewfile — chezmoi apply deploys it"
+fi
+
+# ============================================================================
+# 8b. NetBird's daemon
+# ============================================================================
+# The cask installs the binary; the system daemon is a separate step. Skipped when launchd
+# already lists it. The sudo credential is the one step 0 cached.
+# Every external command below reads /dev/null, so an unexpected prompt fails into its warning
+# instead of hanging the unattended run.
+if NETBIRD_STATE=$(launchctl print system/netbird 2>/dev/null </dev/null); then
+  # Installed is not running: a daemon launchd lists without `state = running` is started.
+  case "$NETBIRD_STATE" in
+    *"state = running"*) log_info "✓ NetBird daemon already installed and running" ;;
+    *) log_info "Starting the NetBird daemon..."
+       sudo netbird service start </dev/null \
+         || warn "NetBird daemon installed but not started — run: sudo netbird service start" ;;
+  esac
+else
+  log_info "Installing the NetBird daemon..."
+  { sudo netbird service install && sudo netbird service start; } </dev/null \
+    || warn "NetBird daemon not installed or started — run: sudo netbird service install && sudo netbird service start"
 fi
 
 # ============================================================================
 # 9. Reconcile AI agent plugins (Claude Code + Codex)
 # ============================================================================
-if [ -x "${SRC_DIR}/.scripts/reconcile-agents.sh" ]; then
+if [ -x "${SCRIPTS_DIR}/reconcile-agents.sh" ]; then
   log_info "Reconciling AI agent plugins..."
-  "${SRC_DIR}/.scripts/reconcile-agents.sh" \
-    || warn "agent plugins: reconcile incomplete — if Claude Code has never run here, its plugin state does not exist yet; launch it once, then re-run .scripts/reconcile-agents.sh"
+  "${SCRIPTS_DIR}/reconcile-agents.sh" \
+    || warn "agent plugins: reconcile incomplete (its warnings are above) — re-run dotfiles-run reconcile-agents"
 else
   log_warn "reconcile-agents.sh not found, skipping agent plugin setup"
 fi
@@ -291,7 +387,10 @@ fi
 # 10. Set default shell to Homebrew zsh
 # ============================================================================
 log_info "Setting default shell to Homebrew zsh..."
-if [[ "$SHELL" != "${HOMEBREW_PREFIX}/bin/zsh" ]]; then
+# Never to a zsh that is not there: no new terminal could start.
+if [ ! -x "${HOMEBREW_PREFIX}/bin/zsh" ]; then
+  warn "Homebrew zsh is not installed, so the login shell stays ${SHELL} — run provision.sh again once the Brewfile is installed"
+elif [[ "$SHELL" != "${HOMEBREW_PREFIX}/bin/zsh" ]]; then
   if ! grep -qxF "${HOMEBREW_PREFIX}/bin/zsh" /etc/shells; then
     log_info "Adding Homebrew zsh to /etc/shells..."
     echo "${HOMEBREW_PREFIX}/bin/zsh" | sudo tee -a /etc/shells
@@ -331,6 +430,32 @@ else
 fi
 
 # ============================================================================
+# 12b. Neovim plugins and Herdr plugin links
+# ============================================================================
+log_info "Installing Neovim plugins, Mason's tools and the treesitter parsers..."
+# A headless Neovim that quits aborts the installs LazyVim starts in the background, so
+# nvim-finish-install.lua waits for them. Mason's Ruby tools need mise's Ruby, not macOS's,
+# and the shims are on PATH only once zshenv is.
+PATH="${XDG_DATA_HOME}/mise/shims:${PATH}" nvim --headless "+Lazy! install" \
+  "+luafile ${SCRIPTS_DIR}/nvim-finish-install.lua" "+cq 2" </dev/null \
+  || warn "neovim: not everything installed (named above) — open nvim once: LazyVim installs what is missing at start"
+
+# Herdr's TUI plugins are linked, not copied: ~/.config/herdr/plugin-* (chezmoi) and
+# smart-splits.nvim's bundled one (lazy.nvim, installed by the install above). A plugin is
+# linked only when `herdr plugin list` does not already show its [local:<dir>].
+if HERDR_PLUGINS=$(herdr plugin list 2>&1 </dev/null); then
+  for dir in "${XDG_CONFIG_HOME}"/herdr/plugin-*(N/) "${XDG_DATA_HOME}/nvim/lazy/smart-splits.nvim"; do
+    [ -f "${dir}/herdr-plugin.toml" ] || continue
+    case "$HERDR_PLUGINS" in
+      *"[local:${dir}]"*) log_info "✓ herdr plugin already linked: ${dir}" ;;
+      *) herdr plugin link "${dir}" </dev/null || warn "herdr plugin not linked — run: herdr plugin link ${dir}" ;;
+    esac
+  done
+else
+  warn "herdr plugins: could not list them — run: herdr plugin list, then herdr plugin link <folder> for each ~/.config/herdr/plugin-* and ~/.local/share/nvim/lazy/smart-splits.nvim"
+fi
+
+# ============================================================================
 # 13. Create necessary cache directories
 # ============================================================================
 log_info "Creating cache directories..."
@@ -358,14 +483,52 @@ brew cleanup
 # ============================================================================
 # 16. Run macOS configuration
 # ============================================================================
-if [ -f "${SRC_DIR}/.scripts/configure.sh" ]; then
+if [ -f "${SCRIPTS_DIR}/configure.sh" ]; then
   log_info "Running macOS configuration..."
   # --hostname: preflight already owns the identity, so configure.sh verifies instead
   # of prompting. It never renames in this mode.
-  "${SRC_DIR}/.scripts/configure.sh" --hostname "${MACHINE_NAME}" \
+  "${SCRIPTS_DIR}/configure.sh" --hostname "${MACHINE_NAME}" \
     || warn "macOS configuration reported problems"
 else
-  log_warn "macOS configuration script not found at ${SRC_DIR}/.scripts/configure.sh"
+  log_warn "macOS configuration script not found at ${SCRIPTS_DIR}/configure.sh"
+fi
+
+# ============================================================================
+# 17. Pin the Codex daemon to the CLI's package (fresh machines only)
+# ============================================================================
+# A pin restarts the daemon, which would interrupt a running review on a machine that has
+# one, so only a machine with no daemon package is pinned; `codex-daemon-pin` in the
+# checklist reports the rest. env -i, with the LaunchAgent's PATH and XDG variables: a
+# daemon restarted from a Herdr pane keeps its HERDR_* variables and fails `codex-daemon check`.
+if [ "$CODEX_FRESH" -eq 1 ]; then
+  log_info "Pinning the Codex daemon to the CLI's package..."
+  CODEX_PIN_CMD='codex app-server daemon update --from-cli --yes'
+  if ! CODEX_BIN=$("${HOME}/.local/bin/codex-daemon" real-bin 2>/dev/null </dev/null) || [ -z "$CODEX_BIN" ]; then
+    warn "codex daemon not pinned: codex-daemon real-bin found no codex — run: ${CODEX_PIN_CMD} (with the real codex, from a shell outside Herdr)"
+  else
+    # The update needs a selected package, which the daemon configure.sh's LaunchAgent started
+    # selects on its own time (the third VM run pinned too early and failed).
+    waited=0
+    until [ -e "$DAEMON_CURRENT" ] || [ -L "$DAEMON_CURRENT" ] || [ "$waited" -ge 300 ]; do
+      sleep 5; waited=$((waited + 5))
+      [ $((waited % 60)) -eq 0 ] && log_info "  still waiting for the Codex daemon to select its package (${waited}s)"
+    done
+    if [ ! -e "$DAEMON_CURRENT" ] && [ ! -L "$DAEMON_CURRENT" ]; then
+      warn "codex daemon not pinned: it selected no package within 5 minutes — check ~/.local/state/codex-daemon.log, then run: ${CODEX_PIN_CMD} (with the real codex, from a shell outside Herdr)"
+    else
+      # TMPDIR as launchd gives a daemon: the per-user temp directory, else the caller's.
+      PIN_TMPDIR=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null </dev/null) || PIN_TMPDIR=""
+      [ -n "$PIN_TMPDIR" ] || PIN_TMPDIR="${TMPDIR:-/tmp}"
+      env -i HOME="${HOME}" USER="${USER}" LOGNAME="${LOGNAME:-${USER}}" SHELL="${SHELL}" TMPDIR="${PIN_TMPDIR}" \
+        PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" XDG_DATA_HOME="${XDG_DATA_HOME}" \
+        XDG_STATE_HOME="${XDG_STATE_HOME}" XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
+        "$CODEX_BIN" app-server daemon update --from-cli --yes </dev/null \
+        || warn "codex daemon not pinned — run: ${CODEX_BIN} app-server daemon update --from-cli --yes (from a shell outside Herdr)"
+    fi
+  fi
+else
+  log_info "✓ Codex daemon package already present, not pinning"
 fi
 
 # ============================================================================
@@ -383,22 +546,18 @@ if [ ${#WARNINGS[@]} -gt 0 ]; then
   done
   echo ""
 fi
+# The checklist replaces the old hard-coded next steps: Borg, Alfred, Herdr and the rest are
+# rows in it. Read-only; a row that is not done is not a failure of the run.
+"${SCRIPTS_DIR}/machine-check.sh" --todo --machine "${MACHINE_NAME}" </dev/null || true
+log_info "Check again any time, from a new shell: dotfiles-run machine-check"
+echo ""
 log_info "Next steps:"
-log_info "  0. Borg: this machine needs its OWN BorgBase repo and keypair — archives are"
-log_info "     named from the hostname, so sharing a repo interleaves two machines."
-log_info "  1. Restart your terminal or run: exec ${HOMEBREW_PREFIX}/bin/zsh"
+if [ -x "${HOMEBREW_PREFIX}/bin/zsh" ]; then
+  log_info "  1. Restart your terminal or run: exec ${HOMEBREW_PREFIX}/bin/zsh"
+else
+  log_info "  1. Restart your terminal"
+fi
 log_info "  2. Verify chezmoi is using SSH: cd ~/.local/share/chezmoi && git remote -v"
 log_info "  3. Test making changes: chezmoi edit ~/.zshrc"
 log_info "  4. Some macOS settings may require a logout/restart to take effect"
-log_info "  5. The ;codex / ;claude relay snippets are Alfred snippets. Two steps remain:"
-log_info "       a. System Settings > Privacy & Security > Accessibility > add Alfred."
-log_info "          Without it Alfred runs and shows the snippets in its UI while expanding"
-log_info "          nothing — it never sees the keystrokes."
-log_info "       b. Run .scripts/configure.sh, which enables snippet auto-expansion and"
-log_info "          restarts Alfred so it indexes the collection (a NEW collection is only"
-log_info "          discovered at launch, so a bare 'chezmoi apply' is not enough)."
-log_info "       Verify with: ./tests/alfred-relay.test.sh"
-log_info "  6. Herdr app: open it once, run ~/.config/herdr-app/bin/respaces with its window open"
-log_info "     (it builds the michael-spaces and michael-menu mods from Herdr's), then pick the"
-log_info "     michael layout (cmd-shift-L)."
 echo ""

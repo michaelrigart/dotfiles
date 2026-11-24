@@ -401,6 +401,10 @@ first step below covers both by hand.
 4. If the inbox is not writable or the run failed: `launchctl bootout gui/$(id -u)/be.netronix.weekly-research`
    and tell the line. The schedule stays off until the vault route works; there is no fallback
    that runs without a way to reach him.
+   Note, 2026-11-24 (spec 2026-11-22-complete-provisioning, §4): since then `chezmoi apply` and
+   `configure.sh` load every unloaded `be.netronix.*` job, so a bootout alone no longer keeps it
+   off. Also run `launchctl disable gui/$(id -u)/be.netronix.weekly-research`; `launchctl enable`
+   undoes it.
 
 **How the status knows.** Every run, before the model starts, the wrapper writes the date into
 one fixed hidden file in the vault inbox (`.weekly-research-last-run`). A run that cannot write

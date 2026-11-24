@@ -1069,6 +1069,9 @@ hasnt 'focus_pane_right = "ctrl+l"' "no direct Ctrl-l binding bypasses Neovim"
 
 OUT="$(<"$SMART_SPLITS")"
 has 'lazy = false' "smart-splits loads early enough to establish multiplexer integration"
+# v3 (2026-10-08) moved the bundled Herdr plugin out of smart-splits.nvim: a fresh install of an
+# unpinned spec has no smart-splits.nvim plugin for the keys above (the third VM run).
+has 'tag = "v2.' "smart-splits stays on v2, the last line that bundles its Herdr plugin"
 for key in h j k l; do
   has "<C-$key>" "Neovim keeps the Ctrl-$key smart-splits mapping"
 done

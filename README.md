@@ -49,10 +49,14 @@ This will:
 5. Generate the chezmoi config and apply the dotfiles
 6. Switch the chezmoi remote to SSH
 7. Install all packages from [Brewfile](dot_config/homebrew/Brewfile.tmpl)
-8. Reconcile the AI agent plugins, then set Homebrew zsh as the default shell
-9. Install Oh My Zsh
-10. Install development tools via mise
-11. Apply macOS system settings
+8. Install the NetBird daemon
+9. Reconcile the AI agent plugins, then set Homebrew zsh as the default shell
+10. Install Oh My Zsh
+11. Install development tools via mise
+12. Install the Neovim plugins and link the Herdr plugins
+13. Apply macOS system settings
+14. Only if no Codex daemon package existed when the run started, pin the Codex daemon to the CLI's package
+15. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
 
 ---
 
@@ -122,14 +126,18 @@ chezmoi apply
 ### Re-running Scripts
 
 ```bash
+# These run from a fresh clone of origin's main, never from the checkout an agent can write
 # Re-apply macOS system settings
-~/.local/share/chezmoi/.scripts/configure.sh
+dotfiles-run configure
 
 # Update all Homebrew packages
 brew bundle install --file ~/.config/homebrew/Brewfile
 
 # Update development tools
 mise install
+
+# Print what is still to do on this machine
+dotfiles-run machine-check --todo
 ```
 
 ---
@@ -160,8 +168,9 @@ sudo scutil --set HostName      <name>
 sudo scutil --set LocalHostName <name>
 
 # 5. Initialize and apply dotfiles
+#    DOTFILES_PROVISIONING=1 keeps the apply from loading LaunchAgents; step 9's configure.sh does.
 chezmoi init https://github.com/michaelrigart/dotfiles.git
-chezmoi apply --force
+DOTFILES_PROVISIONING=1 chezmoi apply --force
 
 # 6. Switch to SSH
 cd ~/.local/share/chezmoi
@@ -186,7 +195,55 @@ mise install
 # 10. Herdr app: open it once, run `~/.config/herdr-app/bin/respaces` with its window open
 #     (it builds the michael-spaces and michael-menu mods from Herdr's), then pick the
 #     michael layout (cmd-shift-L).
+
+# 11. NetBird daemon, then Neovim's plugins installed and Herdr's linked, then the Codex pin
+sudo netbird service install && sudo netbird service start
+PATH=~/.local/share/mise/shims:$PATH nvim --headless "+Lazy! install" \
+  "+luafile $HOME/.local/share/chezmoi/.scripts/nvim-finish-install.lua" "+cq 2"
+for dir in ~/.config/herdr/plugin-*(N/) ~/.local/share/nvim/lazy/smart-splits.nvim; do
+  herdr plugin link "$dir"
+done
+#     the pin only if ~/.codex/packages/app-server-daemon/current did not exist before step 9,
+#     from a plain terminal, not a Herdr pane
+"$(codex-daemon real-bin)" app-server daemon update --from-cli --yes
+
+# 12. What is left to do
+~/.local/share/chezmoi/.scripts/machine-check.sh --todo
 ```
+
+---
+
+## 🧪 Testing a reinstall
+
+Run the whole provisioning in a throwaway macOS VM on fenrir with [Tart](https://tart.run)
+(`openai/tools/tart`). After `chezmoi apply`, `brew bundle install --file ~/.config/homebrew/Brewfile`
+installs it on fenrir.
+
+```bash
+# Pull the image (about 33 GB), clone it and give the clone room: the whole Brewfile fills 80 GB
+tart clone ghcr.io/cirruslabs/macos-golden-gate-vanilla reinstall-test
+tart set reinstall-test --disk-size 120
+tart run reinstall-test
+
+# In the VM (its window shares no clipboard, so type this): run the branch's script. It installs
+# the 1Password app; when it asks, sign in there, turn on the CLI integration and approve the
+# terminal's request. Answer `hercules` for the machine name: `fenrir` is taken on the network
+# the VM shares with fenrir, and macOS renames the VM `fenrir (2)`.
+# PROVISION_REF is honoured only inside a VM and picks the branch the clone checks out.
+ref=<branch>
+PROVISION_REF=$ref /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/$ref/.scripts/provision.sh)"
+
+# Afterwards, on fenrir
+tart delete reinstall-test
+```
+
+It passes when every `script` row of the final check is ✓ except the rows a VM cannot satisfy
+(`hercules-power` if `pmset` rejects a key); the `you` rows, Little Snitch's extension among them,
+print ✗ until Michael does them after one run, a second run prints the same machine-check
+result, reloads no LaunchAgent and adds no warning, and the `you` rows print in order.
+
+Then remove the VM's device from 1Password. Never run `netbird up`, pair Syncthing or start Borg
+inside the VM.
 
 ---
 
@@ -242,8 +299,8 @@ Rollback, on each machine: turn the 1Password SSH agent back on; if step 5 point
 "SSH config" note and run
 `chezmoi apply` (this renders `~/.ssh/config` again) before booting the job out, so ssh never
 points at a missing socket; `launchctl bootout gui/$(id -u)/be.netronix.ssh-agent`; revert the PR,
-`chezmoi apply` and `rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`; restart shells and
-Claude Code sessions.
+`rm ~/Library/LaunchAgents/be.netronix.ssh-agent.plist`, then `chezmoi apply` (the plist goes
+first, so the apply hook cannot load it again); restart shells and Claude Code sessions.
 
 ### Secrets in Config
 

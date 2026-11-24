@@ -1,0 +1,6 @@
+.chezmoidata/machines.toml	data	guard
+.scripts/configure.sh	zsh	-
+.scripts/machine-check.sh	zsh	guard
+.scripts/machine-checklist.tsv	data	own,guard
+.scripts/provision.sh	zsh	-
+dot_config/agents/plugins.conf	data	guard

@@ -3,7 +3,8 @@
   Exchange Codex memory inputs with the other Mac on a timer.
 
   Managed by chezmoi (source: Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl).
-  Bootstrapped by .scripts/configure.sh; load by hand with:
+  Loaded by .scripts/load-launchagents.sh (run by configure.sh, and by the chezmoi apply hook
+  when this plist changes); load by hand with:
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.codex-memory-share.plist
 
   codex-memory-share exports this machine's raw_memories.md and rollout_summaries/ as a verified
