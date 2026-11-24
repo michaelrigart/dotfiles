@@ -5,28 +5,49 @@ require("lazy").load({ plugins = { "mason.nvim", "nvim-treesitter" } })
 local tools = LazyVim.opts("mason.nvim").ensure_installed or {}
 local parsers = LazyVim.opts("nvim-treesitter").ensure_installed or {}
 local mr = require("mason-registry")
+local TS = require("nvim-treesitter")
+local TIMEOUT = 15 * 60 * 1000
 local function pkg(tool)
   local ok, p = pcall(mr.get_package, tool)
   return ok and p or nil
 end
+local function missing_parsers()
+  local have = {}
+  for _, lang in ipairs(TS.get_installed()) do
+    have[lang] = true
+  end
+  return vim.tbl_filter(function(lang) return not have[lang] end, parsers)
+end
 
--- Runs after LazyVim's own refresh callback, so it starts only what that one did not (Mason
--- refuses a second install of a package). Mason calls back on a failed refresh too.
+-- Starts only what LazyVim's own refresh callback did not (Mason refuses a second install).
+-- Scheduled, because that callback runs after this one when the registry was stale. Mason
+-- calls back on a failed refresh too.
 local refreshed = false
 mr.refresh(function()
-  for _, tool in ipairs(tools) do
-    local p = pkg(tool)
-    if p and not p:is_installed() and not p:is_installing() then
-      p:install()
+  vim.schedule(function()
+    for _, tool in ipairs(tools) do
+      local p = pkg(tool)
+      if p and not p:is_installed() and not p:is_installing() then
+        p:install()
+      end
     end
-  end
-  refreshed = true
+    refreshed = true
+  end)
 end)
 
-local TIMEOUT = 15 * 60 * 1000
-pcall(function()
-  require("nvim-treesitter").install(parsers):wait(TIMEOUT) -- waits for a parser LazyVim is building
-end)
+-- nvim-treesitter waits at most 60 s for a parser LazyVim's install is already building, then
+-- moves on, so a round that installed something, or ran that long, is followed by another.
+local deadline = vim.uv.hrtime() + TIMEOUT * 1e6
+local left = missing_parsers()
+while #left > 0 and vim.uv.hrtime() < deadline do
+  local started = vim.uv.hrtime()
+  pcall(function() TS.install(left):wait(TIMEOUT) end)
+  local now = missing_parsers()
+  if #now == #left and vim.uv.hrtime() - started < 60e9 then
+    break
+  end
+  left = now
+end
 vim.wait(TIMEOUT, function()
   return refreshed and not vim.iter(tools):any(function(t)
     local p = pkg(t)
@@ -38,14 +59,8 @@ local missing = vim.iter(tools):filter(function(t)
   local p = pkg(t)
   return not (p and p:is_installed())
 end):totable()
-local have = {}
-for _, lang in ipairs(require("nvim-treesitter").get_installed()) do
-  have[lang] = true
-end
-for _, lang in ipairs(parsers) do
-  if not have[lang] then
-    missing[#missing + 1] = "parser " .. lang
-  end
+for _, lang in ipairs(missing_parsers()) do
+  missing[#missing + 1] = "parser " .. lang
 end
 if #missing == 0 then
   vim.cmd("qall!")
