@@ -20,12 +20,12 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 696 lines of non-test code (+600 −96), 1.48 times the estimate; 1,599 lines of test
-code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
+**Real size:** 705 lines of non-test code (+612 −93), 1.50 times the estimate, at the limit where
+a line stops; 1,735 lines of test code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
 `provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines),
 the fourth one (7 lines), the fifth one (10 lines), and a second reading of the fifth run's log two
-more (68 lines). One increment.
+more (77 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -328,6 +328,7 @@ the closing list did not show:
   - The Brewfile now installs `tree-sitter-cli`.
   - `.scripts/nvim-finish-install.lua` waits for Mason's tools and the parsers. It exits 1 and
     names what is missing; a script error exits 2. Either one is a warning.
+    `tests/nvim-finish-install.test.sh` runs it in the real Neovim against stub modules.
   - mise's shims go on PATH for that command. Without them, Mason's Ruby tools find macOS's Ruby
     2.6 and fail.
 
@@ -339,7 +340,8 @@ the closing list did not show:
 
 Not faults of provisioning: Microsoft Office's installer ran out of disk in the VM (its 80 GB
 disk was full, 4.2 GB free, so the README now gives it 120 GB); `pmset` in the VM sets no `womp` or
-`autorestart`, so `hercules-power` reads ✗ there.
+`autorestart`, so `hercules-power` reads ✗ there; the language servers Mason installs through
+mason-lspconfig wait for the first file Neovim opens, since nvim-lspconfig loads only then.
 
 ### 4. `configure.sh`
 
