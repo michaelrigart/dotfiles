@@ -275,6 +275,11 @@ called "chezmoi apply --force" "a fresh machine applies"
 la=$(grep -n "scutil --set ComputerName" "$CALLS" | head -1 | cut -d: -f1)
 lb=$(grep -n "chezmoi init" "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$la" ] && [ -n "$lb" ] && [ "$la" -lt "$lb" ]; } && _pass "identity is set before chezmoi init" || _fail "identity is set before chezmoi init"
+# The first apply runs modify_ scripts whose jq programs the system jq (1.7.1) rejects: the second
+# VM run (2026-11-24) stopped there with "chezmoi: .claude/settings.json: exit status 3".
+lj=$(grep -nE '^brew\[[^]]*\] install( [^ ]+)* jq( |$)' "$CALLS" | head -1 | cut -d: -f1)
+lp=$(grep -n '^chezmoi apply' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$lj" ] && [ -n "$lp" ] && [ "$lj" -lt "$lp" ]; } && _pass "Homebrew's jq is installed before the first apply" || _fail "Homebrew's jq is installed before the first apply"
 hasnt "already provisioned" "a fresh machine is not told it is already provisioned"
 SBX_SRC="$T/src"
 reset; run 'hercules\ny\n'

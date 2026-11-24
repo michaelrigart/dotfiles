@@ -117,7 +117,8 @@ fi
 # 3. Install essential tools for bootstrap
 # ============================================================================
 log_info "Installing essential bootstrap tools..."
-brew install chezmoi 1password-cli git
+# jq: the first apply (step 6) runs modify_ scripts whose jq programs the system jq rejects.
+brew install chezmoi 1password-cli git jq
 # The desktop app supplies CLI integration, so it is bootstrap work, not Brewfile work:
 # step 6 renders op:// templates and cannot wait for step 8.
 # NOT optional, so not a warning: every op:// template depends on it, and without the
