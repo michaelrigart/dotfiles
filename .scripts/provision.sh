@@ -133,14 +133,22 @@ fi
 # capturing the machine's CURRENT name — but the name is not chosen until preflight,
 # below. Cloning first also makes the machine allowlist readable before we prompt.
 SRC_DIR="${PROVISION_SRC_OVERRIDE:-${XDG_DATA_HOME}/chezmoi}"
-DOTFILES_URL=https://github.com/michaelrigart/dotfiles.git
+# A checkout chezmoi never ran from (no chezmoi config yet) is what an earlier run left when it
+# stopped after its clone. Step 6 applies only this run's own clone, so it is moved aside, never
+# deleted, and cloned afresh: git status cannot vouch for it, because chezmoi applies the files
+# themselves (ignored ones too), which is why the chezmoi wrapper applies a fresh clone as well.
+if [ -d "${SRC_DIR}/.git" ] && [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ]; then
+  EARLIER_SRC="${SRC_DIR}.earlier-$(date +%Y%m%d-%H%M%S)"
+  mv "${SRC_DIR}" "${EARLIER_SRC}"
+  warn "An earlier run's checkout, which chezmoi never applied, is now ${EARLIER_SRC}; delete it once nothing in it is needed"
+fi
 SRC_PRESENT=0
 if [ -d "${SRC_DIR}/.git" ]; then
   SRC_PRESENT=1
   log_info "✓ dotfiles source already present"
 else
   log_info "Cloning dotfiles source..."
-  git clone --branch "${PROVISION_REF}" "${DOTFILES_URL}" "${SRC_DIR}"
+  git clone --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
 fi
 
 # ============================================================================
@@ -256,33 +264,12 @@ log_info "✓ identity set to ${MACHINE_NAME}"
 # 6. Generate the chezmoi config, then apply
 # ============================================================================
 # Only now, with the identity settled, does chezmoi capture it.
-# This runs in zsh as a script, so the chezmoi wrapper that deploys only origin's main is not
-# loaded, and a checkout that already existed may hold changes nobody reviewed. So the run
-# applies its own clone, and a checkout an earlier run left before chezmoi ever ran (no chezmoi
-# config yet) only when it passes the wrapper's gate: clean, and at origin's commit.
-checkout_is_origin() {
-  local st want head
-  st=$(git -c core.fsmonitor=false -C "${SRC_DIR}" status --porcelain --untracked-files=all </dev/null) || return 1
-  [ -z "$st" ] || return 1
-  # -C /: no repository, so no checkout configuration (url rewrites included) reaches it.
-  want=$(git -C / ls-remote "${DOTFILES_URL}" "refs/heads/${PROVISION_REF}" </dev/null) || return 1
-  want=${want%%$'\t'*}
-  [[ $want =~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ]] || return 1
-  head=$(git -c core.fsmonitor=false -C "${SRC_DIR}" rev-parse HEAD </dev/null) || return 1
-  [ "$head" = "$want" ]
-}
-APPLY_SOURCE=0
-if [ "$SRC_PRESENT" -eq 0 ]; then
-  APPLY_SOURCE=1
-elif [ -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ]; then
+# Only on this run's own clone (step 4). This runs in zsh as a script, so the chezmoi wrapper
+# that deploys only origin's main is not loaded: on a machine whose checkout already existed,
+# init and apply would deploy the working tree, which the checkout cannot prove was reviewed.
+if [ "$SRC_PRESENT" -eq 1 ]; then
   warn "Machine already provisioned: chezmoi init and apply are skipped. Run chezmoi apply --init from zsh, which deploys origin's main."
-elif checkout_is_origin; then
-  log_info "✓ The checkout an earlier run left is origin's ${PROVISION_REF}, unchanged: applying it"
-  APPLY_SOURCE=1
 else
-  warn "The checkout an earlier run left is not origin's ${PROVISION_REF}, unchanged (or origin could not be read): chezmoi init and apply are skipped. Delete ${SRC_DIR} and run provision.sh again."
-fi
-if [ "$APPLY_SOURCE" -eq 1 ]; then
   log_info "Generating chezmoi config..."
   chezmoi init
   log_info "Applying dotfiles with chezmoi..."
@@ -374,7 +361,7 @@ fi
 log_info "Setting default shell to Homebrew zsh..."
 # Never to a zsh that is not there: no new terminal could start.
 if [ ! -x "${HOMEBREW_PREFIX}/bin/zsh" ]; then
-  warn "Homebrew zsh is not installed, so the login shell stays ${SHELL} — once the Brewfile is installed: sudo chsh -s ${HOMEBREW_PREFIX}/bin/zsh ${USER}"
+  warn "Homebrew zsh is not installed, so the login shell stays ${SHELL} — run provision.sh again once the Brewfile is installed"
 elif [[ "$SHELL" != "${HOMEBREW_PREFIX}/bin/zsh" ]]; then
   if ! grep -qxF "${HOMEBREW_PREFIX}/bin/zsh" /etc/shells; then
     log_info "Adding Homebrew zsh to /etc/shells..."
@@ -522,7 +509,11 @@ fi
 log_info "Check again any time: ${SRC_DIR}/.scripts/machine-check.sh"
 echo ""
 log_info "Next steps:"
-log_info "  1. Restart your terminal or run: exec ${HOMEBREW_PREFIX}/bin/zsh"
+if [ -x "${HOMEBREW_PREFIX}/bin/zsh" ]; then
+  log_info "  1. Restart your terminal or run: exec ${HOMEBREW_PREFIX}/bin/zsh"
+else
+  log_info "  1. Restart your terminal"
+fi
 log_info "  2. Verify chezmoi is using SSH: cd ~/.local/share/chezmoi && git remote -v"
 log_info "  3. Test making changes: chezmoi edit ~/.zshrc"
 log_info "  4. Some macOS settings may require a logout/restart to take effect"

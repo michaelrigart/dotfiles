@@ -125,20 +125,10 @@ exit 0
 O
 # A fresh machine has no checkout: `git clone` copies the fixture source into the target, so
 # the run after it reads the same allowlist and scripts as one with an existing checkout.
-# The check of a checkout an earlier run left reads $T/git-status (status), $T/git-head
-# (rev-parse HEAD) and $T/git-origin (ls-remote; fail-git-ls-remote fails it); both commits
-# default to the same id, so an unchanged checkout is at origin's commit.
 cat > "$T/bin/git" <<'G'
 #!/usr/bin/env bash
 echo "git $*" >> "$CALLS"
-SHA0=1111111111111111111111111111111111111111
-case "$*" in
-  *"branch --show-current"*) cat "$SBX_ROOT/branch" 2>/dev/null ;;
-  *" status "*) cat "$SBX_ROOT/git-status" 2>/dev/null ;;
-  *"rev-parse HEAD"*) cat "$SBX_ROOT/git-head" 2>/dev/null || echo "$SHA0" ;;
-  *" ls-remote "*) [ -e "$SBX_ROOT/fail-git-ls-remote" ] && exit 128
-                   printf '%s\t%s\n' "$(cat "$SBX_ROOT/git-origin" 2>/dev/null || echo "$SHA0")" "${@: -1}" ;;
-esac
+case "$*" in *"branch --show-current"*) cat "$SBX_ROOT/branch" 2>/dev/null ;; esac
 if [ "$1" = clone ]; then
   for last; do :; done
   mkdir -p "$last" && cp -R "$SBX_ROOT/src/." "$last"
@@ -217,7 +207,7 @@ done
 echo "$tool $*" >> "$CALLS"; exec "/bin/$tool" "$@"
 M
 chmod +x "$T/bin/_mut"
-for t in rm chmod find; do
+for t in rm chmod find mv; do
   printf '#!/usr/bin/env bash\nexec "%s/bin/_mut" %s "$@"\n' "$T" "$t" > "$T/bin/$t"
 done
 chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/brew/bin/zsh "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex"
@@ -297,30 +287,28 @@ has "chezmoi apply --init" "and Michael is pointed at the wrapper's command"
 called "scutil --set ComputerName hercules" "the rest of the run still happens"
 called "configure.sh --hostname hercules" "including the macOS configuration"
 
-echo "B2b. a checkout an earlier run left before chezmoi ran is applied only as origin's commit"
+ls -d "$T"/src.earlier-* >/dev/null 2>&1 && _fail "a configured machine's checkout stays where it is" || _pass "a configured machine's checkout stays where it is"
+
+echo "B2b. a checkout an earlier run left before chezmoi ran is moved aside and cloned afresh"
 # The first VM run (2026-11-24) stopped at the 1Password wait after cloning; its retry skipped
-# chezmoi for good, so nothing was deployed. No chezmoi config means chezmoi never ran here.
+# chezmoi for good, so nothing was deployed. No chezmoi config means chezmoi never ran here. The
+# left checkout is never applied: git status cannot vouch for the files chezmoi reads.
+rm -rf "$T/left" "$T"/left.earlier-*; cp -R "$T/src" "$T/left"; echo planted > "$T/left/run_planted.log"
+SBX_SRC="$T/left"
 reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml"; run 'hercules\ny\n'
-rc_is 0 "a never-applied checkout at origin's commit finishes"
-called "chezmoi init" "it is initialised"
+rc_is 0 "a never-applied checkout's retry finishes"
+moved=$(ls -d "$T"/left.earlier-* 2>/dev/null | head -1)
+[ -n "$moved" ] && [ -f "$moved/run_planted.log" ] && _pass "the left checkout is moved aside, whole" || _fail "the left checkout is moved aside, whole"
+[ ! -e "$T/left/run_planted.log" ] && _pass "nothing of it stays in the source chezmoi applies" || _fail "nothing of it stays in the source chezmoi applies"
+called "git clone --branch main" "the source is cloned afresh"
+called "chezmoi init" "the fresh clone is initialised"
 called "chezmoi apply --force" "and applied"
-called "git -c core.fsmonitor=false -C $SBX_SRC status --porcelain --untracked-files=all" "untracked files count as changes, and no fsmonitor runs"
-called "git -C / ls-remote https://github.com/michaelrigart/dotfiles.git refs/heads/main" "origin's commit is read outside the checkout, from the fixed URL"
 hasnt "already provisioned" "it is not called provisioned"
-for c in changed moved unreadable; do
-  reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml"
-  case $c in
-    changed)    echo "?? planted.tmpl" > "$T/git-status" ;;
-    moved)      echo 2222222222222222222222222222222222222222 > "$T/git-head" ;;
-    unreadable) : > "$T/fail-git-ls-remote" ;;
-  esac
-  run 'hercules\ny\n'
-  rc_is 0 "a never-applied checkout ($c) still finishes"
-  not_called "chezmoi init" "a never-applied checkout ($c) is not initialised"
-  not_called "chezmoi apply" "a never-applied checkout ($c) is not applied"
-  has "is not origin's main, unchanged" "a never-applied checkout ($c): the skip is announced"
-  rm -f "$T/git-status" "$T/git-head" "$T/fail-git-ls-remote"
-done
+has "⚠ An earlier run's checkout, which chezmoi never applied, is now $moved" "the closing list says where the old checkout went"
+gl=$(grep -n '^git clone' "$CALLS" | head -1 | cut -d: -f1); ml=$(grep -n "^mv $T/left " "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$ml" ] && [ -n "$gl" ] && [ "$ml" -lt "$gl" ]; } && _pass "moved before the clone" || _fail "moved before the clone"
+rm -rf "$T/left" "$T"/left.earlier-*
+SBX_SRC="$T/src"
 
 echo "B3. 1Password: the run signs the CLI in, in its own terminal session"
 # 1Password authorizes each terminal session and op whoami only reports it, so a run that only
@@ -383,6 +371,7 @@ rc_is 0 "a run without Homebrew's zsh finishes"
 not_called "chsh" "the login shell is not pointed at a missing zsh"
 not_called "/etc/shells" "nor is the missing zsh added to /etc/shells"
 has "⚠ Homebrew zsh is not installed" "the closing list says so"
+hasnt "exec $T/brew/bin/zsh" "and the next steps do not offer to exec it"
 mv "$T/brew-zsh.off" "$T/brew/bin/zsh"
 
 echo "F. identity guard in Brewfile.tmpl"

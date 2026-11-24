@@ -7,7 +7,8 @@
 **Sign-off:** Michael, 2026-11-22, in the line's own pane: "signed off, D1 yes, D2 both. I follow
 your recommendations". Codex approved the spec in round 3 (xr-1795308251-d19b9da8). D3 follows the
 recommendation's fallback until Michael names the 1Password items (see D3). The retry rule in §3
-("Found by the first VM run"): Michael, 2026-11-24, "yes, go ahead with your recommendation".
+("Found by the first VM run"): Michael, 2026-11-24, "yes, go ahead with your recommendation", then
+"I follow your recommendations" for the night; the move-aside form is the line's ruling (see §3).
 **Source:** Michael, 2026-11-22: "I want you to make sure when I do a complete reinstall, everything
 gets installed and configured properly again." Relayed in the driver's brief (chezmoi-08) of the
 same day.
@@ -19,10 +20,10 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 588 lines of non-test code (+504 −84), 1.25 times the estimate; 1,450 lines of test
+**Real size:** 579 lines of non-test code (+495 −84), 1.23 times the estimate; 1,441 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
-`provision.sh` fixes in §3 (53 lines). One increment.
+`provision.sh` fixes in §3 (44 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -247,16 +248,20 @@ change kept a fresh machine from being provisioned at all:
   The wait prints a line each minute.
 - **A checkout an earlier run left.** Any existing checkout counted as "already provisioned", so a
   run that stopped after its clone (at the 1Password wait, say) skipped `chezmoi init` and `apply`
-  on every retry, and nothing was deployed. Now a checkout that chezmoi never ran from (no
-  `~/.config/chezmoi/chezmoi.toml`) is applied when it passes the `chezmoi` wrapper's gate: `git
-  status --porcelain --untracked-files=all` is empty (fsmonitor off), and `HEAD` equals origin's
-  `PROVISION_REF`, read with `git -C / ls-remote` from the fixed https URL. Otherwise the run skips
-  chezmoi as before and says to delete the checkout and run again. A machine with a chezmoi config
-  keeps today's skip and its pointer to the wrapper.
+  on every retry, and nothing was deployed. Now step 4 moves a checkout that chezmoi never ran
+  from (no `~/.config/chezmoi/chezmoi.toml`) aside, to `<source>.earlier-<time>`, and clones
+  afresh, so step 6 applies only the run's own clone; the closing list names the old checkout for
+  Michael to delete. A machine with a chezmoi config keeps today's skip and its pointer to the
+  wrapper. Michael approved a gate instead (apply the left checkout when it is clean and at
+  origin's commit, the wrapper's checks); the cold review showed git's view is not what chezmoi
+  reads (ignored files such as `*.log`, skip-worktree flags, replace refs, `core.worktree`), which
+  is why the wrapper itself applies a fresh clone. Moving aside keeps the rule he approved (only
+  origin's reviewed commit is applied), deletes nothing, and a retry also works after origin moved.
 - **The login shell.** Step 10 pointed the login shell at Homebrew's zsh even when no Brewfile had
   installed it, so no new terminal could start. It now changes the shell only when that zsh is
-  executable, and otherwise warns with the command. A missing Brewfile is a warning in the closing
-  list, not only an error line.
+  executable, and otherwise warns to run `provision.sh` again once the Brewfile is installed; the
+  closing "exec" hint appears only when that zsh exists. A missing Brewfile is a warning in the
+  closing list, not only an error line.
 
 ### 4. `configure.sh`
 
