@@ -20,11 +20,11 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 618 lines of non-test code (+528 −90), 1.31 times the estimate; 1,559 lines of test
+**Real size:** 628 lines of non-test code (+535 −93), 1.34 times the estimate; 1,575 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
 `provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines),
-the fourth one (7 lines). One increment.
+the fourth one (7 lines), the fifth one (10 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -305,6 +305,16 @@ download worked, and the re-run reloaded no LaunchAgent. One claim of this spec 
   it. `plugins.conf` now declares `anthropics/claude-plugins-official` (fenrir already lists it, and
   where one does not, its next reconcile adds it), which installs the official plugins with no login;
   `agent-plugins` is a script row, and step 9's warning no longer blames a missing first start.
+
+**Found by the fifth VM run (2026-11-24), fixed here.** The official plugins installed and
+`agent-plugins` read ✓; the re-run reloaded no LaunchAgent and warned only that the machine was
+already provisioned. One false warning remained:
+
+- **Outdated read as missing.** Releases of `glab`, `mise` and `herdr-app` published during the run
+  made them outdated by the time of the Brewfile retry, and step 8's `brew bundle check`, unlike the `brewfile`
+  row's, ran without `--no-upgrade`, so the run ended on "brew bundle did not complete" while the
+  row read ✓. Step 8 now checks with `--no-upgrade` (missing items are still named), and an install
+  that fails on both attempts with nothing missing (an upgrade, on a re-run) gets its own warning.
 
 Not faults of provisioning: Microsoft Office's installer ran out of disk in the VM (its 80 GB
 disk was full, 4.2 GB free, so the README now gives it 120 GB); `pmset` in the VM sets no `womp` or
