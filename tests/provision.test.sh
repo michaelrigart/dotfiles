@@ -156,8 +156,8 @@ exit 0
 H
 # kern.hv_vmm_present is 1 inside a VM; $HV chooses.
 printf '#!/usr/bin/env bash\necho "sysctl $*" >> "$CALLS"\necho "${HV:-0}"\n' > "$T/bin/sysctl"
-# chezmoi also logs the marker provisioning sets for its apply.
-printf '#!/usr/bin/env bash\necho "chezmoi $*" >> "$CALLS"\necho "chezmoi-env DOTFILES_PROVISIONING=${DOTFILES_PROVISIONING:-unset}" >> "$CALLS"\nexit 0\n' > "$T/bin/chezmoi"
+# chezmoi also logs the marker provisioning sets for its apply; fail-chezmoi-apply fails the apply.
+printf '#!/usr/bin/env bash\necho "chezmoi $*" >> "$CALLS"\necho "chezmoi-env DOTFILES_PROVISIONING=${DOTFILES_PROVISIONING:-unset}" >> "$CALLS"\n[ "$1" = apply ] && [ -e "$SBX_ROOT/fail-chezmoi-apply" ] && exit 1\nexit 0\n' > "$T/bin/chezmoi"
 # The pin runs the real codex through `codex-daemon real-bin`, under env -i: the stub codex
 # cannot read $CALLS from the environment, so its path is baked in, and it logs its whole
 # environment (that is what the pin's clean-environment assertions read).
@@ -309,7 +309,7 @@ called "git clone --branch main" "the source is cloned afresh"
 called "chezmoi init" "the fresh clone is initialised"
 called "chezmoi apply --force" "and applied"
 hasnt "already provisioned" "it is not called provisioned"
-has "⚠ An earlier run's checkout, which chezmoi never applied, is now $moved" "the closing list says where the old checkout went"
+has "⚠ An earlier run's checkout, which chezmoi never finished applying, is now $moved" "the closing list says where the old checkout went"
 gl=$(grep -n '^git clone' "$CALLS" | head -1 | cut -d: -f1); ml=$(grep -n "^mv $T/left " "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$ml" ] && [ -n "$gl" ] && [ "$ml" -lt "$gl" ]; } && _pass "moved before the clone" || _fail "moved before the clone"
 rm -rf "$T/left" "$T"/left.earlier-*
@@ -320,6 +320,30 @@ reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml"; run 'hercules\ny\n'
 ls -d "$T"/left.earlier-* >/dev/null 2>&1 && _fail "an applied machine without its config keeps its checkout" || _pass "an applied machine without its config keeps its checkout"
 not_called "git clone" "and nothing is cloned over it"
 rm -rf "$T/left" "$T"/left.earlier-* "$T/home/.config/chezmoi/chezmoistate.boltdb"
+SBX_SRC="$T/src"
+
+echo "B2c. a run whose apply failed: the retry moves its clone aside and applies a fresh one"
+# The second VM run (2026-11-24): the first apply failed after chezmoi init had written its config
+# and the apply its state, so the retry took the clone for a provisioned machine and skipped chezmoi.
+SBX_SRC="$T/failed"; rm -rf "$SBX_SRC" "$T"/failed.earlier-*
+: > "$T/fail-chezmoi-apply"
+reset; run 'hercules\ny\n'
+[ "$RC" -ne 0 ] && _pass "a failed apply ends the run" || _fail "a failed apply ends the run"
+rm -f "$T/fail-chezmoi-apply"
+# What chezmoi init and the partial apply left behind.
+: > "$T/home/.config/chezmoi/chezmoistate.boltdb"
+reset; run 'hercules\ny\n'
+rc_is 0 "the retry finishes"
+moved=$(ls -d "$T"/failed.earlier-* 2>/dev/null | head -1)
+[ -n "$moved" ] && _pass "the clone the failed apply left is moved aside" || _fail "the clone the failed apply left is moved aside"
+called "git clone" "the source is cloned afresh"
+called "chezmoi apply --force" "and applied"
+hasnt "already provisioned" "the retry is not called provisioned"
+# A finished apply leaves an ordinary checkout: the next run keeps it.
+reset; run 'hercules\ny\n'
+[ "$(ls -d "$T"/failed.earlier-* 2>/dev/null | wc -l)" -eq 1 ] && _pass "after a finished apply the next run keeps the checkout" || _fail "after a finished apply the next run keeps the checkout"
+not_called "chezmoi apply" "and applies nothing from it"
+rm -rf "$SBX_SRC" "$T"/failed.earlier-* "$T/home/.config/chezmoi/chezmoistate.boltdb"
 SBX_SRC="$T/src"
 
 echo "B3. 1Password: the run signs the CLI in, in its own terminal session"

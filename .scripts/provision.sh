@@ -134,16 +134,19 @@ fi
 # capturing the machine's CURRENT name — but the name is not chosen until preflight,
 # below. Cloning first also makes the machine allowlist readable before we prompt.
 SRC_DIR="${PROVISION_SRC_OVERRIDE:-${XDG_DATA_HOME}/chezmoi}"
-# A checkout chezmoi never ran from (neither its config nor its state yet) is what an earlier run
-# left when it stopped after its clone. Step 6 applies only this run's own clone, so it is moved
-# aside, never deleted, and cloned afresh: git status cannot vouch for it, because chezmoi applies
-# the files themselves (ignored ones too), which is why the chezmoi wrapper applies a fresh clone
-# as well. A machine chezmoi has applied keeps its checkout, and the wt siblings linked to it.
-if [ -d "${SRC_DIR}/.git" ] && [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ] \
-   && [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoistate.boltdb" ]; then
+# An earlier run that stopped after its clone left a checkout chezmoi never finished applying:
+# chezmoi never ran from it (neither its config nor its state yet), or its clone still carries
+# UNAPPLIED, which step 6 removes only once its apply has succeeded. Step 6 applies only this run's
+# own clone, so such a checkout is moved aside, never deleted, and cloned afresh: git status cannot
+# vouch for it, because chezmoi applies the files themselves (ignored ones too), which is why the
+# chezmoi wrapper applies a fresh clone as well. A machine chezmoi has applied keeps its checkout,
+# and the wt siblings linked to it.
+UNAPPLIED="${SRC_DIR}/.git/provision-unapplied"
+if [ -d "${SRC_DIR}/.git" ] && { [ -e "${UNAPPLIED}" ] || { [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ] \
+   && [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoistate.boltdb" ]; }; }; then
   EARLIER_SRC="${SRC_DIR}.earlier-$(date +%Y%m%d-%H%M%S)"
   mv "${SRC_DIR}" "${EARLIER_SRC}"
-  warn "An earlier run's checkout, which chezmoi never applied, is now ${EARLIER_SRC}; delete it once nothing in it is needed"
+  warn "An earlier run's checkout, which chezmoi never finished applying, is now ${EARLIER_SRC}; delete it once nothing in it is needed"
 fi
 SRC_PRESENT=0
 if [ -d "${SRC_DIR}/.git" ]; then
@@ -152,6 +155,7 @@ if [ -d "${SRC_DIR}/.git" ]; then
 else
   log_info "Cloning dotfiles source..."
   git clone --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
+  : > "${UNAPPLIED}"
 fi
 
 # ============================================================================
@@ -280,6 +284,7 @@ else
   # command and never exported: a value that leaked to a later apply would make the
   # run_onchange_ script skip its work and chezmoi record that version as run.
   DOTFILES_PROVISIONING=1 chezmoi apply --force
+  rm -f "${UNAPPLIED}"
 fi
 
 # ============================================================================
