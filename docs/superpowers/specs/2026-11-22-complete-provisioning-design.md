@@ -20,11 +20,11 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 611 lines of non-test code (+524 −87), 1.30 times the estimate; 1,532 lines of test
+**Real size:** 618 lines of non-test code (+528 −90), 1.31 times the estimate; 1,559 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
-`provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines).
-One increment.
+`provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines),
+the fourth one (7 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -143,6 +143,7 @@ holds them in full):
 |---|---|---|---|---|
 | `identity` | all | script | ComputerName and HostName are the machine's name (preflight) | `scutil --get HostName` equals the name |
 | `brewfile` | all | script | everything in the Brewfile is installed | `brew bundle check --no-upgrade` |
+| `agent-plugins` | all | script | every marketplace and plugin in `plugins.conf` is installed (re-run `.scripts/reconcile-agents.sh` when not) | `reconcile-agents.sh --check` (new: queries, installs nothing) |
 | `login-shell` | all | script | Homebrew zsh is the login shell | `dscl . -read /Users/$USER UserShell` |
 | `oh-my-zsh` | all | script | Oh My Zsh in the XDG data folder | the folder exists |
 | `mise-tools` | all | script | every mise tool installed | `mise ls --missing` prints nothing |
@@ -158,7 +159,6 @@ holds them in full):
 | `borg-key-hercules` | hercules | script | chezmoi renders hercules' Borg key, `~/.ssh/borg-hercules` | the file exists |
 | `op-ssh-agent-off` | all | you | leave 1Password → Settings → Developer → "Use the SSH agent" off; the native agent serves ssh | `ssh-add -l` on 1Password's socket cannot connect |
 | `claude-login` | all | you | start `claude` once and sign in | `claude auth status` |
-| `agent-plugins` | all | you | then run `.scripts/reconcile-agents.sh` again (its run during provisioning fails until Claude Code has started once) | `reconcile-agents.sh --check` (new: queries, installs nothing) |
 | `codex-login` | all | you | start `codex` once in a plain terminal (not a Herdr pane) and sign in | `codex login status` (real binary) |
 | `forge-logins` | all | you | `gh auth login`, `glab auth login`, `az login` | `gh auth status`, `glab auth status`, `az account show` |
 | `orbstack` | all | you | open OrbStack once, so it installs its helper | its helper's LaunchDaemon exists |
@@ -295,11 +295,21 @@ closing list, and its re-run reloaded no LaunchAgent. Three faults remained:
   check` misses to stderr, which step 8 discarded. It now reads both streams. Step 8 also says that
   Homebrew can print nothing for many minutes while it downloads.
 
+**Found by the fourth VM run (2026-11-24), fixed here.** On a 120 GB disk the run met the pass bar:
+every script row ✓ but `hercules-power`; the Codex pin, the smart-splits link and a retried Teams
+download worked, and the re-run reloaded no LaunchAgent. One claim of this spec was wrong:
+
+- **The official Claude Code plugins.** `agent-plugins` said provisioning's reconcile fails until
+  Claude Code has started once. A fresh Claude Code lists no marketplace at all, not even its
+  default `claude-plugins-official`, until one is added, and nothing showed that a first start adds
+  it. `plugins.conf` now declares `anthropics/claude-plugins-official` (fenrir already lists it, and
+  where one does not, its next reconcile adds it), which installs the official plugins with no login;
+  `agent-plugins` is a script row, and step 9's warning no longer blames a missing first start.
+
 Not faults of provisioning: Microsoft Office's installer ran out of disk in the VM (its 80 GB
 disk was full, 4.2 GB free, so the README now gives it 120 GB); `pmset` in the VM sets no `womp` or
-`autorestart`, so `hercules-power` reads ✗ there; the plugins from `claude-plugins-official` install
-only once Claude Code has run (the `claude-login` and `agent-plugins` rows); the headless Neovim
-install leaves Mason's tools for the first interactive start.
+`autorestart`, so `hercules-power` reads ✗ there; the headless Neovim install leaves Mason's tools
+for the first interactive start.
 
 ### 4. `configure.sh`
 
