@@ -368,6 +368,8 @@ log_info "Configuring Alfred snippet auto-expansion..."
 alfred_prefs_json="${HOME}/Library/Application Support/Alfred/prefs.json"
 if [ "$UNATTENDED" = true ] && pgrep -x "Alfred" &> /dev/null; then
   log_info "Skipping the Alfred toggle: it needs Alfred quit, by an Apple Event; run .scripts/configure.sh yourself to set it"
+elif [ "$UNATTENDED" = true ] && [[ ! -f "$alfred_prefs_json" ]]; then
+  log_info "Skipping the Alfred toggle: Alfred has not been launched yet; the alfred-snippets step in the list covers it"
 elif [[ -f "$alfred_prefs_json" ]]; then
   alfred_localhash=$(sed -n 's/.*"localhash" *: *"\([^"]*\)".*/\1/p' "$alfred_prefs_json")
   if [[ -n "$alfred_localhash" ]]; then

@@ -633,6 +633,12 @@ has "Skipping the Alfred toggle" "the Alfred skip is announced"
 called "pgrep -x Alfred" "the Alfred skip is decided by a running Alfred"
 : > "$CALLS"; cfg fenrir fenrir fenrir fenrir
 not_called "osascript" "--hostname with Alfred not running: still no osascript call"
+rm -f "$T/home/Library/Application Support/Alfred/prefs.json"
+: > "$CALLS"; cfg fenrir fenrir fenrir fenrir
+hasnt "Alfred has not been launched yet — re-run" "--hostname with Alfred never launched: no warning, the alfred-snippets step covers it"
+has "Skipping the Alfred toggle: Alfred has not been launched yet" "and the skip is announced"
+: > "$CALLS"; cfg_attended fenrir
+has "Alfred has not been launched yet — re-run" "an attended run with Alfred never launched still warns"
 : > "$CALLS"; OSA_RC=1 cfg_attended fenrir
 rc_is 0 "an attended run whose wallpaper Apple Event fails still exits 0"
 called "osascript -e tell application \"System Events\"" "the attended run does try the wallpaper"
