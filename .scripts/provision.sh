@@ -318,9 +318,10 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
   # `brew bundle` fails for the whole file, so ask `check` which items actually missed.
   # A single retry absorbs transient download failures. --no-upgrade, like the brewfile row:
   # a release published during the run leaves an item outdated, not missing.
+  BUNDLE_FAILED=0
   if ! brew bundle install --file "${HOMEBREW_BUNDLE_FILE}"; then
     log_warn "brew bundle had failures — retrying once"
-    brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || true
+    brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || BUNDLE_FAILED=1
   fi
   if ! brew bundle check --no-upgrade --file "${HOMEBREW_BUNDLE_FILE}" >/dev/null 2>&1; then
     # Process substitution, not a pipeline: `cmd | while read` runs the loop in a
@@ -331,6 +332,8 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
       [ -n "$item" ] && warn "brewfile: ${item}"
     done < <(brew bundle check --no-upgrade --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>&1 | sed -n 's/^→ *//p')
     warn "brew bundle did not complete — see the items above"
+  elif [ "$BUNDLE_FAILED" -eq 1 ]; then
+    warn "brew bundle failed although every Brewfile item is installed (an upgrade, most likely) — see its output above"
   fi
 else
   warn "Brewfile not found at ${XDG_CONFIG_HOME}/homebrew/Brewfile — chezmoi apply deploys it"

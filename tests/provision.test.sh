@@ -62,8 +62,8 @@ exec "$@"
 SU
 # fail-brew-bundle fails `brew bundle`; its check then names a missed item on stderr, as Homebrew 7 does.
 # outdated-brew-bundle: everything is installed but glab has a newer release, so only a check
-# without --no-upgrade fails.
-printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed or updated." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
+# without --no-upgrade fails. With both markers, the install fails on that upgrade.
+printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
 # Homebrew's zsh, which step 10 makes the login shell only when it is installed.
 printf '#!/bin/sh\nexec /bin/zsh "$@"\n' > "$T/brew/bin/zsh"
@@ -431,7 +431,7 @@ has "⚠ Brewfile not found" "a missing Brewfile is in the closing list"
 mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"; : > "$T/fail-brew-bundle"
 reset; run 'hercules\ny\n'
 rc_is 0 "a run whose brew bundle fails finishes"
-has "⚠ brewfile: Cask microsoft-office needs to be installed or updated." "the closing list names each item brew bundle missed"
+has "⚠ brewfile: Cask microsoft-office needs to be installed." "the closing list names each item brew bundle missed"
 rm -rf "$T/home/.config/homebrew" "$T/fail-brew-bundle"
 # The fifth VM run: releases published during the run left three installed items outdated, and
 # step 8's check, unlike the brewfile row's, reported them as not installed.
@@ -439,7 +439,14 @@ mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"; : 
 reset; run 'hercules\ny\n'
 hasnt "brewfile: Formula glab" "an installed item with a newer release is not reported missing"
 hasnt "brew bundle did not complete" "nor is the Brewfile reported incomplete"
-rm -rf "$T/home/.config/homebrew" "$T/outdated-brew-bundle"
+hasnt "every Brewfile item is installed" "an install that succeeds leaves no upgrade warning"
+# A re-run whose install fails twice on an upgrade alone: nothing is missing, but the failure
+# still reaches the closing list.
+: > "$T/fail-brew-bundle"
+reset; run 'hercules\ny\n'
+has "⚠ brew bundle failed although every Brewfile item is installed" "an upgrade that fails twice is in the closing list"
+hasnt "brew bundle did not complete" "it is not reported as a missing item"
+rm -rf "$T/home/.config/homebrew" "$T/outdated-brew-bundle" "$T/fail-brew-bundle"
 # The first VM run deployed no Brewfile, then pointed the login shell at a zsh that did not
 # exist, so no new terminal could start.
 mv "$T/brew/bin/zsh" "$T/brew-zsh.off"
