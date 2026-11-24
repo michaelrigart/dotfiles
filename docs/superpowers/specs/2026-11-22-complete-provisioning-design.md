@@ -20,10 +20,10 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 581 lines of non-test code (+497 −84), 1.24 times the estimate; 1,449 lines of test
+**Real size:** 589 lines of non-test code (+504 −85), 1.25 times the estimate; 1,478 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
-`provision.sh` fixes in §3 (46 lines). One increment.
+`provision.sh` fixes in §3 (46 lines), the second two more (8 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -263,6 +263,18 @@ change kept a fresh machine from being provisioned at all:
   executable, and otherwise warns to run `provision.sh` again once the Brewfile is installed; the
   closing "exec" hint appears only when that zsh exists. A missing Brewfile is a warning in the
   closing list, not only an error line.
+
+**Found by the second VM run (2026-11-24), fixed here.** With 1Password passing, two more:
+
+- **The first apply needs Homebrew's jq.** `chezmoi apply` stopped at `.claude/settings.json`
+  ("jq: 2 compile errors", exit status 3): since 0d90799 (2026-11-13) that `modify_` script's jq
+  program uses syntax the system jq (1.7.1) rejects, and on a fresh machine only the system jq
+  exists before the Brewfile is installed. Step 3 now installs `jq` with the other bootstrap tools.
+- **A retry after a failed apply.** `chezmoi init` had written its config and the failed apply its
+  state, so the retry took the clone for a provisioned machine and skipped chezmoi again. Step 4
+  now marks its own clone (`.git/provision-unapplied`), step 6 removes the mark once the apply
+  succeeds, and step 4 also moves a marked checkout aside. A machine provisioned before the mark
+  existed has none, so it keeps its checkout.
 
 ### 4. `configure.sh`
 
