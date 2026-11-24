@@ -9,6 +9,8 @@ your recommendations". Codex approved the spec in round 3 (xr-1795308251-d19b9da
 recommendation's fallback until Michael names the 1Password items (see D3). The retry rule in §3
 ("Found by the first VM run"): Michael, 2026-11-24, "yes, go ahead with your recommendation", then
 "I follow your recommendations" for the night; the move-aside form is the line's ruling (see §3).
+Michael, 2026-11-24, in the pane: he confirmed the move-aside form, named the D3 items (the names
+on disk) and had the three scripts that run outside the sandbox run from a fresh clone (§2).
 **Source:** Michael, 2026-11-22: "I want you to make sure when I do a complete reinstall, everything
 gets installed and configured properly again." Relayed in the driver's brief (chezmoi-08) of the
 same day.
@@ -20,13 +22,15 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 708 lines of non-test code (+615 −93), 1.51 times the estimate, 3 lines past the
-limit where a line stops; 1,761 lines of test code. Michael, 2026-11-24, kept the final review's
-fix (§4, a disabled LaunchAgent) in this change rather than split it out. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
+**Real size:** 741 lines of non-test code (+648 −93), 1.58 times the estimate, past the limit
+where a line stops; 1,843 lines of test code. Michael, 2026-11-24, kept the final review's fix (§4,
+a disabled LaunchAgent) in this change rather than split it out, then added the fresh-clone runs
+of §2 and D3's key templates, accepting the size. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
 `provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines),
 the fourth one (7 lines), the fifth one (10 lines), and a second reading of the fifth run's log two
-more (73 lines), and the final review one (7 lines). One increment.
+more (73 lines), the final review one (7 lines), and Michael's last decisions `dotfiles-run` and D3's keys
+(33 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -176,7 +180,7 @@ holds them in full):
 | `syncthing-folders` | all | you | pair with the peer again, add the three folders of §8 E3–E5; `claude-memory` Receive Only until Up to Date, then Send & Receive | the final state of §8 E3–E5 in `config.xml` (read with `xmllint --xpath`): `claude-memory` at `~/.claude/projects`, `sendreceive`, staggered versioning; this machine's `codex-memory-<name>` at the outbox, `sendonly`; the peer's at `inbox/<peer>`, `receiveonly`; each shared with a device besides this one. So the row stays open while `claude-memory` is still Receive Only |
 | `herdr-app` | all | you | open the Herdr app, run `~/.config/herdr-app/bin/respaces` with its window open, pick the michael layout (cmd-shift-L) | the `michael-spaces` and `michael-menu` mods exist and the app's layout is `michael` |
 | `vorta` | all | you | Vorta: this machine's own BorgBase repository (its existing one on a reinstall) and a schedule | Vorta's database has a profile with a repository and a schedule other than `off` |
-| `borg-key-fenrir` | fenrir | you | restore `borg-fenrir`, `borg-append-only-fenrir` and `huginn` into `~/.ssh` from wherever they are kept (the repository does not render them; D3) | the three files exist |
+| `borg-key-fenrir` | fenrir | script | chezmoi renders `borg-fenrir`, `borg-append-only-fenrir` and `huginn` into `~/.ssh` (D3) | the three files exist |
 | `login-items` | all | you | turn on Open at Login for Syncthing, Alfred, Vorta and the menu-bar apps | `-` |
 | `privacy-and-sign-ins` | all | you | grant each app the permission it asks for at first launch, and sign in to the apps that need an account | `-` |
 | `filevault-on` | fenrir | you | turn FileVault on (it travels) | `fdesetup status` |
@@ -206,6 +210,14 @@ holds them in full):
   sandbox: sandboxed, `launchctl`, `herdr`, the firewall and the extension list misreport (measured
   2026-11-22: the firewall read "disabled" sandboxed and "enabled" outside). An agent's sandboxed
   run is never evidence about a machine.
+- **Never from the main checkout.** The sandbox can write `~/.local/share/chezmoi`, and this script,
+  `configure.sh` and `reconcile-agents.sh` run outside it, so a planted verify or step would run
+  unsandboxed. Michael runs them with `dotfiles-run <name>`, a zsh function beside the chezmoi
+  wrapper: it clones origin's main from the wrapper's pinned URL into `~/.cache/dotfiles-run`,
+  outside the sandbox's write set, runs `.scripts/<name>.sh` from the clone and removes it; `DOTFILES`
+  is then the clone, so the rows that compare with the source compare with origin's main.
+  Provisioning runs them from its own clone, before any agent runs on the machine. (Michael,
+  2026-11-24; the line had recommended leaving the scripts ungated.)
 
 ### 3. `provision.sh`
 
@@ -472,7 +484,10 @@ Which is it, and what are the item names? And which host uses `huginn`?
 **Decided at sign-off:** D1 yes, D2 both. D3: the item names were not given, so `borg-key-fenrir`
 is a `you` row (restore this machine's Borg keys into `~/.ssh`, checked by the files existing) unless
 Michael names the items before that task runs; then the keys are templated and the row becomes
-`script`, as `borg-key-hercules` already is.
+`script`, as `borg-key-hercules` already is. Michael, 2026-11-24: the items carry the names on disk,
+so the six key files are templates like `borg-hercules`'s, rendered on every machine, and the row is
+`script`. A first apply replaces a file on disk that differs, so before merging he checks that each
+item's public key matches the one on disk (the PR's Before merge).
 
 ## Michael's steps after merge
 
@@ -480,7 +495,7 @@ Michael names the items before that task runs; then the keys are templated and t
    job except codex-app-server once, because no records exist yet; the ssh-agent is without keys
    for about a second), then `brew bundle install --file ~/.config/homebrew/Brewfile` (fenrir:
    Tart).
-2. On fenrir and on hercules, from his own terminal: `~/.local/share/chezmoi/.scripts/machine-check.sh`,
+2. On fenrir and on hercules, from a new shell in his own terminal: `dotfiles-run machine-check`,
    and work down its `✗` lines. On fenrir that includes the Codex re-pin (`codex-daemon-pin`).
 
 ## Left to the builder
