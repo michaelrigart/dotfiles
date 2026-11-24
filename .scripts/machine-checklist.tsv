@@ -6,6 +6,7 @@
 # under /usr/bin/timeout -k 5 30 /bin/zsh -f -c, with the working directory $HOME and stdin /dev/null. tests/provisioning.test.sh lints this file.
 identity	all	script	ComputerName and HostName are the machine's name (the preflight sets them)	[ "$(scutil --get ComputerName)" = "$MACHINE" ] && [ "$(scutil --get HostName)" = "$MACHINE" ]
 brewfile	all	script	Everything in the Brewfile is installed	HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_API_AUTO_UPDATE_SECS=31536000 brew bundle check --no-upgrade --file "$HOME/.config/homebrew/Brewfile"
+agent-plugins	all	script	Every marketplace and plugin in ~/.config/agents/plugins.conf is installed (re-run .scripts/reconcile-agents.sh when not)	"$DOTFILES/.scripts/reconcile-agents.sh" --check
 login-shell	all	script	Homebrew zsh is the login shell	[ "$(dscl . -read "/Users/$USER" UserShell | awk '{print $2}')" = /opt/homebrew/bin/zsh ]
 oh-my-zsh	all	script	Oh My Zsh is in the XDG data folder	[ -f "$XDG_DATA_HOME/oh-my-zsh/oh-my-zsh.sh" ]
 mise-tools	all	script	Every mise tool is installed	m=$(mise ls --missing 2>/dev/null) && [ -z "$m" ]
@@ -21,7 +22,6 @@ hercules-power	hercules	script	No system sleep, wake for network access, restart
 borg-key-hercules	hercules	script	chezmoi renders hercules' Borg key, ~/.ssh/borg-hercules	[ -f "$HOME/.ssh/borg-hercules" ]
 op-ssh-agent-off	all	you	Leave 1Password, Settings, Developer, "Use the SSH agent" off; the native agent serves ssh	for s in "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" "$HOME/.1password/agent.sock"; do [ -S "$s" ] && /usr/bin/nc -U -w 1 "$s" </dev/null >/dev/null 2>&1 && exit 1; done; true
 claude-login	all	you	Start claude once and sign in	claude auth status --json | /usr/bin/jq -e .loggedIn
-agent-plugins	all	you	Then run .scripts/reconcile-agents.sh again (its run during provisioning fails until Claude Code has started once)	"$DOTFILES/.scripts/reconcile-agents.sh" --check
 codex-login	all	you	Start codex once in a plain terminal, not a Herdr pane, and sign in	"$(codex-daemon real-bin)" login status
 forge-logins	all	you	gh auth login, glab auth login and az login	/usr/bin/timeout 10 gh auth status >/dev/null 2>&1 && glab auth status >/dev/null 2>&1 && AZURE_LOGGING_ENABLE_LOG_FILE=false AZURE_CORE_COLLECT_TELEMETRY=false az account show >/dev/null 2>&1
 orbstack	all	you	Open OrbStack once, so it installs its helper	[ -f /Library/LaunchDaemons/dev.orbstack.OrbStack.privhelper.plist ]

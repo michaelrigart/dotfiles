@@ -362,7 +362,7 @@ fi
 if [ -x "${SRC_DIR}/.scripts/reconcile-agents.sh" ]; then
   log_info "Reconciling AI agent plugins..."
   "${SRC_DIR}/.scripts/reconcile-agents.sh" \
-    || warn "agent plugins: reconcile incomplete — if Claude Code has never run here, its plugin state does not exist yet; launch it once, then re-run .scripts/reconcile-agents.sh"
+    || warn "agent plugins: reconcile incomplete (its warnings are above) — re-run .scripts/reconcile-agents.sh"
 else
   log_warn "reconcile-agents.sh not found, skipping agent plugin setup"
 fi

@@ -13,12 +13,13 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 LISTFILE="$SRC/.scripts/machine-checklist.tsv"
 TOML="$SRC/.chezmoidata/machines.toml"
 CHECKER="$SRC/.scripts/machine-check.sh"
+PLUGINS="$SRC/dot_config/agents/plugins.conf"
 pass=0; fail=0; OUT=""; RC=0
 _pass(){ echo "  PASS: $1"; pass=$((pass+1)); }
 _fail(){ echo "  FAIL: $1"; fail=$((fail+1)); }
 rc_is(){ [ "$RC" -eq "$1" ] && _pass "$2" || _fail "$2 (rc=$RC)"; }
 
-for f in "$LISTFILE" "$TOML" "$CHECKER"; do
+for f in "$LISTFILE" "$TOML" "$CHECKER" "$PLUGINS"; do
   [ -f "$f" ] || { echo "MISSING SUBJECT: ${f#"$SRC"/}"; exit 2; }
 done
 
@@ -422,6 +423,31 @@ says "no herdr/plugin-* glob" "no glob: the check names it"
 rm -rf "$T/pl"; mkdir -p "$T/pl/.scripts" "$T/pl/dot_config/herdr"; cp "$SRC/.scripts/provision.sh" "$T/pl/.scripts/provision.sh"
 OUT=$(check_plugins "$T/pl"); RC=$?
 rc_is 1 "no plugin at all fails (not a vacuous pass)"
+
+echo "== 6: plugins.conf declares the marketplace of its official plugins"
+# A fresh Claude Code lists no marketplace, not even claude-plugins-official, until one is added, so
+# a plugin from it installs at provisioning only when plugins.conf declares that marketplace.
+# check_official <plugins.conf>: one problem line and status 1 when it declares such a plugin without it.
+check_official(){
+  grep -Eq '^claude_plugin[[:space:]]+[^[:space:]]+@claude-plugins-official([[:space:]]|$)' "$1" || return 0
+  grep -Eq '^claude_marketplace[[:space:]]+anthropics/claude-plugins-official([[:space:]]|$)' "$1" && return 0
+  echo "a claude-plugins-official plugin without claude_marketplace anthropics/claude-plugins-official"; return 1
+}
+OUT=$(check_official "$PLUGINS"); RC=$?
+rc_is 0 "the real plugins.conf declares the official marketplace its plugins need"
+printf 'claude_plugin  superpowers@claude-plugins-official\n' > "$T/plugins.conf"
+OUT=$(check_official "$T/plugins.conf"); RC=$?
+rc_is 1 "an official plugin without its marketplace fails"
+says "without claude_marketplace anthropics/claude-plugins-official" "an undeclared official marketplace: the check names it"
+printf '# claude_marketplace  anthropics/claude-plugins-official\nclaude_plugin  superpowers@claude-plugins-official\n' > "$T/plugins.conf"
+OUT=$(check_official "$T/plugins.conf"); RC=$?
+rc_is 1 "a commented-out marketplace line does not count"
+printf 'claude_marketplace  anthropics/claude-plugins-official\nclaude_plugin  superpowers@claude-plugins-official\n' > "$T/plugins.conf"
+OUT=$(check_official "$T/plugins.conf"); RC=$?
+rc_is 0 "an official plugin with its marketplace passes"
+printf 'claude_marketplace  basecamp/claude-plugins\nclaude_plugin  basecamp@37signals\n' > "$T/plugins.conf"
+OUT=$(check_official "$T/plugins.conf"); RC=$?
+rc_is 0 "no official plugin needs no official marketplace"
 
 echo
 echo "Passed: $pass / $((pass + fail))"
