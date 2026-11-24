@@ -8,6 +8,7 @@ set -u
 RECON="$(cd "$(dirname "$0")/.." && pwd)/.scripts/reconcile-agents.sh"
 [ -f "$RECON" ] || { echo "missing script under test: $RECON" >&2; exit 2; }
 BIN=$(mktemp -d); CFG=$(mktemp -d); CALLS="$BIN/calls.log"; MCPCWD="$BIN/mcp-cwd.log"
+CX_LIST_ARGS="$BIN/cx-list-args"
 mkdir -p "$CFG/agents"
 trap 'rm -rf "$BIN" "$CFG"' EXIT   # clean temp dirs even on interrupt
 pass=0; fail=0; OUT=""; RC=0
@@ -27,11 +28,21 @@ case "$*" in
   *) exit 0 ;;
 esac
 STUB
+# The codex stub models Codex's remote plugin catalog: with MOCK_CX_REMOTE_HANG set, a
+# `plugin list` that leaves the remote_plugin feature on waits that many seconds without
+# answering, as the real one does unsandboxed. It records each plugin list call's arguments
+# in $CX_LIST_ARGS, which section I replays against the real codex.
 cat > "$BIN/codex" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
   "plugin marketplace list --json") printf '%s' "$MOCK_CX_MKT" ;;
-  "plugin list --json")             printf '%s' "$MOCK_CX_PLUGINS" ;;
+  "plugin list --json"*)
+    printf '%s\n' "${*:3}" > "$CX_LIST_ARGS"
+    case " $* " in
+      *" --disable remote_plugin "*|*" -c features.remote_plugin=false "*) ;;
+      *) [ -n "${MOCK_CX_REMOTE_HANG:-}" ] && exec sleep "$MOCK_CX_REMOTE_HANG" ;;
+    esac
+    printf '%s' "$MOCK_CX_PLUGINS" ;;
   "plugin marketplace add"*)        echo "codex $*" >> "$CALLS"; exit 0 ;;
   "plugin add"*)                    echo "codex $*" >> "$CALLS"; exit 0 ;;
   *) exit 0 ;;
@@ -43,14 +54,15 @@ reset_mocks() {  # sane valid-empty defaults; scenarios override specific ones
   export MOCK_CL_MKT='[]' MOCK_CL_PLUGINS='[]' MOCK_CL_INSTALL_RC=0
   export MOCK_CL_MKT_RC=0 MOCK_CL_PLUGINS_RC=0
   export MOCK_CX_MKT='{"marketplaces":[]}' MOCK_CX_PLUGINS='{"installed":[]}'
-  export MOCK_CL_MCP_RC=0
+  export MOCK_CL_MCP_RC=0 MOCK_CX_REMOTE_HANG=
   rm -rf "$CFG/.claude.json" "$CFG/.local"   # HOME is $CFG: no MCP state leaks between scenarios
 }
 run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC; resets the call log
+  # RUN_TIMEOUT (seconds), when set, bounds the run; a run it stops exits 124.
   printf '%b\n' "$1" > "$CFG/agents/plugins.conf"
   : > "$CALLS"; : > "$MCPCWD"
-  # shellcheck disable=SC2086  # RECON_ARGS is empty or one option
-  OUT=$(CALLS="$CALLS" MCPCWD="$MCPCWD" PATH="$BIN:$PATH" HOME="$CFG" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" ${RECON_ARGS:-} 2>&1); RC=$?
+  # shellcheck disable=SC2086  # RECON_ARGS is empty or one option; RUN_TIMEOUT empty or a number
+  OUT=$(CALLS="$CALLS" MCPCWD="$MCPCWD" CX_LIST_ARGS="$CX_LIST_ARGS" PATH="$BIN:$PATH" HOME="$CFG" XDG_CONFIG_HOME="$CFG" ${RUN_TIMEOUT:+/usr/bin/timeout $RUN_TIMEOUT} /bin/bash "$RECON" ${RECON_ARGS:-} 2>&1); RC=$?
 }
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fail=$((fail + 1)); }
@@ -491,6 +503,18 @@ if command -v claude >/dev/null 2>&1; then
 else
   _skip "claude not on PATH — live CLI surface unverified"
 fi
+# The reconciler's own plugin list call, as the stub recorded it, against the real codex: it
+# must answer at once (unsandboxed, Codex 0.169.0 and 0.172.0 held the remote catalog request
+# open for over 90 s) with the schema the reconciler reads; an unknown feature name fails here.
+if command -v codex >/dev/null 2>&1 && [ -s "$CX_LIST_ARGS" ]; then
+  read -r -a cx_args < "$CX_LIST_ARGS"
+  if live=$(/usr/bin/timeout 20 codex plugin list "${cx_args[@]}" 2>/dev/null </dev/null) \
+     && printf '%s' "$live" | jq -e 'type == "object" and (.installed | type == "array") and all(.installed[]; has("pluginId") and has("enabled") and has("marketplaceName"))' >/dev/null 2>&1; then
+    _pass "codex plugin list ${cx_args[*]} answers within 20 s with the reconciler's schema"
+  else _fail_live "codex plugin list ${cx_args[*]} failed, changed shape or ran past 20 s"; fi
+else
+  _skip "codex not on PATH or no plugin list call recorded — live codex call unverified"
+fi
 
 echo "J. fresh machine — an empty [] from both queries means nothing installed"
 reset_mocks
@@ -540,9 +564,15 @@ export MOCK_CL_PLUGINS='[{"id":"foo@m","scope":"user","enabled":true}]'
 export MOCK_CX_MKT='{"marketplaces":[{"name":"a","marketplaceSource":{"source":"https://github.com/owner/cx.git"}}]}'
 export MOCK_CX_PLUGINS='{"installed":[{"pluginId":"bar@cx","enabled":true,"marketplaceName":"cx"}]}'
 printf '%s' '{"mcpServers":{"ha-mcp":'"$J"'}}' > "$CFG/.claude.json"
-RECON_ARGS=--check run "claude_marketplace owner/repo\nclaude_plugin foo@m\nclaude_mcp ha-mcp\ncodex_marketplace owner/cx\ncodex_plugin bar@cx"
+# Codex's remote plugin catalog never answers here (as on fenrir, unsandboxed): the verify and
+# provisioning must still finish, from the installed list alone.
+export MOCK_CX_REMOTE_HANG=30
+RUN_TIMEOUT=10 RECON_ARGS=--check run "claude_marketplace owner/repo\nclaude_plugin foo@m\nclaude_mcp ha-mcp\ncodex_marketplace owner/cx\ncodex_plugin bar@cx"
 if printf '%s\n' "$OUT" | grep -q '^\(missing\|differs\):'; then _fail "--check with everything present: no missing/differs line"; else _pass "--check with everything present: no missing/differs line"; fi
-rc_is 0                                       "--check with everything present: exit 0"
+rc_is 0                                       "--check with everything present: exit 0, without waiting on the remote catalog"
+RUN_TIMEOUT=10 run "codex_marketplace owner/cx\ncodex_plugin bar@cx"
+has "codex plugin present: bar@cx"            "reconcile: the installed codex plugin is found without waiting on the remote catalog"
+rc_is 0                                       "reconcile with everything present: exit 0"
 
 reset_mocks; export MOCK_CL_PLUGINS='[]' MOCK_CL_PLUGINS_RC=1
 RECON_ARGS=--check run "claude_plugin foo@m\ncodex_plugin bar@cx"

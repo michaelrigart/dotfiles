@@ -407,8 +407,13 @@ EOF
   fi
 
   # Plugins (query once, AFTER marketplace adds). Projection: "<pluginId>\t<enabled>\t<marketplace>".
+  # remote_plugin off: with it on, the list also asks ChatGPT's remote plugin catalog, which
+  # outside the sandbox can hold the connection open for minutes without answering. Off, the
+  # list is every plugin installed from a configured marketplace; one installed only through
+  # the remote catalog is left out. `--disable` fails at once on a feature name Codex no
+  # longer knows, where `-c features.<name>=false` would be ignored.
   local proj pid enabled mkt line
-  if run_json json "codex plugin list" codex plugin list --json \
+  if run_json json "codex plugin list" codex plugin list --json --disable remote_plugin \
      && project "$json" \
           '(type=="object") and has("installed") and (.installed|type=="array") and all(.installed[]; has("pluginId") and (.pluginId|type=="string"))' \
           '.installed[] | "\(.pluginId)\t\(.enabled)\t\(.marketplaceName)"' proj "codex plugin list"; then
