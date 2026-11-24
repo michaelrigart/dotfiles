@@ -29,12 +29,13 @@ bad() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 # Tools: installed; fails (its install fails at once); installs (its install takes 300 ms);
 # installing (already installing, done after 1 s); lazyvim (not installed, and LazyVim's own
 # refresh callback installs it, running after this script's, as it does when the registry was
-# stale). Parsers: installed; fails; installs; slow (LazyVim's build of it outlives the first
-# round's wait, so only a second round finds it installed).
+# stale). Parsers: installed; fails; installs; slow<N> (LazyVim's build of it outlives N rounds'
+# waits, so only round N+1 finds it installed). Each round's install appends a line
+# to $T/rounds.
 cat > "$T/stub.lua" <<'LUA'
 local function parse(s)
   local names, state = {}, {}
-  for name, st in (s or ""):gmatch("([%w_-]+):(%a+)") do
+  for name, st in (s or ""):gmatch("([%w_-]+):(%w+)") do
     names[#names + 1] = name
     state[name] = st
   end
@@ -89,9 +90,11 @@ package.preload["nvim-treesitter"] = function()
       return r
     end,
     install = function(langs)
+      local f = io.open(vim.env.ROUNDS, "a"); f:write("round\n"); f:close()
       for _, lang in ipairs(type(langs) == "table" and langs or { langs }) do
-        if parsers[lang] == "installs" then parsers[lang] = "installed"
-        elseif parsers[lang] == "slow" then parsers[lang] = "installs" end
+        local n = tonumber((parsers[lang] or ""):match("^slow(%d+)$"))
+        if parsers[lang] == "installs" or n == 0 then parsers[lang] = "installed"
+        elseif n then parsers[lang] = "slow" .. (n - 1) end
       end
       return { wait = function() return true end }
     end,
@@ -102,7 +105,8 @@ LUA
 # finish <tools> <parsers> [env...]: run the script; sets RC and OUT (stdout and stderr).
 finish() {
   local tools=$1 parsers=$2; shift 2
-  OUT=$(cd "$T" && env TOOLS="$tools" PARSERS="$parsers" "$@" \
+  : > "$T/rounds"
+  OUT=$(cd "$T" && env TOOLS="$tools" PARSERS="$parsers" ROUNDS="$T/rounds" "$@" \
     XDG_CONFIG_HOME="$T/config" XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state" XDG_CACHE_HOME="$T/cache" \
     /usr/bin/timeout 60 nvim --clean --headless "+luafile $T/stub.lua" "+luafile $SCRIPT" "+cq 2" </dev/null 2>&1)
   RC=$?
@@ -126,8 +130,13 @@ finish "shfmt:installing" "lua:installed"
 rc_is 0 "a tool still installing when it starts: waits for it"
 finish "shfmt:installs" "lua:installed"
 rc_is 0 "a tool nothing has started: starts it and waits"
-finish "stylua:installed" "lua:installs typescript:slow"
-rc_is 0 "a parser LazyVim builds past nvim-treesitter's 60 s wait: another round waits for it"
+finish "stylua:installed" "typescript:slow1"
+rc_is 0 "a parser LazyVim builds past nvim-treesitter's 60 s wait: a round that installed nothing is followed by another"
+finish "stylua:installed" "tsx:slow1 typescript:slow3"
+rc_is 0 "a round that installs something starts the count of rounds without progress again"
+finish "stylua:installed" "lua:installs ruby:fails"
+rc_is 1 "a parser that keeps failing: exits 1"
+[ "$(wc -l < "$T/rounds" | tr -d ' ')" = 3 ] && ok "after two rounds in a row that install nothing" || bad "after two rounds in a row that install nothing (rounds: $(wc -l < "$T/rounds" | tr -d ' '), wanted 3)"
 
 echo "4. LazyVim's callback, when it runs after this one, finds nothing already installing"
 finish "erb-lint:lazyvim" "lua:installed"

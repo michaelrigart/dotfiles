@@ -36,16 +36,12 @@ mr.refresh(function()
 end)
 
 -- nvim-treesitter waits at most 60 s for a parser LazyVim's install is already building, then
--- moves on, so a round that installed something, or ran that long, is followed by another.
-local deadline = vim.uv.hrtime() + TIMEOUT * 1e6
-local left = missing_parsers()
-while #left > 0 and vim.uv.hrtime() < deadline do
-  local started = vim.uv.hrtime()
+-- moves on, so rounds go on until two in a row install nothing.
+local left, idle = missing_parsers(), 0
+while #left > 0 and idle < 2 do
   pcall(function() TS.install(left):wait(TIMEOUT) end)
   local now = missing_parsers()
-  if #now == #left and vim.uv.hrtime() - started < 60e9 then
-    break
-  end
+  idle = #now < #left and 0 or idle + 1
   left = now
 end
 vim.wait(TIMEOUT, function()
