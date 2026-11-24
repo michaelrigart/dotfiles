@@ -133,13 +133,14 @@ fi
 # capturing the machine's CURRENT name — but the name is not chosen until preflight,
 # below. Cloning first also makes the machine allowlist readable before we prompt.
 SRC_DIR="${PROVISION_SRC_OVERRIDE:-${XDG_DATA_HOME}/chezmoi}"
+DOTFILES_URL=https://github.com/michaelrigart/dotfiles.git
 SRC_PRESENT=0
 if [ -d "${SRC_DIR}/.git" ]; then
   SRC_PRESENT=1
   log_info "✓ dotfiles source already present"
 else
   log_info "Cloning dotfiles source..."
-  git clone --branch "${PROVISION_REF}" https://github.com/michaelrigart/dotfiles.git "${SRC_DIR}"
+  git clone --branch "${PROVISION_REF}" "${DOTFILES_URL}" "${SRC_DIR}"
 fi
 
 # ============================================================================
@@ -149,8 +150,10 @@ fi
 # stopped for input four separate times, potentially hours apart.
 
 # 5a. 1Password. The desktop app's CLI integration means no Secret Key is typed, which
-# matters because the Emergency Kit is deliberately stored off this machine.
-if op whoami &>/dev/null; then
+# matters because the Emergency Kit is deliberately stored off this machine. 1Password
+# authorizes each terminal session, and `op whoami` only reports that, never asks for it: so
+# the run waits until op sees an account, then signs in itself, in this session.
+if op whoami &>/dev/null </dev/null; then
   log_info "✓ 1Password CLI already authenticated"
 else
   open -a "1Password" 2>/dev/null || true
@@ -160,6 +163,7 @@ else
   echo "    2. Settings → Developer → ☑ Integrate with 1Password CLI"
   echo "    3. Quit the app fully (⌘Q) and reopen it — the CLI link is established"
   echo "       at launch, so enabling it in a running app often does not take."
+  echo "    4. Approve 1Password's request to let this terminal use the CLI."
   echo ""
   echo "  To check from another terminal:  ${HOMEBREW_PREFIX}/bin/op account list"
   echo "  (Homebrew was just installed, so plain \`op\` is not on PATH in any tab you"
@@ -171,13 +175,18 @@ else
   echo "    ${HOMEBREW_PREFIX}/bin/op account add --address my.1password.com --email <you>"
   echo ""
   waited=0
-  until op whoami &>/dev/null; do
+  until op account list --format=json 2>/dev/null </dev/null | grep -q '"url"'; do
     if [ "$waited" -ge 900 ]; then
-      log_error "1Password CLI still unavailable after 15 minutes."
+      log_error "1Password CLI still sees no account after 15 minutes."
       exit 1
     fi
     sleep 3; waited=$((waited + 3))
+    [ $((waited % 60)) -eq 0 ] && log_info "  still waiting for the 1Password app (${waited}s)"
   done
+  # The output is empty with the app integration; an account added with `op account add`
+  # prints its session variable instead.
+  OP_SIGNIN=$(op signin) && eval "$OP_SIGNIN" && op whoami &>/dev/null </dev/null \
+    || { log_error "1Password CLI sign-in failed — run provision.sh again"; exit 1; }
   log_info "✓ 1Password CLI authenticated"
 fi
 
@@ -247,12 +256,33 @@ log_info "✓ identity set to ${MACHINE_NAME}"
 # 6. Generate the chezmoi config, then apply
 # ============================================================================
 # Only now, with the identity settled, does chezmoi capture it.
-# Only on a fresh clone. This runs in zsh as a script, so the chezmoi wrapper that deploys
-# only origin's main is not loaded: on a machine whose checkout already existed, init and
-# apply would deploy the working tree, which the checkout cannot prove was reviewed.
-if [ "$SRC_PRESENT" -eq 1 ]; then
+# This runs in zsh as a script, so the chezmoi wrapper that deploys only origin's main is not
+# loaded, and a checkout that already existed may hold changes nobody reviewed. So the run
+# applies its own clone, and a checkout an earlier run left before chezmoi ever ran (no chezmoi
+# config yet) only when it passes the wrapper's gate: clean, and at origin's commit.
+checkout_is_origin() {
+  local st want head
+  st=$(git -c core.fsmonitor=false -C "${SRC_DIR}" status --porcelain --untracked-files=all </dev/null) || return 1
+  [ -z "$st" ] || return 1
+  # -C /: no repository, so no checkout configuration (url rewrites included) reaches it.
+  want=$(git -C / ls-remote "${DOTFILES_URL}" "refs/heads/${PROVISION_REF}" </dev/null) || return 1
+  want=${want%%$'\t'*}
+  [[ $want =~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ]] || return 1
+  head=$(git -c core.fsmonitor=false -C "${SRC_DIR}" rev-parse HEAD </dev/null) || return 1
+  [ "$head" = "$want" ]
+}
+APPLY_SOURCE=0
+if [ "$SRC_PRESENT" -eq 0 ]; then
+  APPLY_SOURCE=1
+elif [ -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ]; then
   warn "Machine already provisioned: chezmoi init and apply are skipped. Run chezmoi apply --init from zsh, which deploys origin's main."
+elif checkout_is_origin; then
+  log_info "✓ The checkout an earlier run left is origin's ${PROVISION_REF}, unchanged: applying it"
+  APPLY_SOURCE=1
 else
+  warn "The checkout an earlier run left is not origin's ${PROVISION_REF}, unchanged (or origin could not be read): chezmoi init and apply are skipped. Delete ${SRC_DIR} and run provision.sh again."
+fi
+if [ "$APPLY_SOURCE" -eq 1 ]; then
   log_info "Generating chezmoi config..."
   chezmoi init
   log_info "Applying dotfiles with chezmoi..."
@@ -303,7 +333,7 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
     warn "brew bundle did not complete — see the items above"
   fi
 else
-  log_error "Brewfile not found at ${XDG_CONFIG_HOME}/homebrew/Brewfile"
+  warn "Brewfile not found at ${XDG_CONFIG_HOME}/homebrew/Brewfile — chezmoi apply deploys it"
 fi
 
 # ============================================================================
@@ -342,7 +372,10 @@ fi
 # 10. Set default shell to Homebrew zsh
 # ============================================================================
 log_info "Setting default shell to Homebrew zsh..."
-if [[ "$SHELL" != "${HOMEBREW_PREFIX}/bin/zsh" ]]; then
+# Never to a zsh that is not there: no new terminal could start.
+if [ ! -x "${HOMEBREW_PREFIX}/bin/zsh" ]; then
+  warn "Homebrew zsh is not installed, so the login shell stays ${SHELL} — once the Brewfile is installed: sudo chsh -s ${HOMEBREW_PREFIX}/bin/zsh ${USER}"
+elif [[ "$SHELL" != "${HOMEBREW_PREFIX}/bin/zsh" ]]; then
   if ! grep -qxF "${HOMEBREW_PREFIX}/bin/zsh" /etc/shells; then
     log_info "Adding Homebrew zsh to /etc/shells..."
     echo "${HOMEBREW_PREFIX}/bin/zsh" | sudo tee -a /etc/shells

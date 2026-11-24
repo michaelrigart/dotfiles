@@ -223,8 +223,10 @@ tart clone ghcr.io/cirruslabs/macos-golden-gate-vanilla reinstall-test
 tart set reinstall-test --disk-size 80
 tart run reinstall-test
 
-# In the VM: run the branch's script. It installs the 1Password app; when it asks, sign in
-# there and turn on the CLI integration. Answer `hercules` when it asks for the machine name.
+# In the VM (its window shares no clipboard, so type this): run the branch's script. It installs
+# the 1Password app; when it asks, sign in there, turn on the CLI integration and approve the
+# terminal's request. Answer `hercules` for the machine name: `fenrir` is taken on the network
+# the VM shares with fenrir, and macOS renames the VM `fenrir (2)`.
 # PROVISION_REF is honoured only inside a VM and picks the branch the clone checks out.
 ref=<branch>
 PROVISION_REF=$ref /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/$ref/.scripts/provision.sh)"

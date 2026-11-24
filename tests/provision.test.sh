@@ -62,6 +62,8 @@ exec "$@"
 SU
 printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
+# Homebrew's zsh, which step 10 makes the login shell only when it is installed.
+printf '#!/bin/sh\nexec /bin/zsh "$@"\n' > "$T/brew/bin/zsh"
 # tee is stubbed because step 10 pipes into `sudo tee -a /etc/shells`; without it the
 # delegating sudo reaches the real /etc/shells. Anything the script writes outside the
 # temp roots needs a stub here — that is the whole isolation boundary.
@@ -99,14 +101,44 @@ case "$verb" in
              grep -vx "$label" "$LAUNCHCTL_LOADED" > "$LAUNCHCTL_LOADED.n"; mv "$LAUNCHCTL_LOADED.n" "$LAUNCHCTL_LOADED" ;;
 esac
 L
-# op also logs the app-integration switch it was started with (see section B).
-printf '#!/usr/bin/env bash\necho "op $*" >> "$CALLS"\necho "op-env OP_BIOMETRIC_UNLOCK_ENABLED=${OP_BIOMETRIC_UNLOCK_ENABLED:-unset}" >> "$CALLS"\nexit 0\n' > "$T/bin/op"
+# op also logs the app-integration switch it was started with (see section B). 1Password
+# authorizes each terminal session and `op whoami` only reports it: with $T/op-signed-out,
+# whoami fails until `op signin` has run ($T/op-authorized), or, with $T/op-manual (an account
+# added without the app integration), until the session variable signin prints is exported.
+# `account list` gives as many empty answers as $T/op-no-account counts; fail-op-signin fails.
+cat > "$T/bin/op" <<'O'
+#!/usr/bin/env bash
+echo "op $*" >> "$CALLS"
+echo "op-env OP_BIOMETRIC_UNLOCK_ENABLED=${OP_BIOMETRIC_UNLOCK_ENABLED:-unset}" >> "$CALLS"
+case "$1" in
+  whoami)  [ -e "$SBX_ROOT/op-signed-out" ] || exit 0
+           [ -e "$SBX_ROOT/op-authorized" ] && exit 0
+           [ "${OP_SESSION_test:-}" = tok ] && exit 0
+           echo "[ERROR] account is not signed in" >&2; exit 1 ;;
+  account) n=$(cat "$SBX_ROOT/op-no-account" 2>/dev/null || echo 0)
+           if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$SBX_ROOT/op-no-account"; echo '[]'; exit 0; fi
+           echo '[{"account_uuid":"A","email":"tester@example.com","url":"my.1password.com","user_uuid":"U"}]' ;;
+  signin)  [ -e "$SBX_ROOT/fail-op-signin" ] && exit 1
+           if [ -e "$SBX_ROOT/op-manual" ]; then echo 'export OP_SESSION_test="tok"'; else : > "$SBX_ROOT/op-authorized"; fi ;;
+esac
+exit 0
+O
 # A fresh machine has no checkout: `git clone` copies the fixture source into the target, so
 # the run after it reads the same allowlist and scripts as one with an existing checkout.
+# The check of a checkout an earlier run left reads $T/git-status (status), $T/git-head
+# (rev-parse HEAD) and $T/git-origin (ls-remote; fail-git-ls-remote fails it); both commits
+# default to the same id, so an unchanged checkout is at origin's commit.
 cat > "$T/bin/git" <<'G'
 #!/usr/bin/env bash
 echo "git $*" >> "$CALLS"
-case "$*" in *"branch --show-current"*) cat "$SBX_ROOT/branch" 2>/dev/null ;; esac
+SHA0=1111111111111111111111111111111111111111
+case "$*" in
+  *"branch --show-current"*) cat "$SBX_ROOT/branch" 2>/dev/null ;;
+  *" status "*) cat "$SBX_ROOT/git-status" 2>/dev/null ;;
+  *"rev-parse HEAD"*) cat "$SBX_ROOT/git-head" 2>/dev/null || echo "$SHA0" ;;
+  *" ls-remote "*) [ -e "$SBX_ROOT/fail-git-ls-remote" ] && exit 128
+                   printf '%s\t%s\n' "$(cat "$SBX_ROOT/git-origin" 2>/dev/null || echo "$SHA0")" "${@: -1}" ;;
+esac
 if [ "$1" = clone ]; then
   for last; do :; done
   mkdir -p "$last" && cp -R "$SBX_ROOT/src/." "$last"
@@ -188,7 +220,7 @@ chmod +x "$T/bin/_mut"
 for t in rm chmod find; do
   printf '#!/usr/bin/env bash\nexec "%s/bin/_mut" %s "$@"\n' "$T" "$t" > "$T/bin/$t"
 done
-chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex"
+chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/brew/bin/zsh "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex"
 
 # Guard the harness against itself. Verifying that a containment assertion CAN fail
 # must never be done by pointing an override at the real binary -- that executes it.
@@ -197,7 +229,10 @@ canon(){ python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; 
 assert_inside(){ local r; r=$(canon "$2")
   case "$r" in "$T"|"$T"/*) ;; *) echo "REFUSING: $1='$2' resolves to '$r', outside $T"; exit 2 ;; esac; }
 
-reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"; }
+# A run starts on a machine chezmoi has configured (its config exists) and a terminal 1Password
+# has not authorized yet; section B2b removes the config.
+reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
+  mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"; }
 SBX_SRC="$T/src"; SBX_BREW="$T/brew/bin/brew"
 run(){ local ans=$1; shift
   assert_inside PROVISION_BREW_BIN "$SBX_BREW"
@@ -262,6 +297,61 @@ has "chezmoi apply --init" "and Michael is pointed at the wrapper's command"
 called "scutil --set ComputerName hercules" "the rest of the run still happens"
 called "configure.sh --hostname hercules" "including the macOS configuration"
 
+echo "B2b. a checkout an earlier run left before chezmoi ran is applied only as origin's commit"
+# The first VM run (2026-11-24) stopped at the 1Password wait after cloning; its retry skipped
+# chezmoi for good, so nothing was deployed. No chezmoi config means chezmoi never ran here.
+reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml"; run 'hercules\ny\n'
+rc_is 0 "a never-applied checkout at origin's commit finishes"
+called "chezmoi init" "it is initialised"
+called "chezmoi apply --force" "and applied"
+called "git -c core.fsmonitor=false -C $SBX_SRC status --porcelain --untracked-files=all" "untracked files count as changes, and no fsmonitor runs"
+called "git -C / ls-remote https://github.com/michaelrigart/dotfiles.git refs/heads/main" "origin's commit is read outside the checkout, from the fixed URL"
+hasnt "already provisioned" "it is not called provisioned"
+for c in changed moved unreadable; do
+  reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml"
+  case $c in
+    changed)    echo "?? planted.tmpl" > "$T/git-status" ;;
+    moved)      echo 2222222222222222222222222222222222222222 > "$T/git-head" ;;
+    unreadable) : > "$T/fail-git-ls-remote" ;;
+  esac
+  run 'hercules\ny\n'
+  rc_is 0 "a never-applied checkout ($c) still finishes"
+  not_called "chezmoi init" "a never-applied checkout ($c) is not initialised"
+  not_called "chezmoi apply" "a never-applied checkout ($c) is not applied"
+  has "is not origin's main, unchanged" "a never-applied checkout ($c): the skip is announced"
+  rm -f "$T/git-status" "$T/git-head" "$T/fail-git-ls-remote"
+done
+
+echo "B3. 1Password: the run signs the CLI in, in its own terminal session"
+# 1Password authorizes each terminal session and op whoami only reports it, so a run that only
+# polled whoami waited out its 15 minutes on a fresh machine (the VM run of 2026-11-24).
+: > "$T/op-signed-out"
+reset; run 'hercules\ny\n'
+rc_is 0 "a signed-out terminal finishes"
+called "op signin" "the run signs in itself"
+ql=$(grep -n '^op account list' "$CALLS" | head -1 | cut -d: -f1); sl=$(grep -n '^op signin' "$CALLS" | head -1 | cut -d: -f1)
+il=$(grep -n 'scutil --set ComputerName' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$ql" ] && [ -n "$sl" ] && [ "$ql" -lt "$sl" ]; } && _pass "once op sees an account" || _fail "once op sees an account"
+{ [ -n "$sl" ] && [ -n "$il" ] && [ "$sl" -lt "$il" ]; } && _pass "before anything changes" || _fail "before anything changes"
+has "✓ 1Password CLI authenticated" "and says so"
+echo 1 > "$T/op-no-account"
+reset; run 'hercules\ny\n'
+[ "$(grep -c '^op account list' "$CALLS")" -ge 2 ] && _pass "it waits while op sees no account" || _fail "it waits while op sees no account"
+called "op signin" "then signs in"
+: > "$T/op-manual"
+reset; run 'hercules\ny\n'
+rc_is 0 "an account added without the app integration signs in too"
+has "✓ 1Password CLI authenticated" "with the session op signin prints"
+rm -f "$T/op-manual"
+: > "$T/fail-op-signin"
+reset; run 'hercules\ny\n'
+rc_is 1 "a refused sign-in ends the run"
+has "1Password CLI sign-in failed" "and says so"
+not_called "scutil --set" "before anything changes"
+rm -f "$T/fail-op-signin" "$T/op-signed-out" "$T/op-no-account"
+reset; run 'hercules\ny\n'
+not_called "op signin" "a terminal already signed in is not asked again"
+
 echo "C. consent gates the rename"
 reset; run 'hercules\nn\n'
 rc_is 1 "declining aborts"
@@ -284,6 +374,16 @@ n_chsh=$(grep -c '^chsh ' "$CALLS" || true); n_sudo_chsh=$(grep -c '^sudo chsh '
   || _fail "no chsh call bypasses sudo (chsh=$n_chsh via-sudo=$n_sudo_chsh)"
 called "StrictHostKeyChecking=accept-new" "the SSH check cannot block on a host key"
 called "configure.sh --hostname hercules" "configure.sh is told the identity, not asked"
+has "⚠ Brewfile not found" "a missing Brewfile is in the closing list"
+# The first VM run deployed no Brewfile, then pointed the login shell at a zsh that did not
+# exist, so no new terminal could start.
+mv "$T/brew/bin/zsh" "$T/brew-zsh.off"
+reset; run 'hercules\ny\n'
+rc_is 0 "a run without Homebrew's zsh finishes"
+not_called "chsh" "the login shell is not pointed at a missing zsh"
+not_called "/etc/shells" "nor is the missing zsh added to /etc/shells"
+has "⚠ Homebrew zsh is not installed" "the closing list says so"
+mv "$T/brew-zsh.off" "$T/brew/bin/zsh"
 
 echo "F. identity guard in Brewfile.tmpl"
 mkdir -p "$T/tbin"

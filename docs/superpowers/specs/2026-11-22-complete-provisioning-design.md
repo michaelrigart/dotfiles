@@ -6,7 +6,8 @@
 `~/.local/share/chezmoi-feat-complete-provisioning`
 **Sign-off:** Michael, 2026-11-22, in the line's own pane: "signed off, D1 yes, D2 both. I follow
 your recommendations". Codex approved the spec in round 3 (xr-1795308251-d19b9da8). D3 follows the
-recommendation's fallback until Michael names the 1Password items (see D3).
+recommendation's fallback until Michael names the 1Password items (see D3). The retry rule in §3
+("Found by the first VM run"): Michael, 2026-11-24, "yes, go ahead with your recommendation".
 **Source:** Michael, 2026-11-22: "I want you to make sure when I do a complete reinstall, everything
 gets installed and configured properly again." Relayed in the driver's brief (chezmoi-08) of the
 same day.
@@ -18,9 +19,10 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 535 lines of non-test code (+461 −74), 1.14 times the estimate; 1,342 lines of test
+**Real size:** 588 lines of non-test code (+504 −84), 1.25 times the estimate; 1,450 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
-and source check, and the checklist lint's wider rules. One increment.
+and source check, and the checklist lint's wider rules; the first VM run added the three
+`provision.sh` fixes in §3 (53 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -232,6 +234,29 @@ New steps, each skipped when already done, none asking anything:
   `main` is refused unless `sysctl -n kern.hv_vmm_present` prints 1: on a real Mac provisioning
   deploys only reviewed `main`, as today. The summary before "Proceed?" shows the ref when it is not
   `main`.
+
+**Found by the first VM run (2026-11-24), fixed here.** Three faults in steps older than this
+change kept a fresh machine from being provisioned at all:
+
+- **1Password.** The preflight polled `op whoami` for 15 minutes. 1Password authorizes each
+  terminal session, and `op whoami` only reports that, so a fresh terminal never passed (measured in
+  the VM: "account is not signed in" before `op signin` in the same session, signed in after). The
+  run now waits until `op account list` shows an account, then runs `op signin` itself, evaluating
+  what it prints (nothing with the app integration; the session variable for an account added with
+  `op account add`), and checks `op whoami`. A failed sign-in ends the run before anything changes.
+  The wait prints a line each minute.
+- **A checkout an earlier run left.** Any existing checkout counted as "already provisioned", so a
+  run that stopped after its clone (at the 1Password wait, say) skipped `chezmoi init` and `apply`
+  on every retry, and nothing was deployed. Now a checkout that chezmoi never ran from (no
+  `~/.config/chezmoi/chezmoi.toml`) is applied when it passes the `chezmoi` wrapper's gate: `git
+  status --porcelain --untracked-files=all` is empty (fsmonitor off), and `HEAD` equals origin's
+  `PROVISION_REF`, read with `git -C / ls-remote` from the fixed https URL. Otherwise the run skips
+  chezmoi as before and says to delete the checkout and run again. A machine with a chezmoi config
+  keeps today's skip and its pointer to the wrapper.
+- **The login shell.** Step 10 pointed the login shell at Homebrew's zsh even when no Brewfile had
+  installed it, so no new terminal could start. It now changes the shell only when that zsh is
+  executable, and otherwise warns with the command. A missing Brewfile is a warning in the closing
+  list, not only an error line.
 
 ### 4. `configure.sh`
 
