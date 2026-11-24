@@ -352,7 +352,11 @@ mason-lspconfig wait for the first file Neovim opens, since nvim-lspconfig loads
   shipping with its own after-merge step, as today. On the first run after this change no copies
   exist, so the other jobs reload once. A deployed plist whose `<label>.plist[.tmpl]` is gone from
   the loader's own source tree is skipped and reported (`not in the source`), never loaded, so a
-  retired LaunchAgent left behind by chezmoi is not started again at the next apply.
+  retired LaunchAgent left behind by chezmoi is not started again at the next apply. A job
+  disabled with `launchctl disable` is skipped and reported (`disabled`), loaded or not, and the
+  `launchagents` row counts it as done: that is how a job is kept off, since the loader now runs
+  at apply and a bootout alone lasts only until its next run or login (found by the final review,
+  against weekly-research's off step).
 - **No Apple Events in the unattended run.** The wallpaper (`osascript` to System Events) and
   Alfred's quit and relaunch send Apple Events, which on a fresh machine open an Automation consent
   dialog: that is a question after the preflight, and, unanswered or refused, the `osascript` fails

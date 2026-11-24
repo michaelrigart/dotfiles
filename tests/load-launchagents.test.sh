@@ -36,7 +36,8 @@ UID_NOW=$(id -u)
 # FAIL_BOOTSTRAP names it), bootout removes it. Like launchd, bootstrap of a loaded label
 # fails with 5. Race knobs: LINGER names a label that still answers print once after its
 # bootout (and refuses bootstrap until then); FAIL_FIRST names one whose first bootstrap
-# fails. Every call is logged.
+# fails. Every call is logged. A label listed in $LOADED.disabled is disabled: print-disabled
+# lists it as disabled (every other loaded label as enabled), and like launchd its bootstrap fails.
 cat > "$T/bin/launchctl" <<'L'
 #!/usr/bin/env bash
 echo "launchctl $*" >> "$CALLS"
@@ -47,8 +48,14 @@ case "$verb" in
              if grep -qx "$label" "$LOADED"; then exit 0; fi
              if [ -f "$LOADED.linger" ]; then rm -f "$LOADED.linger"; exit 0; fi
              exit 1 ;;
+  print-disabled)
+             echo "disabled services = {"
+             while read -r l; do echo "	\"$l\" => enabled"; done < "$LOADED"
+             [ -f "$LOADED.disabled" ] && while read -r l; do echo "	\"$l\" => disabled"; done < "$LOADED.disabled"
+             echo "}" ;;
   bootstrap) label=$(basename "$3" .plist)
              grep -qx "$label" "$LOADED" && exit 5
+             [ -f "$LOADED.disabled" ] && grep -qx "$label" "$LOADED.disabled" && exit 119
              [ -f "$LOADED.linger" ] && exit 5
              [ "${FAIL_BOOTSTRAP:-}" = "$label" ] && exit 5
              if [ "${FAIL_FIRST:-}" = "$label" ] && [ ! -f "$LOADED.failed1" ]; then : > "$LOADED.failed1"; exit 5; fi
@@ -66,7 +73,7 @@ plist_nosrc(){ printf '<plist>%s</plist>\n' "$2" > "$LA/$1.plist"; }
 load(){ OUT=$(env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" CALLS="$CALLS" LOADED="$LOADED" \
     FAIL_BOOTSTRAP="${FAIL_BOOTSTRAP:-}" FAIL_FIRST="${FAIL_FIRST:-}" LINGER="${LINGER:-}" \
     /bin/bash "$SUT" 2>&1); RC=$?; }
-reset(){ : > "$CALLS"; : > "$LOADED"; rm -f "$LOADED.linger" "$LOADED.failed1" "$LA"/*.plist "$LS"/Library/LaunchAgents/*
+reset(){ : > "$CALLS"; : > "$LOADED"; rm -f "$LOADED.linger" "$LOADED.failed1" "$LOADED.disabled" "$LA"/*.plist "$LS"/Library/LaunchAgents/*
   [ -d "$REC" ] && chmod -R u+w "$REC"; rm -rf "$T/home/.local"; }
 
 echo "A. no plists"
@@ -172,6 +179,16 @@ has "  loaded be.netronix.kept" "a plist the source has still loads"
 not_called "launchctl bootout" "an orphan that is already loaded is not booted out either"
 rm -f "$LS/Library/LaunchAgents/be.netronix.kept.plist.tmpl"; printf '<plist>v1</plist>\n' > "$LS/Library/LaunchAgents/be.netronix.kept.plist"; : > "$CALLS"; load
 has "  unchanged be.netronix.kept" "a non-template source plist counts as in the source"
+
+echo "J3. a job disabled with launchctl disable stays off, so a disable is how a job is kept off"
+reset; plist be.netronix.off v1; plist be.netronix.on v1; echo be.netronix.off > "$LOADED.disabled"; load
+rc_is 0 "exit 0"
+has "  skipped be.netronix.off: disabled" "the disabled job is reported"
+not_called "launchctl bootstrap gui/$UID_NOW $LA/be.netronix.off.plist" "and not bootstrapped"
+has "  loaded be.netronix.on" "an enabled job still loads"
+echo be.netronix.off >> "$LOADED"; plist be.netronix.off v2; : > "$CALLS"; load
+rc_is 0 "a disabled job still loaded whose plist changed: exit 0"
+not_called "launchctl bootout" "and it is not booted out"
 
 echo "K. chezmoi reruns the loader when a plist, as rendered for this machine, changes"
 # The run_onchange_ script carries one hash line per plist template, of the template RENDERED

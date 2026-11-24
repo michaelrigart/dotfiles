@@ -66,8 +66,8 @@ every agent: Claude Code and Codex both load it natively.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`, `reconcile-agents.sh`,
   `machine-check.sh`, `load-launchagents.sh`, `preflight-ssh-agent.sh`). Those that change system
   settings (provisioning and the installer) are deliberately not `run_once_` scripts: they need
-  interaction. The one exception, `run_onchange_after_load-launchagents.sh`, reloads a changed
-  `be.netronix.*` plist at apply (never codex-app-server, not in provisioning's first apply).
+  interaction. The one exception, `run_onchange_after_load-launchagents.sh`, runs the loader when a
+  `be.netronix.*` plist changes (never reloading codex-app-server; not in provisioning's first run).
   **Lasting machine setup reaches provisioning in the same change:** a `provision.sh` or
   `configure.sh` step where a script can do it, always a row in `machine-checklist.tsv` with a
   verify where one exists. A spec with after-merge steps carries a `**Provisioning:**` line (row

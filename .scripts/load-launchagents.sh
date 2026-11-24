@@ -4,8 +4,9 @@
 # copy recorded at its last load. be.netronix.codex-app-server is never reloaded: a reload
 # disconnects every Codex session. A deployed plist whose source (Library/LaunchAgents/<label>.plist
 # or .plist.tmpl in this script's own source tree) is gone is skipped: chezmoi leaves a removed
-# file deployed, and it must not be bootstrapped again. macOS /bin/bash is 3.2: no associative
-# arrays, no ${x,,}.
+# file deployed, and it must not be bootstrapped again. A job disabled with launchctl disable is
+# skipped too: that keeps it off, where a bootout lasts only until the next run or login. macOS
+# /bin/bash is 3.2: no associative arrays, no ${x,,}.
 set -u
 
 uid=$(id -u)
@@ -35,6 +36,10 @@ for plist in "$HOME/Library/LaunchAgents"/be.netronix.*.plist; do
   label=$(basename "$plist" .plist)
   if [ ! -f "$src/Library/LaunchAgents/$label.plist" ] && [ ! -f "$src/Library/LaunchAgents/$label.plist.tmpl" ]; then
     echo "  skipped $label: not in the source"
+    continue
+  fi
+  if launchctl print-disabled "gui/$uid" 2>/dev/null | grep -qF "\"$label\" => disabled"; then
+    echo "  skipped $label: disabled (launchctl enable gui/$uid/$label to load it at the next run)"
     continue
   fi
   record="$state/$label.plist"
