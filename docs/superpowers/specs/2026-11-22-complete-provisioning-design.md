@@ -1,6 +1,6 @@
 # Complete provisioning: a reinstalled Mac ends up as it is today
 
-**Status:** Implemented (branch `feat/complete-provisioning`, its PR against `main`)
+**Status:** Implemented ([PR #46](https://github.com/michaelrigart/dotfiles/pull/46), branch `feat/complete-provisioning`)
 **Date:** 2026-11-22
 **Branch:** `feat/complete-provisioning`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-complete-provisioning`

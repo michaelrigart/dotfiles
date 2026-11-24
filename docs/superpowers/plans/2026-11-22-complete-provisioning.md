@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: the `plan-run` skill (it overrides
 > superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Implemented (the pull request of branch `feat/complete-provisioning`). Completed 2026-11-22: do not run this plan again.
+**Status:** Implemented ([PR #46](https://github.com/michaelrigart/dotfiles/pull/46), branch `feat/complete-provisioning`). Completed 2026-11-22: do not run this plan again.
 
 **Goal:** A wiped fenrir or hercules that runs `.scripts/provision.sh` ends with every scriptable
 step done and one ordered, checked list of what is left; the same list checks a live machine; a
