@@ -316,19 +316,20 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
 
   # A licence-gated cask must not end the run — the remaining steps still matter.
   # `brew bundle` fails for the whole file, so ask `check` which items actually missed.
-  # A single retry absorbs transient download failures.
+  # A single retry absorbs transient download failures. --no-upgrade, like the brewfile row:
+  # a release published during the run leaves an item outdated, not missing.
   if ! brew bundle install --file "${HOMEBREW_BUNDLE_FILE}"; then
     log_warn "brew bundle had failures — retrying once"
     brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || true
   fi
-  if ! brew bundle check --file "${HOMEBREW_BUNDLE_FILE}" >/dev/null 2>&1; then
+  if ! brew bundle check --no-upgrade --file "${HOMEBREW_BUNDLE_FILE}" >/dev/null 2>&1; then
     # Process substitution, not a pipeline: `cmd | while read` runs the loop in a
     # subshell, so every warn() inside it appends to a WARNINGS array that is thrown
     # away when the subshell exits. The end-of-run summary silently lost every item.
     # Homebrew writes the missed items to stderr.
     while read -r item; do
       [ -n "$item" ] && warn "brewfile: ${item}"
-    done < <(brew bundle check --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>&1 | sed -n 's/^→ *//p')
+    done < <(brew bundle check --no-upgrade --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>&1 | sed -n 's/^→ *//p')
     warn "brew bundle did not complete — see the items above"
   fi
 else
