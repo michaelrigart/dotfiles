@@ -295,8 +295,8 @@ closing list, and its re-run reloaded no LaunchAgent. Three faults remained:
   check` misses to stderr, which step 8 discarded. It now reads both streams. Step 8 also says that
   Homebrew can print nothing for many minutes while it downloads.
 
-Not faults of provisioning: Microsoft Office's installer ran out of disk in the VM (Tart's
-`--disk-size` does not grow a macOS guest's own partition); `pmset` in the VM sets no `womp` or
+Not faults of provisioning: Microsoft Office's installer ran out of disk in the VM (its 80 GB
+disk was full, 4.2 GB free, so the README now gives it 120 GB); `pmset` in the VM sets no `womp` or
 `autorestart`, so `hercules-power` reads ✗ there; the plugins from `claude-plugins-official` install
 only once Claude Code has run (the `claude-login` and `agent-plugins` rows); the headless Neovim
 install leaves Mason's tools for the first interactive start.

@@ -218,9 +218,9 @@ Run the whole provisioning in a throwaway macOS VM on fenrir with [Tart](https:/
 installs it on fenrir.
 
 ```bash
-# Pull the image (about 33 GB), clone it and give the clone room
+# Pull the image (about 33 GB), clone it and give the clone room: the whole Brewfile fills 80 GB
 tart clone ghcr.io/cirruslabs/macos-golden-gate-vanilla reinstall-test
-tart set reinstall-test --disk-size 80
+tart set reinstall-test --disk-size 120
 tart run reinstall-test
 
 # In the VM (its window shares no clipboard, so type this): run the branch's script. It installs
