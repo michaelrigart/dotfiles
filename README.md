@@ -197,7 +197,8 @@ mise install
 
 # 11. NetBird daemon, then Neovim's plugins installed and Herdr's linked, then the Codex pin
 sudo netbird service install && sudo netbird service start
-nvim --headless "+Lazy! install" +qa
+PATH=~/.local/share/mise/shims:$PATH nvim --headless "+Lazy! install" \
+  "+luafile $HOME/.local/share/chezmoi/.scripts/nvim-finish-install.lua" "+cq 2"
 for dir in ~/.config/herdr/plugin-*(N/) ~/.local/share/nvim/lazy/smart-splits.nvim; do
   herdr plugin link "$dir"
 done
