@@ -20,10 +20,10 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 609 lines of non-test code (+522 −87), 1.30 times the estimate; 1,526 lines of test
+**Real size:** 611 lines of non-test code (+524 −87), 1.30 times the estimate; 1,532 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
-`provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (17 lines).
+`provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines).
 One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
@@ -284,7 +284,8 @@ closing list, and its re-run reloaded no LaunchAgent. Three faults remained:
 - **The Codex pin ran too early.** The daemon configure.sh's LaunchAgent starts selects its
   package on its own time, and the pin, 30 seconds later, failed with "no daemon package is
   selected"; by the next run the package existed, so the machine was never pinned. Step 17 now
-  waits up to five minutes for the package link before it pins, and otherwise warns.
+  waits up to five minutes for the package link before it pins (once it has found codex), and
+  otherwise warns.
 - **smart-splits.nvim lost its Herdr plugin.** Its v3 (2026-10-08) moved the bundled Herdr plugin
   out of the repository, and the unpinned spec installed v3, so step 12b found no manifest to link
   and Ctrl-h/j/k/l had no dispatcher. The spec is pinned to v2.1.1-final, the last release that

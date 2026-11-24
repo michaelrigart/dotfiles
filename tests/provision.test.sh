@@ -713,8 +713,14 @@ has "codex app-server daemon update --from-cli --yes" "and the warning names the
 rm -rf "$T/home/.codex"; : > "$T/no-daemon-package"; : > "$T/fast-sleep"; : > "$T/mk-current-at-sleep"
 reset; run 'hercules\ny\n'
 rm -f "$T/mk-current-at-sleep"
-called "$PIN" "the pin waits until the daemon has selected its package"
+sl=$(grep -n '^sleep 5' "$CALLS" | head -1 | cut -d: -f1); pl=$(grep -n "^$PIN" "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$sl" ] && [ -n "$pl" ] && [ "$sl" -lt "$pl" ]; } && _pass "the pin waits until the daemon has selected its package" || _fail "the pin waits until the daemon has selected its package"
 hasnt "codex daemon not pinned" "and then pins it"
+# Without a codex there is nothing to wait for: the warning names the missing binary at once.
+rm -rf "$T/home/.codex"; : > "$T/read-stdin-codex-daemon"; reset; run 'hercules\ny\n'
+rm -f "$T/read-stdin-codex-daemon"
+not_called "sleep 5" "a machine without codex does not wait for a daemon package"
+has "codex-daemon real-bin found no codex" "and the warning names the missing codex"
 rm -rf "$T/home/.codex"; reset; run 'hercules\ny\n'
 rm -f "$T/fast-sleep" "$T/no-daemon-package"
 rc_is 0 "a daemon that never selects a package does not end the run"
