@@ -60,7 +60,8 @@ case "$1" in
 esac
 exec "$@"
 SU
-printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
+# fail-brew-bundle fails `brew bundle`; its check then names a missed item on stderr, as Homebrew 7 does.
+printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed or updated." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
 # Homebrew's zsh, which step 10 makes the login shell only when it is installed.
 printf '#!/bin/sh\nexec /bin/zsh "$@"\n' > "$T/brew/bin/zsh"
@@ -408,6 +409,13 @@ n_chsh=$(grep -c '^chsh ' "$CALLS" || true); n_sudo_chsh=$(grep -c '^sudo chsh '
 called "StrictHostKeyChecking=accept-new" "the SSH check cannot block on a host key"
 called "configure.sh --hostname hercules" "configure.sh is told the identity, not asked"
 has "⚠ Brewfile not found" "a missing Brewfile is in the closing list"
+# The second VM run's closing list said only "brew bundle did not complete": Homebrew 7 writes the
+# items `brew bundle check` misses to stderr, which the run threw away.
+mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"; : > "$T/fail-brew-bundle"
+reset; run 'hercules\ny\n'
+rc_is 0 "a run whose brew bundle fails finishes"
+has "⚠ brewfile: Cask microsoft-office needs to be installed or updated." "the closing list names each item brew bundle missed"
+rm -rf "$T/home/.config/homebrew" "$T/fail-brew-bundle"
 # The first VM run deployed no Brewfile, then pointed the login shell at a zsh that did not
 # exist, so no new terminal could start.
 mv "$T/brew/bin/zsh" "$T/brew-zsh.off"

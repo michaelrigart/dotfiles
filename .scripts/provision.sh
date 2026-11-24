@@ -311,7 +311,7 @@ fi
 # 8. Install Homebrew packages from Brewfile
 # ============================================================================
 if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
-  log_info "Installing packages from Brewfile..."
+  log_info "Installing packages from Brewfile (Homebrew downloads several at once and can print nothing for many minutes)..."
   export HOMEBREW_BUNDLE_FILE="${XDG_CONFIG_HOME}/homebrew/Brewfile"
 
   # A licence-gated cask must not end the run — the remaining steps still matter.
@@ -325,9 +325,10 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
     # Process substitution, not a pipeline: `cmd | while read` runs the loop in a
     # subshell, so every warn() inside it appends to a WARNINGS array that is thrown
     # away when the subshell exits. The end-of-run summary silently lost every item.
+    # Homebrew writes the missed items to stderr.
     while read -r item; do
       [ -n "$item" ] && warn "brewfile: ${item}"
-    done < <(brew bundle check --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>/dev/null | sed -n 's/^→ *//p')
+    done < <(brew bundle check --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>&1 | sed -n 's/^→ *//p')
     warn "brew bundle did not complete — see the items above"
   fi
 else
