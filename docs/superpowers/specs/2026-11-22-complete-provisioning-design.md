@@ -20,10 +20,11 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 592 lines of non-test code (+507 −85), 1.26 times the estimate; 1,487 lines of test
+**Real size:** 609 lines of non-test code (+522 −87), 1.30 times the estimate; 1,526 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
-`provision.sh` fixes in §3 (46 lines), the second two more (11 lines). One increment.
+`provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (17 lines).
+One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -276,6 +277,28 @@ change kept a fresh machine from being provisioned at all:
   succeeds, and step 4 also moves a marked checkout aside. A machine provisioned before the mark
   existed has none, so it keeps its checkout. A checkout with linked `wt` worktrees is never moved,
   marked or not: an apply by hand leaves the mark, and a move would break every sibling's link.
+
+**Found by the third VM run (2026-11-24), fixed here.** The run provisioned the VM through to its
+closing list, and its re-run reloaded no LaunchAgent. Three faults remained:
+
+- **The Codex pin ran too early.** The daemon configure.sh's LaunchAgent starts selects its
+  package on its own time, and the pin, 30 seconds later, failed with "no daemon package is
+  selected"; by the next run the package existed, so the machine was never pinned. Step 17 now
+  waits up to five minutes for the package link before it pins, and otherwise warns.
+- **smart-splits.nvim lost its Herdr plugin.** Its v3 (2026-10-08) moved the bundled Herdr plugin
+  out of the repository, and the unpinned spec installed v3, so step 12b found no manifest to link
+  and Ctrl-h/j/k/l had no dispatcher. The spec is pinned to v2.1.1-final, the last release that
+  ships it (one commit ahead of fenrir's copy), which also keeps a `:Lazy update` on fenrir from
+  removing it.
+- **The closing list did not name a failed Brewfile item.** Homebrew writes the items `brew bundle
+  check` misses to stderr, which step 8 discarded. It now reads both streams. Step 8 also says that
+  Homebrew can print nothing for many minutes while it downloads.
+
+Not faults of provisioning: Microsoft Office's installer ran out of disk in the VM (Tart's
+`--disk-size` does not grow a macOS guest's own partition); `pmset` in the VM sets no `womp` or
+`autorestart`, so `hercules-power` reads ✗ there; the plugins from `claude-plugins-official` install
+only once Claude Code has run (the `claude-login` and `agent-plugins` rows); the headless Neovim
+install leaves Mason's tools for the first interactive start.
 
 ### 4. `configure.sh`
 
