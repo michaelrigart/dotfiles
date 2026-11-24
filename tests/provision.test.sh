@@ -142,9 +142,18 @@ G
 # make a step fail without a new env var; the stubs read $SBX_ROOT, which every run passes. A file
 # named read-stdin-<tool> makes the stub read one line of stdin and fail on EOF: the run feeds
 # spare lines, so a step that does not close its stdin gets one and succeeds.
-for t in netbird nvim; do
+for t in netbird; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -e "$SBX_ROOT/read-stdin-%s" ] && { read -r _ || exit 1; }\n[ -e "$SBX_ROOT/fail-%s" ] && exit 1\nexit 0\n' "$t" "$t" "$t" > "$T/bin/$t"
 done
+# nvim also records the first entry of its PATH: Mason's Ruby tools need mise's Ruby.
+cat > "$T/bin/nvim" <<'NV'
+#!/usr/bin/env bash
+echo "nvim $*" >> "$CALLS"
+echo "nvim-path-head ${PATH%%:*}" >> "$CALLS"
+[ -e "$SBX_ROOT/read-stdin-nvim" ] && { read -r _ || exit 1; }
+[ -e "$SBX_ROOT/fail-nvim" ] && exit 1
+exit 0
+NV
 # `herdr plugin list` prints the file $T/herdr-list (the linked plugins); `plugin link` can fail.
 cat > "$T/bin/herdr" <<'H'
 #!/usr/bin/env bash
@@ -661,7 +670,8 @@ mkdir -p "$CFG/herdr/plugin-a" "$CFG/herdr/plugin-b" "$CFG/herdr/plugin-c" "$NVL
 : > "$CFG/herdr/plugin-a/herdr-plugin.toml"; : > "$CFG/herdr/plugin-b/herdr-plugin.toml"; : > "$NVL/herdr-plugin.toml"
 printf '2 plugins installed:\n- b (B) enabled [local:%s/herdr/plugin-b]\n  config: x\n' "$CFG" > "$T/herdr-list"
 reset; run 'hercules\ny\n'
-called "nvim --headless +Lazy! install +qa" "Neovim installs its plugins headless"
+called "nvim --headless +Lazy! install +luafile $T/src/.scripts/nvim-finish-install.lua +cq 2" "Neovim installs its plugins headless, then waits for Mason's tools and the parsers"
+called "nvim-path-head $T/home/.local/share/mise/shims" "with mise's shims first on PATH, so Mason's Ruby tools get mise's Ruby"
 called "herdr plugin link $CFG/herdr/plugin-a" "an unlinked plugin folder is linked"
 called "herdr plugin link $NVL" "smart-splits.nvim's bundled plugin is linked"
 not_called "herdr plugin link $CFG/herdr/plugin-b" "a folder whose [local:<dir>] is already listed is not linked again"
@@ -683,7 +693,7 @@ not_called "herdr plugin link $NVL" "a smart-splits.nvim that was never installe
 reset; : > "$T/fail-nvim"; run 'hercules\ny\n'
 rm -f "$T/fail-nvim"
 rc_is 0 "a failing Neovim install does not end the run"
-has "Lazy! install" "and the warning names the command"
+has "neovim: not everything installed" "and it warns"
 called "herdr plugin link $CFG/herdr/plugin-a" "and the links still happen"
 reset; : > "$T/fail-herdr-list"; run 'hercules\ny\n'
 rm -f "$T/fail-herdr-list"
@@ -805,7 +815,7 @@ for t in netbird nvim herdr-link codex machine-check; do : > "$T/read-stdin-$t";
 reset; run "$SPARE"
 rc_is 0 "stdin read failures do not end the run"
 has "NetBird daemon not installed or started" "netbird service install and start read /dev/null"
-has "neovim plugins: install failed" "nvim reads /dev/null"
+has "neovim: not everything installed" "nvim reads /dev/null"
 has "herdr plugin not linked" "herdr plugin link reads /dev/null"
 has "codex daemon not pinned — run: $T/codexbin/codex" "the pin reads /dev/null"
 called "machine-check-stdin eof" "machine-check.sh reads /dev/null"

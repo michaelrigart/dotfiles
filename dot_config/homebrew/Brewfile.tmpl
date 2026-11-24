@@ -83,6 +83,8 @@ brew "mise"
 brew "mono-libgdiplus"                 # Iris.WeInspect Reporting Service — System.Drawing.Common on macOS
 brew "mtr"
 brew "neovim"
+brew "tree-sitter-cli"                 # LazyVim's treesitter parsers; without it on PATH, a fresh headless
+                                       # install races Mason for it and fails (provision.sh step 12b)
 brew "netbird"                         # NetBird client (homebrew-core): reach hercules away from home;
                                        # daemon: sudo netbird service install
 brew "nmap"                            # supplies `ncat`, which dot_local/bin/executable_ssh-sandbox-proxy uses

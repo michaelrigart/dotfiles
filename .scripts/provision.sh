@@ -420,9 +420,13 @@ fi
 # ============================================================================
 # 12b. Neovim plugins and Herdr plugin links
 # ============================================================================
-log_info "Installing Neovim plugins..."
-nvim --headless "+Lazy! install" +qa </dev/null \
-  || warn "neovim plugins: install failed — run: nvim --headless \"+Lazy! install\" +qa"
+log_info "Installing Neovim plugins, Mason's tools and the treesitter parsers..."
+# A headless Neovim that quits aborts the installs LazyVim starts in the background, so
+# nvim-finish-install.lua waits for them. Mason's Ruby tools need mise's Ruby, not macOS's,
+# and the shims are on PATH only once zshenv is.
+PATH="${XDG_DATA_HOME}/mise/shims:${PATH}" nvim --headless "+Lazy! install" \
+  "+luafile ${SRC_DIR}/.scripts/nvim-finish-install.lua" "+cq 2" </dev/null \
+  || warn "neovim: not everything installed (named above) — open nvim once: LazyVim installs what is missing at start"
 
 # Herdr's TUI plugins are linked, not copied: ~/.config/herdr/plugin-* (chezmoi) and
 # smart-splits.nvim's bundled one (lazy.nvim, installed by the install above). A plugin is
