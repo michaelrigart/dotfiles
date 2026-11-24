@@ -343,6 +343,15 @@ hasnt "already provisioned" "the retry is not called provisioned"
 reset; run 'hercules\ny\n'
 [ "$(ls -d "$T"/failed.earlier-* 2>/dev/null | wc -l)" -eq 1 ] && _pass "after a finished apply the next run keeps the checkout" || _fail "after a finished apply the next run keeps the checkout"
 not_called "chezmoi apply" "and applies nothing from it"
+# A checkout with wt siblings is in use, mark or not (an apply by hand, which leaves the mark, then
+# wt lines): moving it would break every sibling's link into its .git.
+rm -rf "$SBX_SRC" "$T"/failed.earlier-*
+cp -R "$T/src" "$SBX_SRC"; : > "$SBX_SRC/.git/provision-unapplied"; mkdir -p "$SBX_SRC/.git/worktrees/failed-feat-x"
+reset; run 'hercules\ny\n'
+ls -d "$T"/failed.earlier-* >/dev/null 2>&1 && _fail "a marked checkout with wt siblings stays where it is" || _pass "a marked checkout with wt siblings stays where it is"
+not_called "git clone" "and nothing is cloned over it"
+reset; rm -f "$T/home/.config/chezmoi/chezmoi.toml" "$T/home/.config/chezmoi/chezmoistate.boltdb"; run 'hercules\ny\n'
+ls -d "$T"/failed.earlier-* >/dev/null 2>&1 && _fail "so does one without chezmoi's config and state" || _pass "so does one without chezmoi's config and state"
 rm -rf "$SBX_SRC" "$T"/failed.earlier-* "$T/home/.config/chezmoi/chezmoistate.boltdb"
 SBX_SRC="$T/src"
 

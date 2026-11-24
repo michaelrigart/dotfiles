@@ -20,10 +20,10 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 589 lines of non-test code (+504 −85), 1.25 times the estimate; 1,478 lines of test
+**Real size:** 592 lines of non-test code (+507 −85), 1.26 times the estimate; 1,487 lines of test
 code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
-`provision.sh` fixes in §3 (46 lines), the second two more (8 lines). One increment.
+`provision.sh` fixes in §3 (46 lines), the second two more (11 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -274,7 +274,8 @@ change kept a fresh machine from being provisioned at all:
   state, so the retry took the clone for a provisioned machine and skipped chezmoi again. Step 4
   now marks its own clone (`.git/provision-unapplied`), step 6 removes the mark once the apply
   succeeds, and step 4 also moves a marked checkout aside. A machine provisioned before the mark
-  existed has none, so it keeps its checkout.
+  existed has none, so it keeps its checkout. A checkout with linked `wt` worktrees is never moved,
+  marked or not: an apply by hand leaves the mark, and a move would break every sibling's link.
 
 ### 4. `configure.sh`
 

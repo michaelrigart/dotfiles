@@ -140,9 +140,12 @@ SRC_DIR="${PROVISION_SRC_OVERRIDE:-${XDG_DATA_HOME}/chezmoi}"
 # own clone, so such a checkout is moved aside, never deleted, and cloned afresh: git status cannot
 # vouch for it, because chezmoi applies the files themselves (ignored ones too), which is why the
 # chezmoi wrapper applies a fresh clone as well. A machine chezmoi has applied keeps its checkout,
-# and the wt siblings linked to it.
+# and so does one with wt siblings, whose links into its .git a move would break (an apply by
+# hand leaves the mark in place).
 UNAPPLIED="${SRC_DIR}/.git/provision-unapplied"
-if [ -d "${SRC_DIR}/.git" ] && { [ -e "${UNAPPLIED}" ] || { [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ] \
+LINKED_WORKTREES=( "${SRC_DIR}"/.git/worktrees/*(DN) )
+if [ -d "${SRC_DIR}/.git" ] && (( ${#LINKED_WORKTREES} == 0 )) \
+   && { [ -e "${UNAPPLIED}" ] || { [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoi.toml" ] \
    && [ ! -e "${XDG_CONFIG_HOME}/chezmoi/chezmoistate.boltdb" ]; }; }; then
   EARLIER_SRC="${SRC_DIR}.earlier-$(date +%Y%m%d-%H%M%S)"
   mv "${SRC_DIR}" "${EARLIER_SRC}"
