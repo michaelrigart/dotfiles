@@ -20,12 +20,13 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 701 lines of non-test code (+608 −93), 1.49 times the estimate, just under the limit
-where a line stops; 1,744 lines of test code. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
+**Real size:** 708 lines of non-test code (+615 −93), 1.51 times the estimate, 3 lines past the
+limit where a line stops; 1,761 lines of test code. Michael, 2026-11-24, kept the final review's
+fix (§4, a disabled LaunchAgent) in this change rather than split it out. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
 `provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines),
 the fourth one (7 lines), the fifth one (10 lines), and a second reading of the fifth run's log two
-more (73 lines). One increment.
+more (73 lines), and the final review one (7 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
