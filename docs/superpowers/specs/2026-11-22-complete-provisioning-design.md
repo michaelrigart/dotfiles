@@ -22,15 +22,15 @@ about 10 (D2, D3). About 500 lines of test code: a new `tests/machine-check.test
 `tests/provisioning.test.sh`, and `tests/provision.test.sh` and `tests/reconcile-agents.test.sh`
 extended. Comparable: the provisioning preflight (`provision.sh` and its suite). One increment
 (without D1, about 405).
-**Real size:** 741 lines of non-test code (+648 −93), 1.58 times the estimate, past the limit
-where a line stops; 1,843 lines of test code. Michael, 2026-11-24, kept the final review's fix (§4,
+**Real size:** 763 lines of non-test code (+665 −98), 1.62 times the estimate, past the limit
+where a line stops; 1,857 lines of test code. Michael, 2026-11-24, kept the final review's fix (§4,
 a disabled LaunchAgent) in this change rather than split it out, then added the fresh-clone runs
 of §2 and D3's key templates, accepting the size. The review rounds added `reconcile-agents.sh`'s `--check` reporting, the loader's poll, retry
 and source check, and the checklist lint's wider rules; the first VM run added the three
 `provision.sh` fixes in §3 (46 lines), the second two more (11 lines), the third three (19 lines),
 the fourth one (7 lines), the fifth one (10 lines), and a second reading of the fifth run's log two
-more (73 lines), the final review one (7 lines), and Michael's last decisions `dotfiles-run` and D3's keys
-(33 lines). One increment.
+more (73 lines), the final review one (7 lines), and Michael's last decisions `dotfiles-run` and D3's keys,
+with provisioning's re-runs taking their scripts from a fresh clone (55 lines). One increment.
 **Provisioning:** `launchagents`, `codex-daemon-pin`, `netbird-service`, `herdr-plugins`,
 `hercules-power`
 
@@ -216,8 +216,10 @@ holds them in full):
   wrapper: it clones origin's main from the wrapper's pinned URL into `~/.cache/dotfiles-run`,
   outside the sandbox's write set, runs `.scripts/<name>.sh` from the clone and removes it; `DOTFILES`
   is then the clone, so the rows that compare with the source compare with origin's main.
-  Provisioning runs them from its own clone, before any agent runs on the machine. (Michael,
-  2026-11-24; the line had recommended leaving the scripts ungated.)
+  Provisioning runs them from its own clone on a fresh machine; on a machine whose checkout already
+  existed, from a fresh clone of the run's ref in `~/.cache/dotfiles-run`, removed when the run
+  ends (found by the final review). (Michael, 2026-11-24; the line had recommended leaving the
+  scripts ungated.)
 
 ### 3. `provision.sh`
 
