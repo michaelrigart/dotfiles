@@ -604,8 +604,16 @@ check "the settings still exclude xreview-app and wt-app by their full paths, wi
 check "programs.json has no claude override" \
   jq -e '.programs | has("claude") | not' ${bin:h}/programs.json >/dev/null
 check "AGENTS.local.md, the notes the app has agents read, reaches the app's folder" test -s ${bin:h}/AGENTS.local.md
-check "keys.json binds Cmd+Alt+1…9 to agent.select 1…9" \
-  jq -e '[range(1; 10) as $i | .global["cmd-alt-\($i)"] == "agent.select:\($i)"] | all' ${bin:h}/keys.json >/dev/null
+# The app names a key by the character the layout types: on ABC-AZERTY the digit row types
+# & é " ' ( § è ! ç à, and only Shift makes it a digit. Each digit-row binding has both spellings.
+azerty=$'&é"\'(§è!ç'
+for mod action in cmd tab.select ctrl space.select cmd-alt agent.select; do
+  check "keys.json binds $mod-1…9 and ABC-AZERTY's $mod-&…ç to $action 1…9" \
+    jq -e --arg m $mod --arg a $action --arg az $azerty '($az | explode | map([.] | implode)) as $c
+      | [range(1; 10) as $i | .global["\($m)-\($i)", "\($m)-\($c[$i - 1])"] == "\($a):\($i)"] | all' ${bin:h}/keys.json >/dev/null
+done
+check "keys.json binds cmd-0 and ABC-AZERTY's cmd-à to app.zoom_reset" \
+  jq -e '[.global["cmd-0", "cmd-à"] == "app.zoom_reset"] | all' ${bin:h}/keys.json >/dev/null
 check "keys.json binds Ctrl+Cmd+arrows to pane.resize that way" \
   jq -e '[("left", "right", "up", "down") as $d | .global["ctrl-cmd-\($d)"] == "pane.resize:\($d)"] | all' ${bin:h}/keys.json >/dev/null
 # A key written twice in one object keeps one of its bindings at most, and jq never says so.
