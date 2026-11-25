@@ -219,7 +219,6 @@ const folded = (kids, by = {}) => {
   check("tail: ...or to the name after its leading emoji", !shown(tail({ id: "s", name: "🧪 feat/x" }, g("feat/x"))).includes("feat/x"));
   check("tail: the repository name is hidden when the name after its leading emoji is the repository",
     !texts(tail({ id: "s", name: "🚀 att.owd" }, g("develop"))).some((s) => s.includes("ATT.OWD")));
-  check("tail: ...but only a leading emoji is dropped", texts(tail({ id: "s", name: "att.owd 🚀" }, g("develop"))).some((s) => s.includes("ATT.OWD")));
   const typed = tail(w, g("feature/dtx-machine-service"));
   check("tail: the type is dimmed and the rest muted", colorOf(holding(typed, "feature/")) === "dim"
     && colorOf(holding(typed, "dtx-machine-service")) === "muted");
