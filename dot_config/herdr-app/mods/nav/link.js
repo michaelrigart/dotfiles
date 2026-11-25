@@ -1,14 +1,16 @@
 // Cmd-click on path:line or path:line:col in a terminal: the file opens at that line in the
-// Neovim of the space's editor tab, and that tab is shown. Everything else passes to Herdr's own
-// handling: a URL, a path without a line, a terminal on another machine, an editor tab with no
-// Neovim, a path that is not a regular file.
+// Neovim of the space's editor tab, and that tab is shown; a space with no editor tab gets one, as
+// Alt-E makes it, with Neovim started on the file at that line. Everything else passes to Herdr's
+// own handling: a URL, a path without a line, a terminal on another machine, an editor tab with
+// no Neovim, a path that is not a regular file.
 //
-// The clicked text is untrusted. It reaches Neovim only as a Vim string literal that Lua gets
-// as data (_A): never through an Ex command, which expands backticks and splits on spaces, nor
-// a shell.
+// The clicked text is untrusted. It reaches a running Neovim only as a Vim string literal that
+// Lua gets as data (_A), and a new one only as the file argument after "--", which Herdr's
+// launcher passes whole ("$@"): never through an Ex command, which expands backticks and splits
+// on spaces, nor a shell.
 
 import { spaces, panes, run, exec } from "herdr";
-import { vimIn, serverOf } from "./nvim.js";
+import { vimIn, serverOf, editorStarting, makeEditor } from "./nvim.js";
 
 // 1 when it opened the file, 0 when the path is not a readable regular file or the request came
 // after its deadline. It opens in a normal window (not a float, a file tree or a terminal): the
@@ -36,7 +38,11 @@ end)(_A[1], _A[2], _A[3], _A[4])`;
 
 // A single-quoted Vim string takes everything literally but its own quote, doubled.
 const vimString = (s) => `'${s.replaceAll("'", "''")}'`;
-const count = (n) => (Number.isInteger(n) && n > 0 ? n : null);
+// Exact, so it prints as digits alone: a new tab's Neovim gets it in an Ex command.
+const count = (n) => (Number.isSafeInteger(n) && n > 0 ? n : null);
+// A regular file (a link to one too), asked of a program, not a shell: a new Neovim on a folder,
+// a FIFO or a device would show it or hang where Herdr's own handling does better.
+const regular = async (p) => (await exec("test", ["-f", p], { timeout: 2000 }).catch(() => null))?.code === 0;
 
 // Herdr gives the path it resolved; a relative one is taken from the clicked terminal's folder.
 function absolute(path, cwd) {
@@ -48,21 +54,28 @@ export async function handleLink({ link, source }) {
   const line = link.kind === "file" ? count(link.line) : null;
   const path = line && !source.machine ? absolute(link.path, source.cwd) : null;
   if (!path) return "pass";
-  const tab = spaces().find((s) => s.id === source.space)?.tabs?.find((t) => t.name === "editor");
-  if (!tab) return "pass";
-  for (const p of panes().filter((x) => x.tab === tab.id && x.terminal)) {
+  const space = spaces().find((s) => s.id === source.space);
+  const column = count(link.column) ?? 1;
+  const tab = space?.tabs?.find((t) => t.name === "editor");
+  for (const p of tab ? panes().filter((x) => x.tab === tab.id && x.terminal) : []) {
     const pid = await vimIn(p.terminal);
     const server = pid ? await serverOf(pid) : null;
     if (!server) continue;
     // A busy Neovim (a prompt, a long command) still runs the request once it is free, after exec
     // has given up and Herdr has opened the file its own way: past the deadline it opens nothing.
     const by = Math.floor(Date.now() / 1000) + 3;
-    const expr = `luaeval(${vimString(OPEN)}, [${vimString(path)}, ${line}, ${count(link.column) ?? 1}, ${by}])`;
+    const expr = `luaeval(${vimString(OPEN)}, [${vimString(path)}, ${line}, ${column}, ${by}])`;
     const r = await exec("nvim", ["--server", server, "--remote-expr", expr], { timeout: 10000 }).catch(() => null);
     if (r?.code !== 0 || r.stdout.trim() !== "1") return "pass";
     run("tab.select", { id: tab.id });
     run("pane.focus", { pane: p.pane });
     return "handled";
   }
-  return "pass";
+  // No Neovim answered. An editor tab asked for moments ago (by this handler or Alt-E) is still
+  // starting: the click is taken and dropped, so it neither makes a second tab nor goes to Herdr.
+  // An older editor tab with no Neovim passes.
+  if (!space || (tab && !editorStarting(space.id))) return "pass";
+  if (!(await regular(path))) return "pass";
+  if (!tab) makeEditor(space.id, space.folder || source.cwd, ["nvim", `+call cursor(${line}, ${column})`, "--", path]);
+  return "handled";
 }

@@ -4,7 +4,7 @@
 //                            ctrl+h and ctrl+l still work beside an edge)
 //   nav.agents|runtime       alt+a / alt+r: the space's tab of that name
 //   nav.editor               alt+e: the editor tab, made with `nvim .` the first time
-// Cmd-click on path:line opens it in that tab's Neovim: link.js.
+// Cmd-click on path:line opens it in that tab's Neovim, making the tab when there is none: link.js.
 //
 // Neovim needs no plugin or config for this: its server answers whether the cursor is at
 // a split edge, and only then does the key leave it. smart-splits finds no multiplexer in
@@ -12,7 +12,7 @@
 
 import { View, div } from "gpui-kit";
 import { spaces, panes, focused, run, exec, hc, notify, nextCommand } from "herdr";
-import { vimIn, serverOf } from "./nvim.js";
+import { vimIn, serverOf, makeEditor } from "./nvim.js";
 
 const DIRS = { left: ["h", "ctrl+h"], down: ["j", "ctrl+j"], up: ["k", "ctrl+k"], right: ["l", "ctrl+l"] };
 const TABS = ["agents", "runtime", "editor"];
@@ -20,7 +20,6 @@ const TABS = ["agents", "runtime", "editor"];
 export default class Nav extends View {
   init(_props, cx) {
     this.sockets = {}; // terminal -> its Neovim's server socket
-    this.making = {}; // space -> when an editor tab was asked for
     // One at a time and in order: two quick presses must move twice, not race.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -91,10 +90,7 @@ export default class Nav extends View {
     // agents and runtime come with the space (open-space): one that is missing is news,
     // not something a jump should quietly rebuild.
     if (name !== "editor") return notify({ title: `No ${name} tab in ${s.name}`, level: "warning", timeout: 2500 });
-    // A second press before the first tab shows must not make two.
-    if (Date.now() - (this.making[s.id] ?? 0) < 3000) return;
-    this.making[s.id] = Date.now();
-    run("tab.new", { name: "editor", space: s.id, folder: s.folder || focused()?.cwd || undefined, argv: ["nvim", "."] });
+    makeEditor(s.id, s.folder || focused()?.cwd, ["nvim", "."]);
   }
 
   render() {
