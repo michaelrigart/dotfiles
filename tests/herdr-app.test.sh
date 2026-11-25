@@ -700,29 +700,33 @@ else
   skipped+=21; print -u2 -- "SKIP: no installed Herdr app mods in $shipped; the 21 patch-mod checks did not run"
 fi
 
-# --- rows.js and phases.js: what the spaces pane draws -------------------------------------------
+# --- rows.js, phases.js and the usage mod: what the spaces pane draws, what waits while hidden ----
 # Run headless under JavaScriptCore (the runtime herdr-app-resume uses): the modules' imports are
 # pointed at fixtures/herdr-app/rows-stubs.js in a scratch copy, so the sources stay as they ship.
-# The test prints PASS/FAIL lines, counted here.
+# Each test prints PASS/FAIL lines, counted here.
 jsc=/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc
-for f in $SRC/dot_config/herdr-app/patches/{phases,rows}.js $here/fixtures/herdr-app/{rows.test,rows-stubs}.js; do
+for f in $SRC/dot_config/herdr-app/patches/{phases,rows}.js $SRC/dot_config/herdr-app/mods/usage/main.js \
+         $here/fixtures/herdr-app/{rows.test,hidden.test,rows-stubs}.js; do
   [[ -f $f ]] || { print -u2 -- "missing ${f#$SRC/}"; exit 2 }
 done
 if [[ -x $jsc ]]; then
   d=$root/rows-js; mkdir -p $d
-  for f in phases rows; do
-    sed -e 's|from "gpui-kit"|from "./rows-stubs.js"|' -e 's|from "gpui-base"|from "./rows-stubs.js"|' -e 's|from "herdr"|from "./rows-stubs.js"|' \
-      $SRC/dot_config/herdr-app/patches/$f.js > $d/$f.js
+  stubbed() { sed -e 's|from "gpui-kit"|from "./rows-stubs.js"|' -e 's|from "gpui-base"|from "./rows-stubs.js"|' -e 's|from "herdr"|from "./rows-stubs.js"|' $1 }
+  stubbed $SRC/dot_config/herdr-app/patches/phases.js > $d/phases.js
+  stubbed $SRC/dot_config/herdr-app/patches/rows.js > $d/rows.js
+  stubbed $SRC/dot_config/herdr-app/mods/usage/main.js > $d/usage.js
+  cp $here/fixtures/herdr-app/{rows.test,hidden.test,rows-stubs}.js $d/
+  check "rows.js, phases.js and the usage mod import only what the stubs stand in for" \
+    test -z "$(grep -h '^import .* from "[^.]' $d/phases.js $d/rows.js $d/usage.js)"
+  for t in rows hidden; do
+    js_out=$($jsc -m $d/$t.test.js 2>&1); js_rc=$?
+    print -r -- $js_out
+    js_pass=$(print -r -- $js_out | grep -c '^  PASS:'); js_fail=$(print -r -- $js_out | grep -c '^  FAIL:')
+    (( passed += js_pass, total += js_pass + js_fail ))
+    check "the $t test ran cleanly (jsc exit $js_rc, $((js_pass + js_fail)) assertions)" test $js_rc -eq 0 -a $((js_pass + js_fail)) -gt 0
   done
-  cp $here/fixtures/herdr-app/rows.test.js $here/fixtures/herdr-app/rows-stubs.js $d/
-  check "rows.js and phases.js import only what the stubs stand in for" test -z "$(grep -h '^import .* from "[^.]' $d/phases.js $d/rows.js)"
-  js_out=$($jsc -m $d/rows.test.js 2>&1); js_rc=$?
-  print -r -- $js_out
-  js_pass=$(print -r -- $js_out | grep -c '^  PASS:'); js_fail=$(print -r -- $js_out | grep -c '^  FAIL:')
-  (( passed += js_pass, total += js_pass + js_fail ))
-  check "the rows test ran cleanly (jsc exit $js_rc, $((js_pass + js_fail)) assertions)" test $js_rc -eq 0 -a $((js_pass + js_fail)) -gt 0
 else
-  skipped+=1; print -u2 -- "SKIP: no jsc here; the rows and phases checks did not run"
+  skipped+=2; print -u2 -- "SKIP: no jsc here; the rows, phases and usage checks did not run"
 fi
 
 # With the window closed nothing may be moved: the old clone would be gone and the new one

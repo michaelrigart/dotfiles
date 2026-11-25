@@ -1,17 +1,27 @@
 // Claude and Codex usage at the right end of the status bar. The numbers come from the
 // TUI's usage.sh, called read-only, so the parsing rules live in one place.
+// Not while the window is hidden: the first tick after it shows again refreshes what fell due.
 
 import { View } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { exec, home, theme } from "herdr";
+import { exec, home, theme, window } from "herdr";
 
 const SCRIPT = ".config/herdr/usage.sh";
+const TICK = 2000; // how often it checks whether a refresh is due; runs nothing unless it is
 const EVERY = 60000;
 
 export default class Usage extends View {
   init(_props, cx) {
     this.text = "";
-    cx.timer.every(EVERY, (cx) => this.refresh(cx));
+    this.at = 0;
+    cx.timer.every(TICK, (cx) => this.tick(cx));
+    this.tick(cx);
+  }
+
+  tick(cx) {
+    // The app keeps timers running while the window is hidden; null is no window (`herdr-app check`).
+    if (window()?.visible === false || Date.now() - this.at < EVERY) return;
+    this.at = Date.now();
     this.refresh(cx);
   }
 

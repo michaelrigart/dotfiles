@@ -15,10 +15,12 @@
 //   - the forge again right after a remote ref moves, and every 15 s while a pipeline runs
 //     or for two minutes after a push, otherwise every 60 s;
 //   - local state at least every 60 s, for edits that touch nothing under .git.
+// None of it while the window is hidden: what fell due then is looked at on the first tick
+// after it shows again.
 
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, exec, home, appHome, notify, nextCommand, watchFolder } from "herdr";
+import { spaces, panes, run, exec, home, appHome, notify, nextCommand, watchFolder, window } from "herdr";
 
 const TICK = 2000; // how often it checks whether anything is due; runs nothing unless it is
 const LOCAL = 60000; // local git state is read at least this often
@@ -116,7 +118,8 @@ export class Phases {
   }
 
   tick(cx) {
-    if (this.busy) return;
+    // The app keeps timers running while the window is hidden; null is no window (`herdr-app check`).
+    if (this.busy || window()?.visible === false) return;
     const now = Date.now();
     const places = this.places();
     const seen = JSON.stringify(places);

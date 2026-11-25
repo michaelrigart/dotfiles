@@ -1,5 +1,5 @@
-// Headless stand-ins for what patches/phases.js and patches/rows.js import ("gpui-kit",
-// "gpui-base" and "herdr"), so their logic runs under jsc. A builder records what it was told:
+// Headless stand-ins for what patches/phases.js, patches/rows.js and the usage mod import
+// ("gpui-kit", "gpui-base" and "herdr"), so their logic runs under jsc. A builder records what it was told:
 // `kids` (child, children), `calls` ([method, args] for every other method) and `handlers`
 // (on_*); `when(cond, fn)` applies fn when cond holds. Tests read that structure back.
 
@@ -46,3 +46,10 @@ export const appHome = () => "/app";
 export const notify = () => {};
 export const nextCommand = () => new Promise(() => {});
 export const watchFolder = () => new Promise(() => {});
+export const theme = () => new Proxy({}, { get: (_, k) => String(k) });
+export class View {}
+
+// The app's window as a test sets it; null is no window at all, as in `herdr-app check`.
+let shownWindow = { visible: true };
+export const window = () => shownWindow;
+export const setWindow = (w) => { shownWindow = w; };

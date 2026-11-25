@@ -34,6 +34,7 @@ dot_config/herdr-app/patches/worktree-actions.js	data	-
 dot_config/herdr-app/programs.json.tmpl	data	own
 dot_config/herdr-app/themes/tokyo-night.json	data	-
 dot_config/zsh/functions	zsh	guard
+tests/fixtures/herdr-app/hidden.test.js	data	-
 tests/fixtures/herdr-app/render.zsh	zsh	-
 tests/fixtures/herdr-app/rows-stubs.js	data	-
 tests/fixtures/herdr-app/rows.test.js	data	-
