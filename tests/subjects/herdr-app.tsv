@@ -1,4 +1,5 @@
 .chezmoiignore	data	-
+dot_config/herdr-app/AGENTS.local.md	data	-
 dot_config/herdr-app/bin/executable_checkout-spaces	zsh	own,guard
 dot_config/herdr-app/bin/executable_claude-app	zsh	own
 dot_config/herdr-app/bin/executable_close-own-tab	zsh	own

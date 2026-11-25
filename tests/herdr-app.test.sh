@@ -603,6 +603,7 @@ check "the settings still exclude xreview-app and wt-app by their full paths, wi
   jq -e --arg c "${bin:h}/bin/xreview-app *" --arg w "${bin:h}/bin/wt-app *" '. == {sandbox: {excludedCommands: [$c, $w]}}' ${bin:h}/claude-settings.json >/dev/null
 check "programs.json has no claude override" \
   jq -e '.programs | has("claude") | not' ${bin:h}/programs.json >/dev/null
+check "AGENTS.local.md, the notes the app has agents read, reaches the app's folder" test -s ${bin:h}/AGENTS.local.md
 
 # --- the pinned PATH -------------------------------------------------------------------------
 # open-space and close-own-tab run unsandboxed after the caller's PATH has served a repository's
