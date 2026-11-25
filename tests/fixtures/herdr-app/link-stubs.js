@@ -19,6 +19,7 @@ export async function exec(command, args, options) {
   calls.push(["exec", command, args, options]);
   if (command === "sh") {
     const server = world.servers[args[args.length - 1]];
+    if (server === "reject") throw new Error("timed out");
     return server ? { code: 0, stdout: server, stderr: "" } : { code: 1, stdout: "", stderr: "" };
   }
   if (command === "nvim") return world.nvim(args);

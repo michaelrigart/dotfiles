@@ -20,6 +20,6 @@ export async function vimIn(terminal) {
 
 // The server socket of the Neovim whose UI has that pid, or null.
 export async function serverOf(pid) {
-  const r = await exec("sh", ["-c", FIND, "nav", String(pid)], { timeout: 2000 });
-  return r.code === 0 ? r.stdout : null;
+  const r = await exec("sh", ["-c", FIND, "nav", String(pid)], { timeout: 2000 }).catch(() => null);
+  return r?.code === 0 ? r.stdout : null;
 }

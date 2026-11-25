@@ -50,7 +50,7 @@ names=(
   '%#.txt' '*.txt' '[ab].txt' '{a,b}.txt' '$HOME.txt' '~x' 'sp ace\back.txt' 'a b.lua' 'dq"bs\.txt' 'ü.txt'
 )
 for n in "${names[@]}"; do printf 'l1\nl2\nl3 hello world\nl4 four\nl5 five\n' > "$files/$n" || exit 1; done
-mkfifo "$files/fifo" && ln -s plain.txt "$files/link.txt" || exit 1
+printf 'l1\nl2\n' > "$files/late.txt" && mkfifo "$files/fifo" && ln -s plain.txt "$files/link.txt" || exit 1
 
 # --- the handler, under jsc -----------------------------------------------------------------------
 d=$root/js

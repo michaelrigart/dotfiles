@@ -10,9 +10,11 @@
 import { spaces, panes, run, exec } from "herdr";
 import { vimIn, serverOf } from "./nvim.js";
 
-// 1 when it opened the file, 0 when the path is not a readable regular file. A file already in
-// a window is jumped to; a special window (a file tree, a terminal) gives way to a normal one.
-const OPEN = `(function(p, l, c)
+// 1 when it opened the file, 0 when the path is not a readable regular file or the request came
+// after its deadline. A file already in a window is jumped to; a special window (a file tree, a
+// terminal) gives way to a normal one. Insert mode ends, so the next keys do not edit the file.
+const OPEN = `(function(p, l, c, by)
+  if os.time() > by then return 0 end
   local st = vim.uv.fs_stat(p)
   if not st or st.type ~= "file" or vim.fn.filereadable(p) ~= 1 then return 0 end
   local buf = vim.fn.bufadd(p)
@@ -28,9 +30,10 @@ const OPEN = `(function(p, l, c)
   end
   if win then vim.api.nvim_set_current_win(win) end
   if vim.api.nvim_get_current_buf() ~= buf then vim.api.nvim_win_set_buf(0, buf) end
+  vim.cmd.stopinsert()
   vim.fn.cursor(l, c)
   return 1
-end)(_A[1], _A[2], _A[3])`;
+end)(_A[1], _A[2], _A[3], _A[4])`;
 
 // A single-quoted Vim string takes everything literally but its own quote, doubled.
 const vimString = (s) => `'${s.replaceAll("'", "''")}'`;
@@ -52,9 +55,12 @@ export async function handleLink({ link, source }) {
     const pid = await vimIn(p.terminal);
     const server = pid ? await serverOf(pid) : null;
     if (!server) continue;
-    const expr = `luaeval(${vimString(OPEN)}, [${vimString(path)}, ${line}, ${count(link.column) ?? 1}])`;
-    const r = await exec("nvim", ["--server", server, "--remote-expr", expr], { timeout: 5000 });
-    if (r.code !== 0 || r.stdout.trim() !== "1") return "pass";
+    // A busy Neovim (a prompt, a long command) still runs the request once it is free, after exec
+    // has given up and Herdr has opened the file its own way: past the deadline it opens nothing.
+    const by = Math.floor(Date.now() / 1000) + 4;
+    const expr = `luaeval(${vimString(OPEN)}, [${vimString(path)}, ${line}, ${count(link.column) ?? 1}, ${by}])`;
+    const r = await exec("nvim", ["--server", server, "--remote-expr", expr], { timeout: 6000 }).catch(() => null);
+    if (r?.code !== 0 || r.stdout.trim() !== "1") return "pass";
     run("tab.select", { id: tab.id });
     run("pane.focus", { pane: p.pane });
     return "handled";

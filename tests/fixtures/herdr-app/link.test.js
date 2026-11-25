@@ -30,11 +30,16 @@ const nvimCalls = () => calls.filter(([k, c]) => k === "exec" && c === "nvim");
 const runs = () => calls.filter(([k]) => k === "run").map(([, n, a]) => `${n} ${JSON.stringify(a)}`).join("; ");
 
 // Every Neovim expression is replayed by the suite: `want` is what Neovim must answer, `check` an
-// expression asked afterwards and `expect` its answer; `setup` runs first when given.
+// expression asked afterwards and `expect` its answer; `setup` runs first when given. `when` is
+// the click's time in ms: an hour ahead by default, since the suite sends the expressions only
+// after this test has ended, and in the past for a click Neovim gets too late.
 let replays = 0;
-async function replay(what, link, source, want, check, expect, setup) {
+const LATER = Date.now() + 3600000;
+async function replay(what, link, source, want, check, expect, setup, when = LATER) {
   reset();
-  await click(link, source);
+  const now = Date.now;
+  Date.now = () => when;
+  try { await click(link, source); } finally { Date.now = now; }
   const sent = nvimCalls();
   if (sent.length !== 1) return print(`  FAIL: ${what}: the handler sent Neovim ${sent.length} expressions`);
   replays++;
@@ -96,6 +101,11 @@ reset();
 world.nvim = () => ({ code: 1, stdout: "", stderr: "E247" });
 r = await click(file(`${FILES}/plain.txt`, 3));
 check("a Neovim that does not answer passes, and no tab is shown", r === "pass" && runs() === "");
+reset();
+world.nvim = () => { throw new Error("timed out"); }; // exec rejects on its timeout
+r = await click(file(`${FILES}/plain.txt`, 3));
+check("a Neovim that is too busy to answer in time passes, and no tab is shown", r === "pass" && runs() === "");
+await passes("a socket lookup that cannot run", file(`${FILES}/plain.txt`, 3), from(), () => { world.servers[20] = "reject"; });
 
 // --- the clicked text runs nowhere ------------------------------------------------------------
 reset();
@@ -122,4 +132,8 @@ await replay("a file shown in another window is jumped to, not opened twice", fi
 await replay("from a special window it opens in a normal one, leaving that window", file(`${FILES}/plain.txt`, 2), from(), "1",
   "&buftype .. '|' .. len(filter(getwininfo(), {_, w -> getbufvar(w.bufnr, '&buftype') ==# 'nofile'}))", "|1",
   "execute('only | enew | vsplit | enew | setlocal buftype=nofile')");
-check(`every Neovim case produced an expression to replay (${replays})`, replays === NAMES.length + 10);
+await replay("a click Neovim gets too late opens nothing", file(`${FILES}/late.txt`, 2), from(), "0",
+  `bufexists('${FILES}/late.txt')`, "0", undefined, Date.now() - 60000);
+await replay("insert mode ends, so the next keys do not edit the file", file(`${FILES}/plain.txt`, 2), from(), "1",
+  "mode()", "n", "feedkeys('i', 'n')");
+check(`every Neovim case produced an expression to replay (${replays})`, replays === NAMES.length + 12);
