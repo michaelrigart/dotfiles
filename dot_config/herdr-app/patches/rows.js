@@ -14,8 +14,10 @@ const SIDE_MIN = 48; // the spaces mod's own minimum for a row's tail
 
 export class Rows {
   // `phases`: the view's Phases, for the phase and default-branch data each row is drawn from.
-  constructor(phases) {
+  // `emoji`: the spaces mod's own EMOJI rule, the leading emoji its gitTail drops from a name.
+  constructor(phases, emoji) {
     this.phases = phases;
+    this.emoji = emoji;
     this.kids = {}; // repo -> how many worktree spaces sit under it, folded or not
     this.owner = {}; // repo -> the space whose row they follow (and which carries the fold toggle)
     this.under = {}; // repo -> the worktree spaces under it
@@ -50,15 +52,20 @@ export class Rows {
   // The tail after a row's name. A nested worktree: the mod's own gitTail, given the branch as
   // its name when the label already shows it. Any other row: the same thing drawn here, with the
   // branch's type (feature/, fix/, ...) dimmed, and the repository's own default branch hidden
-  // (main and master only while it is unknown). Keep in step with the spaces mod's gitTail:
-  // the gitTail digest check in bin/patch-mod stops respaces when Herdr changes that method, so
-  // this copy is brought up to date (and the digest with it) instead of drifting.
+  // (main and master only while it is unknown). Like gitTail, a branch or repository equal to
+  // the name, or to the name after its leading emoji, is not repeated. Keep in step with the
+  // spaces mod's gitTail: the gitTail digest check in bin/patch-mod stops respaces when Herdr
+  // changes that method, so this copy is brought up to date (and the digest with it) instead of
+  // drifting.
   tail(host, w, g, tree, t) {
     if (tree) return host.gitTail(g, tree, this.asBranch(w, g, tree) ?? w.name, t);
     const raw = g.branch ?? "detached";
     const [on, dir] = JSON.parse(g.repo);
     const known = on ? null : this.phases.defaults[dir]?.branch;
-    const same = (a) => a.toLowerCase() === w.name.toLowerCase();
+    const full = w.name.toLowerCase();
+    const lead = this.emoji.exec(w.name)?.[0];
+    const label = lead ? w.name.slice(lead.length).trim().toLowerCase() : full;
+    const same = (a) => a.toLowerCase() === full || a.toLowerCase() === label;
     const hide = same(raw) || (known ? raw === known : raw === "main" || raw === "master");
     const repo = same(g.name) ? "" : g.name;
     const cut = raw.indexOf("/") + 1;

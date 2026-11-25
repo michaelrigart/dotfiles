@@ -16,9 +16,9 @@ EDITS = {
         # 1. Load the phase data (phases.js) and the row drawing built on it (rows.js).
         ('} from "herdr";\n',
          '} from "herdr";\nimport { Phases } from "./phases.js";\nimport { Rows } from "./rows.js";\n'),
-        # 2. Start them with the view.
+        # 2. Start them with the view. Rows gets the mod's own EMOJI rule, which gitTail uses.
         ('    cx.timer.every(250, (cx) => this.checkNew(cx));\n',
-         '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n    this.rows = new Rows(this.phases);\n'),
+         '    cx.timer.every(250, (cx) => this.checkNew(cx));\n    this.phases = new Phases(cx);\n    this.rows = new Rows(this.phases, EMOJI);\n'),
         # 3. A worktree under its repository is labelled by its branch, and each row ends on its
         #    badge. The tail is rows.tail: the mod's gitTail for a nested worktree, its own
         #    drawing (type prefix dimmed, the repository's default branch hidden) for other rows.
@@ -79,7 +79,7 @@ for number, (old, new) in enumerate(EDITS, 1):
 # brace; any change to it changes the digest and stops the run. After bringing rows.tail up to
 # date, put the digest the message prints here.
 GITTAIL_START, GITTAIL_END = "  gitTail(g, tree, name, t) {\n", "\n  }\n"
-GITTAIL_SHA256 = "96c007d1737b3054eb5e4c784f31fd42f7ffd9138ddbe62638b2982cf6e32216"
+GITTAIL_SHA256 = "02a0184340b60b020fce4bfeb6f2377e29f9a02c016865d12251a157ec5c254a"
 if shipped == "spaces":
     start = text.find(GITTAIL_START)
     end = text.find(GITTAIL_END, start) if start >= 0 else -1
