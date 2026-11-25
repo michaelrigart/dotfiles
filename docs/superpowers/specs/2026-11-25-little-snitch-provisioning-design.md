@@ -15,10 +15,11 @@ But I want you to review everything by the end of the week and put it in 1Passwo
 my current rules and optimize everything. At the same time, I would also want to know, once we have
 a good rule set, if we could include it in our privisioning scripts." Relayed in the driver's brief
 (chezmoi-94) of the same day. Approach A picked by Michael in the line's pane: "lets go with A then".
-**Size:** about 260 lines of non-test code: about 6 in `.scripts/machine-checklist.tsv` (the two
-Little Snitch rows move up and `little-snitch-rules` gets a new step) and about 250 for
-`.scripts/little-snitch-review.py`, estimated from the private builder it generalises (about 330
-lines, of which the machine-specific decisions move to a private file). A README section of about
+**Size:** about 310 lines of non-test code: about 6 in `.scripts/machine-checklist.tsv` (the two
+Little Snitch rows move up and `little-snitch-rules` gets a new step) and about 300 for
+`.scripts/little-snitch-review.py` plus its ad-hoc entry, estimated from the private builder it
+generalises (about 330 lines, its machine-specific decisions moving to a private file, plus
+decision validation and the invariants). A README section of about
 45 lines (docs, not counted). One increment.
 **Provisioning:** `little-snitch-extension`, `little-snitch-rules`
 
@@ -37,7 +38,8 @@ install.
   Homebrew tool whose rule checks its identity (§3). Each machine gets its own rules. The alerts of
   the tools the checklist and the README's first-use step exercise come while Michael is at the
   machine. Nothing private enters this public repository.
-- **Non-goals.** The rule review itself (private; Michael applies it in the UI). Approving the
+- **Non-goals.** The rules themselves (private: the review and its periodic rerun hand Michael a
+  file he restores). Approving the
   network extension without a click (that needs an MDM profile). Keeping fenrir and hercules in sync
   between reinstalls (approach C below; revisit if hercules' alerts become the pain).
 - **Anti-goals.** Any script that writes Little Snitch rules, preferences or rule groups. The
@@ -109,9 +111,13 @@ command stays as Michael's manual fallback when the user IDs differ (§5). Micha
 `Little Snitch backup <machine>` (`Little Snitch backup fenrir`, `Little Snitch backup hercules`).
 Each holds a File › Create Backup… file made with Settings › Security › "Allow access via Terminal"
 off. Nothing in the repository reads them; the names appear only in the README and the checklist,
-as instructions to Michael. An agent creates or replaces an item only when Michael asks for it in
-its pane, and only with a backup Michael saved himself through File › Create Backup…, uploaded
-unchanged after the `jq` check (its SHA-256 reported to him).
+as instructions to Michael. An agent touches them only on Michael's request in its pane, and then
+only like this: the item `Little Snitch backup <machine>` in Private, through `op document create`
+or `op document edit … --vault Private`; the file is the exact path Michael names, a backup he saved
+through File › Create Backup…, never a file the review script wrote nor a review input; the `jq`
+check prints `[0,[<id -u>]]`; the agent reports the file's SHA-256 and, after reading the document
+back (`op document get … --vault Private` into `/tmp`, deleted afterwards), the read-back's
+SHA-256 and `jq` result. Michael compares them with `shasum -a 256 <his file>`.
 
 **The checklist rows.** `little-snitch-extension` and `little-snitch-rules` keep their ids, their
 machines (`all`), their `by` (`you`) and their verifies, and move up to sit right after
@@ -158,34 +164,62 @@ change it:
    dialog, run the `jq` check, replace the document
    (`op document edit "Little Snitch backup <machine>" /tmp/little-snitch.lsbackup`), delete the
    file. A new machine creates its item the same way with `op document create`.
-5. *Never restore onto a machine in use* except to roll back: it discards every rule made since the
-   backup (Little Snitch keeps an automatic copy of what it replaced).
+5. *Never restore onto a machine in use* except to roll back or to apply a periodic review (below):
+   it discards every rule made since the backup (Little Snitch keeps an automatic copy of what it
+   replaced).
 
 **Periodic review** (approach A of 2026-11-25: an agent runs it, Michael restores). Every month or
-two, and after a burst of alerts: Michael saves a backup into the private folder
-`~/Code/.metrics/little-snitch/`; an agent runs
-`python3 -I .scripts/little-snitch-review.py <backup> <decisions> <out> <log>` and hands Michael
-the optimised file and the change log; Michael restores it, saves a fresh backup, and the backup
-goes to 1Password (by the agent when he asks, else by him). The script reads and writes files only:
-it never calls `littlesnitch`, `sudo` or `op`.
+two, and after a burst of alerts:
 
-- *Generic passes, in the repository:* rules for programs no longer on disk (an app bundle that is
-  gone, or a path that no longer exists; a signed command-line tool whose recorded path moved is
-  kept); rules last used over 180 days ago, or never used and older than 60 days; rules an allow-any
-  or a broader domain rule of the same scope covers; expired temporary suggestions; temporary rules
-  not named in the decisions (dropped); the `approved` flags; Terminal access off. Protected,
-  factory, rule-group, hidden and OS-update entries are never touched.
-- *The agents' terminal* (a code ID the decisions name, herdr core today) keeps a permanent
-  allow-any, plus "via <tool> -> any" for every ad-hoc or unsigned tool a terminal has used that is
-  still on disk, so agent work never stops on an alert (Michael, 2026-11-25: "What I don't want is
-  being asked while my AI agents are working"). The agents' network boundary is their sandboxes.
-- *Machine-specific decisions, private:* `~/Code/.metrics/little-snitch/decisions-<machine>.json`
-  holds the temporaries to keep, the rules to narrow (to the host, address or port their alert
-  named), the terminals, and the interpreters whose allow-any is removed. It names hosts, so it never
-  enters the repository.
-- *Invariants, checked before the file is written:* no temporary rule; the agents' terminal has
-  exactly one permanent allow-any and one per tool; no protected, factory, rule-group or OS-update
-  entry removed; the output's top-level keys equal the input's. A failed invariant writes nothing.
+1. Michael saves a backup into `~/Code/.metrics/little-snitch/` (directory 700) and names its path.
+2. An agent runs `.scripts/little-snitch-review.py <backup> <decisions> <out> <log>` and hands him
+   `<out>` and the log.
+3. Michael restores `<out>` only if he has answered no alert since step 1; otherwise back to step 1,
+   because a restore discards every rule made since its source backup.
+4. He saves a fresh backup; it goes to 1Password under the clause above; the review's input,
+   output and log are then deleted.
+
+The script reads and writes files only: no subprocess, no `littlesnitch`, `sudo` or `op`.
+
+- *Passes, generic, in the repository.* Each skips protected, factory, rule-group, hidden and
+  OS-update entries.
+  - Programs gone: a rule whose process or via is a path that no longer exists, or an app bundle
+    found in neither `/Applications` nor `~/Applications` (three levels deep). A signed
+    command-line tool whose recorded path moved is kept.
+  - Unused: last used over 180 days ago, or never used and created over 60 days ago.
+  - Redundant: an allow rule covered by a permanent, enabled allow rule of the same scope (process,
+    via, direction, ports, protocol, owner, user, priority) that allows any server, or a domain
+    containing every host or domain the rule names. Deny and ask rules are never covered.
+  - Expired temporary suggestions are removed.
+  - Temporary rules the decisions keep become permanent; the rest are removed.
+  - The decisions' `narrow` (it may set only the remote, `ports` and `protocol`, and replaces the
+    old remote key) and `remove`.
+  - `approved: false` keys are removed, `markNewRulesAsUnapproved` is set to 0 and Terminal access
+    off; the filter state is left as backed up.
+- *The agents' terminals.* Each terminal in `agent_terminals` (herdr core today) keeps exactly one
+  permanent outgoing allow-any (a temporary one is promoted, duplicates are removed), plus one
+  "via <tool> -> any" for every path-identified tool (a `path.`, script or absolute-path via, never
+  an `identifier.` one) seen under a terminal in `tool_sources` and still on disk, so agent work
+  never stops on an alert (Michael, 2026-11-25: "What I don't want is being asked while my AI agents
+  are working"). Terminals in `keep_any` (Ghostty today) keep their own allow-any. Added rules take
+  the user ID of the backup's single non-root user. The agents' network boundary is their
+  sandboxes.
+- *Decisions, private.* `~/Code/.metrics/little-snitch/decisions-<machine>.json` (mode 600) holds
+  `agent_terminals`, `tool_sources`, `keep_any`, `keep_temporary`, `narrow` and `remove`; a matcher
+  names process, via, direction and remote (a list-valued remote joined with commas). It names
+  hosts, so it never enters the repository. An unknown key or a malformed matcher exits 2. A
+  decision that matches nothing is logged as stale; one an agent terminal's tool rule supersedes is
+  logged as superseded, not as a change.
+- *Log.* The net result per rule (removed, made permanent, narrowed, added), grouped by pass, with
+  before and after counts.
+- *Invariants,* checked before anything is written (exit 1, nothing written): no temporary rule;
+  each agent terminal has exactly one permanent allow-any and one per tool; each `keep_any` terminal
+  has its allow-any; every protected, factory, rule-group, hidden and OS-update entry is in the
+  output unchanged; the top-level keys equal the input's. Exit 2: usage, an unreadable input, bad
+  decisions, more than one non-root user, an output path equal to the input or not writable.
+  Output and log are created with mode 600. Run on its own output, the script changes nothing.
+- *Test seams:* `LS_REVIEW_NOW` (an ISO time) and `LS_REVIEW_APP_ROOTS` (colon-separated) replace
+  the clock and the app folders.
 
 ## 6. Security
 
@@ -202,7 +236,9 @@ it never calls `littlesnitch`, `sudo` or `op`.
 - The stored backup is made with Terminal access off and checked (`jq`) before it is stored and
   before it is restored, so a restore turns Terminal access off rather than on.
 - The plain-text backup exists outside 1Password only in `/tmp`, for the minutes a backup or
-  restore takes.
+  restore takes, and, during a periodic review, in `~/Code/.metrics/little-snitch/` (directory
+  700, files 600) until the fresh backup is stored. Spotlight indexes that folder, so the Restore
+  dialog lists its files; the deletion in step 4 keeps that list short.
 
 ## 7. Checks
 
@@ -215,8 +251,10 @@ it never calls `littlesnitch`, `sudo` or `op`.
   the backup is stored.
 - The checklist and README changes get no new test: they are the order and wording of manual
   steps, and no suite pins either.
-- `tests/little-snitch-review.test.sh`: synthetic backups (no private data), one case per pass and
-  per invariant, each shown able to fail.
+- `tests/little-snitch-review.test.sh`: synthetic backups (no private data), one case per pass,
+  per decision kind and per exit code, the invariant check shown failing on an input that trips it,
+  a rerun on the script's own output, and a check that the script starts no process. Each case is
+  shown able to fail.
 - Before the PR: `./tests/run.sh --changed`.
 
 ## 8. After the merge
@@ -233,7 +271,8 @@ hercules relies on the row's fallback):
 2. Store the backup as the README's *Refresh* step says, creating the item with
    `op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup <machine>"
    --vault Private`. For fenrir, the line does this at Michael's request by the end of the week of
-   2026-11-23, after one more review of the alerts answered since the restore.
+   2026-11-23, after one more review of the alerts answered since the restore: outside the plan,
+   possibly before the merge, under §5's clause.
 
 ## 9. Left to the builder
 

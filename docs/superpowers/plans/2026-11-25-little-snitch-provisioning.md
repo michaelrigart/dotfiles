@@ -1,7 +1,8 @@
 # Little Snitch provisioning Implementation Plan
 
-> **For agentic workers:** a small change: the line's own session implements it task by task, with
-> no `plan-run` controller (global Autonomy rules). Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: the `plan-run` skill (it overrides
+> superpowers:subagent-driven-development); about 310 lines of non-test code, so not a small change.
+> Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Status:** In progress (branch `feat/little-snitch-rules`)
 
@@ -23,21 +24,32 @@ a README section holds the procedure. No script touches Little Snitch or 1Passwo
   `.scripts/machine-checklist.tsv`; rebase onto `origin/main` first), and Codex has reviewed the spec
   and this plan (its limit resets 2026-11-28 09:29), with any spec change signed by Michael.
 - Touch `.scripts/machine-checklist.tsv`, `README.md`, `.scripts/little-snitch-review.py`,
-  `tests/little-snitch-review.test.sh` and its subject map if `tests/AGENTS.md` asks for one, the
-  spec's rebase note (Task 1, Step 4) and, at the finish, the spec's and this plan's Status lines.
-  Nothing else in the repository. Task 3 may start before the dependency merges: it touches none of
-  that line's files.
+  `tests/little-snitch-review.test.sh`, `tests/subjects/little-snitch-review.tsv`,
+  `tests/provisioning.test.sh` (the ad-hoc entry only), `AGENTS.md` (the `.scripts/` list only),
+  the spec's rebase note (Task 1, Step 4) and, at the finish, the spec's and this plan's Status
+  lines. Nothing else in the repository. Task 3 may start before the dependency merges: it touches
+  none of that line's files.
 - The private decisions file `~/Code/.metrics/little-snitch/decisions-fenrir.json` (mode 600) is
   written outside the repository and never committed; no test reads it.
 - Public repository: nothing from the private review or a backup. The only names are the item names
   `Little Snitch backup <machine>` and what the spec already states (hercules' incoming sshd rule,
   hercules-agent-machine section 8 G).
-- Never run `op`, `sudo` or `littlesnitch`, and never change Little Snitch. Reading the private
+- Never run `op`, `sudo` or `littlesnitch`, and never change Little Snitch. The 1Password upload of
+  spec §8 step 2 is outside this plan: only on Michael's request in the pane, under spec §5's
+  clause. Reading the private
   backup in `~/Code/.metrics/little-snitch/` with `jq` is allowed; its output is never committed.
 - One temporary path throughout: `/tmp/little-snitch.lsbackup`.
 - `git branch --show-current` before each commit; no agent attribution.
 
 ## Review Focus
+
+- Task 3: `tool_sources` and `agent_terminals` are separate: a tool seen only under Ghostty still
+  gets herdr core's "via -> any" rule, and Ghostty gets none (`tool_from_other_source_terminal_added`).
+- Task 3: protected, factory, rule-group, hidden and OS-update entries come out byte-identical even
+  where a pass would otherwise hit them (`untouchable_entries_identical`).
+- Task 3: a rerun on the script's own output changes nothing (`rerun_on_output_changes_nothing`).
+- Task 3: added rules take the backup's own user ID, not 501 (`added_rules_take_backup_uid`).
+- Task 3: nothing private reaches the repository (Step 6).
 
 - The checklist is tab-separated with five columns; a stray tab or a line break in the new step
   breaks the row. `provisioning` lints it.
@@ -136,46 +148,72 @@ a README section holds the procedure. No script touches Little Snitch or 1Passwo
 **Depends on:** none (Codex's review of the spec and plan still comes first).
 
 **Files:**
-- Create: `.scripts/little-snitch-review.py` (mode 755, `#!/usr/bin/env python3`, standard library)
-- Create: `tests/little-snitch-review.test.sh` (mode 755, bash; read `tests/AGENTS.md` first)
-- Private, not committed: `~/Code/.metrics/little-snitch/decisions-fenrir.json`, from the lists in
-  `~/Code/.metrics/little-snitch/optimise.py`
+- Create: `.scripts/little-snitch-review.py` (mode 755, `#!/usr/bin/env -S python3 -I`, standard
+  library only)
+- Create: `tests/little-snitch-review.test.sh` (mode 755, bash; read `tests/AGENTS.md` first) and
+  `tests/subjects/little-snitch-review.tsv` with the row
+  `.scripts/little-snitch-review.py<TAB>py<TAB>own,guard`
+- Modify: `tests/provisioning.test.sh`: `little-snitch-review.py` in `ADHOC`, reason "Little
+  Snitch rule review, run by an agent at Michael's request"; `AGENTS.md`: name the script in the
+  `.scripts/` list
+- Private, not committed: `~/Code/.metrics/little-snitch/decisions-fenrir.json` (mode 600), from
+  the lists in `~/Code/.metrics/little-snitch/optimise.py`
 
 **Interfaces:**
-- `python3 -I .scripts/little-snitch-review.py <backup> <decisions.json> <out> <log>`: exit 0 and
-  both files written (mode 600); exit 1 when an invariant fails, writing neither; exit 2 on usage
-  or an unreadable input. It never runs `littlesnitch`, `sudo` or `op`.
-- Decisions JSON: `{"agent_terminals": [<code ID>], "keep_temporary": [<matcher>], "narrow":
-  [{"match": <matcher>, "set": {<field>: <value>}}], "remove": [<matcher>]}`, where a matcher is
-  `{"process": ..., "via": ... | null, "remote": [<key>, <value>] | null}` (null `remote`: any
-  remote except allow-any). `remove` carries the interpreter allow-any and the one-off incoming
-  allows.
-- The log lists every change under the spec §5 pass that made it, with before and after counts.
+- `little-snitch-review.py <backup> <decisions.json> <out> <log>`, with the passes, decisions,
+  invariants, exit codes (0, 1 invariant, 2 input), modes and seams (`LS_REVIEW_NOW`,
+  `LS_REVIEW_APP_ROOTS`) of spec §5 *Periodic review*.
+- Decisions JSON: `{"agent_terminals": [<code ID>], "tool_sources": [<code ID>], "keep_any":
+  [<code ID>], "keep_temporary": [<matcher>], "narrow": [{"match": <matcher>, "set": {...}}],
+  "remove": [<matcher>]}`. A matcher is `{"process": <id>, "via": <id> | null, "direction":
+  "outgoing" | "incoming" | null, "remote": [<key>, <value>] | null}`; a null field matches any
+  value, except that a null `remote` never matches an allow-any. `set` keys: `remote`,
+  `remote-hosts`, `remote-domains`, `remote-addresses`, `ports`, `protocol`.
 
-- [ ] **Step 1: Write the failing suite.** One case per behaviour, each on a synthetic backup built
-  in a temp dir (app paths and tool paths inside the temp dir, so "on disk" is controlled):
-  `gone_app_removed`, `moved_signed_cli_kept`, `missing_path_removed`, `unused_180_removed`,
-  `never_used_old_removed`, `never_used_recent_kept`, `redundant_under_any_removed`,
-  `other_via_not_redundant`, `temporary_broad_covers_nothing`, `expired_suggestions_removed`,
-  `os_update_suggestions_kept`, `keep_temporary_promoted`, `other_temporary_dropped`,
-  `agent_terminal_any_added`, `agent_terminal_temporary_promoted`, `agent_tool_via_any_added`,
-  `missing_tool_gets_no_rule`, `narrow_domain_to_host`, `remove_matcher_applied`,
-  `protected_factory_group_untouched`, `terminal_access_off`, `approved_keys_removed`,
-  `invariant_failure_writes_nothing` (exit 1, no output), `bad_input_exit_2`,
-  `no_live_commands` (the script names none of `littlesnitch`, `sudo`, `op ` as a command).
-- [ ] **Step 2: Run it and see it fail.** `./tests/run.sh little-snitch-review`: every case fails
-  (no script).
-- [ ] **Step 3: Implement** the passes and invariants of spec §5 *Periodic review*, in the order of
-  the private builder: terminals, narrowing, temporaries, removals, programs gone, unused,
-  redundant, suggestions, approvals, settings, invariants.
-- [ ] **Step 4: Suite passes,** then the revert check on three cases (`redundant_under_any_removed`,
-  `agent_tool_via_any_added`, `invariant_failure_writes_nothing`): break the code path, see the case
-  fail, restore it.
-- [ ] **Step 5: Parity, private.** Write `decisions-fenrir.json`, run the script on
-  `~/Code/.metrics/little-snitch/fenrir-pre-restore.lsbackup`, and compare with
-  `fenrir-restore-2026-11-25.lsbackup`: the same rules apart from the creation and modification
-  dates of added rules. Report any other difference instead of committing.
-- [ ] **Step 6: Commit.** "Add a Little Snitch rule review script for periodic clean-ups".
+- [ ] **Step 1: Write the failing suite.** Synthetic backups in a temp dir, with app and tool paths
+  inside it and `LS_REVIEW_NOW` and `LS_REVIEW_APP_ROOTS` pointing there. One case each:
+  - Programs gone: `gone_app_removed`, `moved_app_bundle_kept`, `moved_signed_cli_kept`,
+    `missing_path_removed`, `gone_via_removed`.
+  - Unused: `unused_180_removed`, `never_used_old_removed`, `never_used_recent_kept`.
+  - Redundant: `redundant_under_any_removed`, `redundant_under_domain_removed`,
+    `same_domain_twice_kept`, `other_via_not_redundant`, `temporary_broad_covers_nothing`,
+    `disabled_any_covers_nothing`, `deny_under_any_kept`.
+  - Suggestions: `expired_suggestions_removed`, `os_update_suggestions_kept`.
+  - Temporaries and decisions: `keep_temporary_promoted`, `other_temporary_dropped`,
+    `narrow_domain_to_host`, `narrow_wider_field_exit_2`, `remove_matcher_applied`,
+    `remove_matcher_direction`, `stale_decision_logged`, `superseded_decision_logged`,
+    `bad_decisions_exit_2`.
+  - Terminals: `agent_terminal_any_added`, `agent_terminal_temporary_promoted`,
+    `agent_terminal_duplicate_any_deduped`, `agent_tool_via_any_added`,
+    `tool_from_other_source_terminal_added`, `identifier_via_gets_no_tool_rule`,
+    `missing_tool_gets_no_rule`, `keep_any_terminal_kept`, `added_rules_take_backup_uid` (uid
+    502), `ambiguous_user_exit_2`.
+  - Settings and safety: `terminal_access_off`, `approved_keys_removed`, `mark_unapproved_off`,
+    `filter_state_unchanged`, `untouchable_entries_identical` (one entry of each kind where each
+    pass would hit it), `invariant_failure_writes_nothing` (a `keep_any` terminal without its
+    allow-any: exit 1, no files), `bad_input_exit_2`, `out_equals_input_exit_2`,
+    `output_mode_600`, `rerun_on_output_changes_nothing`, `no_live_commands` (the script imports
+    neither `subprocess` nor `pty` and calls no `os.system`, `os.exec*` or `os.spawn*`, checked
+    with `ast`; and a run with recording stubs for `op`, `sudo` and `littlesnitch` first on
+    `PATH` records nothing).
+- [ ] **Step 2: Run it.** `./tests/run.sh little-snitch-review`: the suite's guard exits 2 on the
+  missing script, as `tests/AGENTS.md` requires.
+- [ ] **Step 3: Implement** spec §5 *Periodic review*, in the private builder's order: terminals,
+  narrowing, temporaries, removals, programs gone, unused, redundant, suggestions, approvals,
+  settings, invariants.
+- [ ] **Step 4: Suite passes;** then the revert check on `redundant_under_domain_removed`,
+  `tool_from_other_source_terminal_added`, `untouchable_entries_identical` and
+  `invariant_failure_writes_nothing`: break the code path, see the case fail, restore it.
+- [ ] **Step 5: Parity, private.** Write `decisions-fenrir.json`; run the script with
+  `LS_REVIEW_NOW=2026-11-25T21:46:00Z` on `~/Code/.metrics/little-snitch/fenrir-pre-restore.lsbackup`
+  and compare the whole document with `fenrir-restore-2026-11-25.lsbackup`, ignoring only the added
+  rules' creation and modification dates. Report any other difference instead of committing.
+- [ ] **Step 6: Private-data check.** Build a pattern file in `~/Code/.metrics/little-snitch/`
+  from every host, domain and address in `decisions-fenrir.json` and the backup's rules; after
+  `git add`, `git diff --cached | rg -F -f <that file>` prints nothing. The pattern file is never
+  committed.
+- [ ] **Step 7: Suites.** `./tests/run.sh little-snitch-review provisioning`: both pass.
+- [ ] **Step 8: Commit.** "Add a Little Snitch rule review script for periodic clean-ups".
 
 ## Finish
 
