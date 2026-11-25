@@ -12,6 +12,8 @@
 #
 # --check: the same queries, no state change; prints "missing: <what>" or "differs: <what>"
 # per item and exits 1 when any (or when a query fails), 0 when none. An unknown option exits 2.
+# RECONCILE_CODEX_TIMEOUT (seconds, default 20) bounds `codex plugin list`; a value that is not
+# a positive integer exits 2.
 #
 # Bash 3.2 compatible (macOS /bin/bash): no associative arrays, mapfile, or ${x,,}.
 # Exit status: 0 = every declared item is present/added; 1 = something could not be
@@ -32,6 +34,7 @@ status=0
 CHECK=0   # --check: report what would change, change nothing
 pending=0 # --check: how many items it reported
 MANIFEST="${XDG_CONFIG_HOME:-$HOME/.config}/agents/plugins.conf"
+CODEX_TIMEOUT=${RECONCILE_CODEX_TIMEOUT:-20}
 
 # Codex marketplaces whose plugins are provided by Codex itself — never flagged as drift.
 CODEX_SYSTEM_MKTS="openai-bundled openai-primary-runtime openai-curated"
@@ -169,13 +172,22 @@ mutate() {
 # in_dir <dir> <command...>  -> run the command in <dir> (a subshell, so the caller stays put)
 in_dir() { local __d=$1; shift; ( cd "$__d" && "$@" ); }
 
+# bounded <cmd...>  -> run the command, stopped after CODEX_TIMEOUT seconds (exit 124, or 137
+# when it ignores SIGTERM and is killed 5 s later).
+bounded() { /usr/bin/timeout -k 5 "$CODEX_TIMEOUT" "$@"; }
+
 # run_json <outvar> <errmsg-prefix> <cmd...>  -> capture stdout JSON (stderr kept out of
 # it). On failure, re-run to surface a concise stderr line (these are read-only list
-# commands, safe to call twice) and set status=1. Returns non-zero on failure.
+# commands, safe to call twice) and set status=1. Returns non-zero on failure. A `bounded`
+# command that runs out of time is reported as such and not re-run.
 run_json() {
   local __out=$1 __prefix=$2; shift 2
   local __data __rc __err
   __data=$("$@" 2>/dev/null); __rc=$?
+  if [ "$1" = bounded ] && { [ $__rc -eq 124 ] || [ $__rc -eq 137 ]; }; then
+    log_warn "$__prefix: no answer within $CODEX_TIMEOUT s"
+    status=1; return 1
+  fi
   if [ $__rc -ne 0 ]; then
     __err=$("$@" 2>&1 1>/dev/null | head -n 1)
     log_warn "$__prefix failed: $__err"
@@ -407,8 +419,13 @@ EOF
   fi
 
   # Plugins (query once, AFTER marketplace adds). Projection: "<pluginId>\t<enabled>\t<marketplace>".
+  # remote_plugin off: with it on, outside the sandbox the list waited on ChatGPT's plugin
+  # service for minutes without answering (Codex 0.169.0 and 0.172.0); off, it answered at
+  # once with every plugin installed from a configured marketplace. It still asks that service
+  # for the account's installed plugins, hence the time bound. `--disable` fails at once on a
+  # feature name Codex no longer knows, where `-c features.<name>=false` would be ignored.
   local proj pid enabled mkt line
-  if run_json json "codex plugin list" codex plugin list --json \
+  if run_json json "codex plugin list" bounded codex plugin list --json --disable remote_plugin \
      && project "$json" \
           '(type=="object") and has("installed") and (.installed|type=="array") and all(.installed[]; has("pluginId") and (.pluginId|type=="string"))' \
           '.installed[] | "\(.pluginId)\t\(.enabled)\t\(.marketplaceName)"' proj "codex plugin list"; then
@@ -446,6 +463,9 @@ main() {
       *) log_error "unknown option: $arg (usage: reconcile-agents.sh [--check])"; exit 2 ;;
     esac
   done
+  case "$CODEX_TIMEOUT" in
+    ''|*[!0-9]*|0*) log_error "RECONCILE_CODEX_TIMEOUT must be a positive integer: '$CODEX_TIMEOUT'"; exit 2 ;;
+  esac
   if ! command -v jq >/dev/null 2>&1; then
     log_error "jq not found — cannot parse plugin state. Install jq and re-run."
     exit 1
