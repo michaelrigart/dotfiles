@@ -3,8 +3,8 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: the `plan-run` skill (it overrides
 > superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress. Execution starts once Codex approves this plan (not before 2026-11-28
-09:29, when its usage limit resets).
+**Status:** In progress. Michael chose on 2026-11-25 to execute Tasks 2–7 before Codex's reviews
+(its usage limit resets on 2026-11-28 09:29); those reviews and Task 1 follow them.
 
 **Goal:** A reinstalled fenrir or hercules ends `provision.sh` with NetBird joined by setup key,
 Syncthing configured before its first start, Vorta holding its profile, and the login apps started
@@ -73,14 +73,19 @@ LaunchAgent, `be.netronix.login-apps`, opens the login apps; `configure.sh`'s lo
 
 ---
 
-## Before Task 1: Codex's reviews (controller, on or after 2026-11-28 09:29)
+## Order
+
+Tasks 2–7 run first (Michael, 2026-11-25). Then, on or after 2026-11-28 09:29, the reviews below,
+then Task 1, then Task 8.
+
+## Codex's reviews (controller, on or after 2026-11-28 09:29)
 
 In order, each through the `cross-review` skill with `xreview -C <checkout>`, `round --reset`
 between checkpoints:
 
 1. `--checkpoint spec` on the committed spec. A finding that would change it goes to Michael.
-2. `--checkpoint plan` on this plan (`--diff main...feat/script-provisioning-rows`). Plan fixes
-   are committed before each re-dispatch.
+2. `--checkpoint plan` on this plan. A plan finding is fixed in the plan and in the code Tasks 2–7
+   wrote, before each re-dispatch.
 3. `--checkpoint pre-merge` on #46's `5a86be4..4c57690` and #47's `187ad97..0643bbe` together
    (two `--diff` arguments if `xreview` takes them, else two dispatches back to back). If #47 has
    not merged by then, its findings go to the driver (chezmoi-94), not into this line. If it has,
@@ -88,7 +93,7 @@ between checkpoints:
 
 ### Task 1: Fix Codex's findings on #46 and #47
 
-**Depends on:** the reviews above.
+**Depends on:** the reviews above (so it runs after Task 7).
 
 One commit per verified finding (or per shared cause), test first where its bug could return, each
 message stating the invariant restored. Record their non-test size under the spec's `**Size:**`;
@@ -97,7 +102,7 @@ ones whose subjects the fixes touch, then `./tests/run.sh --changed`.
 
 ### Task 2: The preflight reads the setup secrets (step 5c)
 
-**Depends on:** Task 1.
+**Depends on:** nothing.
 
 **Files:**
 - Modify: `.scripts/provision.sh` (knobs near `BREW_BIN`; new 5c after the machine name; summary;
@@ -374,7 +379,7 @@ ones whose subjects the fixes touch, then `./tests/run.sh --changed`.
 
 ### Task 8: Finish (controller)
 
-**Depends on:** Task 7.
+**Depends on:** Task 7, Codex's reviews and Task 1.
 
 - [ ] A whole-branch review by `sp-architect`, its findings handled by the Fix-now rule.
 - [ ] Codex's pre-merge review of `origin/main...feat/script-provisioning-rows`, to approval.

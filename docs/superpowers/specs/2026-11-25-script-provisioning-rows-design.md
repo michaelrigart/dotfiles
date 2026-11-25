@@ -224,8 +224,9 @@ After Codex's usage limit resets on 2026-11-28 at 09:29, `xreview -C <checkout> 
 --checkpoint pre-merge` with the partial range `5a86be4..4c57690` (Michael merged #46 without that
 review on 2026-11-24). A partial range is recorded and never opens a gate. Each verified finding is
 fixed on this branch in its own commit, with a test where its bug could return, and its size goes
-into this spec's Real size. Those commits come before this line's implementation, so they read as
-their own range in the history and in the PR. If they pass about 150 lines of non-test code, they
+into this spec's Real size. Those commits come after this line's implementation (Michael,
+2026-11-25: build before Codex's reviews), each named as a fix to #46 or #47, so they read as their
+own commits in the history and in the PR. If they pass about 150 lines of non-test code, they
 move to a line of their own (Michael's call). `xreview round --reset` then separates the review
 from this line's own.
 
@@ -235,7 +236,9 @@ Michael's call (the driver's brief, 2026-11-25). If #47 has merged by then, this
 onto main first and its findings are fixed here like #46's; if not, they go to the driver.
 
 Codex is unavailable until then, so this spec's own review, the plan's and #46's and #47's all run
-on 2026-11-28. A Codex finding that would change this spec comes back to Michael.
+on 2026-11-28. Michael chose on 2026-11-25 to build before them rather than wait: a finding on the
+spec or the plan is fixed in the code already written. A Codex finding that would change this spec
+comes back to Michael.
 
 ### 8. Tests and verification
 
