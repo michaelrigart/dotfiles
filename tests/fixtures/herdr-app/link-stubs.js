@@ -1,9 +1,18 @@
 // A headless stand-in for the "herdr" module that mods/nav/link.js and mods/nav/nvim.js import,
 // so the link handler runs under jsc. A test sets `world` (spaces, panes, what `hc get` and the
-// socket lookup answer, and how Neovim answers) and reads back `calls`.
+// socket lookup answer, how Neovim answers, and the exit code of `test -f`) and reads back `calls`.
+// localStorage is the app's, which the link handler shares with the nav view.
 
-export const world = { spaces: [], panes: [], foreground: {}, servers: {}, nvim: () => ({ code: 0, stdout: "1\n", stderr: "" }) };
+export const world = { spaces: [], panes: [], foreground: {}, servers: {}, nvim: () => ({ code: 0, stdout: "1\n", stderr: "" }), regular: () => 0 };
 export const calls = [];
+
+const stored = new Map();
+globalThis.localStorage = {
+  getItem: (k) => (stored.has(k) ? stored.get(k) : null),
+  setItem: (k, v) => void stored.set(k, String(v)),
+  removeItem: (k) => void stored.delete(k),
+  clear: () => stored.clear(),
+};
 
 export const spaces = () => world.spaces;
 export const panes = () => world.panes;
@@ -23,5 +32,10 @@ export async function exec(command, args, options) {
     return server ? { code: 0, stdout: server, stderr: "" } : { code: 1, stdout: "", stderr: "" };
   }
   if (command === "nvim") return world.nvim(args);
+  if (command === "test") {
+    const code = world.regular(args);
+    if (code === "reject") throw new Error("timed out");
+    return { code, stdout: "", stderr: "" };
+  }
   throw new Error(`exec: unexpected ${command}`);
 }

@@ -1,8 +1,11 @@
 // The nav mod's terminal link handler (mods/nav/link.js), run headless under jsc by
 // tests/herdr-app-link.test.sh: ./link-stubs.js stands in for "herdr", ./env.js names the folder
 // of files the suite made. What the handler decides is asserted here; every Neovim expression it
-// would send is printed as a REPLAY line, which the suite sends to a real headless Neovim.
+// would send is printed as a REPLAY line, which the suite sends to a real headless Neovim; every
+// editor tab it would make is printed as a LAUNCH line, whose Neovim the suite starts with that
+// argv; every file check it would run is printed as a TEST line, which the suite runs.
 import { handleLink } from "./link.js";
+import { makeEditor } from "./nvim.js";
 import { world, calls } from "./link-stubs.js";
 import { FILES, NAMES } from "./env.js";
 
@@ -10,9 +13,11 @@ const check = (what, ok) => print(`  ${ok ? "PASS" : "FAIL"}: ${what}`);
 
 function reset() {
   calls.length = 0;
+  localStorage.clear();
+  world.regular = () => 0;
   world.spaces = [
-    { id: "s1", name: "dots", machine: null, tabs: [{ id: "a1", name: "agents" }, { id: "e1", name: "editor" }] },
-    { id: "s2", name: "other", machine: null, tabs: [{ id: "e2", name: "editor" }] },
+    { id: "s1", name: "dots", machine: null, folder: "", tabs: [{ id: "a1", name: "agents" }, { id: "e1", name: "editor" }] },
+    { id: "s2", name: "other", machine: null, folder: "", tabs: [{ id: "e2", name: "editor" }] },
   ];
   world.panes = [
     { pane: "pa", tab: "a1", terminal: "ta" },
@@ -78,6 +83,7 @@ const passes = async (what, link, source, prepare) => {
 await passes("a path without a line", file(`${FILES}/plain.txt`));
 await passes("a line that is not a positive whole number", file(`${FILES}/plain.txt`, 2.5));
 await passes("line 0", file(`${FILES}/plain.txt`, 0));
+await passes("a line too large to be exact", file(`${FILES}/plain.txt`, 1e21));
 await passes("a URL", { kind: "url", raw: "https://example.com", url: "https://example.com" });
 await passes("a terminal on another machine, though its space has a Neovim editor tab", file("/srv/app.rb", 3),
   from({ machine: "hercules", space: "hercules/s9" }), () => {
@@ -89,7 +95,6 @@ await passes("a terminal on another machine, though its space has a Neovim edito
 await passes("a path Herdr could not resolve", file(null, 3));
 await passes("a relative path from a terminal with no folder", file("src/a.rb", 3), from({ cwd: null }));
 await passes("a path with a control character", file(`${FILES}/plain.txt\n:!touch x`, 3));
-await passes("a space without an editor tab", file(`${FILES}/plain.txt`, 3), from(), () => { world.spaces[0].tabs.pop(); });
 await passes("an editor tab running a shell", file(`${FILES}/plain.txt`, 3), from(), () => { world.foreground.te = { name: "zsh", pid: 20 }; });
 await passes("a Neovim whose server cannot be found", file(`${FILES}/plain.txt`, 3), from(), () => { delete world.servers[20]; });
 await passes("a terminal whose foreground cannot be read", file(`${FILES}/plain.txt`, 3), from(), () => { delete world.foreground.te; });
@@ -106,6 +111,88 @@ world.nvim = () => { throw new Error("timed out"); }; // exec rejects on its tim
 r = await click(file(`${FILES}/plain.txt`, 3));
 check("a Neovim that is too busy to answer in time passes, and no tab is shown", r === "pass" && runs() === "");
 await passes("a socket lookup that cannot run", file(`${FILES}/plain.txt`, 3), from(), () => { world.servers[20] = "reject"; });
+
+// --- a space with no editor tab gets one, as Alt-E makes it -----------------------------------
+const made = () => calls.filter(([k, n]) => k === "run" && n === "tab.new").map(([, , a]) => a);
+const tested = () => calls.filter(([k, c]) => k === "exec" && c === "test").map(([, , a]) => a);
+const noEditor = (id = "s1") => { const s = world.spaces.find((x) => x.id === id); s.tabs = s.tabs.filter((t) => t.name !== "editor"); };
+const json = (x) => JSON.stringify(x);
+const later = async (ms, f) => { const now = Date.now, t = now(); Date.now = () => t + ms; try { return await f(); } finally { Date.now = now; } };
+const starting = () => { world.spaces[0].tabs.push({ id: "e1", name: "editor" }); world.foreground.te = { name: "zsh", pid: 20 }; calls.length = 0; };
+
+reset(); noEditor();
+r = await click(file(`${FILES}/plain.txt`, 3, 4));
+let m = made();
+check("a space without an editor tab gets one, running Neovim on the file at its line and column", r === "handled"
+  && m.length === 1 && m[0].name === "editor" && m[0].space === "s1"
+  && json(m[0].argv) === json(["nvim", "+call cursor(3, 4)", "--", `${FILES}/plain.txt`]));
+check("...in the clicked terminal's folder when the space has none", m[0]?.folder === "/w");
+check("...after asking only whether the path is a readable regular file, and nothing of any terminal",
+  json(tested()) === json([["-f", `${FILES}/plain.txt`, "-a", "-r", `${FILES}/plain.txt`]]) && nvimCalls().length === 0
+  && calls.every(([k]) => k !== "hc") && calls.filter(([k]) => k === "run").length === 1);
+reset(); noEditor();
+world.spaces[0].folder = "/repo";
+await click(file(`${FILES}/plain.txt`, 3));
+check("...in the space's folder when it has one", made()[0]?.folder === "/repo");
+
+reset(); noEditor();
+await click(file(`${FILES}/plain.txt`, 3));
+r = await click(file(`${FILES}/a b.lua`, 2));
+check("a second click before the new tab shows is taken, and makes no second tab", r === "handled" && made().length === 1);
+reset(); noEditor();
+await click(file(`${FILES}/plain.txt`, 3));
+starting();
+r = await click(file(`${FILES}/plain.txt`, 2));
+check("a click while the new tab's Neovim is still starting is taken, and does nothing", r === "handled" && runs() === "" && nvimCalls().length === 0);
+reset(); noEditor();
+await click(file(`${FILES}/plain.txt`, 3));
+r = await later(3001, () => click(file(`${FILES}/plain.txt`, 3)));
+check("3 s on, a space still without an editor tab gets another", r === "handled" && made().length === 2);
+reset(); noEditor();
+await click(file(`${FILES}/plain.txt`, 3));
+starting();
+r = await later(3001, () => click(file(`${FILES}/plain.txt`, 3)));
+check("3 s on, an editor tab with no Neovim passes again", r === "pass" && runs() === "");
+reset(); noEditor("s1"); noEditor("s2");
+await click(file(`${FILES}/plain.txt`, 3));
+r = await click(file(`${FILES}/plain.txt`, 3), from({ space: "s2" }));
+check("a new tab in one space holds back no other space", r === "handled" && made().length === 2 && made()[1].space === "s2");
+reset(); noEditor();
+await later(3600000, () => makeEditor("s1", "/w", ["nvim", "."]));
+r = await click(file(`${FILES}/plain.txt`, 3));
+check("a tab asked for before the clock stepped back holds back no click", r === "handled" && made().length === 2);
+
+reset(); noEditor();
+check("Alt-E's tab runs nvim . in the folder it is given", makeEditor("s1", "/w", ["nvim", "."]) === true
+  && json(made()) === json([{ name: "editor", space: "s1", folder: "/w", argv: ["nvim", "."] }]));
+r = await click(file(`${FILES}/plain.txt`, 3));
+check("a click just after Alt-E asked for the tab is taken, and makes no second one", r === "handled" && made().length === 1);
+reset(); noEditor();
+await click(file(`${FILES}/plain.txt`, 3));
+check("Alt-E just after a click made the tab makes no second one", makeEditor("s1", "/w", ["nvim", "."]) === false && made().length === 1);
+
+await passes("with no editor tab, a check that cannot run", file(`${FILES}/plain.txt`, 3), from(), () => { noEditor(); world.regular = () => "reject"; });
+await passes("with no editor tab, a terminal on another machine", file("/srv/app.rb", 3), from({ machine: "hercules", space: "hercules/s9" }),
+  () => { world.spaces.push({ id: "hercules/s9", name: "far", machine: "hercules", folder: "/srv", tabs: [] }); });
+await passes("a space Herdr does not list", file(`${FILES}/plain.txt`, 3), from({ space: "gone" }));
+
+// Whether it is a readable regular file is asked of `test`, which the suite runs: `code` is the
+// exit the handler is told here, and the one the real `test` must give.
+let probes = 0;
+async function probe(what, path, code) {
+  reset(); noEditor();
+  world.regular = () => code;
+  const r = await click(file(path, 1));
+  const t = tested();
+  const ok = t.length === 1 && r === (code === 0 ? "handled" : "pass") && made().length === (code === 0 ? 1 : 0);
+  check(`with no editor tab, ${what}: ${code === 0 ? "a tab is made" : "passes"}`, ok);
+  if (ok) { probes++; print(`TEST ${json({ what, argv: ["test", ...t[0]], code })}`); }
+}
+for (const [n, code] of [["plain.txt", 0], ["link.txt", 0], ["dir", 1], ["fifo", 1], ["missing", 1], ["locked.txt", 1]]) {
+  await probe(`${n} ${code ? "is not" : "is"} a readable regular file`, `${FILES}/${n}`, code);
+}
+await probe("a device is not a readable regular file", "/dev/null", 1);
+check(`every file check produced a command to run (${probes})`, probes === 7);
 
 // --- the clicked text runs nowhere ------------------------------------------------------------
 reset();
@@ -145,3 +232,24 @@ await replay("a float showing the file is not where it opens, nor is the current
   "win_gettype() .. '|' .. luaeval('vim.api.nvim_buf_get_name(0)')", `|${FILES}/plain.txt`,
   `execute('only | enew!') .. luaeval('vim.api.nvim_open_win(vim.fn.bufadd(_A), true, {relative = "editor", row = 1, col = 1, width = 20, height = 3}) * 0', '${FILES}/plain.txt')`);
 check(`every Neovim case produced an expression to replay (${replays})`, replays === NAMES.length + 16);
+
+// --- each new tab's Neovim, started by the suite ------------------------------------------------
+// Herdr runs a tab's argv as "$@" in the login shell, so each element reaches Neovim whole. Only
+// whole numbers reach its Ex command; the path comes after "--". `expect` is the buffer, the
+// cursor and the mode once Neovim has started.
+let launches = 0;
+async function launch(what, link, source, expect) {
+  reset(); noEditor();
+  await click(link, source);
+  const m = made(), argv = m[0]?.argv ?? [];
+  if (m.length !== 1 || argv.length !== 4 || argv[0] !== "nvim" || !/^\+call cursor\(\d+, \d+\)$/.test(argv[1]) || argv[2] !== "--") {
+    return print(`  FAIL: ${what}: the handler made ${m.length} tabs, argv ${json(argv)}`);
+  }
+  launches++;
+  print(`LAUNCH ${json({ what, args: argv.slice(1), expect })}`);
+}
+for (const n of NAMES) await launch(`a new tab opens ${json(n)} at 3:4`, file(`${FILES}/${n}`, 3, 4), from(), `${FILES}/${n} 3:4 n`);
+await launch("a new tab opens a relative path from the clicked terminal's folder", file("plain.txt", 3, 5), from({ cwd: `${FILES}/` }), `${FILES}/plain.txt 3:5 n`);
+await launch("a new tab with no column starts at the line's start", file(`${FILES}/plain.txt`, 4), from(), `${FILES}/plain.txt 4:1 n`);
+await launch("a new tab with a line past the end starts at the last line", file(`${FILES}/plain.txt`, 99, 2), from(), `${FILES}/plain.txt 5:2 n`);
+check(`every new tab produced a Neovim to start (${launches})`, launches === NAMES.length + 3);

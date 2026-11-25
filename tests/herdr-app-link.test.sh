@@ -6,7 +6,8 @@
 # the rows test does. Every Neovim expression it would send is then sent, as the handler sends it
 # (`nvim --server <address> --remote-expr <expression>`), to a real headless Neovim, for files whose
 # names try to run something; the suite then looks for anything they made. That Neovim listens on
-# local TCP, because the sandbox denies binding a Unix socket.
+# local TCP, because the sandbox denies binding a Unix socket. Each editor tab the handler would
+# make has its Neovim started with the tab's argv, and each file check it would run is run.
 set -uo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -52,6 +53,7 @@ names=(
 )
 for n in "${names[@]}"; do printf 'l1\nl2\nl3 hello world\nl4 four\nl5 five\n' > "$files/$n" || exit 1; done
 printf 'l1\nl2\n' > "$files/late.txt" && mkfifo "$files/fifo" && ln -s plain.txt "$files/link.txt" || exit 1
+printf 'l1\n' > "$files/locked.txt" && chmod 000 "$files/locked.txt" || exit 1
 
 # --- the handler, under jsc -----------------------------------------------------------------------
 d=$root/js
@@ -63,7 +65,7 @@ cp "$FIX/link.test.js" "$FIX/link-stubs.js" "$d/"
 } > "$d/env.js"
 check "link.js and nvim.js import only what the stubs stand in for" test -z "$(grep -h '^import .* from "[^.]' "$d/link.js" "$d/nvim.js")"
 out=$("$J" -m "$d/link.test.js" 2>&1); jrc=$?
-printf '%s\n' "$out" | grep -v '^REPLAY '
+printf '%s\n' "$out" | grep -Ev '^(REPLAY|LAUNCH|TEST) '
 p=$(printf '%s\n' "$out" | grep -c '^  PASS:'); f=$(printf '%s\n' "$out" | grep -c '^  FAIL:')
 passed=$((passed + p)); total=$((total + p + f))
 check "the handler test ran cleanly (jsc exit $jrc, $((p + f)) assertions)" test "$jrc" -eq 0 -a $((p + f)) -gt 0
@@ -92,6 +94,35 @@ while IFS= read -r line; do
   replays=$((replays + 1))
 done < <(printf '%s\n' "$out" | grep '^REPLAY ')
 check "expressions were replayed ($replays)" test "$replays" -gt 0
+
+# --- each new tab's Neovim, started with the tab's argv ----------------------------------------
+args_of() { # <json> <key>: the array's elements, NUL-separated
+  jq -j --arg k "$2" '.[$k][] | . + "\u0000"' <<<"$1"
+}
+AT="luaeval('vim.api.nvim_buf_get_name(0)') .. ' ' .. line('.') .. ':' .. col('.') .. ' ' .. mode()"
+launches=0
+while IFS= read -r line; do
+  json=${line#LAUNCH }
+  args=(); while IFS= read -r -d '' a; do args+=("$a"); done < <(args_of "$json" args)
+  rm -f "$root/at"
+  (cd "$root/cwd" && timeout 10 "${nv[@]}" --clean -n --headless \
+    --cmd "autocmd VimEnter * call writefile([$AT], '$root/at') | qa!" "${args[@]}" </dev/null >/dev/null 2>&1)
+  same "$(jq -r .what <<<"$json")" "$(cat "$root/at" 2>/dev/null)" "$(jq -r .expect <<<"$json")"
+  launches=$((launches + 1))
+done < <(printf '%s\n' "$out" | grep '^LAUNCH ')
+check "new tabs' Neovims were started ($launches)" test "$launches" -gt 0
+
+# --- each file check, run as the handler runs it (a program, no shell) ------------------------
+probes=0
+while IFS= read -r line; do
+  json=${line#TEST }
+  argv=(); while IFS= read -r -d '' a; do argv+=("$a"); done < <(args_of "$json" argv)
+  timeout 5 env "${argv[@]}" </dev/null >/dev/null 2>&1; code=$?
+  [ "$code" -eq 0 ] || code=1
+  same "$(jq -r .what <<<"$json")" "$code" "$(jq -r .code <<<"$json")"
+  probes=$((probes + 1))
+done < <(printf '%s\n' "$out" | grep '^TEST ')
+check "file checks were run ($probes)" test "$probes" -gt 0
 check "no clicked name ran anything" test -z "$(find "$root" -name 'pwned-*' -print)"
 same "the Neovim is still answering" "$(ask '1+1')" 2
 
