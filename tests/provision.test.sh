@@ -299,7 +299,8 @@ run(){ local ans=$1; shift
     MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
     LAUNCHCTL_LOADED="$LAUNCHCTL_LOADED" LAUNCHCTL_FAIL="${LAUNCHCTL_FAIL:-}" \
     PROVISION_REF="${PROVISION_REF:-}" HV="${HV:-0}" PROVISION_OP_VAULT="${PROVISION_OP_VAULT:-}" \
-    PROVISION_APPLICATIONS="${PROVISION_APPLICATIONS:-$T/apps}" PV_NETBIRD_KEY="${PV_NETBIRD_KEY:-}" HERDR_PANE_ID=pane-test HERDR_SOCKET_PATH="$T/herdr.sock" TMPDIR="$T/caller-tmp" \
+    PROVISION_APPLICATIONS="${PROVISION_APPLICATIONS:-$T/apps}" PV_NETBIRD_KEY="${PV_NETBIRD_KEY:-}" PV_ST_USER="${PV_ST_USER:-}" \
+    PV_ST_PASSWORD="${PV_ST_PASSWORD:-}" PV_VORTA_EXPORT="${PV_VORTA_EXPORT:-}" HERDR_PANE_ID=pane-test HERDR_SOCKET_PATH="$T/herdr.sock" TMPDIR="$T/caller-tmp" \
     PROVISION_SRC_OVERRIDE="$SBX_SRC" PROVISION_BREW_BIN="$SBX_BREW" \
     zsh "$SRC/.scripts/provision.sh" "$@" 2>&1); RC=$?; }
 
@@ -890,7 +891,7 @@ rm -f "$T/lc-stopped"; lc_reset; rm -rf "$CFG/herdr" "$T/herdr-list" "$T/home/.c
 reset; fresh_steps; items_all; run "$SPARE"
 rm -f "$T/read-stdin-op"
 rc_is 0 "a preflight whose reads fail does not end the run"
-has "Missing in 1Password  NetBird setup key, Syncthing GUI, BorgBase hercules" "op read and op document get read /dev/null"
+has "Not read from 1Password  NetBird setup key, Syncthing GUI, BorgBase hercules" "op read and op document get read /dev/null"
 : > "$T/read-stdin-netbird"
 reset; items_all; run "$SPARE"
 rm -f "$T/read-stdin-netbird"
@@ -925,7 +926,7 @@ reset; run 'hercules\ny\n'
 not_called "op read" "a machine that is set up reads no item"
 not_called "op document" "and no document"
 has "Setup secrets ...... none needed" "and the summary says so"
-hasnt "Missing in 1Password" "with nothing missing"
+hasnt "Not read from 1Password" "with nothing unread"
 # One step at a time.
 reset; rm -f "$ST_DIR/config.xml"; items_all; run 'hercules\ny\n'
 called "op read op://Private/Syncthing GUI/password" "without config.xml, Syncthing's login is read"
@@ -942,14 +943,14 @@ called "op document get BorgBase hercules --vault Private" "a settings.db whose 
 for it in "NetBird setup key" "Syncthing GUI" "BorgBase hercules"; do
   reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/$it"; run 'hercules\ny\n'
   rc_is 0 "$it missing: the run finishes"
-  has "Missing in 1Password  $it — answer n, add them to 1Password (Private) and run again; y skips their steps" "$it missing: the summary names it before Proceed"
-  has "⚠ 1Password item '$it' not found in Private:" "$it missing: the closing list names it"
+  has "Not read from 1Password  $it — answer n, add or unlock them in 1Password (Private) and run again; y skips their steps" "$it missing: the summary names it before Proceed"
+  has "⚠ 1Password item '$it' could not be read from Private:" "$it missing: the closing list names it"
 done
 reset; fresh_steps; items_all; rm -f "$T/op-items/Private/Syncthing GUI/password"; run 'hercules\ny\n'
-has "Missing in 1Password  Syncthing GUI" "an item with one field missing is missing"
+has "Not read from 1Password  Syncthing GUI" "an item with one field missing is missing"
 reset; fresh_steps; items_all; printf '  \n' > "$T/op-items/Private/NetBird setup key/credential"; run 'hercules\ny\n'
 rc_is 0 "a value of only whitespace: the run finishes"
-has "Missing in 1Password  NetBird setup key" "and counts as not found"
+has "Not read from 1Password  NetBird setup key" "and counts as unread"
 reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/NetBird setup key" "$T/op-items/Private/Syncthing GUI" "$T/op-items/Private/BorgBase hercules"; run 'hercules\ny\n'
 has "Setup secrets ...... none read" "with every item missing, the summary reads none"
 # NetBird's done test.
@@ -986,14 +987,14 @@ rc_is 0 "an empty PROVISION_OP_VAULT is unset"
 called "op read op://Private/NetBird setup key/credential" "and the reads use Private"
 hasnt "1Password vault" "with no vault line in the summary"
 # A caller that already exports a secret's variable name: no child's environment carries it.
-reset; fresh_steps; items_all; PV_NETBIRD_KEY=decoy run 'hercules\ny\n'
-rc_is 0 "a caller exporting PV_NETBIRD_KEY: the run finishes"
+reset; fresh_steps; items_all; PV_NETBIRD_KEY=decoy1 PV_ST_USER=decoy2 PV_ST_PASSWORD=decoy3 PV_VORTA_EXPORT=decoy4 run 'hercules\ny\n'
+rc_is 0 "a caller exporting all four secret variables: the run finishes"
 called "op read op://Private/NetBird setup key/credential" "the key is still read"
 called "configure-fullenv HOME=" "and configure.sh, a child started after the reads, ran"
 not_called "configure-fullenv PV_" "no child started after the reads carries a PV_ variable"
 not_called "netbird-env PV_" "nor does netbird"
-for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy; do not_called "$m" "no log line carries $m"; done
-for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy; do hasnt "$m" "the run prints no $m"; done
+for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy1 decoy2 decoy3 decoy4; do not_called "$m" "no log line carries $m"; done
+for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy1 decoy2 decoy3 decoy4; do hasnt "$m" "the run prints no $m"; done
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

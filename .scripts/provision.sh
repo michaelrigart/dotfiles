@@ -280,14 +280,15 @@ vorta_state() {
     print -r -- unreadable
   fi
 }
-# A value that is empty once its whitespace is removed counts as not found.
+# A read that fails (no such item, a locked app, a dismissed prompt) or gives a value that is empty
+# once its whitespace is removed leaves the item unread.
 pv_blank() { [[ -z "${1//[[:space:]]/}" ]]; }
-# pv_missing <item> <what is skipped> <checklist row>
-pv_missing() {
-  MISSING_ITEMS+=("$1")
-  PREFLIGHT_WARNS+=("1Password item '$1' not found in ${OP_VAULT}: $2 skipped — see the $3 row")
+# pv_unread <item> <what is skipped> <checklist row>
+pv_unread() {
+  UNREAD_ITEMS+=("$1")
+  PREFLIGHT_WARNS+=("1Password item '$1' could not be read from ${OP_VAULT}: $2 skipped — see the $3 row")
 }
-typeset -a READ_ITEMS=() MISSING_ITEMS=() PREFLIGHT_WARNS=()
+typeset -a READ_ITEMS=() UNREAD_ITEMS=() PREFLIGHT_WARNS=()
 NEED_NETBIRD=0; NEED_SYNCTHING=0; NEED_VORTA=0
 if ! NETBIRD_DAEMON_STATE=$(netbird_state); then
   NEED_NETBIRD=1
@@ -305,7 +306,7 @@ if (( NEED_NETBIRD )); then
   PV_NETBIRD_KEY=$(op read "op://${OP_VAULT}/NetBird setup key/credential" </dev/null 2>/dev/null) || PV_NETBIRD_KEY=""
   if pv_blank "$PV_NETBIRD_KEY"; then
     PV_NETBIRD_KEY=""
-    pv_missing "NetBird setup key" "NetBird's join" "netbird-up"
+    pv_unread "NetBird setup key" "NetBird's join" "netbird-up"
   else
     READ_ITEMS+=("NetBird setup key")
   fi
@@ -315,7 +316,7 @@ if (( NEED_SYNCTHING )); then
   PV_ST_PASSWORD=$(op read "op://${OP_VAULT}/Syncthing GUI/password" </dev/null 2>/dev/null) || PV_ST_PASSWORD=""
   if pv_blank "$PV_ST_USER" || pv_blank "$PV_ST_PASSWORD"; then
     PV_ST_USER=""; PV_ST_PASSWORD=""
-    pv_missing "Syncthing GUI" "Syncthing's GUI login" "syncthing-settings"
+    pv_unread "Syncthing GUI" "Syncthing's GUI login" "syncthing-settings"
   else
     READ_ITEMS+=("Syncthing GUI")
   fi
@@ -324,7 +325,7 @@ if (( NEED_VORTA )); then
   PV_VORTA_EXPORT=$(op document get "BorgBase ${MACHINE_NAME}" --vault "${OP_VAULT}" </dev/null 2>/dev/null) || PV_VORTA_EXPORT=""
   if pv_blank "$PV_VORTA_EXPORT"; then
     PV_VORTA_EXPORT=""
-    pv_missing "BorgBase ${MACHINE_NAME}" "Vorta's profile import" "vorta"
+    pv_unread "BorgBase ${MACHINE_NAME}" "Vorta's profile import" "vorta"
   else
     READ_ITEMS+=("BorgBase ${MACHINE_NAME}")
   fi
@@ -360,8 +361,8 @@ elif (( ${#READ_ITEMS} == 0 )); then
 else
   echo "  Setup secrets ...... read: ${(j:, :)READ_ITEMS}"
 fi
-if (( ${#MISSING_ITEMS} > 0 )); then
-  echo "  Missing in 1Password  ${(j:, :)MISSING_ITEMS} — answer n, add them to 1Password (${OP_VAULT}) and run again; y skips their steps"
+if (( ${#UNREAD_ITEMS} > 0 )); then
+  echo "  Not read from 1Password  ${(j:, :)UNREAD_ITEMS} — answer n, add or unlock them in 1Password (${OP_VAULT}) and run again; y skips their steps"
 fi
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "
