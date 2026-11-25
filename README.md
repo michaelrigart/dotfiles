@@ -45,18 +45,21 @@ This will:
 1. Install Xcode Command Line Tools and Homebrew
 2. Install the bootstrap tools (chezmoi, the 1Password CLI and app, git)
 3. Clone the dotfiles source
-4. Authenticate with 1Password, then ask for the machine name (it must be listed in [machines.toml](.chezmoidata/machines.toml)), confirm, and set the macOS ComputerName, HostName and LocalHostName to it
+4. Authenticate with 1Password, ask for the machine name (it must be listed in [machines.toml](.chezmoidata/machines.toml)), then read the secrets of the steps not yet done (the `NetBird setup key`, `Syncthing GUI` and `BorgBase <machine>` items) before the one confirmation that sets the macOS ComputerName, HostName and LocalHostName to it
 5. Generate the chezmoi config and apply the dotfiles
 6. Switch the chezmoi remote to SSH
 7. Install all packages from [Brewfile](dot_config/homebrew/Brewfile.tmpl)
-8. Install the NetBird daemon
+8. Install the NetBird daemon, join it with the setup key, then generate Syncthing's config with its GUI login, both only when not yet set up
 9. Reconcile the AI agent plugins, then set Homebrew zsh as the default shell
 10. Install Oh My Zsh
 11. Install development tools via mise
 12. Install the Neovim plugins and link the Herdr plugins
-13. Apply macOS system settings
-14. Only if no Codex daemon package existed when the run started, pin the Codex daemon to the CLI's package
-15. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
+13. Start Vorta once so it imports its own export, which holds the backup profile
+14. Apply macOS system settings, which loads the LaunchAgents, among them the one that opens the login apps
+15. Only if no Codex daemon package existed when the run started, pin the Codex daemon to the CLI's package
+16. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
+
+No secret reaches a command's arguments or environment: each is piped to its one command (`netbird up`, `syncthing generate`), or written once to `~/.vorta-init.json`, which Vorta deletes after importing it. A step already done reads no item, so a second run changes nothing.
 
 ---
 
@@ -229,9 +232,10 @@ tart run reinstall-test
 # the 1Password app; when it asks, sign in there, turn on the CLI integration and approve the
 # terminal's request. Answer `hercules` for the machine name: `fenrir` is taken on the network
 # the VM shares with fenrir, and macOS renames the VM `fenrir (2)`.
-# PROVISION_REF is honoured only inside a VM and picks the branch the clone checks out.
+# PROVISION_REF is honoured only inside a VM and picks the branch the clone checks out;
+# PROVISION_OP_VAULT, also VM-only, names the test vault the three items are read from.
 ref=<branch>
-PROVISION_REF=$ref /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/$ref/.scripts/provision.sh)"
+PROVISION_REF=$ref PROVISION_OP_VAULT=<test vault> /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/$ref/.scripts/provision.sh)"
 
 # Afterwards, on fenrir
 tart delete reinstall-test
@@ -240,10 +244,20 @@ tart delete reinstall-test
 It passes when every `script` row of the final check is ✓ except the rows a VM cannot satisfy
 (`hercules-power` if `pmset` rejects a key); the `you` rows, Little Snitch's extension among them,
 print ✗ until Michael does them after one run, a second run prints the same machine-check
-result, reloads no LaunchAgent and adds no warning, and the `you` rows print in order.
+result, reloads no LaunchAgent and adds no warning, and the `you` rows print in order. With the test
+vault below, `netbird-up`, `netbird-session-expiry`, `syncthing-settings`, `vorta` and `login-items`
+are also ✓ with no prompt, `~/.vorta-init.json` is gone, and the second run reads no item, keeps
+NetBird's peer and adds no Vorta profile.
 
-Then remove the VM's device from 1Password. Never run `netbird up`, pair Syncthing or start Borg
-inside the VM.
+The VM reads its three 1Password items from a vault of its own, never from Michael's. Make the
+vault with the same item names as the real ones: `NetBird setup key` (an ephemeral key that
+auto-assigns a group of its own), `Syncthing GUI` (a throwaway login) and `BorgBase hercules` (a
+Vorta export whose repository is `ssh://nobody@127.0.0.1:9/./repo`, with a throwaway passphrase).
+Then add `PROVISION_OP_VAULT=<test vault>` beside `PROVISION_REF` in the command; like it, it is
+refused outside a VM.
+
+Then remove the VM's device from 1Password. Run the VM only with that test vault, never with
+Michael's own items, and still never pair Syncthing or start a backup there.
 
 ---
 

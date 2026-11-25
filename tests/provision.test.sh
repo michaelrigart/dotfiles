@@ -292,6 +292,7 @@ cat > "$T/src/.scripts/machine-check.sh" <<'MC'
 #!/usr/bin/env bash
 echo "machine-check.sh $*" >> "$CALLS"
 echo "machine-check-from $(cd "$(dirname "$0")/.." && pwd)" >> "$CALLS"
+/usr/bin/env | sed 's/^/machine-check-fullenv /' >> "$CALLS"
 if [ -e "$SBX_ROOT/read-stdin-machine-check" ]; then
   if read -r _; then echo "machine-check-stdin got-input" >> "$CALLS"; else echo "machine-check-stdin eof" >> "$CALLS"; fi
 fi
@@ -1309,6 +1310,62 @@ else
   not_called "open -g -a Elgato Control Center" "Elgato Control Center is not opened when absent"
   rm -rf "$T/apps/Alfred 5.app"
 fi
+
+echo "Z. no secret leaves its stdin or its file, and a second run changes nothing"
+# One run of a machine with every step undone, whose caller already exports two secret variables
+# (the same names as the run's own), then a second run on the machine the first left.
+: > "$T/vorta-imports"; : > "$T/fast-sleep"
+reset; fresh_steps; items_all
+PV_NETBIRD_KEY=decoy PV_ST_PASSWORD=decoy run 'hercules\ny\n'
+rc_is 0 "a fresh machine with all three items: the run finishes"
+called "netbird up --no-browser --setup-key-file /dev/stdin" "NetBird joined"
+called "syncthing generate" "Syncthing's config was generated"
+called "open -g -a Vorta" "Vorta was started"
+called "netbird-env HOME=" "netbird's environment is logged"
+called "syncthing-env HOME=" "syncthing's environment is logged"
+called "configure-fullenv HOME=" "configure.sh's environment is logged"
+called "machine-check-fullenv HOME=" "machine-check.sh's environment is logged"
+for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy; do
+  not_called "$m" "no stub's arguments or environment carry $m"
+  hasnt "$m" "the run prints no $m"
+done
+not_called "PV_" "no logged argument or environment names a secret variable"
+# Each marker is on disk in one place only (the 1Password stub's own items aside).
+only_in(){ local m=$1 want=$2 got
+  got=$(grep -rlF -- "$m" "$T" 2>/dev/null | grep -vF "$T/op-items/" | LC_ALL=C sort | tr '\n' ' ')
+  [ "$got" = "$want " ] && _pass "$m is found only in ${want##*/}" || _fail "$m is found only in ${want##*/} (found: ${got:-nowhere})"; }
+only_in "$MK_NB" "$T/netbird-up-stdin"
+only_in "$MK_ST" "$T/syncthing-stdin"
+only_in "$MK_VORTA" "$T/vorta-init-seen"
+[ "$(cat "$T/netbird-up-stdin")" = "$MK_NB" ] && _pass "NetBird's stdin is exactly the key" || _fail "NetBird's stdin is exactly the key"
+[ "$(cat "$T/syncthing-stdin")" = "$MK_ST" ] && _pass "Syncthing's stdin is exactly the password" || _fail "Syncthing's stdin is exactly the password"
+printf '%s\n' "$VORTA_EXPORT" | cmp -s - "$T/vorta-init-seen" && _pass "Vorta saw exactly the export" || _fail "Vorta saw exactly the export"
+[ -e "$VI" ] || [ -L "$VI" ] && _fail "the file is gone after the import" || _pass "the file is gone after the import"
+# The machine the first run left, as a real Mac would: connected, the generated config.xml kept, and
+# settings.db holding the profile Vorta's import made.
+[ -f "$ST_DIR/config.xml" ] && _pass "the first run left Syncthing's config.xml" || _fail "the first run left Syncthing's config.xml"
+cp "$ST_DIR/config.xml" "$T/config.z"
+echo '{"daemonStatus":"Connected"}' > "$T/netbird-status"; rm -f "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/vorta-init-seen" "$T/vorta-init-mode"
+/usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('Default', 1);"
+: > "$CALLS"; : > "$MUTLOG"
+run 'hercules\ny\n'
+rc_is 0 "the second run finishes"
+not_called "op read" "the second run reads no item"
+not_called "op document" "and no document"
+not_called "netbird up" "runs no netbird up"
+not_called "generate" "generates no Syncthing config"
+not_called "open -g -a Vorta" "does not start Vorta"
+[ -e "$VI" ] || [ -L "$VI" ] && _fail "and writes no Vorta file" || _pass "and writes no Vorta file"
+cmp -s "$ST_DIR/config.xml" "$T/config.z" && _pass "config.xml is byte for byte as it was" || _fail "config.xml is byte for byte as it was"
+[ -s "$T/syncthing-stdin" ] || [ -s "$T/netbird-up-stdin" ] && _fail "no secret reached any stdin" || _pass "no secret reached any stdin"
+has "Setup secrets ...... none needed" "the summary says nothing was needed"
+warns=$(printf '%s\n' "$OUT" | grep '⚠' | sed 's/^[[:space:]]*//')
+# What the stubbed machine always warns about, none of it from the new steps.
+want_warns="⚠ Machine already provisioned: chezmoi init and apply are skipped. Run chezmoi apply --init from zsh, which deploys origin's main.
+⚠ SSH to GitHub not confirmed — check ~/.ssh/michael
+⚠ Brewfile not found at $T/home/.config/homebrew/Brewfile — chezmoi apply deploys it"
+[ "$warns" = "$want_warns" ] && _pass "the second run adds no warning" || _fail "the second run adds no warning (got: $warns)"
+rm -f "$T/fast-sleep" "$T/config.z"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
