@@ -59,7 +59,7 @@ This will:
 15. Only if no Codex daemon package existed when the run started, pin the Codex daemon to the CLI's package
 16. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
 
-No secret reaches a command's arguments or environment: each is piped to its one command (`netbird up`, `syncthing generate`), or written once to `~/.vorta-init.json`, which Vorta deletes after importing it. A step already done reads no item, so a second run changes nothing.
+No secret reaches a command's arguments or environment: each is piped to its one command (`netbird up`, `syncthing generate`), or written once to `~/.vorta-init.json`, which Vorta deletes after a successful import (the run warns when it stays); `jq` checks the Vorta export on stdin too. A step already done reads no item, so a second run changes nothing.
 
 ---
 
@@ -222,6 +222,13 @@ Run the whole provisioning in a throwaway macOS VM on fenrir with [Tart](https:/
 (`openai/tools/tart`). After `chezmoi apply`, `brew bundle install --file ~/.config/homebrew/Brewfile`
 installs it on fenrir.
 
+The VM reads its three 1Password items from a vault of its own, never from Michael's. Make the
+vault with the same item names as the real ones: `NetBird setup key` (an ephemeral key that
+auto-assigns a group of its own), `Syncthing GUI` (a throwaway login) and `BorgBase hercules` (a
+Vorta export whose repository is `ssh://nobody@127.0.0.1:9/./repo`, with a throwaway passphrase).
+The run names it with `PROVISION_OP_VAULT=<test vault>`, which, like `PROVISION_REF`, is refused
+outside a VM.
+
 ```bash
 # Pull the image (about 33 GB), clone it and give the clone room: the whole Brewfile fills 80 GB
 tart clone ghcr.io/cirruslabs/macos-golden-gate-vanilla reinstall-test
@@ -245,16 +252,12 @@ It passes when every `script` row of the final check is ✓ except the rows a VM
 (`hercules-power` if `pmset` rejects a key); the `you` rows, Little Snitch's extension among them,
 print ✗ until Michael does them after one run, a second run prints the same machine-check
 result, reloads no LaunchAgent and adds no warning, and the `you` rows print in order. With the test
-vault below, `netbird-up`, `netbird-session-expiry`, `syncthing-settings`, `vorta` and `login-items`
-are also ✓ with no prompt, `~/.vorta-init.json` is gone, and the second run reads no item, keeps
-NetBird's peer and adds no Vorta profile.
-
-The VM reads its three 1Password items from a vault of its own, never from Michael's. Make the
-vault with the same item names as the real ones: `NetBird setup key` (an ephemeral key that
-auto-assigns a group of its own), `Syncthing GUI` (a throwaway login) and `BorgBase hercules` (a
-Vorta export whose repository is `ssh://nobody@127.0.0.1:9/./repo`, with a throwaway passphrase).
-Then add `PROVISION_OP_VAULT=<test vault>` beside `PROVISION_REF` in the command; like it, it is
-refused outside a VM.
+vault, `netbird-up`, `netbird-session-expiry`, `syncthing-settings`, `vorta` and `login-items` are
+also ✓ with no prompt, `~/.vorta-init.json` is gone, and the second run reads no item, leaves
+`config.xml` unchanged, keeps the same NetBird peer and IP and adds no Vorta profile. None of the
+three throwaway values may appear in NetBird's logs and config (`/var/log/netbird`,
+`/var/lib/netbird`), `~/Library/Logs`, Syncthing's folder (only a bcrypt hash) or Vorta's
+`settings.db` and log.
 
 Then remove the VM's device from 1Password. Run the VM only with that test vault, never with
 Michael's own items, and still never pair Syncthing or start a backup there.

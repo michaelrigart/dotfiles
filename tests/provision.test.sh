@@ -234,6 +234,14 @@ mkdir -p "$home"
 /bin/chmod 600 "$home/config.xml"
 exit 0
 SY
+# jq logs its arguments and environment, then runs the system jq on the same arguments and stdin: a
+# secret on its command line or in its environment shows in $CALLS (netbird_state and step 15b's check use it).
+cat > "$T/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+echo "jq $*" >> "$CALLS"
+/usr/bin/env | sed 's/^/jq-env /' >> "$CALLS"
+exec /usr/bin/jq "$@"
+JQ
 # nvim also records the first entry of its PATH: Mason's Ruby tools need mise's Ruby.
 cat > "$T/bin/nvim" <<'NV'
 #!/usr/bin/env bash
@@ -1325,6 +1333,9 @@ called "netbird-env HOME=" "netbird's environment is logged"
 called "syncthing-env HOME=" "syncthing's environment is logged"
 called "configure-fullenv HOME=" "configure.sh's environment is logged"
 called "machine-check-fullenv HOME=" "machine-check.sh's environment is logged"
+called "jq-env HOME=" "jq's environment is logged"
+warns1=$(printf '%s\n' "$OUT" | grep '⚠' | sed 's/^[[:space:]]*//')
+printf '%s\n' "$warns1" | grep -qiE 'netbird|syncthing|vorta|1password' && _fail "the first run warns of no new step (got: $warns1)" || _pass "the first run warns of no new step"
 for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy; do
   not_called "$m" "no stub's arguments or environment carry $m"
   hasnt "$m" "the run prints no $m"
@@ -1360,11 +1371,7 @@ cmp -s "$ST_DIR/config.xml" "$T/config.z" && _pass "config.xml is byte for byte 
 [ -s "$T/syncthing-stdin" ] || [ -s "$T/netbird-up-stdin" ] && _fail "no secret reached any stdin" || _pass "no secret reached any stdin"
 has "Setup secrets ...... none needed" "the summary says nothing was needed"
 warns=$(printf '%s\n' "$OUT" | grep '⚠' | sed 's/^[[:space:]]*//')
-# What the stubbed machine always warns about, none of it from the new steps.
-want_warns="⚠ Machine already provisioned: chezmoi init and apply are skipped. Run chezmoi apply --init from zsh, which deploys origin's main.
-⚠ SSH to GitHub not confirmed — check ~/.ssh/michael
-⚠ Brewfile not found at $T/home/.config/homebrew/Brewfile — chezmoi apply deploys it"
-[ "$warns" = "$want_warns" ] && _pass "the second run adds no warning" || _fail "the second run adds no warning (got: $warns)"
+[ "$warns" = "$warns1" ] && _pass "the second run adds no warning" || _fail "the second run adds no warning (got: $warns)"
 rm -f "$T/fast-sleep" "$T/config.z"
 
 echo; echo "RESULT: $pass passed, $fail failed"
