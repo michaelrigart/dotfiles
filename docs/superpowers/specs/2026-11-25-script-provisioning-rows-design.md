@@ -10,11 +10,13 @@ hercules' `netbird-session-expiry` (setup key), `syncthing-settings` (`syncthing
 (chezmoi-94) of 2026-11-25, with Codex's review of #46's unreviewed commits.
 **Size:** about 215 lines of non-test code: `.scripts/provision.sh` about 150 (the preflight's
 reads and their guards 45, NetBird 20, Syncthing 35, Vorta 40, the VM vault knob 10), login items
-about 35 (D1: a LaunchAgent template and its loop), the checklist about 10, `README.md` about 20, `AGENTS.md` 1. Comparable: #46's NetBird daemon
-and Codex pin steps. Not yet counted: the fixes from Codex's review of #46 (§7). About 400 lines of
-test code, `tests/provision.test.sh` extended. One increment.
-**Provisioning:** `netbird-up`, `netbird-session-expiry`, `netbird-old-peer`, `syncthing-settings`, `vorta`,
-`login-items`
+about 35 (D1: a LaunchAgent template and its loop), the checklist about 10, `README.md` about 20,
+`AGENTS.md` 1. Comparable: #46's NetBird daemon and Codex pin steps. Not yet counted: the fixes from
+Codex's review of #46 (§7). About 400 lines of test code, `tests/provision.test.sh` extended. One
+increment. Real size, before §7's fixes (2026-11-25): 275 lines of non-test code (`provision.sh` 214,
+the login-apps plist 49, the checklist 12; `change-facts`), 534 of test code; README 37, AGENTS.md 18.
+**Provisioning:** `netbird-up`, `netbird-session-expiry`, `netbird-old-peer`, `syncthing-settings`,
+`vorta`, `login-items`
 
 ## Why
 
