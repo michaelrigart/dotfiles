@@ -21,6 +21,18 @@ warn() { WARNINGS+=("$1"); log_warn "$1"; }
 
 # Overridden only by tests/provision.test.sh; nothing else sets these.
 BREW_BIN="${PROVISION_BREW_BIN:-/opt/homebrew/bin/brew}"
+# PROVISION_OP_VAULT is the vault the setup items are read from (a VM run uses a test vault).
+OP_VAULT="${PROVISION_OP_VAULT:-Private}"
+# PROVISION_APPLICATIONS is where the casks put their apps.
+APPS="${PROVISION_APPLICATIONS:-/Applications}"
+ST_BIN="${APPS}/Syncthing.app/Contents/Resources/syncthing/syncthing"
+ST_HOME="${HOME}/Library/Application Support/Syncthing"
+VORTA_DB="${HOME}/Library/Application Support/Vorta/settings.db"
+VORTA_INIT="${HOME}/.vorta-init.json"
+# The setup secrets (step 5c): never exported, so a caller that exports the same names cannot make
+# them reach a child's environment.
+typeset +x PV_NETBIRD_KEY PV_ST_USER PV_ST_PASSWORD PV_VORTA_EXPORT
+PV_NETBIRD_KEY=""; PV_ST_USER=""; PV_ST_PASSWORD=""; PV_VORTA_EXPORT=""
 
 # Set temporary XDG variables for bootstrap (will be properly set by chezmoi later)
 export XDG_CACHE_HOME="${HOME}/.cache"
@@ -38,6 +50,10 @@ export OP_BIOMETRIC_UNLOCK_ENABLED=true
 PROVISION_REF="${PROVISION_REF:-main}"
 if [ "$PROVISION_REF" != "main" ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" != "1" ]; then
   log_error "PROVISION_REF=${PROVISION_REF} is refused outside a VM: provisioning a real Mac deploys main only."
+  exit 1
+fi
+if [ "$OP_VAULT" != "Private" ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" != "1" ]; then
+  log_error "PROVISION_OP_VAULT=${OP_VAULT} is refused outside a VM: provisioning a real Mac reads the Private vault."
   exit 1
 fi
 
@@ -238,11 +254,87 @@ while [ -z "$MACHINE_NAME" ]; do
   [ -z "$MACHINE_NAME" ] && log_warn "Unknown machine '${REPLY_NAME}' — add it to .chezmoidata/machines.toml first"
 done
 
-# 5c. sudo was acquired in step 0, which had to precede Homebrew. Refresh it here in
+# 5c. The setup secrets. 1Password authorizes a terminal session for 10 minutes of idleness and
+# the Brewfile alone runs longer, so a read after it would prompt in the middle of the unattended
+# run: every item is read here, and only for a step that is not done (a re-run reads nothing).
+# A value goes into its unexported variable through $(...), never onto a command line, and no log
+# line names one: items are named, values never.
+# NetBird is done when its status reads, names a daemonStatus and is not NeedsLogin or LoginFailed.
+netbird_state() {
+  local json state
+  json=$(netbird status --json 2>/dev/null </dev/null) || return 1
+  state=$(print -r -- "$json" | jq -r '.daemonStatus // empty' 2>/dev/null) || return 1
+  [ -n "$state" ] || return 1
+  print -r -- "$state"
+}
+# Vorta: absent (no settings.db), none (no profile has a repository), configured, or unreadable.
+# Its start-up import overwrites a profile of the same name, so only a query that succeeds and
+# counts none makes the step due; anything else fails closed.
+vorta_state() {
+  local count
+  [ -e "$VORTA_DB" ] || { print -r -- absent; return 0; }
+  if count=$(sqlite3 -readonly "$VORTA_DB" 'select count(*) from backupprofilemodel where repo_id is not null' 2>/dev/null </dev/null) \
+     && [[ "$count" == <-> ]]; then
+    if (( count == 0 )); then print -r -- none; else print -r -- configured; fi
+  else
+    print -r -- unreadable
+  fi
+}
+# A value that is empty once its whitespace is removed counts as not found.
+pv_blank() { [[ -z "${1//[[:space:]]/}" ]]; }
+# pv_missing <item> <what is skipped> <checklist row>
+pv_missing() {
+  MISSING_ITEMS+=("$1")
+  PREFLIGHT_WARNS+=("1Password item '$1' not found in ${OP_VAULT}: $2 skipped — see the $3 row")
+}
+typeset -a READ_ITEMS=() MISSING_ITEMS=() PREFLIGHT_WARNS=()
+NEED_NETBIRD=0; NEED_SYNCTHING=0; NEED_VORTA=0
+if ! NETBIRD_DAEMON_STATE=$(netbird_state); then
+  NEED_NETBIRD=1
+else
+  case "$NETBIRD_DAEMON_STATE" in NeedsLogin|LoginFailed) NEED_NETBIRD=1 ;; esac
+fi
+[ -e "${ST_HOME}/config.xml" ] || NEED_SYNCTHING=1
+VORTA_STATE=$(vorta_state)
+case "$VORTA_STATE" in
+  absent|none) NEED_VORTA=1 ;;
+  unreadable) PREFLIGHT_WARNS+=("Vorta's settings could not be read: no profile imported — see the vorta row") ;;
+esac
+
+if (( NEED_NETBIRD )); then
+  PV_NETBIRD_KEY=$(op read "op://${OP_VAULT}/NetBird setup key/credential" </dev/null 2>/dev/null) || PV_NETBIRD_KEY=""
+  if pv_blank "$PV_NETBIRD_KEY"; then
+    PV_NETBIRD_KEY=""
+    pv_missing "NetBird setup key" "NetBird's join" "netbird-up"
+  else
+    READ_ITEMS+=("NetBird setup key")
+  fi
+fi
+if (( NEED_SYNCTHING )); then
+  PV_ST_USER=$(op read "op://${OP_VAULT}/Syncthing GUI/username" </dev/null 2>/dev/null) || PV_ST_USER=""
+  PV_ST_PASSWORD=$(op read "op://${OP_VAULT}/Syncthing GUI/password" </dev/null 2>/dev/null) || PV_ST_PASSWORD=""
+  if pv_blank "$PV_ST_USER" || pv_blank "$PV_ST_PASSWORD"; then
+    PV_ST_USER=""; PV_ST_PASSWORD=""
+    pv_missing "Syncthing GUI" "Syncthing's GUI login" "syncthing-settings"
+  else
+    READ_ITEMS+=("Syncthing GUI")
+  fi
+fi
+if (( NEED_VORTA )); then
+  PV_VORTA_EXPORT=$(op document get "BorgBase ${MACHINE_NAME}" --vault "${OP_VAULT}" </dev/null 2>/dev/null) || PV_VORTA_EXPORT=""
+  if pv_blank "$PV_VORTA_EXPORT"; then
+    PV_VORTA_EXPORT=""
+    pv_missing "BorgBase ${MACHINE_NAME}" "Vorta's profile import" "vorta"
+  else
+    READ_ITEMS+=("BorgBase ${MACHINE_NAME}")
+  fi
+fi
+
+# 5d. sudo was acquired in step 0, which had to precede Homebrew. Refresh it here in
 # case the Xcode CLT download ran long.
 sudo -v
 
-# 5d. One confirmation. Nothing machine-specific has changed yet, so declining here
+# 5e. One confirmation. Nothing machine-specific has changed yet, so declining here
 # leaves the machine's identity and configuration exactly as they were found.
 echo ""
 echo "══ Provision: ${MACHINE_NAME} ═══════════════════"
@@ -258,6 +350,19 @@ if [ "$PROVISION_REF" != "main" ]; then
   fi
 fi
 echo "  1Password .......... authenticated"
+if [ -n "${PROVISION_OP_VAULT:-}" ]; then
+  echo "  1Password vault .... ${OP_VAULT}"
+fi
+if (( NEED_NETBIRD + NEED_SYNCTHING + NEED_VORTA == 0 )); then
+  echo "  Setup secrets ...... none needed"
+elif (( ${#READ_ITEMS} == 0 )); then
+  echo "  Setup secrets ...... none read"
+else
+  echo "  Setup secrets ...... read: ${(j:, :)READ_ITEMS}"
+fi
+if (( ${#MISSING_ITEMS} > 0 )); then
+  echo "  Missing in 1Password  ${(j:, :)MISSING_ITEMS} — answer n, add them to 1Password (${OP_VAULT}) and run again; y skips their steps"
+fi
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "
 read -r REPLY_GO
@@ -265,8 +370,9 @@ case "$REPLY_GO" in
   y|Y) ;;
   *) log_warn "Aborted. Nothing machine-specific was changed."; exit 1 ;;
 esac
+for w in "${PREFLIGHT_WARNS[@]}"; do warn "$w"; done
 
-# 5e. Apply the identity, then read it back. All three fields matter: ComputerName is
+# 5f. Apply the identity, then read it back. All three fields matter: ComputerName is
 # what chezmoi records, and HostName is what `hostname` — and therefore Borg's archive
 # naming — resolves to. LocalHostName tolerates the numeric suffix macOS appends by
 # itself when the Bonjour name collides on the network.
