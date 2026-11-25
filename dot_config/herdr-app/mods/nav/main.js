@@ -11,15 +11,10 @@
 
 import { View, div } from "gpui-kit";
 import { spaces, panes, focused, run, exec, hc, notify, nextCommand } from "herdr";
+import { vimIn, serverOf } from "./nvim.js";
 
 const DIRS = { left: ["h", "ctrl+h"], down: ["j", "ctrl+j"], up: ["k", "ctrl+k"], right: ["l", "ctrl+l"] };
 const TABS = ["agents", "runtime", "editor"];
-// The process names vim-tmux-navigator and smart-splits treat as Vim.
-const VIM = /^g?(view|l?n?vim?x?)(diff)?$/;
-// Neovim 0.10+ runs its UI and its server as two processes: the server is the UI's child,
-// and its socket is named after the server's pid.
-const FIND = 'for k in "$1" $(pgrep -P "$1"); do for s in "${TMPDIR%/}"/nvim.$(id -un)/*/nvim."$k".0; do ' +
-  '[ -S "$s" ] && { printf %s "$s"; exit 0; }; done; done; exit 1';
 
 export default class Nav extends View {
   init(_props, cx) {
@@ -37,20 +32,12 @@ export default class Nav extends View {
     });
   }
 
-  async vimIn(terminal) {
-    let t;
-    try { t = JSON.parse((await hc(["get", terminal, "--json"])).stdout); } catch { return null; }
-    const fg = t?.foreground;
-    return fg && VIM.test(fg.name ?? "") ? fg.pid : null;
-  }
-
   async socket(terminal, pid) {
     const hit = this.sockets[terminal];
     if (hit?.pid === pid) return hit.path;
-    const r = await exec("sh", ["-c", FIND, "nav", String(pid)], { timeout: 2000 });
-    if (r.code !== 0) return null;
-    this.sockets[terminal] = { pid, path: r.stdout };
-    return r.stdout;
+    const path = await serverOf(pid);
+    if (path) this.sockets[terminal] = { pid, path };
+    return path;
   }
 
   // true: Neovim is in normal mode with the cursor at that edge, so the key leaves it.
@@ -85,7 +72,7 @@ export default class Nav extends View {
     // The pane's program is the app's guess and costs nothing; ask the core only when it
     // says Vim, or knows nothing.
     const maybe = !pane?.program || pane.program.shell === false;
-    const pid = terminal && maybe ? await this.vimIn(terminal) : null;
+    const pid = terminal && maybe ? await vimIn(terminal) : null;
     if (pid) {
       const leave = await this.leaves(terminal, pid, w);
       if (leave !== true) return this.key(terminal, key);
