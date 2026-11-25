@@ -16,8 +16,8 @@ function reset() {
   localStorage.clear();
   world.regular = () => 0;
   world.spaces = [
-    { id: "s1", name: "dots", machine: null, folder: null, tabs: [{ id: "a1", name: "agents" }, { id: "e1", name: "editor" }] },
-    { id: "s2", name: "other", machine: null, folder: null, tabs: [{ id: "e2", name: "editor" }] },
+    { id: "s1", name: "dots", machine: null, folder: "", tabs: [{ id: "a1", name: "agents" }, { id: "e1", name: "editor" }] },
+    { id: "s2", name: "other", machine: null, folder: "", tabs: [{ id: "e2", name: "editor" }] },
   ];
   world.panes = [
     { pane: "pa", tab: "a1", terminal: "ta" },
@@ -127,8 +127,8 @@ check("a space without an editor tab gets one, running Neovim on the file at its
   && m.length === 1 && m[0].name === "editor" && m[0].space === "s1"
   && json(m[0].argv) === json(["nvim", "+call cursor(3, 4)", "--", `${FILES}/plain.txt`]));
 check("...in the clicked terminal's folder when the space has none", m[0]?.folder === "/w");
-check("...after asking only whether the path is a regular file, and nothing of any terminal",
-  json(tested()) === json([["-f", `${FILES}/plain.txt`]]) && nvimCalls().length === 0
+check("...after asking only whether the path is a readable regular file, and nothing of any terminal",
+  json(tested()) === json([["-f", `${FILES}/plain.txt`, "-a", "-r", `${FILES}/plain.txt`]]) && nvimCalls().length === 0
   && calls.every(([k]) => k !== "hc") && calls.filter(([k]) => k === "run").length === 1);
 reset(); noEditor();
 world.spaces[0].folder = "/repo";
@@ -157,6 +157,10 @@ reset(); noEditor("s1"); noEditor("s2");
 await click(file(`${FILES}/plain.txt`, 3));
 r = await click(file(`${FILES}/plain.txt`, 3), from({ space: "s2" }));
 check("a new tab in one space holds back no other space", r === "handled" && made().length === 2 && made()[1].space === "s2");
+reset(); noEditor();
+await later(3600000, () => makeEditor("s1", "/w", ["nvim", "."]));
+r = await click(file(`${FILES}/plain.txt`, 3));
+check("a tab asked for before the clock stepped back holds back no click", r === "handled" && made().length === 2);
 
 reset(); noEditor();
 check("Alt-E's tab runs nvim . in the folder it is given", makeEditor("s1", "/w", ["nvim", "."]) === true
@@ -172,8 +176,8 @@ await passes("with no editor tab, a terminal on another machine", file("/srv/app
   () => { world.spaces.push({ id: "hercules/s9", name: "far", machine: "hercules", folder: "/srv", tabs: [] }); });
 await passes("a space Herdr does not list", file(`${FILES}/plain.txt`, 3), from({ space: "gone" }));
 
-// Whether it is a regular file is asked of `test -f`, which the suite runs: `code` is the exit
-// the handler is told here, and the one the real `test` must give.
+// Whether it is a readable regular file is asked of `test`, which the suite runs: `code` is the
+// exit the handler is told here, and the one the real `test` must give.
 let probes = 0;
 async function probe(what, path, code) {
   reset(); noEditor();
@@ -184,11 +188,11 @@ async function probe(what, path, code) {
   check(`with no editor tab, ${what}: ${code === 0 ? "a tab is made" : "passes"}`, ok);
   if (ok) { probes++; print(`TEST ${json({ what, argv: ["test", ...t[0]], code })}`); }
 }
-for (const [n, code] of [["plain.txt", 0], ["link.txt", 0], ["dir", 1], ["fifo", 1], ["missing", 1]]) {
-  await probe(`${n} ${code ? "is not" : "is"} a regular file`, `${FILES}/${n}`, code);
+for (const [n, code] of [["plain.txt", 0], ["link.txt", 0], ["dir", 1], ["fifo", 1], ["missing", 1], ["locked.txt", 1]]) {
+  await probe(`${n} ${code ? "is not" : "is"} a readable regular file`, `${FILES}/${n}`, code);
 }
-await probe("a device is not a regular file", "/dev/null", 1);
-check(`every file check produced a command to run (${probes})`, probes === 6);
+await probe("a device is not a readable regular file", "/dev/null", 1);
+check(`every file check produced a command to run (${probes})`, probes === 7);
 
 // --- the clicked text runs nowhere ------------------------------------------------------------
 reset();

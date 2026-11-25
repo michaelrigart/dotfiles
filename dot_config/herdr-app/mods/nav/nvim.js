@@ -26,12 +26,14 @@ export async function serverOf(pid) {
 
 // An editor tab asked for in a space less than 3 s ago may not show yet, nor its Neovim answer:
 // asking again, by Alt-E or a click, must not make a second one. Kept in localStorage, which the
-// link handler and this mod's view share.
+// link handler and this mod's view share, and which outlives a clock stepped back: a stamp in the
+// future holds nothing back.
 const asked = (space) => `editor.asked.${space}`;
 export function editorStarting(space) {
   let at = 0;
   try { at = Number(localStorage.getItem(asked(space))) || 0; } catch {}
-  return Date.now() - at < 3000;
+  const since = Date.now() - at;
+  return since >= 0 && since < 3000;
 }
 
 // Makes the space's editor tab, running argv in folder; false when one is still starting.

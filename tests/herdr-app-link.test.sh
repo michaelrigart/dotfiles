@@ -53,6 +53,7 @@ names=(
 )
 for n in "${names[@]}"; do printf 'l1\nl2\nl3 hello world\nl4 four\nl5 five\n' > "$files/$n" || exit 1; done
 printf 'l1\nl2\n' > "$files/late.txt" && mkfifo "$files/fifo" && ln -s plain.txt "$files/link.txt" || exit 1
+printf 'l1\n' > "$files/locked.txt" && chmod 000 "$files/locked.txt" || exit 1
 
 # --- the handler, under jsc -----------------------------------------------------------------------
 d=$root/js

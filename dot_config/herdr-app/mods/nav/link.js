@@ -2,7 +2,7 @@
 // Neovim of the space's editor tab, and that tab is shown; a space with no editor tab gets one, as
 // Alt-E makes it, with Neovim started on the file at that line. Everything else passes to Herdr's
 // own handling: a URL, a path without a line, a terminal on another machine, an editor tab with
-// no Neovim, a path that is not a regular file.
+// no Neovim, a path that is not a readable regular file.
 //
 // The clicked text is untrusted. It reaches a running Neovim only as a Vim string literal that
 // Lua gets as data (_A), and a new one only as the file argument after "--", which Herdr's
@@ -40,9 +40,10 @@ end)(_A[1], _A[2], _A[3], _A[4])`;
 const vimString = (s) => `'${s.replaceAll("'", "''")}'`;
 // Exact, so it prints as digits alone: a new tab's Neovim gets it in an Ex command.
 const count = (n) => (Number.isSafeInteger(n) && n > 0 ? n : null);
-// A regular file (a link to one too), asked of a program, not a shell: a new Neovim on a folder,
-// a FIFO or a device would show it or hang where Herdr's own handling does better.
-const regular = async (p) => (await exec("test", ["-f", p], { timeout: 2000 }).catch(() => null))?.code === 0;
+// A readable regular file (a link to one too), as OPEN asks of a running Neovim, asked of a
+// program, not a shell: a new Neovim on a folder, a FIFO or a device would show it or hang where
+// Herdr's own handling does better.
+const regular = async (p) => (await exec("test", ["-f", p, "-a", "-r", p], { timeout: 2000 }).catch(() => null))?.code === 0;
 
 // Herdr gives the path it resolved; a relative one is taken from the clicked terminal's folder.
 function absolute(path, cwd) {
