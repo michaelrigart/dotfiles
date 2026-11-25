@@ -212,6 +212,7 @@ prompt. Apple Events also run only in Michael's attended `configure.sh`, never i
 | `syncthing-settings` | `you` | `script`; verify unchanged |
 | `vorta` | `you` | `script`; verify adds `[ ! -e "$HOME/.vorta-init.json" ]` and a `vorta-repo` keychain item (§4) |
 | `login-items` | `you`, no check | `script`, checked by `launchctl print` (§5) |
+| `hercules-autologin` | `you`, hercules, `autoLoginUser` checked | removed (§9) |
 
 The `script` rows move into the `script` block, in run order. The spec's `**Provisioning:**` line
 gains `netbird-old-peer` in the commit that adds the row (the suite rejects an id the checklist
@@ -282,6 +283,14 @@ app's quarantined `syncthing` binary runs before the app's first open, and what 
 Vorta's and the login apps' first starts. About 30 minutes
 of Michael's time and two to three hours unattended. The PR opens with its merge state on hold
 until he reports the run; a failure is fixed on the branch first.
+
+### 9. `hercules-autologin` leaves the checklist
+
+Michael decided on 2026-11-25, in the `feat/complete-provisioning` pane, that hercules needs no
+automatic login (relayed by the driver, chezmoi-94, the same day). The `hercules-autologin` row goes;
+no script ever set it. `hercules-power` (`autorestart`) and `filevault-off` stay: NetBird's daemon and
+sshd start before anyone logs in, so a remote power-on still reaches hercules. The #46 spec keeps
+its row table as it was, with a dated note pointing here.
 
 ## Decisions (Michael, 2026-11-25: "signed off, I follow your recommendations")
 

@@ -193,6 +193,10 @@ holds them in full):
 | `weekly-research` | research_host | you | first run under launchd: `launchctl kickstart gui/$(id -u)/be.netronix.weekly-research`, then read the note | `weekly-research --status` says `vault inbox: writable` |
 | `acceptance` | all | you | in a fresh Claude Code session `./tests/run.sh live-agent-signing live-credential-boundary live-agent-auth`; start `codex` once in a Herdr pane and clear its first-run screens, then, unsandboxed, `./tests/run.sh live-codex-daemon`; with Remote Login on, `ssh -o PubkeyAuthentication=no <this Mac>` from the other Mac is refused | `-` |
 
+**Update 2026-11-25:** `hercules-autologin` has left the checklist: Michael decided hercules needs no
+automatic login, since NetBird and sshd start before it. Recorded in
+`2026-11-25-script-provisioning-rows-design.md` §9.
+
 ### 2. `.scripts/machine-check.sh`
 
 - `machine-check.sh [--machine <name>] [--todo]`. The machine defaults to `scutil --get ComputerName`
