@@ -6,12 +6,14 @@
 **Status:** In progress (branch `feat/little-snitch-rules`)
 
 **Goal:** A reinstalled Mac restores its Little Snitch rules from its own 1Password backup, before
-the first login, by a checklist step that points at one README procedure.
+the first login, by a checklist step that points at one README procedure; an agent can rerun the
+rule review from a backup with one script.
 
 **Architecture:** Two manual `you` rows of the machine checklist move up and one gets a new step;
 a README section holds the procedure. No script touches Little Snitch or 1Password.
 
-**Tech Stack:** the TSV checklist, `README.md`, `./tests/run.sh`.
+**Tech Stack:** the TSV checklist, `README.md`, Python 3 (standard library only), bash,
+`./tests/run.sh`.
 
 **Spec:** `docs/superpowers/specs/2026-11-25-little-snitch-provisioning-design.md`
 
@@ -20,8 +22,13 @@ a README section holds the procedure. No script touches Little Snitch or 1Passwo
 - Start only after both: `feat/script-provisioning-rows` has merged (it edits
   `.scripts/machine-checklist.tsv`; rebase onto `origin/main` first), and Codex has reviewed the spec
   and this plan (its limit resets 2026-11-28 09:29), with any spec change signed by Michael.
-- Touch `.scripts/machine-checklist.tsv`, `README.md`, the spec's rebase note (Task 1, Step 4) and,
-  at the finish, the spec's and this plan's Status lines. Nothing else.
+- Touch `.scripts/machine-checklist.tsv`, `README.md`, `.scripts/little-snitch-review.py`,
+  `tests/little-snitch-review.test.sh` and its subject map if `tests/AGENTS.md` asks for one, the
+  spec's rebase note (Task 1, Step 4) and, at the finish, the spec's and this plan's Status lines.
+  Nothing else in the repository. Task 3 may start before the dependency merges: it touches none of
+  that line's files.
+- The private decisions file `~/Code/.metrics/little-snitch/decisions-fenrir.json` (mode 600) is
+  written outside the repository and never committed; no test reads it.
 - Public repository: nothing from the private review or a backup. The only names are the item names
   `Little Snitch backup <machine>` and what the spec already states (hercules' incoming sshd rule,
   hercules-agent-machine section 8 G).
@@ -111,7 +118,10 @@ a README section holds the procedure. No script touches Little Snitch or 1Passwo
   backup turns Terminal access on: neither restore nor store it. The two `restore-model` lines are
   only for a user-ID mismatch (`-l` lists the backup's users), with Terminal access turned on
   first; never pass `--preserve-terminal-access`. `--vault Private` on `get` and `edit` is the
-  plan's tightening of the spec's commands (§6 names Private as the trust boundary).
+  plan's tightening of the spec's commands (§6 names Private as the trust boundary). A sixth part,
+  *Periodic review*, gives Michael's side of spec §5's periodic review: save a backup into
+  `~/Code/.metrics/little-snitch/`, ask an agent to run the review, restore its file, save a fresh
+  backup for 1Password.
 - [ ] **Step 2: Check.**
   - `jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid]]' ~/Code/.metrics/little-snitch/fenrir-2026-11-25.lsbackup`
     prints `[1,[501]]`.
@@ -120,6 +130,52 @@ a README section holds the procedure. No script touches Little Snitch or 1Passwo
   - `rg -n 'preserve-terminal-access' README.md`: one line, the "never".
   - `rg -o '/tmp/[a-z.-]+' README.md | sort -u`: only `/tmp/little-snitch.lsbackup`.
 - [ ] **Step 3: Commit.** "Document restoring and refreshing the Little Snitch backup".
+
+### Task 3: Review script
+
+**Depends on:** none (Codex's review of the spec and plan still comes first).
+
+**Files:**
+- Create: `.scripts/little-snitch-review.py` (mode 755, `#!/usr/bin/env python3`, standard library)
+- Create: `tests/little-snitch-review.test.sh` (mode 755, bash; read `tests/AGENTS.md` first)
+- Private, not committed: `~/Code/.metrics/little-snitch/decisions-fenrir.json`, from the lists in
+  `~/Code/.metrics/little-snitch/optimise.py`
+
+**Interfaces:**
+- `python3 -I .scripts/little-snitch-review.py <backup> <decisions.json> <out> <log>`: exit 0 and
+  both files written (mode 600); exit 1 when an invariant fails, writing neither; exit 2 on usage
+  or an unreadable input. It never runs `littlesnitch`, `sudo` or `op`.
+- Decisions JSON: `{"agent_terminals": [<code ID>], "keep_temporary": [<matcher>], "narrow":
+  [{"match": <matcher>, "set": {<field>: <value>}}], "remove": [<matcher>]}`, where a matcher is
+  `{"process": ..., "via": ... | null, "remote": [<key>, <value>] | null}` (null `remote`: any
+  remote except allow-any). `remove` carries the interpreter allow-any and the one-off incoming
+  allows.
+- The log lists every change under the spec §5 pass that made it, with before and after counts.
+
+- [ ] **Step 1: Write the failing suite.** One case per behaviour, each on a synthetic backup built
+  in a temp dir (app paths and tool paths inside the temp dir, so "on disk" is controlled):
+  `gone_app_removed`, `moved_signed_cli_kept`, `missing_path_removed`, `unused_180_removed`,
+  `never_used_old_removed`, `never_used_recent_kept`, `redundant_under_any_removed`,
+  `other_via_not_redundant`, `temporary_broad_covers_nothing`, `expired_suggestions_removed`,
+  `os_update_suggestions_kept`, `keep_temporary_promoted`, `other_temporary_dropped`,
+  `agent_terminal_any_added`, `agent_terminal_temporary_promoted`, `agent_tool_via_any_added`,
+  `missing_tool_gets_no_rule`, `narrow_domain_to_host`, `remove_matcher_applied`,
+  `protected_factory_group_untouched`, `terminal_access_off`, `approved_keys_removed`,
+  `invariant_failure_writes_nothing` (exit 1, no output), `bad_input_exit_2`,
+  `no_live_commands` (the script names none of `littlesnitch`, `sudo`, `op ` as a command).
+- [ ] **Step 2: Run it and see it fail.** `./tests/run.sh little-snitch-review`: every case fails
+  (no script).
+- [ ] **Step 3: Implement** the passes and invariants of spec §5 *Periodic review*, in the order of
+  the private builder: terminals, narrowing, temporaries, removals, programs gone, unused,
+  redundant, suggestions, approvals, settings, invariants.
+- [ ] **Step 4: Suite passes,** then the revert check on three cases (`redundant_under_any_removed`,
+  `agent_tool_via_any_added`, `invariant_failure_writes_nothing`): break the code path, see the case
+  fail, restore it.
+- [ ] **Step 5: Parity, private.** Write `decisions-fenrir.json`, run the script on
+  `~/Code/.metrics/little-snitch/fenrir-pre-restore.lsbackup`, and compare with
+  `fenrir-restore-2026-11-25.lsbackup`: the same rules apart from the creation and modification
+  dates of added rules. Report any other difference instead of committing.
+- [ ] **Step 6: Commit.** "Add a Little Snitch rule review script for periodic clean-ups".
 
 ## Finish
 
