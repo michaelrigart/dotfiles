@@ -80,7 +80,31 @@ done
 # osascript and pgrep answer from the environment, so a case can make the Apple Event fail
 # ($OSA_RC) or Alfred look running ($PGREP_RC=0; the default is not running).
 printf '#!/usr/bin/env bash\necho "osascript $*" >> "$CALLS"\nexit "${OSA_RC:-0}"\n' > "$T/bin/osascript"
-printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"\nexit "${PGREP_RC:-1}"\n' > "$T/bin/pgrep"
+# $T/vorta-running makes `pgrep -x vorta-darwin` (Vorta.app's process) succeed; read-stdin-pgrep makes any
+# pgrep that gets a line on stdin succeed too, so a step that left its stdin open reads Vorta as running.
+cat > "$T/bin/pgrep" <<'PG'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$CALLS"
+[ -e "$SBX_ROOT/read-stdin-pgrep" ] && { read -r _ && exit 0; }
+case "$*" in *"-x vorta-darwin"*) [ -e "$SBX_ROOT/vorta-running" ] && exit 0 ;; esac
+exit "${PGREP_RC:-1}"
+PG
+# open logs its arguments. With $T/vorta-imports it plays Vorta's start: it copies ~/.vorta-init.json to
+# $T/vorta-init-seen, its mode to $T/vorta-init-mode, and deletes it, as Vorta does after an import.
+# read-stdin-open makes it read one line of stdin and fail on EOF, before importing.
+cat > "$T/bin/open" <<'OP'
+#!/usr/bin/env bash
+echo "open $*" >> "$CALLS"
+[ -e "$SBX_ROOT/read-stdin-open" ] && { read -r _ || exit 1; }
+f="$HOME/.vorta-init.json"
+if [ -e "$SBX_ROOT/vorta-imports" ] && [ -f "$f" ]; then
+  cp "$f" "$SBX_ROOT/vorta-init-seen"; stat -f %Lp "$f" > "$SBX_ROOT/vorta-init-mode"; /bin/rm -f "$f"
+fi
+exit 0
+OP
+# Vorta imports by default, so a run that reaches step 15b does not wait out its 2 minutes; section X
+# removes the marker for the case where it never does.
+: > "$T/vorta-imports"
 # REUSABLE launchctl stub (the loader and any later case read it): a file of loaded labels
 # ($LAUNCHCTL_LOADED, one per line). `print` exits 0 iff the label is listed, `bootstrap` adds
 # it unless $LAUNCHCTL_FAIL names it, `bootout` removes it, and every call is logged to
@@ -319,17 +343,19 @@ assert_inside(){ local r; r=$(canon "$2")
 # It is also a machine whose setup is done: netbird is connected, Syncthing has its config.xml and
 # Vorta's settings.db holds a profile with a repository, so no step reads a 1Password item.
 ST_DIR="$T/home/Library/Application Support/Syncthing"; VORTA_DIR="$T/home/Library/Application Support/Vorta"
-reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
+VI="$T/home/.vorta-init.json"; mkdir -p "$T/apps/Vorta.app"
+reset(){ rm -f "$VI" "$T/vorta-init-seen" "$T/vorta-init-mode"; : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
   mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"
   rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing" "$T/st-appears"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
   /usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('p', 1);"; }
 # The secrets are the suite's markers; nothing here is a real value. items_all takes the vault.
 MK_NB='MARK-NB-KEY-7f3a'; MK_ST='MARK-ST-PW-91c2'; MK_VORTA='MARK-VORTA-PW-d4e8'
+VORTA_EXPORT='{"id":1,"name":"Default","SchemaVersion":{"version":23},"repo":{"url":"ssh://nobody@127.0.0.1:9/./repo"},"password":"'"$MK_VORTA"'"}'
 put_item(){ mkdir -p "$T/op-items/$1/$2"; printf '%s\n' "$4" > "$T/op-items/$1/$2/$3"; }
 items_all(){ local v=${1:-Private}
   put_item "$v" "NetBird setup key" credential "$MK_NB"
   put_item "$v" "Syncthing GUI" username st-user; put_item "$v" "Syncthing GUI" password "$MK_ST"
-  put_item "$v" "BorgBase hercules" document '{"password":"'"$MK_VORTA"'","repo":{"url":"ssh://nobody@127.0.0.1:9/./repo"}}'; }
+  put_item "$v" "BorgBase hercules" document "$VORTA_EXPORT"; }
 # A machine on which all three steps are not done.
 fresh_steps(){ rm -f "$ST_DIR/config.xml" "$VORTA_DIR/settings.db"; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; }
 SBX_SRC="$T/src"; SBX_BREW="$T/brew/bin/brew"
@@ -943,6 +969,18 @@ rm -f "$T/read-stdin-netbird" "$T/fast-sleep"
 has "read: NetBird setup key" "the preflight's netbird status --json reads /dev/null (a status it cannot read means the key is read)"
 has "NetBird did not join with the setup key" "and step 8c's reads /dev/null too: it warns instead of joining on a spare line's status"
 not_called "netbird up" "and runs no up"
+# Vorta's step: pgrep and open read /dev/null. A leaked line makes pgrep report Vorta running, or open import.
+mkdir -p "$T/apps/Vorta.app"; : > "$T/fast-sleep"
+: > "$T/read-stdin-pgrep"
+reset; fresh_steps; items_all; run "$SPARE"
+rm -f "$T/read-stdin-pgrep"
+hasnt "quit Vorta, then run provision.sh again" "pgrep -x vorta-darwin reads /dev/null"
+called "open -g -a Vorta" "and Vorta is started"
+: > "$T/read-stdin-open"
+reset; fresh_steps; items_all; run "$SPARE"
+rm -f "$T/read-stdin-open" "$T/fast-sleep"
+[ -e "$VI" ] && _pass "open reads /dev/null: it fails before importing" || _fail "open reads /dev/null: it fails before importing"
+has "answer macOS's prompt to open Vorta" "and the file's warning stands"
 
 echo "S. the end of the run points at the checklist"
 reset; run 'hercules\ny\n'
@@ -1163,6 +1201,75 @@ hasnt "Syncthing's options globalAnnounceEnabled" "and only that one"
 # Without the login (item unread), nothing is generated.
 reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/Syncthing GUI"; run 'hercules\ny\n'
 not_called "syncthing generate" "no login read: nothing is generated"
+umask "$OLD_UMASK"
+
+echo "X. Vorta imports its own export"
+OLD_UMASK=$(umask); umask 022
+mkdir -p "$T/apps/Vorta.app"; : > "$T/vorta-imports"; : > "$T/fast-sleep"
+reset; fresh_steps; items_all; run 'hercules\ny\n'
+rc_is 0 "a fresh machine: the run finishes"
+called "open -g -a Vorta" "Vorta is started in the background"
+[ "$(cat "$T/vorta-init-mode" 2>/dev/null)" = 600 ] && _pass "the file is mode 600 under umask 022" || _fail "the file is mode 600 under umask 022"
+printf '%s\n' "$VORTA_EXPORT" | cmp -s - "$T/vorta-init-seen" && _pass "Vorta sees the export byte for byte" || _fail "Vorta sees the export byte for byte"
+[ -e "$VI" ] && _fail "the file is gone after the import" || _pass "the file is gone after the import"
+ol=$(grep -n '^open -g -a Vorta' "$CALLS" | head -1 | cut -d: -f1); cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$ol" ] && [ -n "$cl" ] && [ "$ol" -lt "$cl" ]; } && _pass "Vorta starts before configure.sh" || _fail "Vorta starts before configure.sh"
+not_called "$MK_VORTA" "no log line carries the password"
+hasnt "$MK_VORTA" "the run prints no password"
+# Vorta never imports (macOS's first-open prompt, say): the file stays and the warning says what is left.
+rm -f "$T/vorta-imports"
+reset; fresh_steps; items_all; run 'hercules\ny\n'
+rc_is 0 "no import: the run finishes"
+[ -f "$VI" ] && _pass "the file stays" || _fail "the file stays"
+has "answer macOS's prompt to open Vorta" "and the warning says what is left"
+has "$VI" "and names the file"
+hasnt "$MK_VORTA" "and prints no password"
+[ "$(grep -c '^sleep 5$' "$CALLS")" -eq 24 ] && _pass "the wait is 24 steps of 5 s, 120 s" || _fail "the wait is 24 steps of 5 s, 120 s ($(grep -c '^sleep 5$' "$CALLS"))"
+: > "$T/vorta-imports"
+nowrite(){ not_called "open -g -a Vorta" "$1: Vorta is not started"
+  [ -e "$VI" ] || [ -L "$VI" ] && _fail "$1: no file is written" || _pass "$1: no file is written"; }
+# A profile with a repository, or a settings.db that cannot be read: the export is not even read.
+reset; items_all; run 'hercules\ny\n'
+nowrite "a configured profile"
+reset; items_all; printf 'not a database' > "$VORTA_DIR/settings.db"; run 'hercules\ny\n'
+nowrite "a settings.db that is not a database"
+# Vorta running.
+: > "$T/vorta-running"
+reset; fresh_steps; items_all; run 'hercules\ny\n'; rm -f "$T/vorta-running"
+rc_is 0 "Vorta running: the run finishes"
+nowrite "Vorta running"
+has "quit Vorta, then run provision.sh again" "and the warning says what to do"
+called "pgrep -x vorta-darwin" "and the process asked about is Vorta's"
+# A file already there stays as it is.
+reset; fresh_steps; items_all; printf 'keep me\n' > "$VI"; run 'hercules\ny\n'
+not_called "open -g -a Vorta" "an existing file: Vorta is not started"
+[ "$(cat "$VI")" = "keep me" ] && _pass "an existing file: its content is unchanged" || _fail "an existing file: its content is unchanged"
+has "$VI already exists" "and the warning names it"
+# A dangling symlink is not followed.
+reset; fresh_steps; items_all; ln -s "$T/elsewhere" "$VI"; run 'hercules\ny\n'
+rc_is 0 "a dangling symlink: the run finishes"
+not_called "open -g -a Vorta" "a dangling symlink: Vorta is not started"
+[ -e "$T/elsewhere" ] && _fail "nothing is written through the symlink" || _pass "nothing is written through the symlink"
+[ -L "$VI" ] && _pass "and the symlink is left" || _fail "and the symlink is left"
+has "$VI already exists" "and the warning names it"
+# Vorta.app missing (its cask failed): a warning, nothing written.
+reset; fresh_steps; items_all; mv "$T/apps/Vorta.app" "$T/Vorta.app.away"; run 'hercules\ny\n'; mv "$T/Vorta.app.away" "$T/apps/Vorta.app"
+rc_is 0 "no Vorta.app: the run finishes"
+nowrite "no Vorta.app"
+has "Vorta.app is not installed" "and the warning says so"
+# An export Vorta could not import is never written; no export text reaches the output.
+for bad in '[]' "not json $MK_VORTA {" \
+  '{"id":"1","name":"'"$MK_VORTA"'","SchemaVersion":{"version":23},"repo":{"url":"u"},"password":"x"}' \
+  '{"id":1,"name":"'"$MK_VORTA"'","SchemaVersion":{"version":23},"repo":{"url":"u"},"password":""}' \
+  '{"id":1,"name":"'"$MK_VORTA"'","SchemaVersion":{"version":23},"repo":{"url":"u"}}'; do
+  reset; fresh_steps; items_all; put_item Private "BorgBase hercules" document "$bad"; run 'hercules\ny\n'
+  rc_is 0 "an export that fails the check: the run finishes"
+  nowrite "an export that fails the check"
+  has "is not a profile Vorta can import" "and the warning says so"
+  hasnt "$MK_VORTA" "and no marker reaches the output"
+  not_called "$MK_VORTA" "nor the log"
+done
+rm -f "$T/fast-sleep"
 umask "$OLD_UMASK"
 
 echo; echo "RESULT: $pass passed, $fail failed"

@@ -647,6 +647,48 @@ log_info "Cleaning up Homebrew..."
 brew cleanup
 
 # ============================================================================
+# 15b. Vorta imports its own export
+# ============================================================================
+# Only when the preflight read the export (no profile had a repository). Vorta reads
+# ~/.vorta-init.json at its start and deletes it only after a successful import, so nothing is written
+# unless Vorta.app is installed (else no start could remove the secret), Vorta is not running, the
+# path is free (a dangling symlink counts: it would be followed) and the export has the shape Vorta
+# imports. The check's output goes to /dev/null: jq's errors quote the input. The file is mode 600 and
+# never replaces another. A file Vorta has not imported after 2 minutes stays (spec section 4's
+# ruling): macOS asks before a quarantined app's first start, and deleting would throw the import away.
+if (( NEED_VORTA )) && [ -n "$PV_VORTA_EXPORT" ]; then
+  case "$(vorta_state)" in
+    absent|none)
+      if [ ! -d "$APPS/Vorta.app" ]; then
+        warn "Vorta.app is not installed — its profile was not handed over; see the vorta row"
+      elif pgrep -x vorta-darwin </dev/null >/dev/null 2>&1; then
+        warn "Vorta is running and has no profile — quit Vorta, then run provision.sh again; see the vorta row"
+      elif [ -e "$VORTA_INIT" ] || [ -L "$VORTA_INIT" ]; then
+        warn "${VORTA_INIT} already exists — Vorta's profile was not handed over; see the vorta row"
+      elif ! print -r -- "$PV_VORTA_EXPORT" | jq -e 'type == "object" and (.id|type) == "number" and (.name|type) == "string" and (.SchemaVersion.version|type) == "number" and (.repo.url|type) == "string" and (.password|type) == "string" and (.password|length) > 0' >/dev/null 2>&1; then
+        warn "1Password's 'BorgBase ${MACHINE_NAME}' is not a profile Vorta can import — nothing written; see the vorta row"
+      elif ! ( umask 077; set -o noclobber; print -r -- "$PV_VORTA_EXPORT" > "$VORTA_INIT" ); then
+        warn "${VORTA_INIT} could not be written — Vorta's profile was not handed over; see the vorta row"
+      else
+        log_info "Starting Vorta so it imports its profile..."
+        /usr/bin/timeout -k 5 60 open -g -a Vorta </dev/null || log_warn "open -a Vorta did not return cleanly"
+        vorta_waited=0
+        while [ -e "$VORTA_INIT" ] && (( vorta_waited < 120 )); do
+          sleep 5; vorta_waited=$(( vorta_waited + 5 ))
+        done
+        if [ -e "$VORTA_INIT" ]; then
+          warn "Vorta has not imported ${VORTA_INIT} yet — answer macOS's prompt to open Vorta; if Vorta reports \"Failed to import profile\", delete the file and set Vorta up by hand (vorta row)"
+        else
+          log_info "✓ Vorta imported its profile"
+        fi
+      fi ;;
+    configured) log_info "Vorta already has a profile — nothing imported" ;;
+    *) warn "Vorta's settings could not be read: no profile imported — see the vorta row" ;;
+  esac
+fi
+unset PV_VORTA_EXPORT
+
+# ============================================================================
 # 16. Run macOS configuration
 # ============================================================================
 if [ -f "${SCRIPTS_DIR}/configure.sh" ]; then
