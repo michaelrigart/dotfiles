@@ -194,7 +194,7 @@ echo "K. chezmoi reruns the loader when a plist, as rendered for this machine, c
 # The run_onchange_ script carries one hash line per plist template, of the template RENDERED
 # with the current data, so a data value a plist uses moves the hash with no template edited.
 CP="$T/src"; mkdir -p "$CP/.scripts" "$CP/Library/LaunchAgents"
-cp "$HOOK" "$CP/"; cp "$SRC"/Library/LaunchAgents/*.plist.tmpl "$CP/Library/LaunchAgents/"
+cp "$HOOK" "$CP/"; cp "$SRC"/Library/LaunchAgents/*.plist* "$CP/Library/LaunchAgents/"
 printf '#!/bin/sh\necho loader-ran >> "$LOADER_MARK"\n' > "$CP/.scripts/load-launchagents.sh"
 chmod +x "$CP/.scripts/load-launchagents.sh"
 cfg(){ printf '[data]\n  is_arm = %s\n  name = "n"\n  email = "e@example.com"\n' "$1" > "$T/chezmoi-$1.toml"; }

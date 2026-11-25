@@ -1274,5 +1274,41 @@ done
 rm -f "$T/fast-sleep"
 umask "$OLD_UMASK"
 
+echo "Y. the login apps' LaunchAgent"
+# Spec 2026-11-25-script-provisioning-rows section 5 (ruling 3): one plain plist, whose job opens each
+# listed app that is installed. The job's script runs here against $T/apps and the open stub, never
+# the real /Applications or /usr/bin/open.
+LAP="$SRC/Library/LaunchAgents/be.netronix.login-apps.plist"
+if [ ! -f "$LAP" ]; then
+  _fail "the LaunchAgent plist exists"
+else
+  plutil -lint "$LAP" >/dev/null 2>&1 && _pass "the plist is valid" || _fail "the plist is valid"
+  [ "$(plutil -extract Label raw -o - "$LAP" 2>/dev/null)" = be.netronix.login-apps ] && _pass "its label is be.netronix.login-apps" || _fail "its label is be.netronix.login-apps"
+  [ "$(plutil -extract RunAtLoad raw -o - "$LAP" 2>/dev/null)" = true ] && _pass "it runs at load" || _fail "it runs at load"
+  plutil -extract KeepAlive raw -o - "$LAP" >/dev/null 2>&1 && _fail "it has no KeepAlive" || _pass "it has no KeepAlive"
+  want_apps="Syncthing|Vorta|Alfred 5|1Password|Linger|Tafl|Micro Snitch|Proton Drive|Elgato Control Center"
+  got_apps=""; n=$(plutil -extract ProgramArguments raw -o - "$LAP" 2>/dev/null); i=4
+  while [ "$i" -lt "${n:-0}" ]; do
+    a=$(plutil -extract "ProgramArguments.$i" raw -o - "$LAP" 2>/dev/null); got_apps="${got_apps:+$got_apps|}$a"; i=$((i+1))
+  done
+  [ "$got_apps" = "$want_apps" ] && _pass "the apps are the nine, in order" || _fail "the apps are the nine, in order (got: $got_apps)"
+  [ "$(plutil -extract ProgramArguments.0 raw -o - "$LAP" 2>/dev/null)|$(plutil -extract ProgramArguments.1 raw -o - "$LAP" 2>/dev/null)|$(plutil -extract ProgramArguments.3 raw -o - "$LAP" 2>/dev/null)" = "/bin/zsh|-fc|login-apps" ] \
+    && _pass "it runs /bin/zsh -fc with login-apps as the script's name" || _fail "it runs /bin/zsh -fc with login-apps as the script's name"
+  script=$(plutil -extract ProgramArguments.2 raw -o - "$LAP" 2>/dev/null)
+  script=${script//\/usr\/bin\/open/$T/bin/open}; script=${script//\/Applications/$T/apps}
+  case "$script" in *"$T/bin/open"*"$T/apps"*|*"$T/apps"*"$T/bin/open"*) _pass "the script names /Applications and /usr/bin/open (both swapped for the stubs)" ;; *) _fail "the script names /Applications and /usr/bin/open (both swapped for the stubs)" ;; esac
+  rm -rf "$T/apps/Alfred 5.app"; mkdir -p "$T/apps/Syncthing.app" "$T/apps/Vorta.app" "$T/apps/Alfred 5.app"
+  rm -rf "$T/apps/Elgato Control Center.app"
+  : > "$CALLS"
+  OUT=$(CALLS="$CALLS" SBX_ROOT="$SBX_ROOT" HOME="$T/home" /bin/zsh -fc "$script" login-apps Syncthing Vorta "Alfred 5" 1Password "Elgato Control Center" </dev/null 2>&1); RC=$?
+  rc_is 0 "the job exits 0 though the last app is not installed"
+  called "open -g -a Syncthing" "an installed Syncthing is opened in the background"
+  called "open -g -a Vorta" "an installed Vorta is opened in the background"
+  called "open -g -a Alfred 5" "an app whose name has a space is opened whole"
+  not_called "open -g -a 1Password" "an app that is not installed (1Password) is not opened"
+  not_called "open -g -a Elgato Control Center" "Elgato Control Center is not opened when absent"
+  rm -rf "$T/apps/Alfred 5.app"
+fi
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
