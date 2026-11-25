@@ -15,6 +15,9 @@
     "width": 1,
     "color": "border"
   },
+  "link_handlers": [
+    "nav"
+  ],
   "children": [
     {
       "id": "sidebar",

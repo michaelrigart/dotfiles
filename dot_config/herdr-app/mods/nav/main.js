@@ -4,6 +4,7 @@
 //                            ctrl+h and ctrl+l still work beside an edge)
 //   nav.agents|runtime       alt+a / alt+r: the space's tab of that name
 //   nav.editor               alt+e: the editor tab, made with `nvim .` the first time
+// Cmd-click on path:line opens it in that tab's Neovim: link.js.
 //
 // Neovim needs no plugin or config for this: its server answers whether the cursor is at
 // a split edge, and only then does the key leave it. smart-splits finds no multiplexer in

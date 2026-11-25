@@ -1,1 +1,1 @@
-{ "place": "none", "title": "Nav" }
+{ "place": "none", "title": "Nav", "link_handlers": [{ "kind": "file", "pattern": "." }] }
