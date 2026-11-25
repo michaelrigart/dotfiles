@@ -344,6 +344,8 @@ assert_inside(){ local r; r=$(canon "$2")
 # Vorta's settings.db holds a profile with a repository, so no step reads a 1Password item.
 ST_DIR="$T/home/Library/Application Support/Syncthing"; VORTA_DIR="$T/home/Library/Application Support/Vorta"
 VI="$T/home/.vorta-init.json"; mkdir -p "$T/apps/Vorta.app"
+nowrite(){ not_called "open -g -a Vorta" "$1: Vorta is not started"
+  [ -e "$VI" ] || [ -L "$VI" ] && _fail "$1: no file is written" || _pass "$1: no file is written"; }
 reset(){ rm -f "$VI" "$T/vorta-init-seen" "$T/vorta-init-mode"; : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
   mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"
   rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing" "$T/st-appears"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
@@ -1038,6 +1040,8 @@ rc_is 0 "a value of only whitespace: the run finishes"
 has "Not read from 1Password  NetBird setup key" "and counts as unread"
 reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/NetBird setup key" "$T/op-items/Private/Syncthing GUI" "$T/op-items/Private/BorgBase hercules"; run 'hercules\ny\n'
 has "Setup secrets ...... none read" "with every item missing, the summary reads none"
+hasnt "is not a profile Vorta can import" "and step 15b has no export to check"
+nowrite "every item missing"
 # NetBird's done test.
 : > "$T/fail-netbird"; : > "$T/fast-sleep"; reset; items_all; run 'hercules\ny\n'; rm -f "$T/fail-netbird" "$T/fast-sleep"
 called "op read op://Private/NetBird setup key/credential" "a status netbird cannot give: the key is read"
@@ -1226,8 +1230,6 @@ has "$VI" "and names the file"
 hasnt "$MK_VORTA" "and prints no password"
 [ "$(grep -c '^sleep 5$' "$CALLS")" -eq 24 ] && _pass "the wait is 24 steps of 5 s, 120 s" || _fail "the wait is 24 steps of 5 s, 120 s ($(grep -c '^sleep 5$' "$CALLS"))"
 : > "$T/vorta-imports"
-nowrite(){ not_called "open -g -a Vorta" "$1: Vorta is not started"
-  [ -e "$VI" ] || [ -L "$VI" ] && _fail "$1: no file is written" || _pass "$1: no file is written"; }
 # A profile with a repository, or a settings.db that cannot be read: the export is not even read.
 reset; items_all; run 'hercules\ny\n'
 nowrite "a configured profile"
