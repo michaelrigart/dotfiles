@@ -512,8 +512,10 @@ fi
 # first gives the GUI its login, so it never serves an open one, and fixes the discovery options in
 # the file before the app starts (section 8 E1). The password goes in on a pipe: --gui-password=-
 # reads it from stdin. A failed generate leaves the by-hand fallback, section 8 E1.
-if (( NEED_SYNCTHING )) && [ -n "$PV_ST_USER" ] && [ -n "$PV_ST_PASSWORD" ] && [ ! -e "${ST_HOME}/config.xml" ]; then
-  if [ ! -x "$ST_BIN" ]; then
+if (( NEED_SYNCTHING )) && [ -n "$PV_ST_USER" ] && [ -n "$PV_ST_PASSWORD" ]; then
+  if [ -e "${ST_HOME}/config.xml" ]; then
+    warn "Syncthing already has a config.xml (it started during this run) — set its GUI login and options by hand: see the syncthing-settings row"
+  elif [ ! -x "$ST_BIN" ]; then
     warn "Syncthing.app is not installed — its config was not generated; see the syncthing-settings row"
   else
     log_info "Generating Syncthing's config with its GUI login..."
@@ -537,7 +539,7 @@ fi
 unset PV_ST_USER PV_ST_PASSWORD
 
 # ============================================================================
-# 9.Reconcile AI agent plugins (Claude Code + Codex)
+# 9. Reconcile AI agent plugins (Claude Code + Codex)
 # ============================================================================
 if [ -x "${SCRIPTS_DIR}/reconcile-agents.sh" ]; then
   log_info "Reconciling AI agent plugins..."

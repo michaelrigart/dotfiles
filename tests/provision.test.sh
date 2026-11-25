@@ -63,7 +63,7 @@ SU
 # fail-brew-bundle fails `brew bundle`; its check then names a missed item on stderr, as Homebrew 7 does.
 # outdated-brew-bundle: everything is installed but glab has a newer release, so only a check
 # without --no-upgrade fails. With both markers, the install fails on that upgrade.
-printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
+printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) [ -e "$SBX_ROOT/st-appears" ] && : > "$HOME/Library/Application Support/Syncthing/config.xml"; if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
 # Homebrew's zsh, which step 10 makes the login shell only when it is installed.
 printf '#!/bin/sh\nexec /bin/zsh "$@"\n' > "$T/brew/bin/zsh"
@@ -321,7 +321,7 @@ assert_inside(){ local r; r=$(canon "$2")
 ST_DIR="$T/home/Library/Application Support/Syncthing"; VORTA_DIR="$T/home/Library/Application Support/Vorta"
 reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
   mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"
-  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
+  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing" "$T/st-appears"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
   /usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('p', 1);"; }
 # The secrets are the suite's markers; nothing here is a real value. items_all takes the vault.
 MK_NB='MARK-NB-KEY-7f3a'; MK_ST='MARK-ST-PW-91c2'; MK_VORTA='MARK-VORTA-PW-d4e8'
@@ -1138,6 +1138,12 @@ reset; items_all; printf '<configuration version="52">kept</configuration>\n' > 
 run 'hercules\ny\n'
 not_called "syncthing generate" "an existing config.xml: nothing is generated"
 cmp -s "$ST_DIR/config.xml" "$T/config.before" && _pass "and the file is byte-identical" || _fail "and the file is byte-identical"
+# Syncthing started during the run (the Brewfile step), after the preflight read the login: warn, do not generate.
+mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"
+reset; fresh_steps; items_all; : > "$T/st-appears"; run 'hercules\ny\n'; rm -rf "$T/home/.config/homebrew"
+rc_is 0 "a config.xml that appears after the preflight: the run finishes"
+has "Syncthing already has a config.xml (it started during this run) — set its GUI login and options by hand: see the syncthing-settings row" "the warning says so"
+not_called "syncthing generate" "and nothing is generated"
 # A generate that fails.
 reset; fresh_steps; items_all; : > "$T/fail-syncthing"; run 'hercules\ny\n'
 rc_is 0 "a failing generate: the run finishes"
