@@ -333,6 +333,10 @@ in this plan", and the final review's fixes) apply.
   dismissed prompt fails the same way as a missing item).
 - §1: the preflight's sub-steps are renumbered 5c to 5f, and the secret variables are declared
   `typeset +x`, so a caller's exported name never reaches a child.
+- §2: `netbird-session-expiry`'s check keeps its verify. fenrir's SSO peer reports no
+  `sessionExpiresAt`, which matches its dashboard setting (Michael, 2026-11-25): Session Expiration
+  off for fenrir, the account's expiry on at 24 hours. Its ✗ side (an SSO peer with expiry on
+  reporting the field) has not been observed.
 
 ## Michael's steps after merge
 
