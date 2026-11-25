@@ -148,6 +148,7 @@ Library/LaunchAgents/be.netronix.weekly-research.plist
 !.config/herdr-app/programs.json
 !.config/herdr-app/claude-settings.json
 !.config/herdr-app/settings.json
+!.config/herdr-app/AGENTS.local.md
 !.config/herdr-app/layouts/
 .config/herdr-app/layouts/*
 !.config/herdr-app/layouts/michael.json
