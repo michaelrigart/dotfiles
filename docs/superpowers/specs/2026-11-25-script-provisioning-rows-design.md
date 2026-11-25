@@ -337,6 +337,10 @@ in this plan", and the final review's fixes) apply.
   `sessionExpiresAt`, which matches its dashboard setting (Michael, 2026-11-25): Session Expiration
   off for fenrir, the account's expiry on at 24 hours. Its ✗ side (an SSO peer with expiry on
   reporting the field) has not been observed.
+- §8: the VM run ends with a restart left at the login screen; the VM's peer must then show as
+  connected from fenrir. hercules has no automatic login (§9, Michael: "auto-login is not safe"), so
+  a restarted hercules is reached only if NetBird connects before anyone logs in, which no run has
+  measured for a peer joined by setup key as the console user.
 
 ## Michael's steps after merge
 

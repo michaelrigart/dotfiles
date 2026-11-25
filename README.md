@@ -259,7 +259,10 @@ also ✓ with no prompt, `~/.vorta-init.json` is gone, and the second run reads 
 `config.xml` unchanged, keeps the same NetBird peer and IP and adds no Vorta profile. None of the
 three throwaway values may appear in NetBird's logs and config (`/var/log/netbird`,
 `/var/lib/netbird`), `~/Library/Logs`, Syncthing's folder (only a bcrypt hash) or Vorta's
-`settings.db` and log.
+`settings.db` and log. Last, before `tart delete`: restart the VM from its Apple menu and leave it
+at the login screen. Within a few minutes the VM's peer must show as connected on fenrir (the
+dashboard's Peers page, or `netbird status -d`): hercules has no automatic login, so NetBird
+connecting before anyone logs in is how a restarted hercules is reached.
 
 Then remove the VM's device from 1Password. Run the VM only with that test vault, never with
 Michael's own items, and still never pair Syncthing or start a backup there.
