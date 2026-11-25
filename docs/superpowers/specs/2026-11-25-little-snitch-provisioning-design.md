@@ -187,9 +187,12 @@ change it:
 On each machine already set up (fenrir now, hercules when Michael has access to it; until then
 hercules relies on the row's fallback):
 
-1. Apply the review's changes in the UI, including Settings › Security › "Allow access via
-   Terminal" off. The stored backup is this reviewed rule set; the backup taken for the review
-   (before its changes, with Terminal access on) is never stored.
+1. Apply the review's changes, including Settings › Security › "Allow access via Terminal" off.
+   On fenrir, at Michael's request ("optimizing is something YOU need to do"), the line built an
+   optimised copy of a fresh backup (private, outside the repository), and Michael restores it
+   once: the one restore onto a machine in use that §5 allows, made from a backup taken right
+   before it so no rule is lost. The stored backup is this reviewed rule set; the backup taken for
+   the review (before its changes, with Terminal access on) is never stored.
 2. Store the backup as the README's *Refresh* step says, creating the item with
    `op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup <machine>"
    --vault Private`.
