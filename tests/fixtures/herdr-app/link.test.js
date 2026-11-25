@@ -134,6 +134,14 @@ await replay("from a special window it opens in a normal one, leaving that windo
   "execute('only | enew | vsplit | enew | setlocal buftype=nofile')");
 await replay("a click Neovim gets too late opens nothing", file(`${FILES}/late.txt`, 2), from(), "0",
   `bufexists('${FILES}/late.txt')`, "0", undefined, Date.now() - 60000);
-await replay("insert mode ends, so the next keys do not edit the file", file(`${FILES}/plain.txt`, 2), from(), "1",
-  "mode()", "n", "feedkeys('i', 'n')");
-check(`every Neovim case produced an expression to replay (${replays})`, replays === NAMES.length + 12);
+// A Neovim left in another mode is put in normal mode, so the next keys do not edit the file or
+// run a half-typed command there, and the cursor stays on the clicked column.
+const MODE = "mode() .. ' ' .. line('.') .. ':' .. col('.') .. ' ' .. &modified";
+for (const [what, keys] of [["insert", "i"], ["replace", "R"], ["command-line", ":echo 1"], ["visual", "v"]]) {
+  await replay(`from ${what} mode it ends in normal mode at the clicked column`, file(`${FILES}/plain.txt`, 3, 6), from(), "1",
+    MODE, "n 3:6 0", `execute('only | enew!') .. feedkeys('${keys}', 'n')`);
+}
+await replay("a float showing the file is not where it opens, nor is the current float", file(`${FILES}/plain.txt`, 2), from(), "1",
+  "win_gettype() .. '|' .. luaeval('vim.api.nvim_buf_get_name(0)')", `|${FILES}/plain.txt`,
+  `execute('only | enew!') .. luaeval('vim.api.nvim_open_win(vim.fn.bufadd(_A), true, {relative = "editor", row = 1, col = 1, width = 20, height = 3}) * 0', '${FILES}/plain.txt')`);
+check(`every Neovim case produced an expression to replay (${replays})`, replays === NAMES.length + 16);

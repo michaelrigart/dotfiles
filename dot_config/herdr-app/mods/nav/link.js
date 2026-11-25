@@ -11,27 +11,26 @@ import { spaces, panes, run, exec } from "herdr";
 import { vimIn, serverOf } from "./nvim.js";
 
 // 1 when it opened the file, 0 when the path is not a readable regular file or the request came
-// after its deadline. A file already in a window is jumped to; a special window (a file tree, a
-// terminal) gives way to a normal one. Insert mode ends, so the next keys do not edit the file.
+// after its deadline. It opens in a normal window (not a float, a file tree or a terminal): the
+// one already showing the file, else the current one, else the tab page's first. Then Neovim
+// goes to normal mode, so the next keys do not edit the file or run a half-typed command there;
+// that happens once this call returns, and leaving insert mode moves the cursor, so the keys set
+// it again.
 const OPEN = `(function(p, l, c, by)
   if os.time() > by then return 0 end
   local st = vim.uv.fs_stat(p)
   if not st or st.type ~= "file" or vim.fn.filereadable(p) ~= 1 then return 0 end
+  local function normal(w)
+    return vim.bo[vim.api.nvim_win_get_buf(w)].buftype == "" and vim.api.nvim_win_get_config(w).relative == ""
+  end
   local buf = vim.fn.bufadd(p)
   vim.bo[buf].buflisted = true
-  local win = vim.fn.win_findbuf(buf)[1]
-  if not win and vim.bo.buftype ~= "" then
-    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-      if vim.bo[vim.api.nvim_win_get_buf(w)].buftype == "" and vim.api.nvim_win_get_config(w).relative == "" then
-        win = w
-        break
-      end
-    end
-  end
+  local win = vim.iter(vim.fn.win_findbuf(buf)):find(normal)
+  if not win and not normal(0) then win = vim.iter(vim.api.nvim_tabpage_list_wins(0)):find(normal) end
   if win then vim.api.nvim_set_current_win(win) end
   if vim.api.nvim_get_current_buf() ~= buf then vim.api.nvim_win_set_buf(0, buf) end
-  vim.cmd.stopinsert()
   vim.fn.cursor(l, c)
+  vim.api.nvim_feedkeys(vim.keycode(("<C-\\\\><C-N><Cmd>call cursor(%d, %d)<CR>"):format(l, c)), "n", false)
   return 1
 end)(_A[1], _A[2], _A[3], _A[4])`;
 
@@ -57,9 +56,9 @@ export async function handleLink({ link, source }) {
     if (!server) continue;
     // A busy Neovim (a prompt, a long command) still runs the request once it is free, after exec
     // has given up and Herdr has opened the file its own way: past the deadline it opens nothing.
-    const by = Math.floor(Date.now() / 1000) + 4;
+    const by = Math.floor(Date.now() / 1000) + 3;
     const expr = `luaeval(${vimString(OPEN)}, [${vimString(path)}, ${line}, ${count(link.column) ?? 1}, ${by}])`;
-    const r = await exec("nvim", ["--server", server, "--remote-expr", expr], { timeout: 6000 }).catch(() => null);
+    const r = await exec("nvim", ["--server", server, "--remote-expr", expr], { timeout: 10000 }).catch(() => null);
     if (r?.code !== 0 || r.stdout.trim() !== "1") return "pass";
     run("tab.select", { id: tab.id });
     run("pane.focus", { pane: p.pane });

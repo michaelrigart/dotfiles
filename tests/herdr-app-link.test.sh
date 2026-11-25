@@ -78,12 +78,14 @@ for _ in $(seq 100); do [ -s "$root/addr" ] && break; sleep 0.1; done
 addr=$(cat "$root/addr" 2>/dev/null)
 [ -n "$addr" ] || { echo "INCONCLUSIVE: the headless Neovim did not start" >&2; exit 2; }
 ask() { timeout 10 "${nv[@]}" --server "$addr" --remote-expr "$1" 2>&1; }
+normal() { timeout 10 "${nv[@]}" --server "$addr" --remote-send '<C-\><C-N>' 2>&1; } # each case starts in normal mode
 
 replays=0
 while IFS= read -r line; do
   json=${line#REPLAY }
   what=$(jq -r .what <<<"$json")
   setup=$(jq -r '.setup // empty' <<<"$json")
+  normal
   [ -z "$setup" ] || ask "$setup" >/dev/null
   same "$what: Neovim answers" "$(ask "$(jq -r .expr <<<"$json")")" "$(jq -r .want <<<"$json")"
   same "$what: then" "$(ask "$(jq -r .check <<<"$json")")" "$(jq -r .expect <<<"$json")"
