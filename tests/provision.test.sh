@@ -971,10 +971,15 @@ called "op read op://Private/NetBird setup key/credential" "a status netbird can
 for st in '{"version":"0.20"}' 'not json' '{"daemonStatus":"LoginFailed"}' '{"daemonStatus":"NeedsLogin"}'; do
   : > "$T/fast-sleep"; reset; items_all; printf '%s\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'; rm -f "$T/fast-sleep"
   called "op read op://Private/NetBird setup key/credential" "status $st: the key is read"
+  case "$st" in '{"version"'*|'not json')
+    has "NetBird did not join" "status $st: step 8c warns, a status that names no daemonStatus is unreadable"
+    not_called "netbird up" "status $st: and runs no up" ;;
+  esac
 done
 for st in Connected SessionExpired Idle Connecting; do
   reset; items_all; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'
   not_called "op read" "status $st: no key is read"
+  not_called "netbird up" "status $st: no join"
 done
 called "netbird status --json" "the state is read from netbird status --json"
 # Vorta's done test fails closed: a settings.db that cannot be read counts as done.
@@ -1029,7 +1034,7 @@ rc_is 0 "a key with shell-special content: the run finishes"
 [ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "-n \$(touch $T/pwned) \\x " ] && _pass "it reaches stdin byte for byte" || _fail "it reaches stdin byte for byte"
 [ -e "$T/pwned" ] && _fail "and nothing in it ran" || _pass "and nothing in it ran"
 # Any other state after the preflight read the key: joined or an SSO login's to renew, so no join.
-for st in Connected Idle Connecting SessionExpired; do
+for st in Connected SessionExpired; do
   reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status-later"
   run 'hercules\ny\n'
   rc_is 0 "$st at step 8c: the run finishes"
@@ -1037,10 +1042,15 @@ for st in Connected Idle Connecting SessionExpired; do
   has "NetBird is $st" "$st at step 8c: logged and skipped"
   hasnt "NetBird did not join" "$st at step 8c: no warning"
 done
-# A state already joined at the preflight reads no key, so there is nothing to join with.
-for st in Connected Idle Connecting SessionExpired; do
-  reset; items_all; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'
-  not_called "netbird up" "$st at the preflight: no join"
+# A daemon 8b just started that has not settled (Idle, Connecting) is polled for 30 s, then warned about.
+for st in Idle Connecting; do
+  reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status-later"
+  : > "$T/fast-sleep"; run 'hercules\ny\n'; rm -f "$T/fast-sleep"
+  rc_is 0 "$st at step 8c: the run finishes"
+  not_called "netbird up" "$st at step 8c: no join"
+  has "NetBird is still $st after 30 s — check netbird status" "$st at step 8c: the warning says it is still $st"
+  hasnt "✓ NetBird is $st" "$st at step 8c: and does not read as joined"
+  [ "$(grep -c '^sleep 2$' "$CALLS")" -eq 15 ] && _pass "$st at step 8c: polled for 15 steps, 30 s" || _fail "$st at step 8c: polled for 15 steps, 30 s ($(grep -c '^sleep 2$' "$CALLS"))"
 done
 reset; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; run 'hercules\ny\n'
 not_called "netbird up" "no key read: no join"
