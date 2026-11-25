@@ -738,7 +738,7 @@ if [[ -x $jsc ]]; then
     check "the $t test ran cleanly (jsc exit $js_rc, $((js_pass + js_fail)) assertions)" test $js_rc -eq 0 -a $((js_pass + js_fail)) -gt 0
   done
 else
-  skipped+=2; print -u2 -- "SKIP: no jsc here; the rows, phases and usage checks did not run"
+  skipped+=3; print -u2 -- "SKIP: no jsc here; the rows, phases and usage checks did not run"
 fi
 
 # With the window closed nothing may be moved: the old clone would be gone and the new one
