@@ -229,8 +229,13 @@ their own range in the history and in the PR. If they pass about 150 lines of no
 move to a line of their own (Michael's call). `xreview round --reset` then separates the review
 from this line's own.
 
-Codex is unavailable until then, so this spec's own review, the plan's and #46's all run on
-2026-11-28. A Codex finding that would change this spec comes back to Michael.
+The same review also covers PR #47 (`fix/codex-plugin-list-hang`, `187ad97..0643bbe`:
+`.scripts/reconcile-agents.sh`, its suite and `AGENTS.md`), opened without Codex's review at
+Michael's call (the driver's brief, 2026-11-25). If #47 has merged by then, this branch is rebased
+onto main first and its findings are fixed here like #46's; if not, they go to the driver.
+
+Codex is unavailable until then, so this spec's own review, the plan's and #46's and #47's all run
+on 2026-11-28. A Codex finding that would change this spec comes back to Michael.
 
 ### 8. Tests and verification
 
