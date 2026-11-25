@@ -506,7 +506,38 @@ if [ -n "$PV_NETBIRD_KEY" ]; then
 fi
 
 # ============================================================================
-# 9. Reconcile AI agent plugins (Claude Code + Codex)
+# 8d. Syncthing's config, generated before its first start
+# ============================================================================
+# Only when the preflight read the GUI login (Syncthing had no config.xml). Generating the config
+# first gives the GUI its login, so it never serves an open one, and fixes the discovery options in
+# the file before the app starts (section 8 E1). The password goes in on a pipe: --gui-password=-
+# reads it from stdin. A failed generate leaves the by-hand fallback, section 8 E1.
+if (( NEED_SYNCTHING )) && [ -n "$PV_ST_USER" ] && [ -n "$PV_ST_PASSWORD" ] && [ ! -e "${ST_HOME}/config.xml" ]; then
+  if [ ! -x "$ST_BIN" ]; then
+    warn "Syncthing.app is not installed — its config was not generated; see the syncthing-settings row"
+  else
+    log_info "Generating Syncthing's config with its GUI login..."
+    mkdir -p -m 700 "$ST_HOME"
+    if print -r -- "$PV_ST_PASSWORD" | /usr/bin/timeout -k 5 60 "$ST_BIN" generate --home "$ST_HOME" --gui-user "$PV_ST_USER" --gui-password=-; then
+      for st_opt in globalAnnounceEnabled relaysEnabled natEnabled; do
+        /usr/bin/sed -i '' "s|<${st_opt}>true</${st_opt}>|<${st_opt}>false</${st_opt}>|" "${ST_HOME}/config.xml" </dev/null
+      done
+      st_bad=""
+      for st_opt in globalAnnounceEnabled relaysEnabled natEnabled localAnnounceEnabled; do
+        st_want=false; [ "$st_opt" = localAnnounceEnabled ] && st_want=true
+        [ "$(/usr/bin/xmllint --xpath "string(//options/${st_opt})" "${ST_HOME}/config.xml" </dev/null 2>/dev/null)" = "$st_want" ] \
+          || st_bad="${st_bad:+$st_bad, }${st_opt}"
+      done
+      [ -z "$st_bad" ] || warn "Syncthing's options ${st_bad} are not as section 8 E1 wants — set them in Syncthing's GUI"
+    else
+      warn "Syncthing's config was not generated — see the syncthing-settings row"
+    fi
+  fi
+fi
+unset PV_ST_USER PV_ST_PASSWORD
+
+# ============================================================================
+# 9.Reconcile AI agent plugins (Claude Code + Codex)
 # ============================================================================
 if [ -x "${SCRIPTS_DIR}/reconcile-agents.sh" ]; then
   log_info "Reconciling AI agent plugins..."

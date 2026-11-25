@@ -175,6 +175,41 @@ if [ "$1 $2" = "status --json" ]; then
 fi
 exit 0
 NB
+# Syncthing's bundled binary, found through PROVISION_APPLICATIONS. It logs its arguments and
+# environment, writes its stdin to $T/syncthing-stdin, and `generate --home <dir>` writes
+# <dir>/config.xml (mode 600) in the shape the real one wrote: a <gui> with a user and a bcrypt
+# password, and the four <options> elements each on its own line (the only ones step 8d and the
+# syncthing-settings verify read). $T/st-no-relays leaves <relaysEnabled> out; fail-syncthing exits
+# 1 writing nothing.
+ST_STUB="$T/apps/Syncthing.app/Contents/Resources/syncthing/syncthing"
+mkdir -p "${ST_STUB%/*}"
+cat > "$ST_STUB" <<'SY'
+#!/usr/bin/env bash
+echo "syncthing $*" >> "$CALLS"
+/usr/bin/env | sed 's/^/syncthing-env /' >> "$CALLS"
+cat > "$SBX_ROOT/syncthing-stdin"
+[ -e "$SBX_ROOT/fail-syncthing" ] && exit 1
+[ "$1" = generate ] || exit 0
+home=""; user=""
+while [ $# -gt 0 ]; do case "$1" in --home) home=$2; shift;; --gui-user) user=$2; shift;; esac; shift; done
+mkdir -p "$home"
+{
+  echo '<configuration version="52">'
+  echo '    <gui enabled="true" tls="false" sendBasicAuthPrompt="false">'
+  echo "        <user>$user</user>"
+  echo '        <password>$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234</password>'
+  echo '    </gui>'
+  echo '    <options>'
+  echo '        <globalAnnounceEnabled>true</globalAnnounceEnabled>'
+  echo '        <localAnnounceEnabled>true</localAnnounceEnabled>'
+  [ -e "$SBX_ROOT/st-no-relays" ] || echo '        <relaysEnabled>true</relaysEnabled>'
+  echo '        <natEnabled>true</natEnabled>'
+  echo '    </options>'
+  echo '</configuration>'
+} > "$home/config.xml"
+/bin/chmod 600 "$home/config.xml"
+exit 0
+SY
 # nvim also records the first entry of its PATH: Mason's Ruby tools need mise's Ruby.
 cat > "$T/bin/nvim" <<'NV'
 #!/usr/bin/env bash
@@ -270,7 +305,7 @@ chmod +x "$T/bin/_mut"
 for t in rm chmod find mv; do
   printf '#!/usr/bin/env bash\nexec "%s/bin/_mut" %s "$@"\n' "$T" "$t" > "$T/bin/$t"
 done
-chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/brew/bin/zsh "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex"
+chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/brew/bin/zsh "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex" "$ST_STUB"
 
 # Guard the harness against itself. Verifying that a containment assertion CAN fail
 # must never be done by pointing an override at the real binary -- that executes it.
@@ -286,7 +321,7 @@ assert_inside(){ local r; r=$(canon "$2")
 ST_DIR="$T/home/Library/Application Support/Syncthing"; VORTA_DIR="$T/home/Library/Application Support/Vorta"
 reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
   mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"
-  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
+  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
   /usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('p', 1);"; }
 # The secrets are the suite's markers; nothing here is a real value. items_all takes the vault.
 MK_NB='MARK-NB-KEY-7f3a'; MK_ST='MARK-ST-PW-91c2'; MK_VORTA='MARK-VORTA-PW-d4e8'
@@ -1069,6 +1104,60 @@ not_called "netbird up" "no join without a state"
 has "netbird up (SSO login)" "and a warning names the SSO fallback"
 called "sleep 2" "after waiting in 2 s steps"
 [ "$(grep -c '^sleep 2$' "$CALLS")" -eq 15 ] && _pass "for 15 steps, 30 s" || _fail "for 15 steps, 30 s ($(grep -c '^sleep 2$' "$CALLS"))"
+
+echo "W. Syncthing's config before its first start"
+ST_GEN="syncthing generate --home $ST_DIR --gui-user st-user --gui-password=-"
+xp(){ xmllint --xpath "string(//options/$1)" "$ST_DIR/config.xml" 2>/dev/null; }
+OLD_UMASK=$(umask); umask 022
+reset; fresh_steps; items_all; rmdir "$ST_DIR"; run 'hercules\ny\n'
+rc_is 0 "a fresh machine: the run finishes"
+called "$ST_GEN" "generate runs with the login's user and the password read from stdin"
+# print -r -- sends the password and one newline.
+[ "$(od -An -c "$T/syncthing-stdin" | tr -d ' \n')" = 'MARK-ST-PW-91c2\n' ] && _pass "stdin is exactly the password and one newline" || _fail "stdin is exactly the password and one newline"
+not_called "syncthing-env PV_" "no secret variable is in Syncthing's environment"
+not_called "$MK_ST" "no log line carries the password"
+hasnt "$MK_ST" "the run prints no password"
+[ "$(xp globalAnnounceEnabled)" = false ] && _pass "Global Discovery is off" || _fail "Global Discovery is off"
+[ "$(xp relaysEnabled)" = false ] && _pass "Relaying is off" || _fail "Relaying is off"
+[ "$(xp natEnabled)" = false ] && _pass "NAT traversal is off" || _fail "NAT traversal is off"
+[ "$(xp localAnnounceEnabled)" = true ] && _pass "Local Discovery stays on" || _fail "Local Discovery stays on"
+[ "$(xmllint --xpath 'string(//gui/user)' "$ST_DIR/config.xml")" = st-user ] && _pass "the GUI user is in the file" || _fail "the GUI user is in the file"
+[ "$(stat -f %Lp "$ST_DIR/config.xml")" = 600 ] && _pass "config.xml is mode 600 under umask 022" || _fail "config.xml is mode 600 under umask 022"
+[ "$(stat -f %Lp "$ST_DIR")" = 700 ] && _pass "the Syncthing folder is mode 700" || _fail "the Syncthing folder is mode 700"
+hasnt "Syncthing's config was not generated" "and no warning"
+hasnt "are not as section 8 E1 wants" "and none about the options"
+# A password with shell-special content arrives byte for byte and nothing in it runs.
+reset; fresh_steps; items_all
+printf '%s\n' "-n \$(touch $T/pwned) \\x " > "$T/op-items/Private/Syncthing GUI/password"
+run 'hercules\ny\n'
+rc_is 0 "a password with shell-special content: the run finishes"
+[ "$(cat "$T/syncthing-stdin" 2>/dev/null)" = "-n \$(touch $T/pwned) \\x " ] && _pass "it reaches stdin byte for byte" || _fail "it reaches stdin byte for byte"
+[ -e "$T/pwned" ] && _fail "and nothing in it ran" || _pass "and nothing in it ran"
+# A machine whose Syncthing has a config.xml is left alone.
+reset; items_all; printf '<configuration version="52">kept</configuration>\n' > "$ST_DIR/config.xml"; cp "$ST_DIR/config.xml" "$T/config.before"
+run 'hercules\ny\n'
+not_called "syncthing generate" "an existing config.xml: nothing is generated"
+cmp -s "$ST_DIR/config.xml" "$T/config.before" && _pass "and the file is byte-identical" || _fail "and the file is byte-identical"
+# A generate that fails.
+reset; fresh_steps; items_all; : > "$T/fail-syncthing"; run 'hercules\ny\n'
+rc_is 0 "a failing generate: the run finishes"
+has "Syncthing's config was not generated — see the syncthing-settings row" "and the warning names the row"
+[ -e "$ST_DIR/config.xml" ] && _fail "and no config.xml is left" || _pass "and no config.xml is left"
+# Syncthing.app missing (its cask failed): a warning, no generate.
+reset; fresh_steps; items_all; mv "$T/apps/Syncthing.app" "$T/Syncthing.app.away"; run 'hercules\ny\n'; mv "$T/Syncthing.app.away" "$T/apps/Syncthing.app"
+rc_is 0 "no Syncthing.app: the run finishes"
+has "Syncthing.app is not installed" "and the warning says so"
+not_called "syncthing generate" "and nothing is generated"
+[ -e "$ST_DIR/config.xml" ] && _fail "and no config.xml is written" || _pass "and no config.xml is written"
+# A generated file whose options cannot be turned off.
+reset; fresh_steps; items_all; : > "$T/st-no-relays"; run 'hercules\ny\n'; rm -f "$T/st-no-relays"
+rc_is 0 "a config without <relaysEnabled>: the run finishes"
+has "Syncthing's options relaysEnabled are not as section 8 E1 wants — set them in Syncthing's GUI" "and the warning names the option"
+hasnt "Syncthing's options globalAnnounceEnabled" "and only that one"
+# Without the login (item unread), nothing is generated.
+reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/Syncthing GUI"; run 'hercules\ny\n'
+not_called "syncthing generate" "no login read: nothing is generated"
+umask "$OLD_UMASK"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
