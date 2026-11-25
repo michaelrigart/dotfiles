@@ -38,8 +38,9 @@ same() { # <description> <got> <want>
 }
 
 # --- the declarations ---------------------------------------------------------------------------
-check "nav declares a rule for file links" jq -e '.link_handlers | any(.kind == "file")' "$NAV/mod.json" >/dev/null
-check "the layout hands terminal links to nav alone" jq -e '.link_handlers == ["nav"]' "$LAYOUT" >/dev/null
+holds() { jq -e "$1" "$2" >/dev/null; } # <jq filter> <file>: the filter is true of the file
+check "nav declares a rule for file links" holds '.link_handlers | any(.kind == "file")' "$NAV/mod.json"
+check "the layout hands terminal links to nav alone" holds '.link_handlers == ["nav"]' "$LAYOUT"
 
 # --- files to click, named to run something if any layer parses them ---------------------------
 files=$root/files
