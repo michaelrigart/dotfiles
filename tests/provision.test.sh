@@ -857,7 +857,7 @@ cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1); ml=$(g
 has "Check again any time, from a new shell: dotfiles-run machine-check" "and says how to run the checklist again, from a fresh clone of origin's main"
 hasnt "Borg: this machine" "the hard-coded Borg step is gone"
 hasnt "Alfred snippets" "the hard-coded Alfred steps are gone"
-hasnt "respaces" "the hard-coded Herdr step is gone"
+hasnt "herdr-app/bin/respaces" "the hard-coded Herdr step is gone"
 has "Restart your terminal" "the restart line stays"
 has "exec $T/brew/bin/zsh" "with the exec hint while Homebrew's zsh exists"
 has "logout/restart" "and the logout line"

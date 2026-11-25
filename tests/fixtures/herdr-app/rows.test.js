@@ -14,6 +14,7 @@ const t = new Proxy({}, { get: (_, k) => String(k) });
 
 const texts = (n) => (typeof n === "string" ? [n] : n.kids.flatMap(texts));
 const has = (n, s) => texts(n).includes(s);
+const shown = (n) => texts(n).join(""); // the whole text, however it is split into nodes
 const findNode = (n, pred) => {
   if (typeof n === "string") return null;
   if (pred(n)) return n;
@@ -28,8 +29,11 @@ const tip = (n) => n.calls.filter(([m]) => m === "tooltip").pop()?.[1][0];
 const phases = Object.create(Phases.prototype);
 phases.by = {};
 phases.defaults = {};
-let rows = new Rows(phases);
-const fresh = () => { for (const k of Object.keys(store)) delete store[k]; phases.by = {}; phases.defaults = {}; rows = new Rows(phases); };
+// Stands in for the spaces mod's own EMOJI rule (a space name's leading emoji), which the clone
+// hands to Rows.
+const EMOJI = /^\p{Extended_Pictographic}\uFE0F?/u;
+let rows = new Rows(phases, EMOJI);
+const fresh = () => { for (const k of Object.keys(store)) delete store[k]; phases.by = {}; phases.defaults = {}; rows = new Rows(phases, EMOJI); };
 
 // --- asBranch: a worktree row's name is the automatic one ------------------------------------
 {
@@ -211,7 +215,10 @@ const folded = (kids, by = {}) => {
   const remote = { ...g("develop"), repo: JSON.stringify(["vps", dir]) };
   phases.defaults[dir] = { at: 0, branch: "develop" };
   check("tail: another machine's repository does not use this one's default", has(tail(w, remote), "develop"));
-  check("tail: a branch equal to the space's name is hidden", !has(tail({ id: "s", name: "feat/x" }, g("feat/x")), "feat/x"));
+  check("tail: a branch equal to the space's name is hidden", !shown(tail({ id: "s", name: "feat/x" }, g("feat/x"))).includes("feat/x"));
+  check("tail: ...or to the name after its leading emoji", !shown(tail({ id: "s", name: "🧪 feat/x" }, g("feat/x"))).includes("feat/x"));
+  check("tail: the repository name is hidden when the name after its leading emoji is the repository",
+    !texts(tail({ id: "s", name: "🚀 att.owd" }, g("develop"))).some((s) => s.includes("ATT.OWD")));
   const typed = tail(w, g("feature/dtx-machine-service"));
   check("tail: the type is dimmed and the rest muted", colorOf(holding(typed, "feature/")) === "dim"
     && colorOf(holding(typed, "dtx-machine-service")) === "muted");
