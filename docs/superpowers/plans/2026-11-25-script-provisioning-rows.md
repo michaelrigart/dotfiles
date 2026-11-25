@@ -139,14 +139,14 @@ ones whose subjects the fixes touch, then `./tests/run.sh --changed`.
   - Default `reset` (all done): `not_called "op read"`, `not_called "op document"`, and the
     summary has `Setup secrets ...... none needed`.
   - Each item missing in turn (and one whose value is `"  \n"`): `rc_is 0`; the summary line
-    `Missing in 1Password  <item>` and the closing list's `⚠ 1Password item '<item>' not found in
-    Private:` both name it.
+    `Not read from 1Password  <item>` and the closing list's `⚠ 1Password item '<item>' could not be
+    read from Private:` both name it.
   - `fail-netbird` (status unreadable) and `$T/netbird-status` = `{"version":"0.20"}`: the key is
     read. `LoginFailed`: read. `SessionExpired`, `Idle`, `Connecting`: not read.
   - `settings.db` replaced by the bytes `not a database`: the BorgBase item is not read, and
     `has "Vorta's settings could not be read"`.
   - `PROVISION_OP_VAULT=Test HV=1`: reads use `op://Test/…` and `--vault Test`; the summary shows
-    `1Password vault ... Test`. `PROVISION_OP_VAULT=Test HV=0`: `rc_is 1`, `not_called "sudo -v"`,
+    `1Password vault .... Test`. `PROVISION_OP_VAULT=Test HV=0`: `rc_is 1`, `not_called "sudo -v"`,
     `has "PROVISION_OP_VAULT"`.
   - With `PV_NETBIRD_KEY=decoy` exported into the run and `NeedsLogin`: no `netbird-env` line in
     `$CALLS` carries `PV_NETBIRD_KEY` (Review Focus 1).
@@ -159,10 +159,10 @@ ones whose subjects the fixes touch, then `./tests/run.sh --changed`.
   `PROVISION_OP_VAULT` refusal sits beside `PROVISION_REF`'s, before `sudo`. 5c runs the three
   done-tests, then `op read … </dev/null 2>/dev/null` / `op document get … </dev/null
   2>/dev/null` into the `PV_*` variables through `$(…)`; a failed read or a value empty once
-  `[[:space:]]` is removed adds the item to `MISSING_ITEMS` and empties its variable. The summary
-  gains `Setup secrets ...... read: <items>` or `none needed`, and for missing ones
-  `Missing in 1Password  <items> — answer n, add them to 1Password (<vault>) and run again; y skips
-  their steps`. Each missing item `warn`s `1Password item '<item>' not found in <vault>: <what>
+  `[[:space:]]` is removed adds the item to `UNREAD_ITEMS` and empties its variable. The summary
+  gains `Setup secrets ...... read: <items>` or `none needed`, and for unread ones
+  `Not read from 1Password  <items> — answer n, add or unlock them in 1Password (<vault>) and run
+  again; y skips their steps`. Each unread item `warn`s `1Password item '<item>' could not be read from <vault>: <what>
   skipped — see the <row> row` after the confirmation. A `vorta_state` of `unreadable` warns
   `Vorta's settings could not be read: no profile imported — see the vorta row`.
 - [ ] **Step 4: Rewrite the forge-token exception in `AGENTS.md` as two exceptions:** the forge
