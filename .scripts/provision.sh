@@ -296,9 +296,17 @@ else
   case "$NETBIRD_DAEMON_STATE" in NeedsLogin|LoginFailed) NEED_NETBIRD=1 ;; esac
 fi
 [ -e "${ST_HOME}/config.xml" ] || NEED_SYNCTHING=1
+# A file a first run left for Vorta's import (macOS asks before a quarantined app's first start) is
+# waiting, not undone: the export is not read again, and the closing list says what is left.
+VORTA_WAITING="${VORTA_INIT} is waiting for Vorta — open Vorta and answer macOS's prompt; if Vorta reports \"Failed to import profile\", delete the file and set Vorta up by hand (vorta row)"
 VORTA_STATE=$(vorta_state)
 case "$VORTA_STATE" in
-  absent|none) NEED_VORTA=1 ;;
+  absent|none)
+    if [ -e "$VORTA_INIT" ] || [ -L "$VORTA_INIT" ]; then
+      PREFLIGHT_WARNS+=("$VORTA_WAITING")
+    else
+      NEED_VORTA=1
+    fi ;;
   unreadable) PREFLIGHT_WARNS+=("Vorta's settings could not be read: no profile imported — see the vorta row") ;;
 esac
 
@@ -362,7 +370,7 @@ else
   echo "  Setup secrets ...... read: ${(j:, :)READ_ITEMS}"
 fi
 if (( ${#UNREAD_ITEMS} > 0 )); then
-  echo "  Not read from 1Password  ${(j:, :)UNREAD_ITEMS} — answer n, add or unlock them in 1Password (${OP_VAULT}) and run again; y skips their steps"
+  echo "  Not read ........... ${(j:, :)UNREAD_ITEMS} — answer n, add or unlock them in 1Password (${OP_VAULT}) and run again; y skips their steps (Syncthing's GUI login then stays a manual step)"
 fi
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "
@@ -484,23 +492,33 @@ fi
 # ============================================================================
 # Only when the preflight read the key (NetBird was not joined), so at this point Idle and Connecting
 # mean a daemon 8b just started has not settled, not that it joined. Poll up to 30 s while the
-# status is unreadable, Idle or Connecting. Only NeedsLogin and LoginFailed join; any other settled
-# state is joined already, or an SSO login's to renew. The key goes in on a pipe, as Michael (not
-# sudo, which would leave root-owned files in his home), and `up` on a peer the management server
-# knows ignores it. A join that fails or a status that never settles leaves the SSO login.
+# status is unreadable, Idle or Connecting. Only NeedsLogin and LoginFailed join; Connected is joined
+# already, and any other settled state (SessionExpired) is an SSO login's to renew, so it warns. The
+# key goes in on a pipe, as Michael (not sudo, which would leave root-owned files in his home), and
+# `up` on a peer the management server knows ignores it. A join that fails or a status that never
+# settles leaves the SSO login.
 if [ -n "$PV_NETBIRD_KEY" ]; then
   nb_fallback="run: netbird up (SSO login); on hercules then turn Session Expiration off (netbird-session-expiry row)"
   nb_waited=0
-  while nb_state=$(netbird_state) || nb_state=""; case "$nb_state" in ""|Idle|Connecting) (( nb_waited < 30 )) ;; *) false ;; esac; do
+  while true; do
+    nb_state=$(netbird_state) || nb_state=""
+    case "$nb_state" in
+      ""|Idle|Connecting) ;;
+      *) break ;;
+    esac
+    (( nb_waited < 30 )) || break
     sleep 2; nb_waited=$(( nb_waited + 2 ))
   done
   case "$nb_state" in
     NeedsLogin|LoginFailed)
       log_info "Joining NetBird with the setup key..."
-      print -r -- "$PV_NETBIRD_KEY" | /usr/bin/timeout -k 5 120 netbird up --no-browser --setup-key-file /dev/stdin         || warn "NetBird did not join with the setup key — $nb_fallback" ;;
+      print -r -- "$PV_NETBIRD_KEY" | /usr/bin/timeout -k 5 120 netbird up --no-browser --setup-key-file /dev/stdin \
+        || warn "NetBird did not join with the setup key — $nb_fallback" ;;
     "") warn "NetBird did not join with the setup key — $nb_fallback" ;;
     Idle|Connecting) warn "NetBird is still $nb_state after 30 s — check netbird status, and if it needs a login run: netbird up (SSO login)" ;;
-    *) log_info "✓ NetBird is $nb_state — not joining with the setup key" ;;
+    SessionExpired) warn "NetBird is SessionExpired, so it was not joined with the setup key — $nb_fallback" ;;
+    Connected) log_info "✓ NetBird is Connected — not joining with the setup key" ;;
+    *) log_info "NetBird is $nb_state — not joining with the setup key" ;;
   esac
   unset PV_NETBIRD_KEY
 fi
@@ -520,9 +538,13 @@ if (( NEED_SYNCTHING )) && [ -n "$PV_ST_USER" ] && [ -n "$PV_ST_PASSWORD" ]; the
   else
     log_info "Generating Syncthing's config with its GUI login..."
     mkdir -p -m 700 "$ST_HOME"
-    if print -r -- "$PV_ST_PASSWORD" | /usr/bin/timeout -k 5 60 "$ST_BIN" generate --home "$ST_HOME" --gui-user "$PV_ST_USER" --gui-password=-; then
+    # A generate that exits 0 without writing config.xml counts as failed: there is nothing to edit, and
+    # under set -e a failed sed would end the run.
+    if print -r -- "$PV_ST_PASSWORD" | /usr/bin/timeout -k 5 60 "$ST_BIN" generate --home "$ST_HOME" --gui-user "$PV_ST_USER" --gui-password=- \
+       && [ -f "${ST_HOME}/config.xml" ]; then
+      # A sed that fails leaves its option on, which the check below reports.
       for st_opt in globalAnnounceEnabled relaysEnabled natEnabled; do
-        /usr/bin/sed -i '' "s|<${st_opt}>true</${st_opt}>|<${st_opt}>false</${st_opt}>|" "${ST_HOME}/config.xml" </dev/null
+        /usr/bin/sed -i '' "s|<${st_opt}>true</${st_opt}>|<${st_opt}>false</${st_opt}>|" "${ST_HOME}/config.xml" </dev/null || true
       done
       st_bad=""
       for st_opt in globalAnnounceEnabled relaysEnabled natEnabled localAnnounceEnabled; do
@@ -664,7 +686,7 @@ if (( NEED_VORTA )) && [ -n "$PV_VORTA_EXPORT" ]; then
       elif pgrep -x vorta-darwin </dev/null >/dev/null 2>&1; then
         warn "Vorta is running and has no profile — quit Vorta, then run provision.sh again; see the vorta row"
       elif [ -e "$VORTA_INIT" ] || [ -L "$VORTA_INIT" ]; then
-        warn "${VORTA_INIT} already exists — Vorta's profile was not handed over; see the vorta row"
+        warn "$VORTA_WAITING"
       elif ! print -r -- "$PV_VORTA_EXPORT" | jq -e 'type == "object" and (.id|type) == "number" and (.name|type) == "string" and (.SchemaVersion.version|type) == "number" and (.repo.url|type) == "string" and (.password|type) == "string" and (.password|length) > 0' >/dev/null 2>&1; then
         warn "1Password's 'BorgBase ${MACHINE_NAME}' is not a profile Vorta can import — nothing written; see the vorta row"
       elif ! ( umask 077; set -o noclobber; print -r -- "$PV_VORTA_EXPORT" > "$VORTA_INIT" ); then

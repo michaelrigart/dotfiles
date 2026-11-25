@@ -54,7 +54,7 @@ This will:
 10. Install Oh My Zsh
 11. Install development tools via mise
 12. Install the Neovim plugins and link the Herdr plugins
-13. Start Vorta once so it imports its own export, which holds the backup profile
+13. Start Vorta once so it imports its own export, which holds the backup profile, only when not yet set up
 14. Apply macOS system settings, which loads the LaunchAgents, among them the one that opens the login apps
 15. Only if no Codex daemon package existed when the run started, pin the Codex daemon to the CLI's package
 16. Print what is left to do, from [machine-check.sh](.scripts/machine-check.sh)
@@ -225,7 +225,9 @@ installs it on fenrir.
 The VM reads its three 1Password items from a vault of its own, never from Michael's. Make the
 vault with the same item names as the real ones: `NetBird setup key` (an ephemeral key that
 auto-assigns a group of its own), `Syncthing GUI` (a throwaway login) and `BorgBase hercules` (a
-Vorta export whose repository is `ssh://nobody@127.0.0.1:9/./repo`, with a throwaway passphrase).
+real Vorta export, edited: `repo.url` is `ssh://nobody@127.0.0.1:9/./repo` and `password` a throwaway
+passphrase, with its schedule kept, since Vorta's GUI cannot add an unreachable repository and an
+export with the schedule off makes the `vorta` row read ✗ in the VM).
 The run names it with `PROVISION_OP_VAULT=<test vault>`, which, like `PROVISION_REF`, is refused
 outside a VM.
 

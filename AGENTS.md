@@ -13,7 +13,7 @@ every agent: Claude Code and Codex both load it natively.
   `git diff --cached`, and `grep -L onepassword private_dot_ssh/private_*.tmpl` must print nothing.
   Two exceptions: the forge tokens, read at apply by `dot_claude/modify_private_settings.json`, live
   only in the deployed `~/.claude/settings.json` (preview it through
-  `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`, never whole, and filter its diff); and the setup
+  `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`, never whole, and filter any `apply --dry-run` diff of it, which can show the tokens); and the setup
   items, read by `provision.sh`'s preflight with `op`, passed on stdin or to Vorta in
   `~/.vorta-init.json` (600) until its import (spec 2026-11-25-script-provisioning-rows §1).
 - `.chezmoiignore` is an **allowlist** for `~/.claude`, `~/.codex`, `~/.config/herdr-app` and

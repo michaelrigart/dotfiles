@@ -314,6 +314,26 @@ A missing item only skips its step; nothing fails at apply.
 NetBird server and Vorta's importer, which no stub proves. The PR opens on hold until Michael
 reports the run.
 
+## Amendments during the build (2026-11-25)
+
+The text above is as signed; where it differs, these rulings of the build (the plan's "Rulings taken
+in this plan", and the final review's fixes) apply.
+
+- §3: one seam, `PROVISION_APPLICATIONS` (default `/Applications`), replaces `PROVISION_SYNCTHING_BIN`;
+  it locates Syncthing's bundled binary and Vorta.app.
+- §4: step 15b also requires Vorta.app to be installed; without it no start could import the file and
+  the secret would stay on disk.
+- §4: a `~/.vorta-init.json` (or a dangling symlink) found at the preflight means Vorta's import is
+  waiting, not undone: the export is not read again and the closing list says what is left.
+- §5, §8: the login apps are one plain plist on both machines, not a per-machine template; the job's
+  `[ -d ]` test skips an app the machine lacks.
+- §2: at step 8c, Idle and Connecting mean the daemon has not settled (poll up to 30 s, then warn),
+  not that it joined; SessionExpired warns with the SSO fallback.
+- §1: a read that fails says the item "could not be read", not "not found" (a locked app or a
+  dismissed prompt fails the same way as a missing item).
+- §1: the preflight's sub-steps are renumbered 5c to 5f, and the secret variables are declared
+  `typeset +x`, so a caller's exported name never reaches a child.
+
 ## Michael's steps after merge
 
 1. Make the items of D3 (the NetBird key in the dashboard first, with §2's settings). Only a

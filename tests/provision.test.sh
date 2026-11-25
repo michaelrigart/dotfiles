@@ -63,7 +63,7 @@ SU
 # fail-brew-bundle fails `brew bundle`; its check then names a missed item on stderr, as Homebrew 7 does.
 # outdated-brew-bundle: everything is installed but glab has a newer release, so only a check
 # without --no-upgrade fails. With both markers, the install fails on that upgrade.
-printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) [ -e "$SBX_ROOT/st-appears" ] && : > "$HOME/Library/Application Support/Syncthing/config.xml"; if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
+printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) [ -e "$SBX_ROOT/st-appears" ] && : > "$HOME/Library/Application Support/Syncthing/config.xml"; [ -e "$SBX_ROOT/vi-appears" ] && echo keep-me > "$HOME/.vorta-init.json"; [ -e "$SBX_ROOT/vi-appears-link" ] && ln -s "$SBX_ROOT/elsewhere" "$HOME/.vorta-init.json"; if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
 # Homebrew's zsh, which step 10 makes the login shell only when it is installed.
 printf '#!/bin/sh\nexec /bin/zsh "$@"\n' > "$T/brew/bin/zsh"
@@ -178,7 +178,9 @@ G
 # spare lines, so a step that does not close its stdin gets one and succeeds.
 # netbird logs its whole environment, and `status --json` prints $T/netbird-status (absent: connected);
 # after the first status call, $T/netbird-status-later when it exists (the preflight reads the first,
-# step 8c the later ones). `up` writes its stdin to $T/netbird-up-stdin; fail-netbird-up fails only `up`.
+# step 8c the later ones): its line k answers the k-th later call, its last line every call after, and
+# an empty line is a status that cannot be read. `up` writes its stdin to $T/netbird-up-stdin;
+# fail-netbird-up fails only `up`.
 cat > "$T/bin/netbird" <<'NB'
 #!/usr/bin/env bash
 echo "netbird $*" >> "$CALLS"
@@ -194,7 +196,10 @@ if [ "$1 $2" = "status --json" ]; then
   n=$(cat "$SBX_ROOT/netbird-status-n" 2>/dev/null || echo 0); echo $((n + 1)) > "$SBX_ROOT/netbird-status-n"
   f="$SBX_ROOT/netbird-status"
   [ "$n" -gt 0 ] && [ -e "$SBX_ROOT/netbird-status-later" ] && f="$SBX_ROOT/netbird-status-later"
-  if [ -e "$f" ]; then cat "$f"
+  if [ "$n" -gt 0 ] && [ "$f" = "$SBX_ROOT/netbird-status-later" ]; then
+    total=$(wc -l < "$f" | tr -d ' '); k=$n; [ "$k" -gt "$total" ] && k=$total
+    sed -n "${k}p" "$f"
+  elif [ -e "$f" ]; then cat "$f"
   else echo '{"daemonStatus":"Connected","management":{"connected":true}}'; fi
 fi
 exit 0
@@ -204,7 +209,7 @@ NB
 # <dir>/config.xml (mode 600) in the shape the real one wrote: a <gui> with a user and a bcrypt
 # password, and the four <options> elements each on its own line (the only ones step 8d and the
 # syncthing-settings verify read). $T/st-no-relays leaves <relaysEnabled> out; fail-syncthing exits
-# 1 writing nothing.
+# 1 writing nothing, $T/st-no-config exits 0 writing nothing.
 ST_STUB="$T/apps/Syncthing.app/Contents/Resources/syncthing/syncthing"
 mkdir -p "${ST_STUB%/*}"
 cat > "$ST_STUB" <<'SY'
@@ -214,6 +219,7 @@ echo "syncthing $*" >> "$CALLS"
 cat > "$SBX_ROOT/syncthing-stdin"
 [ -e "$SBX_ROOT/fail-syncthing" ] && exit 1
 [ "$1" = generate ] || exit 0
+[ -e "$SBX_ROOT/st-no-config" ] && exit 0
 home=""; user=""
 while [ $# -gt 0 ]; do case "$1" in --home) home=$2; shift;; --gui-user) user=$2; shift;; esac; shift; done
 mkdir -p "$home"
@@ -357,7 +363,7 @@ nowrite(){ not_called "open -g -a Vorta" "$1: Vorta is not started"
   [ -e "$VI" ] || [ -L "$VI" ] && _fail "$1: no file is written" || _pass "$1: no file is written"; }
 reset(){ rm -f "$VI" "$T/vorta-init-seen" "$T/vorta-init-mode"; : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
   mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"
-  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing" "$T/st-appears"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
+  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing" "$T/st-no-config" "$T/st-appears" "$T/vi-appears" "$T/vi-appears-link" "$T/elsewhere"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
   /usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('p', 1);"; }
 # The secrets are the suite's markers; nothing here is a real value. items_all takes the vault.
 MK_NB='MARK-NB-KEY-7f3a'; MK_ST='MARK-ST-PW-91c2'; MK_VORTA='MARK-VORTA-PW-d4e8'
@@ -973,7 +979,7 @@ rm -f "$T/lc-stopped"; lc_reset; rm -rf "$CFG/herdr" "$T/herdr-list" "$T/home/.c
 reset; fresh_steps; items_all; run "$SPARE"
 rm -f "$T/read-stdin-op"
 rc_is 0 "a preflight whose reads fail does not end the run"
-has "Not read from 1Password  NetBird setup key, Syncthing GUI, BorgBase hercules" "op read and op document get read /dev/null"
+has "Not read ........... NetBird setup key, Syncthing GUI, BorgBase hercules" "op read and op document get read /dev/null"
 : > "$T/read-stdin-netbird"; : > "$T/fast-sleep"
 reset; items_all; run "$SPARE"
 rm -f "$T/read-stdin-netbird" "$T/fast-sleep"
@@ -1022,7 +1028,7 @@ reset; run 'hercules\ny\n'
 not_called "op read" "a machine that is set up reads no item"
 not_called "op document" "and no document"
 has "Setup secrets ...... none needed" "and the summary says so"
-hasnt "Not read from 1Password" "with nothing unread"
+hasnt "Not read ..........." "with nothing unread"
 # One step at a time.
 reset; rm -f "$ST_DIR/config.xml"; items_all; run 'hercules\ny\n'
 called "op read op://Private/Syncthing GUI/password" "without config.xml, Syncthing's login is read"
@@ -1039,14 +1045,16 @@ called "op document get BorgBase hercules --vault Private" "a settings.db whose 
 for it in "NetBird setup key" "Syncthing GUI" "BorgBase hercules"; do
   reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/$it"; run 'hercules\ny\n'
   rc_is 0 "$it missing: the run finishes"
-  has "Not read from 1Password  $it — answer n, add or unlock them in 1Password (Private) and run again; y skips their steps" "$it missing: the summary names it before Proceed"
+  has "Not read ........... $it" "$it missing: the summary names it before Proceed"
+  has "y skips their steps" "$it missing: and says what y does"
+  has "manual step" "$it missing: and that Syncthing's login then stays manual"
   has "⚠ 1Password item '$it' could not be read from Private:" "$it missing: the closing list names it"
 done
 reset; fresh_steps; items_all; rm -f "$T/op-items/Private/Syncthing GUI/password"; run 'hercules\ny\n'
-has "Not read from 1Password  Syncthing GUI" "an item with one field missing is missing"
+has "Not read ........... Syncthing GUI" "an item with one field missing is missing"
 reset; fresh_steps; items_all; printf '  \n' > "$T/op-items/Private/NetBird setup key/credential"; run 'hercules\ny\n'
 rc_is 0 "a value of only whitespace: the run finishes"
-has "Not read from 1Password  NetBird setup key" "and counts as unread"
+has "Not read ........... NetBird setup key" "and counts as unread"
 reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/NetBird setup key" "$T/op-items/Private/Syncthing GUI" "$T/op-items/Private/BorgBase hercules"; run 'hercules\ny\n'
 has "Setup secrets ...... none read" "with every item missing, the summary reads none"
 hasnt "is not a profile Vorta can import" "and step 15b has no export to check"
@@ -1120,14 +1128,21 @@ rc_is 0 "a key with shell-special content: the run finishes"
 [ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "-n \$(touch $T/pwned) \\x " ] && _pass "it reaches stdin byte for byte" || _fail "it reaches stdin byte for byte"
 [ -e "$T/pwned" ] && _fail "and nothing in it ran" || _pass "and nothing in it ran"
 # Any other state after the preflight read the key: joined or an SSO login's to renew, so no join.
-for st in Connected SessionExpired; do
-  reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status-later"
-  run 'hercules\ny\n'
-  rc_is 0 "$st at step 8c: the run finishes"
-  not_called "netbird up" "$st at step 8c: no join"
-  has "NetBird is $st" "$st at step 8c: logged and skipped"
-  hasnt "NetBird did not join" "$st at step 8c: no warning"
-done
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; echo '{"daemonStatus":"Connected"}' > "$T/netbird-status-later"
+run 'hercules\ny\n'
+rc_is 0 "Connected at step 8c: the run finishes"
+not_called "netbird up" "Connected at step 8c: no join"
+has "✓ NetBird is Connected" "Connected at step 8c: logged as joined"
+hasnt "⚠ NetBird" "Connected at step 8c: no warning"
+# SessionExpired is not joined: the closing list says so, with the SSO fallback.
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; echo '{"daemonStatus":"SessionExpired"}' > "$T/netbird-status-later"
+run 'hercules\ny\n'
+rc_is 0 "SessionExpired at step 8c: the run finishes"
+not_called "netbird up" "SessionExpired at step 8c: no join"
+hasnt "✓ NetBird is SessionExpired" "SessionExpired at step 8c: does not read as joined"
+has "⚠ NetBird is SessionExpired" "SessionExpired at step 8c: the closing list names the state"
+has "netbird up (SSO login)" "SessionExpired at step 8c: and the SSO fallback"
+has "netbird-session-expiry" "SessionExpired at step 8c: and the session-expiry row"
 # A daemon 8b just started that has not settled (Idle, Connecting) is polled for 30 s, then warned about.
 for st in Idle Connecting; do
   reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status-later"
@@ -1138,6 +1153,20 @@ for st in Idle Connecting; do
   hasnt "✓ NetBird is $st" "$st at step 8c: and does not read as joined"
   [ "$(grep -c '^sleep 2$' "$CALLS")" -eq 15 ] && _pass "$st at step 8c: polled for 15 steps, 30 s" || _fail "$st at step 8c: polled for 15 steps, 30 s ($(grep -c '^sleep 2$' "$CALLS"))"
 done
+# A daemon that settles on NeedsLogin after the poll started (unreadable, Idle, Connecting first): joined, in time.
+NL='{"daemonStatus":"NeedsLogin"}'; ID='{"daemonStatus":"Idle"}'; CO='{"daemonStatus":"Connecting"}'
+settle(){ local label=$1; shift
+  reset; items_all; echo "$NL" > "$T/netbird-status"; printf '%s\n' "$@" > "$T/netbird-status-later"
+  : > "$T/fast-sleep"; run 'hercules\ny\n'; rm -f "$T/fast-sleep"
+  rc_is 0 "$label then NeedsLogin: the run finishes"
+  called "$UP" "$label then NeedsLogin: NetBird joins"
+  [ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "$MK_NB" ] && _pass "$label then NeedsLogin: stdin is exactly the key" || _fail "$label then NeedsLogin: stdin is exactly the key"
+  hasnt "⚠ NetBird" "$label then NeedsLogin: no NetBird warning"
+  [ "$(grep -c '^sleep 2$' "$CALLS")" -lt 15 ] && _pass "$label then NeedsLogin: the wait ends on the settled state" || _fail "$label then NeedsLogin: the wait ends on the settled state ($(grep -c '^sleep 2$' "$CALLS") sleeps)"; }
+settle "Idle" "$ID" "$NL"
+settle "Idle, Connecting" "$ID" "$CO" "$NL"
+settle "unreadable" "" "$NL"
+settle "unreadable, Idle" "" "$ID" "$NL"
 reset; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; run 'hercules\ny\n'
 not_called "netbird up" "no key read: no join"
 hasnt "NetBird did not join" "and no second warning (the preflight's already names the item)"
@@ -1200,6 +1229,14 @@ reset; fresh_steps; items_all; : > "$T/fail-syncthing"; run 'hercules\ny\n'
 rc_is 0 "a failing generate: the run finishes"
 has "Syncthing's config was not generated — see the syncthing-settings row" "and the warning names the row"
 [ -e "$ST_DIR/config.xml" ] && _fail "and no config.xml is left" || _pass "and no config.xml is left"
+# A generate that exits 0 without writing config.xml (another version's layout): a warning, and the run goes on.
+reset; fresh_steps; items_all; : > "$T/st-no-config"; run 'hercules\ny\n'; rm -f "$T/st-no-config"
+rc_is 0 "a generate that writes no config.xml: the run finishes"
+has "⚠ Syncthing's config was not generated" "and the closing list names it"
+has "syncthing-settings" "and the row"
+hasnt "are not as section 8 E1 wants" "and no options warning"
+called "reconcile-agents.sh" "and the steps after it still run"
+called "machine-check.sh --todo" "and the closing checklist runs"
 # Syncthing.app missing (its cask failed): a warning, no generate.
 reset; fresh_steps; items_all; mv "$T/apps/Syncthing.app" "$T/Syncthing.app.away"; run 'hercules\ny\n'; mv "$T/Syncthing.app.away" "$T/apps/Syncthing.app"
 rc_is 0 "no Syncthing.app: the run finishes"
@@ -1251,18 +1288,43 @@ rc_is 0 "Vorta running: the run finishes"
 nowrite "Vorta running"
 has "quit Vorta, then run provision.sh again" "and the warning says what to do"
 called "pgrep -x vorta-darwin" "and the process asked about is Vorta's"
-# A file already there stays as it is.
+# A file a first run left waiting for Vorta (macOS's first-open prompt): the re-run reads nothing, writes
+# nothing, starts nothing, and says what is left.
 reset; fresh_steps; items_all; printf 'keep me\n' > "$VI"; run 'hercules\ny\n'
-not_called "open -g -a Vorta" "an existing file: Vorta is not started"
-[ "$(cat "$VI")" = "keep me" ] && _pass "an existing file: its content is unchanged" || _fail "an existing file: its content is unchanged"
-has "$VI already exists" "and the warning names it"
-# A dangling symlink is not followed.
+rc_is 0 "a pending file: the run finishes"
+not_called "op document" "a pending file: the export is not read"
+called "op read op://Private/NetBird setup key/credential" "a pending file: the other steps still read their items"
+not_called "open -g -a Vorta" "a pending file: Vorta is not started"
+[ "$(cat "$VI")" = "keep me" ] && _pass "a pending file: its content is unchanged" || _fail "a pending file: its content is unchanged"
+has "⚠ $VI is waiting for Vorta" "a pending file: the closing list names it"
+has "Failed to import profile" "a pending file: and what to do if the import fails"
+has "vorta row" "a pending file: and the row"
+hasnt "BorgBase" "a pending file: no item is named, read or unread"
+# A dangling symlink is pending too: not followed, not read.
 reset; fresh_steps; items_all; ln -s "$T/elsewhere" "$VI"; run 'hercules\ny\n'
 rc_is 0 "a dangling symlink: the run finishes"
+not_called "op document" "a dangling symlink: the export is not read"
 not_called "open -g -a Vorta" "a dangling symlink: Vorta is not started"
 [ -e "$T/elsewhere" ] && _fail "nothing is written through the symlink" || _pass "nothing is written through the symlink"
 [ -L "$VI" ] && _pass "and the symlink is left" || _fail "and the symlink is left"
-has "$VI already exists" "and the warning names it"
+has "⚠ $VI is waiting for Vorta" "a dangling symlink: the closing list names the path"
+# A configured machine has nothing to wait for, whatever file is there.
+reset; items_all; printf 'old\n' > "$VI"; run 'hercules\ny\n'
+not_called "op document" "a configured profile and a file: nothing is read"
+hasnt "waiting for Vorta" "and nothing is said"
+# The file appears after the preflight (a start of Vorta during the Brewfile step): 15b leaves it, same words.
+mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"
+reset; fresh_steps; items_all; : > "$T/vi-appears"; run 'hercules\ny\n'
+rc_is 0 "a file that appears mid-run: the run finishes"
+called "op document get BorgBase hercules --vault Private" "a file that appears mid-run: the export was read at the preflight"
+not_called "open -g -a Vorta" "a file that appears mid-run: Vorta is not started"
+[ "$(cat "$VI")" = "keep-me" ] && _pass "a file that appears mid-run: its content is unchanged" || _fail "a file that appears mid-run: its content is unchanged"
+has "⚠ $VI is waiting for Vorta" "a file that appears mid-run: the closing list says it is waiting"
+reset; fresh_steps; items_all; : > "$T/vi-appears-link"; run 'hercules\ny\n'
+not_called "open -g -a Vorta" "a symlink that appears mid-run: Vorta is not started"
+[ -e "$T/elsewhere" ] && _fail "a symlink that appears mid-run: nothing is written through it" || _pass "a symlink that appears mid-run: nothing is written through it"
+has "⚠ $VI is waiting for Vorta" "a symlink that appears mid-run: the closing list says it is waiting"
+rm -rf "$T/home/.config/homebrew"
 # Vorta.app missing (its cask failed): a warning, nothing written.
 reset; fresh_steps; items_all; mv "$T/apps/Vorta.app" "$T/Vorta.app.away"; run 'hercules\ny\n'; mv "$T/Vorta.app.away" "$T/apps/Vorta.app"
 rc_is 0 "no Vorta.app: the run finishes"
