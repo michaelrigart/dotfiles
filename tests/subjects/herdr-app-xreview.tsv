@@ -16,8 +16,10 @@ dot_config/herdr-app/claude-settings.json.tmpl	data	-
 dot_config/herdr-app/create_settings.json	data	-
 dot_config/herdr-app/keys.json.tmpl	data	-
 dot_config/herdr-app/layouts/michael.json	data	-
+dot_config/herdr-app/mods/nav/link.js	data	-
 dot_config/herdr-app/mods/nav/main.js	data	-
 dot_config/herdr-app/mods/nav/mod.json	data	-
+dot_config/herdr-app/mods/nav/nvim.js	data	-
 dot_config/herdr-app/mods/popup/main.js	data	-
 dot_config/herdr-app/mods/popup/mod.json	data	-
 dot_config/herdr-app/mods/respaces-guard/main.js	data	-

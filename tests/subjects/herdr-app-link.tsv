@@ -1,0 +1,6 @@
+dot_config/herdr-app/layouts/michael.json	data	guard
+dot_config/herdr-app/mods/nav/link.js	data	own,guard
+dot_config/herdr-app/mods/nav/mod.json	data	own,guard
+dot_config/herdr-app/mods/nav/nvim.js	data	own,guard
+tests/fixtures/herdr-app/link-stubs.js	data	guard
+tests/fixtures/herdr-app/link.test.js	data	guard
