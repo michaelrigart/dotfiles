@@ -604,6 +604,18 @@ check "the settings still exclude xreview-app and wt-app by their full paths, wi
 check "programs.json has no claude override" \
   jq -e '.programs | has("claude") | not' ${bin:h}/programs.json >/dev/null
 check "AGENTS.local.md, the notes the app has agents read, reaches the app's folder" test -s ${bin:h}/AGENTS.local.md
+check "keys.json binds Cmd+Alt+1…9 to agent.select 1…9" \
+  jq -e '[range(1; 10) as $i | .global["cmd-alt-\($i)"] == "agent.select:\($i)"] | all' ${bin:h}/keys.json >/dev/null
+check "keys.json binds Ctrl+Cmd+arrows to pane.resize that way" \
+  jq -e '[("left", "right", "up", "down") as $d | .global["ctrl-cmd-\($d)"] == "pane.resize:\($d)"] | all' ${bin:h}/keys.json >/dev/null
+# A key written twice in one object keeps one of its bindings at most, and jq never says so.
+check "keys.json names no key twice in one object" /usr/bin/python3 -I -c '
+import json, sys
+def once(pairs):
+    keys = [k for k, _ in pairs]
+    if len(set(keys)) != len(keys): sys.exit(1)
+    return dict(pairs)
+json.load(open(sys.argv[1]), object_pairs_hook=once)' ${bin:h}/keys.json
 
 # --- the pinned PATH -------------------------------------------------------------------------
 # open-space and close-own-tab run unsandboxed after the caller's PATH has served a repository's
