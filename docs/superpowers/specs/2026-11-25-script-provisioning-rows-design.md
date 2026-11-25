@@ -13,7 +13,7 @@ reads and their guards 45, NetBird 20, Syncthing 35, Vorta 40, the VM vault knob
 about 35 (D1: a LaunchAgent template and its loop), the checklist about 10, `README.md` about 20, `AGENTS.md` 1. Comparable: #46's NetBird daemon
 and Codex pin steps. Not yet counted: the fixes from Codex's review of #46 (§7). About 400 lines of
 test code, `tests/provision.test.sh` extended. One increment.
-**Provisioning:** `netbird-up`, `netbird-session-expiry`, `syncthing-settings`, `vorta`,
+**Provisioning:** `netbird-up`, `netbird-session-expiry`, `netbird-old-peer`, `syncthing-settings`, `vorta`,
 `login-items`
 
 ## Why

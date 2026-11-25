@@ -152,15 +152,25 @@ G
 # make a step fail without a new env var; the stubs read $SBX_ROOT, which every run passes. A file
 # named read-stdin-<tool> makes the stub read one line of stdin and fail on EOF: the run feeds
 # spare lines, so a step that does not close its stdin gets one and succeeds.
-# netbird logs its whole environment, and `status --json` prints $T/netbird-status (absent: connected).
+# netbird logs its whole environment, and `status --json` prints $T/netbird-status (absent: connected);
+# after the first status call, $T/netbird-status-later when it exists (the preflight reads the first,
+# step 8c the later ones). `up` writes its stdin to $T/netbird-up-stdin; fail-netbird-up fails only `up`.
 cat > "$T/bin/netbird" <<'NB'
 #!/usr/bin/env bash
 echo "netbird $*" >> "$CALLS"
 /usr/bin/env | sed 's/^/netbird-env /' >> "$CALLS"
+if [ "$1" = up ]; then
+  cat > "$SBX_ROOT/netbird-up-stdin"
+  [ -e "$SBX_ROOT/fail-netbird-up" ] || [ -e "$SBX_ROOT/fail-netbird" ] && exit 1
+  exit 0
+fi
 [ -e "$SBX_ROOT/read-stdin-netbird" ] && { read -r _ || exit 1; }
 [ -e "$SBX_ROOT/fail-netbird" ] && exit 1
 if [ "$1 $2" = "status --json" ]; then
-  if [ -e "$SBX_ROOT/netbird-status" ]; then cat "$SBX_ROOT/netbird-status"
+  n=$(cat "$SBX_ROOT/netbird-status-n" 2>/dev/null || echo 0); echo $((n + 1)) > "$SBX_ROOT/netbird-status-n"
+  f="$SBX_ROOT/netbird-status"
+  [ "$n" -gt 0 ] && [ -e "$SBX_ROOT/netbird-status-later" ] && f="$SBX_ROOT/netbird-status-later"
+  if [ -e "$f" ]; then cat "$f"
   else echo '{"daemonStatus":"Connected","management":{"connected":true}}'; fi
 fi
 exit 0
@@ -276,7 +286,7 @@ assert_inside(){ local r; r=$(canon "$2")
 ST_DIR="$T/home/Library/Application Support/Syncthing"; VORTA_DIR="$T/home/Library/Application Support/Vorta"
 reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
   mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"
-  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
+  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
   /usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('p', 1);"; }
 # The secrets are the suite's markers; nothing here is a real value. items_all takes the vault.
 MK_NB='MARK-NB-KEY-7f3a'; MK_ST='MARK-ST-PW-91c2'; MK_VORTA='MARK-VORTA-PW-d4e8'
@@ -892,10 +902,12 @@ reset; fresh_steps; items_all; run "$SPARE"
 rm -f "$T/read-stdin-op"
 rc_is 0 "a preflight whose reads fail does not end the run"
 has "Not read from 1Password  NetBird setup key, Syncthing GUI, BorgBase hercules" "op read and op document get read /dev/null"
-: > "$T/read-stdin-netbird"
+: > "$T/read-stdin-netbird"; : > "$T/fast-sleep"
 reset; items_all; run "$SPARE"
-rm -f "$T/read-stdin-netbird"
+rm -f "$T/read-stdin-netbird" "$T/fast-sleep"
 has "read: NetBird setup key" "the preflight's netbird status --json reads /dev/null (a status it cannot read means the key is read)"
+has "NetBird did not join with the setup key" "and step 8c's reads /dev/null too: it warns instead of joining on a spare line's status"
+not_called "netbird up" "and runs no up"
 
 echo "S. the end of the run points at the checklist"
 reset; run 'hercules\ny\n'
@@ -954,10 +966,10 @@ has "Not read from 1Password  NetBird setup key" "and counts as unread"
 reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/NetBird setup key" "$T/op-items/Private/Syncthing GUI" "$T/op-items/Private/BorgBase hercules"; run 'hercules\ny\n'
 has "Setup secrets ...... none read" "with every item missing, the summary reads none"
 # NetBird's done test.
-: > "$T/fail-netbird"; reset; items_all; run 'hercules\ny\n'; rm -f "$T/fail-netbird"
+: > "$T/fail-netbird"; : > "$T/fast-sleep"; reset; items_all; run 'hercules\ny\n'; rm -f "$T/fail-netbird" "$T/fast-sleep"
 called "op read op://Private/NetBird setup key/credential" "a status netbird cannot give: the key is read"
 for st in '{"version":"0.20"}' 'not json' '{"daemonStatus":"LoginFailed"}' '{"daemonStatus":"NeedsLogin"}'; do
-  reset; items_all; printf '%s\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'
+  : > "$T/fast-sleep"; reset; items_all; printf '%s\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'; rm -f "$T/fast-sleep"
   called "op read op://Private/NetBird setup key/credential" "status $st: the key is read"
 done
 for st in Connected SessionExpired Idle Connecting; do
@@ -995,6 +1007,58 @@ not_called "configure-fullenv PV_" "no child started after the reads carries a P
 not_called "netbird-env PV_" "nor does netbird"
 for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy1 decoy2 decoy3 decoy4; do not_called "$m" "no log line carries $m"; done
 for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy1 decoy2 decoy3 decoy4; do hasnt "$m" "the run prints no $m"; done
+
+echo "V. NetBird joins with the setup key"
+UP="netbird up --no-browser --setup-key-file /dev/stdin"
+for st in NeedsLogin LoginFailed; do
+  reset; items_all; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'
+  rc_is 0 "$st: the run finishes"
+  called "$UP" "$st: NetBird joins with the setup key on stdin"
+  not_called "sudo netbird up" "$st: without sudo"
+  [ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "$MK_NB" ] && _pass "$st: stdin is exactly the key" || _fail "$st: stdin is exactly the key"
+  not_called "netbird-env PV_" "$st: the key is in no netbird environment"
+  not_called "$MK_NB" "$st: no log line carries the key"
+  hasnt "$MK_NB" "$st: the run prints no key"
+  hasnt "NetBird did not join" "$st: no warning"
+done
+# A key with shell-special content arrives byte for byte and nothing in it runs.
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"
+printf '%s\n' "-n \$(touch $T/pwned) \\x " > "$T/op-items/Private/NetBird setup key/credential"
+run 'hercules\ny\n'
+rc_is 0 "a key with shell-special content: the run finishes"
+[ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "-n \$(touch $T/pwned) \\x " ] && _pass "it reaches stdin byte for byte" || _fail "it reaches stdin byte for byte"
+[ -e "$T/pwned" ] && _fail "and nothing in it ran" || _pass "and nothing in it ran"
+# Any other state after the preflight read the key: joined or an SSO login's to renew, so no join.
+for st in Connected Idle Connecting SessionExpired; do
+  reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status-later"
+  run 'hercules\ny\n'
+  rc_is 0 "$st at step 8c: the run finishes"
+  not_called "netbird up" "$st at step 8c: no join"
+  has "NetBird is $st" "$st at step 8c: logged and skipped"
+  hasnt "NetBird did not join" "$st at step 8c: no warning"
+done
+# A state already joined at the preflight reads no key, so there is nothing to join with.
+for st in Connected Idle Connecting SessionExpired; do
+  reset; items_all; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'
+  not_called "netbird up" "$st at the preflight: no join"
+done
+reset; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; run 'hercules\ny\n'
+not_called "netbird up" "no key read: no join"
+hasnt "NetBird did not join" "and no second warning (the preflight's already names the item)"
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; : > "$T/fail-netbird-up"; run 'hercules\ny\n'
+rm -f "$T/fail-netbird-up"
+rc_is 0 "a join that fails: the run finishes"
+has "netbird up (SSO login)" "and the warning names the SSO fallback"
+has "netbird-session-expiry" "and the session-expiry row"
+hasnt "$MK_NB" "and prints no key"
+# A status that never reads at step 8c: the 30 s wait runs, then the SSO fallback, never a join.
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; : > "$T/fast-sleep"; : > "$T/fail-netbird"; run 'hercules\ny\n'
+rm -f "$T/fast-sleep" "$T/fail-netbird"
+rc_is 0 "a status that cannot be read: the run finishes"
+not_called "netbird up" "no join without a state"
+has "netbird up (SSO login)" "and a warning names the SSO fallback"
+called "sleep 2" "after waiting in 2 s steps"
+[ "$(grep -c '^sleep 2$' "$CALLS")" -eq 15 ] && _pass "for 15 steps, 30 s" || _fail "for 15 steps, 30 s ($(grep -c '^sleep 2$' "$CALLS"))"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

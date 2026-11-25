@@ -480,6 +480,30 @@ else
 fi
 
 # ============================================================================
+# 8c. NetBird joins with the setup key
+# ============================================================================
+# Only when the preflight read the key (NetBird was not joined). The daemon just started may need
+# a moment to answer, so wait up to 30 s for a status. Only NeedsLogin and LoginFailed join; any
+# other state is joined already, or an SSO login's to renew. The key goes in on a pipe, as Michael
+# (not sudo, which would leave root-owned files in his home), and `up` on a peer the management
+# server knows ignores it. A join that fails or a status that never reads leaves the SSO login.
+if [ -n "$PV_NETBIRD_KEY" ]; then
+  nb_waited=0
+  until nb_state=$(netbird_state) || (( nb_waited >= 30 )); do
+    sleep 2; nb_waited=$(( nb_waited + 2 ))
+  done
+  case "$nb_state" in
+    NeedsLogin|LoginFailed)
+      log_info "Joining NetBird with the setup key..."
+      print -r -- "$PV_NETBIRD_KEY" | /usr/bin/timeout -k 5 120 netbird up --no-browser --setup-key-file /dev/stdin \
+        || warn "NetBird did not join with the setup key — run: netbird up (SSO login); on hercules then turn Session Expiration off (netbird-session-expiry row)" ;;
+    "") warn "NetBird did not join with the setup key — run: netbird up (SSO login); on hercules then turn Session Expiration off (netbird-session-expiry row)" ;;
+    *) log_info "✓ NetBird is $nb_state — not joining with the setup key" ;;
+  esac
+  unset PV_NETBIRD_KEY
+fi
+
+# ============================================================================
 # 9. Reconcile AI agent plugins (Claude Code + Codex)
 # ============================================================================
 if [ -x "${SCRIPTS_DIR}/reconcile-agents.sh" ]; then
