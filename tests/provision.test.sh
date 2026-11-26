@@ -559,16 +559,17 @@ has   "Leaving Universal Control enabled" "and says so"
 cfg hercules hercules hercules hercules
 has   "Disabling Universal Control" "hercules disables it (conflicts with Screen Sharing)"
 
-echo "J. FileVault expectation and autorestart are per-machine"
+echo "J. FileVault is expected on every machine; autorestart is per-machine"
 FV=On  cfg fenrir fenrir fenrir fenrir
 has   "FileVault is enabled"        "fenrir with FileVault on is correct"
 FV=Off cfg fenrir fenrir fenrir fenrir
-has   "FileVault is OFF"            "fenrir without FileVault is flagged (it travels)"
-FV=Off cfg hercules hercules hercules hercules
-has   "FileVault is off (intended"  "hercules without FileVault is correct"
+has   "FileVault is OFF"            "fenrir without FileVault is flagged"
 FV=On  cfg hercules hercules hercules hercules
-has   "FileVault is ON on hercules" "hercules WITH FileVault is flagged"
-has   "fdesetup disable"            "and the remedy is named"
+has   "FileVault is enabled"        "hercules with FileVault on is correct"
+hasnt "fdesetup disable"            "and no remedy turns it off"
+FV=Off cfg hercules hercules hercules hercules
+has   "FileVault is OFF on hercules" "hercules without FileVault is flagged"
+has   "Privacy & Security"          "and the remedy is named"
 FV=Off
 : > "$CALLS"; cfg hercules hercules hercules hercules
 called "pmset -a autorestart 1 sleep 0 womp 1" "hercules enables restart-after-power-loss, no sleep and wake-on-network"
