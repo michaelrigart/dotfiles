@@ -497,7 +497,7 @@ fi
 # Only when the preflight read the key (NetBird was not joined), so at this point Idle and Connecting
 # mean a daemon 8b just started has not settled, not that it joined. Poll up to 30 s while the
 # status is unreadable, Idle or Connecting. Only NeedsLogin and LoginFailed join; Connected is joined
-# already, and any other settled state (SessionExpired) is an SSO login's to renew, so it warns. The
+# already, SessionExpired is an SSO login's to renew, so it warns, and any other state is logged. The
 # key goes in on a pipe, as Michael (not sudo, which would leave root-owned files in his home), and
 # `up` on a peer the management server knows ignores it. A join that fails or a status that never
 # settles leaves the SSO login.
