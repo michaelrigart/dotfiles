@@ -370,7 +370,11 @@ else
   echo "  Setup secrets ...... read: ${(j:, :)READ_ITEMS}"
 fi
 if (( ${#UNREAD_ITEMS} > 0 )); then
-  echo "  Not read ........... ${(j:, :)UNREAD_ITEMS} — answer n, add or unlock them in 1Password (${OP_VAULT}) and run again; y skips their steps (Syncthing's GUI login then stays a manual step)"
+  st_note=""
+  if (( ${UNREAD_ITEMS[(Ie)Syncthing GUI]} )); then
+    st_note=" (Syncthing's GUI login then stays a manual step)"
+  fi
+  echo "  Not read ........... ${(j:, :)UNREAD_ITEMS} — answer n, add or unlock them in 1Password (${OP_VAULT}) and run again; y skips their steps${st_note}"
 fi
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "

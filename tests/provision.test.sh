@@ -1047,7 +1047,11 @@ for it in "NetBird setup key" "Syncthing GUI" "BorgBase hercules"; do
   rc_is 0 "$it missing: the run finishes"
   has "Not read ........... $it" "$it missing: the summary names it before Proceed"
   has "y skips their steps" "$it missing: and says what y does"
-  has "manual step" "$it missing: and that Syncthing's login then stays manual"
+  if [ "$it" = "Syncthing GUI" ]; then
+    has "manual step" "$it missing: and that Syncthing's login then stays manual"
+  else
+    hasnt "manual step" "$it missing: Syncthing's login is not named"
+  fi
   has "⚠ 1Password item '$it' could not be read from Private:" "$it missing: the closing list names it"
 done
 reset; fresh_steps; items_all; rm -f "$T/op-items/Private/Syncthing GUI/password"; run 'hercules\ny\n'
