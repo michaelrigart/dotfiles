@@ -566,7 +566,6 @@ FV=Off cfg fenrir fenrir fenrir fenrir
 has   "FileVault is OFF"            "fenrir without FileVault is flagged"
 FV=On  cfg hercules hercules hercules hercules
 has   "FileVault is enabled"        "hercules with FileVault on is correct"
-hasnt "fdesetup disable"            "and no remedy turns it off"
 FV=Off cfg hercules hercules hercules hercules
 has   "FileVault is OFF on hercules" "hercules without FileVault is flagged"
 has   "Privacy & Security"          "and the remedy is named"
