@@ -1,13 +1,14 @@
 # hercules: Herdr's core runs in the desktop login
 
-**Status:** Approved
+**Status:** Implemented — PR #55 (https://github.com/michaelrigart/dotfiles/pull/55)
 **Date:** 2026-11-27
 **Sign-off:** Michael, 2026-11-27, in the line's own pane: "D1. yes / D2. ok I guess / D3. ok I
 guess", and Q1 answered: `~/.claude/.credentials.json` exists on hercules (700 bytes, mode 600,
 written 2026-11-27 06:28).
 **Amended:** 2026-11-27, at planning: no new checklist row; the existing `launchagents` row checks
 that the job is loaded. After the final review: the job's effect on fenrir (it starts the core when
-none runs) and the desktop-logout warning, in Design, Behaviour, D3 and row `filevault-on`.
+none runs) and the desktop-logout warning, in Design, Behaviour, D3 and row `filevault-on`;
+Michael, 2026-11-27, accepted the job on every machine, and the PR's opening without Codex.
 **Branch:** `feat/hercules-herdr-desktop-session`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-hercules-herdr-desktop-session`
 **Source:** Michael, 2026-11-27, relayed by line `chore/hercules-filevault-on` and briefed by the

@@ -1,5 +1,7 @@
 # hercules Herdr core in the desktop login — Implementation Plan
 
+**Status:** Completed 2026-11-27 — PR #55; do not run again.
+
 > **For agentic workers:** run with the `plan-run` skill (subagent-driven). Steps use checkbox
 > (`- [ ]`) syntax for tracking.
 
