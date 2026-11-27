@@ -20,7 +20,9 @@ agent-run private builder, with what it aims at written down, and the alerts tha
 accepted ("Accept both"). §5's 1Password clause gives the read-back to Michael, because the
 agents' permission check refuses `op document get`; §8 records the rebuild. Later that evening the
 plan review found that neither of Michael's checks before a periodic restore sees a setting other
-than Terminal access; he added a settings `diff` to §5's step 3 ("Add the diff").
+than Terminal access; he added a settings `diff` to §5's step 3 ("Add the diff"). Its re-review
+found that agents can write the backup it compares against, so step 1 now has Michael note that
+backup's hash, which step 3 checks before the `diff`.
 **Source:** Michael, 2026-11-25: "Can you work on Little Snitch for me? I would like you to review
 my current rules and optimize everything. At the same time, I would also want to know, once we have
 a good rule set, if we could include it in our privisioning scripts." Relayed in the driver's brief
@@ -198,7 +200,8 @@ change it:
 **Periodic review** (approach A of 2026-11-25: an agent runs it, Michael restores). Every month or
 two, and after a burst of alerts:
 
-1. Michael saves a backup into `~/Code/.metrics/little-snitch/` (directory 700) and names its path.
+1. Michael saves a backup into `~/Code/.metrics/little-snitch/` (directory 700), notes its
+   `shasum -a 256` and names its path.
 2. An agent reviews it with the machine's private builder, kept in that folder (it holds the
    machine's own decisions, so it never enters the repository), and hands him the output and a log
    of every rule it adds, removes, narrows or makes permanent. The builder checks its own result
@@ -208,11 +211,14 @@ two, and after a burst of alerts:
    (hercules at its first review); a lost builder is rebuilt from the aims below.
 3. Michael copies the output to `/tmp/little-snitch.lsbackup` (deleting a leftover first; sandboxed
    agents cannot write `/tmp` itself), runs the README's `jq` check on that copy himself
-   (`[0,[<id -u>]]`) and the README's settings `diff` between his backup from step 1 and that copy,
-   reads the log, restores that copy and deletes it. The `diff` leaves out only the rules and the
-   two settings the builder changes (`allowCommandLineAccess` and `markNewRulesAsUnapproved`), so
-   it prints nothing; any output (a rule-group subscription, a DNS server, the operating mode) means
-   no restore. He restores only if he has answered no
+   (`[0,[<id -u>]]`); checks that his backup from step 1 still has the hash he noted (agents can
+   write the folder); runs the README's settings `diff` between that backup and the copy; reads the
+   log and goes on only if he accepts every change it lists; then restores the copy and deletes it.
+   The `diff` leaves out only the rules and the two settings the builder changes
+   (`allowCommandLineAccess` and `markNewRulesAsUnapproved`) and compares numbers by value (the
+   builder rewrites the file), so it prints nothing; a changed hash or any `diff` output (a changed
+   setting, such as the DNS servers or the operating mode) means no restore. He restores only if he
+   has answered no
    alert since step 1; otherwise the agent rebuilds the output from a fresh backup, because a
    restore discards every rule made since its source backup.
 4. He saves a fresh backup into the folder and names its path; the agent stores it under the clause
@@ -265,9 +271,10 @@ through that tool alerts until it is answered once at the machine.
 - The periodic review's output is a file Michael restores by hand. Any agent session can write
   `~/Code/.metrics/little-snitch/`, because `~/Code` is in the sandbox's write scope, so the output
   is only as trustworthy as those sessions. Michael's own checks on the copy he restores are the
-  guard: the `jq` check keeps Terminal access off, the settings `diff` against his own backup shows
-  any other setting changed, and the log lists every rule the review adds or removes for him to
-  read. The log is the agent's, so the rules themselves rest on trusting the builder (approach A).
+  guard: the `jq` check keeps Terminal access off, the settings `diff` against his own backup
+  (whose hash he noted when he saved it) shows any other setting changed, and the log lists every
+  rule the review adds or removes for him to read. The log is the agent's, so the rules themselves
+  rest on trusting the builder (approach A).
 - The stored backup is made with Terminal access off and checked (`jq`) before it is stored and
   before it is restored, so a restore turns Terminal access off rather than on.
 - The plain-text backup exists outside 1Password only in `/tmp`, for the minutes a backup or
@@ -286,7 +293,11 @@ through that tool alerts until it is answered once at the machine.
   root, so the check leaves uid `0` out); if its first value is anything but `0`, the README's expectation is corrected before
   the backup is stored.
 - The README's settings `diff`, on stubs: no output when only the rules,
-  `allowCommandLineAccess` and `markNewRulesAsUnapproved` differ; output when any other key does.
+  `allowCommandLineAccess` and `markNewRulesAsUnapproved` differ, or a number is written
+  differently (`1.000` against `1`, as Python's rewrite does); output when any other key does. At
+  the first periodic review the agent confirms from the backup's top-level key names that the
+  rule-group subscriptions, the DNS servers and the operating mode sit outside `.rules`; one that
+  does not is named in §6 as resting on the builder, like the rules.
 - The checklist and README changes get no new test: they are the order and wording of manual
   steps, and no suite pins either.
 - Before the PR: `./tests/run.sh --changed`.

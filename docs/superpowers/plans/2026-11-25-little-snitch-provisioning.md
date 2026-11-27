@@ -48,8 +48,8 @@ periodic review's builder stays private (spec §5).
 - The README's `jq` check is exactly the spec's: `[true,[501]]` on a stub with Terminal access on,
   `[0,[501]]` on one without the key, root's uid `0` left out of both (Task 2, Step 2).
 - The *Periodic review* part leaves every Little Snitch and 1Password check with Michael: he copies
-  the agent's output to `/tmp` himself, runs the `jq` check and the settings `diff` on that copy,
-  reads the log, restores
+  the agent's output to `/tmp` himself, runs the `jq` check on that copy, checks his own backup's
+  hash before the settings `diff` against it, reads the log, restores
   only if he has answered no alert since his backup, and compares both hashes himself (Task 2,
   Step 1).
 
@@ -86,8 +86,9 @@ periodic review's builder stays private (spec §5).
   "Rebase note": `feat/script-provisioning-rows` made `netbird-up`, `syncthing-settings` and `vorta`
   `script` rows that run before any `you` row, so NetBird and Syncthing first connect during
   `provision.sh`, before the filter is on; they meet the restored rules once it is, while Michael is
-  still at the machine. The `vorta` row only leaves a file for Vorta to import, so Vorta first
-  connects at its first backup, which *First use* runs on hercules. The sentence "The rows stay
+  still at the machine. `provision.sh` starts Vorta only to import its profile; Vorta reaches its
+  repository at its first backup (its schedule, or the one *First use* runs on hercules). The
+  sentence "The rows stay
   before `netbird-up` and the Syncthing rows" now holds for `netbird-old-peer` and the Syncthing
   pairing rows only. No design change.
 - [ ] **Step 5: Suites.** `./tests/run.sh provisioning machine-check`. Expected: both pass.
@@ -120,9 +121,11 @@ periodic review's builder stays private (spec §5).
   op document edit "Little Snitch backup <machine>" --vault Private /tmp/little-snitch.lsbackup
   op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup <machine>" --vault Private
   rm /tmp/little-snitch.lsbackup
+  shasum -a 256 <the backup you saved for the review>
   cp <the review's output> /tmp/little-snitch.lsbackup
-  diff <(jq -S 'del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved)' <the backup you saved for the review>) <(jq -S 'del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved)' /tmp/little-snitch.lsbackup)
-  shasum -a 256 <the backup you saved>
+  ls_settings='del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved) | walk(if type == "number" then . + 0 else . end)'
+  diff <(jq -S "$ls_settings" <the backup you saved for the review>) <(jq -S "$ls_settings" /tmp/little-snitch.lsbackup)
+  shasum -a 256 <the fresh backup you saved>
   op document get "Little Snitch backup <machine>" --vault Private | shasum -a 256
   ```
 
@@ -134,15 +137,17 @@ periodic review's builder stays private (spec §5).
   `get` and `edit` is the plan's tightening of the spec's commands (§6 names Private as the trust
   boundary). *Periodic review* gives when (every month or two, and after a burst of alerts) and
   Michael's side of spec §5's four steps, in order: save a backup into
-  `~/Code/.metrics/little-snitch/` (directory 700) and name its path to an agent; when the agent
-  hands over its output and log, delete any leftover `/tmp/little-snitch.lsbackup`, copy the output
-  there, run the `jq` check on the copy, run the settings `diff` (no output; any output means no
-  restore, because only the rules and the two settings it leaves out may change), read the log and
-  go on only if he accepts every rule it
-  adds or widens, restore the copy only if no alert was answered since the backup (else ask for a
-  rebuild from a fresh backup), delete the copy; save a fresh backup into the folder and
-  name its path; once the agent has stored it, run the two `shasum` lines and compare, and tell the
-  agent so it deletes the review's files. It points to spec §5 for what the review aims at and
+  `~/Code/.metrics/little-snitch/` (directory 700), note its `shasum -a 256` and name its path to
+  an agent; when the agent hands over its output and log, delete any leftover
+  `/tmp/little-snitch.lsbackup`, copy the output there, run the `jq` check on the copy, check that
+  the backup still has the noted hash (agents can write the folder), set `ls_settings` and run the
+  settings `diff` (no output; a changed hash or any output means no restore, because only the
+  rules and the two settings the filter leaves out may change, and it compares numbers by value),
+  read the log and go on only if he accepts every change it lists, restore the copy only if no
+  alert was answered since the backup (else ask for a rebuild from a fresh backup), delete the
+  copy; save a fresh backup into the folder and name its path; once the agent has stored it, run
+  the two last lines and compare their hashes, and tell the agent so it deletes the review's
+  files. It points to spec §5 for what the review aims at and
   names no rule, host or builder.
 - [ ] **Step 2: Check.**
   - In `$TMPDIR`, a stub `{"globalDefaults":{"allowCommandLineAccess":true},"users":[{"uid":0},{"uid":501}]}`
@@ -152,19 +157,21 @@ periodic review's builder stays private (spec §5).
     at least 1, so the README carries the exact check.
   - The settings filter on stubs: a base
     `{"rules":[{"action":"allow"}],"globalDefaults":{"allowCommandLineAccess":1,"x":1},"users":[{"uid":0},{"uid":501,"defaults":{"markNewRulesAsUnapproved":1}}]}`,
-    a copy with the rules, `allowCommandLineAccess` and `markNewRulesAsUnapproved` changed, and a
-    copy that also changes `x`. Write each through the README's `jq -S` filter to a file in
-    `$TMPDIR` and `diff` the base's against each (the sandbox denies `/dev/fd`, which `<(…)` needs,
-    so the agent's check uses files; the README keeps `<(…)`): the first prints nothing and exits 0,
-    the second prints the `x` line and exits 1. Run on 2026-11-27: both hold.
-  - `rg -F -c "del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved)" README.md`:
-    at least 1 line (the `diff` line carries the filter twice).
+    a copy with the rules, `allowCommandLineAccess` and `markNewRulesAsUnapproved` changed and `x`
+    written as `1.000`, and a copy that also sets `x` to `2`. Write each through
+    `jq -S "$ls_settings"` (the README's value) to a file in `$TMPDIR` and `diff` the base's against
+    each (the sandbox denies `/dev/fd`, which `<(…)` needs, so the agent's check uses files; the
+    README keeps `<(…)`): the first prints nothing and exits 0, the second prints the `x` line and
+    exits 1.
+  - `rg -F -c` with each of the two `ls_settings` and `diff` lines above, as written: 1 each, so
+    the README carries the exact filter and both sides use it.
   - `rg -n 'preserve-terminal-access' README.md`: one line, the "never".
   - ``rg -o '/tmp/[^[:space:]`"),;]+' README.md | sed 's/\.$//' | sort -u``: only
     `/tmp/little-snitch.lsbackup` (the class stops only at delimiters, so a misspelt path shows up).
-  - `rg -c 'shasum -a 256' README.md`: at least 2.
+  - `rg -c 'shasum -a 256' README.md`: at least 3.
   - After `git add`, `git diff --cached | rg '^\+' | rg -o '[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+' | sort -u`
     prints a subset of `little-snitch.lsbackup`, `Snitch.app` (the CLI path),
+    `globalDefaults.allowCommandLineAccess`, `defaults.markNewRulesAsUnapproved`,
     `2026-11-25-little-snitch-provisioning-design.md` and `machine-checklist.tsv`. Any other token:
     stop and report it instead of committing.
 - [ ] **Step 3: Commit.** "Document restoring and refreshing the Little Snitch backup".
