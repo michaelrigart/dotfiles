@@ -13,8 +13,8 @@ through `herdr-core exec`, whether the core's programs can use the login keychai
 
 **Tech Stack:** bash 3.2, launchd plist (chezmoi template), bash test suite with stubs.
 
-**Spec:** `docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md` (Approved,
-66f2a09). Read its Design, Behaviour and Tests sections before any task.
+**Spec:** `docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md` (Approved).
+Read its Design, Behaviour and Tests sections before any task.
 
 ## Global Constraints
 
@@ -37,24 +37,75 @@ through `herdr-core exec`, whether the core's programs can use the login keychai
 
 ## Review Focus
 
-1. **HOME containing a space** — every path the script builds stays one word. Pinned in Task 1
-   (the scratch `HOME` has a space in it).
+1. **HOME containing a space** — every path the script builds stays one word. Pinned in Task 2
+   (each scratch `HOME` has a space in it; stubs log each argument delimited).
 2. **A fresh machine without `~/.local/state`** — the script creates it before logging. Pinned in
-   Task 1 (case B starts without it).
+   Task 2 (every case starts without it).
 3. **The job unloading itself kills the script mid-run** — the failure line must be in the log
-   before `launchctl bootout` runs. Pinned in Task 1 (the `launchctl` stub records whether the log
+   before `launchctl bootout` runs. Pinned in Task 2 (the `launchctl` stub records whether the log
    already holds the line when it is called).
 4. **A core being stopped and started by herdr's own tooling when the job fires** — the 5-second
-   wait comes before the first check. Pinned in Task 1 (call order).
+   wait comes before the first check. Pinned in Task 2 (call order).
 5. **`core.lock` absent when the job loads (fresh machine)** — launchd's `WatchPaths` on a path that
    does not exist yet. Not testable in a suite; it is covered by Michael's undo check (spec step 3)
    on hercules, where the file exists, and named in the final report for a fresh machine.
 
 ---
 
-### Task 1: The job: script, plist and suite
+### Task 1: Checklist rows and the spec's Provisioning line
 
-**Depends on:** none. Gets a per-task review (it sets who reaches the login keychain).
+**Depends on:** none. Runs first: `tests/provisioning.test.sh` is red on this branch until the
+spec's Provisioning line names existing rows, and it also reads every LaunchAgent plist, so Task 2's
+checks need this one done. Your check, no per-task review.
+
+**Files:**
+- Modify: `.scripts/machine-checklist.tsv` (rows `claude-login`, `filevault-on`)
+- Modify: `docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md` (header and
+  the Provisioning paragraph)
+
+- [ ] **Step 1: Row `claude-login`**
+
+Step text: `Start claude once in a terminal or Herdr pane of the desktop login and sign in (from an
+SSH login Claude Code cannot write the keychain and keeps the login in plain text, in
+~/.claude/.credentials.json; delete that file after signing in again)`. Verify: `claude auth status
+--json | /usr/bin/jq -e .loggedIn >/dev/null && [ ! -e "$HOME/.claude/.credentials.json" ]`.
+
+- [ ] **Step 2: Row `filevault-on`**
+
+Append to the step, after "until a desktop login": `; on hercules that login also moves Herdr's
+core into it (be.netronix.herdr-core-desktop), and Herdr panes opened before it stay in the SSH
+login, so reopen them`.
+
+- [ ] **Step 3: The spec's provisioning (ruling at planning)**
+
+The existing `launchagents` row already fails when a `be.netronix.*` job is not loaded, including
+after this job unloads itself, so no `herdr-core-desktop` row is added. In the spec: add after the
+`**Sign-off:**` entry the line `**Amended:** 2026-11-27, at planning: no new checklist row; the
+existing \`launchagents\` row checks that the job is loaded.`; set `**Provisioning:**
+\`launchagents\`, \`filevault-on\`, \`claude-login\``; in `**Size:**` say "two edited checklist
+rows"; in Design's **Provisioning.** paragraph replace the new-row sentence with "The existing
+`launchagents` row checks that the job is loaded (it fails after the job unloads itself)."
+
+- [ ] **Step 4: Check**
+
+Run: `./tests/run.sh provisioning machine-check`
+Expected: both pass. Then check the new `claude-login` verify against a fixture, the way
+machine-check runs it: a scratch HOME, and a scratch bin directory holding a stub `claude` that
+prints `{"loggedIn":true}`; run `env -i HOME=<scratch> PATH=<scratch bin>:/usr/bin:/bin
+/usr/bin/timeout 30 /bin/zsh -f -c '<the verify>'; echo rc=$?`. Expected: `rc=0` without
+`<scratch>/.claude/.credentials.json`, and `rc=1` after `touch`ing it. Record both in the ledger.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .scripts/machine-checklist.tsv docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md
+git commit -m "Flag a plain-text Claude login and note the desktop-login move in the checklist"
+```
+
+### Task 2: The job: script, plist and suite
+
+**Depends on:** Task 1 (the provisioning suite must be green to judge this task's run). Gets a
+per-task review (it sets who reaches the login keychain).
 
 **Files:**
 - Create: `dot_local/bin/executable_herdr-core-desktop` (mode 755)
@@ -69,44 +120,46 @@ through `herdr-core exec`, whether the core's programs can use the login keychai
 
 - [ ] **Step 1: Write the failing suite `tests/herdr-core-desktop.test.sh`**
 
-Scratch root from `mktemp -d`, removed on exit; a scratch `HOME` under it whose name contains a
-space. Stubs, each appending one line per call to `$CALLS`:
-- `$HOME/.local/bin/herdr-core`: logs `hc <args>`, or `hc-direct <args>` when `STUB_VIA_TIMEOUT` is
-  not set. `exec …` exits 0 when the file `$T/ctx` holds `ok`, else prints `security:
+A scratch root from `mktemp -d`, removed on exit. A `fresh` helper gives each case its own state, as
+`fresh_home` does in `tests/ssh-agent-run.test.sh`: a new scratch `HOME` whose name contains a space
+and that has no `.local/state`, the herdr-core stub installed in it, and new `CALLS`, `ctx` and
+`move` files. Stubs are written with unquoted heredocs so the case's paths are fixed in them at
+creation (`env -i` passes none through). Each logs one line per call to `CALLS`, every argument
+delimited (`printf ' [%s]' "$@"`):
+- `$HOME/.local/bin/herdr-core`: logs `hc`, or `hc-direct` when `STUB_VIA_TIMEOUT` is unset, then
+  its arguments. `exec …` exits 0 when `ctx` holds `ok`, else prints `security:
   SecKeychainCopySettings …: User interaction is not allowed.` to stderr and exits 36. `server
-  restart --fresh` writes `env` to `$T/restart.env` and, per `$T/move` (`now`, `late`, `never`),
-  sets `ctx` to `ok` at once, after the next check, or never.
-- `$HCD_TOOLS/timeout`: logs `timeout <args>`, exports `STUB_VIA_TIMEOUT=1`, drops its first
-  argument (the seconds) and execs the rest.
-- `$HCD_TOOLS/sleep`: logs `sleep <args>`, returns at once.
-- `$HCD_TOOLS/launchctl`: logs `launchctl <args>` and `log-had-failure=yes|no` (whether the log file
-  already holds the failure line).
+  restart --fresh` writes `env | /usr/bin/grep -v '^STUB_VIA_TIMEOUT='` to `restart.env` and, per
+  `move` (`now`, `late`, `never`), sets `ctx` to `ok` at once, after the next check, or never.
+- `$HCD_TOOLS/timeout`: logs `timeout` and its arguments, exports `STUB_VIA_TIMEOUT=1`, drops its
+  first argument (the seconds) and execs the rest.
+- `$HCD_TOOLS/sleep`: logs `sleep` and its arguments, returns at once.
+- `$HCD_TOOLS/launchctl`: logs `launchctl` and its arguments, and `log-had-failure=yes|no` (whether
+  the log file already holds the failure line).
 
 Run the script as `env -i HOME="$HOME" PATH=/opt/x:/usr/bin:/bin HCD_TOOLS=… MARKER=kept
 /bin/bash <script>`. Cases and assertions:
-- **A. usable core:** rc 0; `$CALLS` is exactly `sleep 5`, then one `timeout 60 …` + `hc exec
-  /usr/bin/security show-keychain-info <HOME>/Library/Keychains/login.keychain-db`; no restart; no
-  log file.
-- **B. unusable, moves at once** (no `~/.local/state` beforehand): rc 0; exactly one `hc server
-  restart --fresh`; the log exists with exactly one line, containing `moved`; no `launchctl` call.
+- **A. usable core:** rc 0; `CALLS` is exactly `sleep [5]`, then `timeout [60] [<hc path>] [exec]
+  [/usr/bin/security] [show-keychain-info] [<HOME>/Library/Keychains/login.keychain-db]` and the
+  matching `hc` line; no restart; no log file.
+- **B. unusable, moves at once:** rc 0; exactly one `hc [server] [restart] [--fresh]`; the log
+  exists with exactly one line, containing `moved`; no `launchctl` call.
 - **C. unusable, moves only after the re-check** (`move=late`): rc 0; one restart; three checks;
-  `sleep 5` twice (before the first check, before the re-check); one `moved` line.
+  `sleep [5]` twice (before the first check, before the re-check); one `moved` line.
 - **D. never moves:** rc 1; exactly one restart; the log's one line contains `could not move`;
-  `launchctl bootout gui/<uid>/be.netronix.herdr-core-desktop` called once, with
+  `launchctl [bootout] [gui/<uid>/be.netronix.herdr-core-desktop]` called once, with
   `log-had-failure=yes`.
-- **E. herdr-core missing:** rc 0; `$CALLS` empty; no log file.
+- **E. herdr-core missing:** rc 0; `CALLS` empty; no log file.
 - **F. environment:** in case B's `restart.env`, `PATH=/opt/x:/usr/bin:/bin` and `MARKER=kept`, and
   no variable names besides those given plus `SHLVL`, `_`, `PWD` and `OLDPWD`.
-- **G. timeouts and forbidden calls, over every case:** no `hc-direct` line; no `hc server stop`,
-  `hc kill` or `hc rm` line.
+- **G. timeouts and forbidden calls, over every case:** no `hc-direct` line; no `hc [server]
+  [stop]`, `hc [kill]` or `hc [rm]` line.
 - **H. plist:** render with `sed "s|{{ .chezmoi.homeDir }}|$H|g"` as `tests/ssh-agent-run.test.sh`
   does; `plutil -lint` passes; `Label` is `be.netronix.herdr-core-desktop`; `ProgramArguments.0` is
   `$H/.local/bin/herdr-core-desktop`; `RunAtLoad` and `AbandonProcessGroup` are `true`;
   `LimitLoadToSessionType` is `Aqua`; `WatchPaths.0` is
   `$H/.local/state/herdr-core/default/core.lock`; `KeepAlive` and `EnvironmentVariables` are absent;
-  `StandardOutPath` and `StandardErrorPath` are `/dev/null`; the header names the spec file and the
-  `launchctl bootstrap gui/$(id -u)` and `launchctl bootout gui/$(id -u)/be.netronix.herdr-core-desktop`
-  commands.
+  `StandardOutPath` and `StandardErrorPath` are `/dev/null`. No assertion on header wording.
 
 Missing script or plist: print the path and exit 2.
 
@@ -144,68 +197,24 @@ Library/LaunchAgents/be.netronix.herdr-core-desktop.plist.tmpl	data	own,guard
 `tests/subjects/load-launchagents.tsv` gains, in name order:
 `Library/LaunchAgents/be.netronix.herdr-core-desktop.plist.tmpl	data	-`
 
-- [ ] **Step 6: Run the focused suites, expect all pass**
+- [ ] **Step 6: Stage, then run the focused suites, expect all pass**
 
-Run: `./tests/run.sh herdr-core-desktop load-launchagents missing-subject`
+`git add` the five files first: `missing-subject` copies only `git ls-files`, so unstaged files
+escape it. Run: `./tests/run.sh herdr-core-desktop load-launchagents missing-subject provisioning`
 Expected: every suite passes; `herdr-core-desktop` reports `N/N`.
 
-- [ ] **Step 7: Revert check**
+- [ ] **Step 7: Revert checks**
 
-For case D's `log-had-failure=yes`, case F and case A's `sleep 5` first: break the script (bootout
-before logging; an `export PATH=/usr/bin:/bin`; the check before the sleep), run the suite, see the
-named assertion fail, restore.
+Break the script one way at a time, run the suite, see the named assertion fail, restore: boot out
+before logging (D's `log-had-failure=yes`); add `export PATH=/usr/bin:/bin` (F); check before the
+first sleep (A's order); call herdr-core without the timeout (G's `hc-direct`); leave the keychain
+path unquoted (A's single delimited argument).
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add dot_local/bin/executable_herdr-core-desktop Library/LaunchAgents/be.netronix.herdr-core-desktop.plist.tmpl tests/herdr-core-desktop.test.sh tests/subjects/herdr-core-desktop.tsv tests/subjects/load-launchagents.tsv
 git commit -m "Keep the Herdr core in the desktop login with a LaunchAgent"
-```
-
-### Task 2: Checklist rows and the spec's Provisioning line
-
-**Depends on:** none (disjoint from Task 1). Your check, no per-task review.
-
-**Files:**
-- Modify: `.scripts/machine-checklist.tsv` (rows `claude-login`, `filevault-on`)
-- Modify: `docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md` (header and
-  the Provisioning paragraph)
-
-- [ ] **Step 1: Row `claude-login`**
-
-Step text: `Start claude once in a terminal or Herdr pane of the desktop login and sign in (from an
-SSH login Claude Code cannot write the keychain and keeps the login in plain text, in
-~/.claude/.credentials.json; delete that file after signing in again)`. Verify: `claude auth status
---json | /usr/bin/jq -e .loggedIn >/dev/null && [ ! -e "$HOME/.claude/.credentials.json" ]`.
-
-- [ ] **Step 2: Row `filevault-on`**
-
-Append to the step, after "until a desktop login": `; on hercules that login also moves Herdr's
-core into it (be.netronix.herdr-core-desktop), and Herdr panes opened before it stay in the SSH
-login, so reopen them`.
-
-- [ ] **Step 3: The spec's provisioning (ruling at planning)**
-
-The existing `launchagents` row already fails when a `be.netronix.*` job is not loaded, including
-after this job unloads itself, so no `herdr-core-desktop` row is added. In the spec: add under
-`**Sign-off:**` the line `**Amended:** 2026-11-27, at planning: no new checklist row; the existing
-\`launchagents\` row checks that the job is loaded.`; set `**Provisioning:** \`launchagents\`,
-\`filevault-on\`, \`claude-login\``; in `**Size:**` say "two edited checklist rows"; in Design's
-**Provisioning.** paragraph replace the new-row sentence with "The existing `launchagents` row checks
-that the job is loaded (it fails after the job unloads itself)."
-
-- [ ] **Step 4: Check**
-
-Run: `./tests/run.sh provisioning machine-check`
-Expected: both pass (the lint accepts the rows and the spec's Provisioning line). Then, sandboxed:
-`env -i HOME="$HOME" PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" /bin/zsh -f -c '<the
-claude-login verify>'; echo rc=$?` on fenrir prints `rc=0` or a clear sandbox denial; record which.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add .scripts/machine-checklist.tsv docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md
-git commit -m "Flag a plain-text Claude login and note the desktop-login move in the checklist"
 ```
 
 ---
