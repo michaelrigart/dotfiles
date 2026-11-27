@@ -443,7 +443,7 @@ log_info "Testing SSH connection to GitLab..."
 if ssh -o StrictHostKeyChecking=accept-new -T git@gitlab.com 2>&1 | grep -q "Welcome to GitLab, @"; then
   log_info "✓ SSH connection to GitLab successful"
 else
-  warn "SSH to GitLab not confirmed — run ssh -T git@gitlab.com and check the key it offers"
+  warn "SSH to GitLab not confirmed — run ssh -T git@gitlab.com: check gitlab.com's host key, then that the agent holds a key GitLab accepts"
 fi
 
 # ============================================================================
