@@ -168,11 +168,12 @@ periodic review's builder stays private (spec §5).
   - `rg -n 'preserve-terminal-access' README.md`: one line, the "never".
   - ``rg -o '/tmp/[^[:space:]`"),;]+' README.md | sed 's/\.$//' | sort -u``: only
     `/tmp/little-snitch.lsbackup` (the class stops only at delimiters, so a misspelt path shows up).
-  - `rg -c 'shasum -a 256' README.md`: at least 3.
-  - After `git add`, `git diff --cached | rg '^\+' | rg -o '[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+' | sort -u`
+  - `rg -F -c 'shasum -a 256 <the backup you saved for the review>' README.md` and
+    `rg -F -c 'shasum -a 256 <the fresh backup you saved>' README.md`: at least 1 each.
+  - After `git add`, `git diff --cached | rg '^\+' | rg -v '^\+\+\+ ' | rg -o '[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+' | sort -u`
     prints a subset of `little-snitch.lsbackup`, `Snitch.app` (the CLI path),
-    `globalDefaults.allowCommandLineAccess`, `defaults.markNewRulesAsUnapproved`,
-    `2026-11-25-little-snitch-provisioning-design.md` and `machine-checklist.tsv`. Any other token:
+    `globalDefaults.allowCommandLineAccess`, `defaults.markNewRulesAsUnapproved` and
+    `2026-11-25-little-snitch-provisioning-design.md`. Any other token:
     stop and report it instead of committing.
 - [ ] **Step 3: Commit.** "Document restoring and refreshing the Little Snitch backup".
 

@@ -208,7 +208,11 @@ two, and after a burst of alerts:
    before writing (no temporary rule left, each agent workspace with its rules, each block present,
    Little Snitch's own entries unchanged) and changes nothing when run on its own output; a review
    that needs a new kind of decision extends it. A machine without a builder starts from fenrir's
-   (hercules at its first review); a lost builder is rebuilt from the aims below.
+   (hercules at its first review); a lost builder is rebuilt from the aims below. At each machine's
+   next review (fenrir's next, hercules' first) the agent also reports the backup's top-level key
+   names (`jq -r 'keys[]'`) and whether the rule-group subscriptions, the DNS servers and the
+   operating mode sit outside `.rules`, where step 3's `diff` sees them; one inside is reported to
+   Michael as resting on the builder, like the rules.
 3. Michael copies the output to `/tmp/little-snitch.lsbackup` (deleting a leftover first; sandboxed
    agents cannot write `/tmp` itself), runs the README's `jq` check on that copy himself
    (`[0,[<id -u>]]`); checks that his backup from step 1 still has the hash he noted (agents can
@@ -294,10 +298,8 @@ through that tool alerts until it is answered once at the machine.
   the backup is stored.
 - The README's settings `diff`, on stubs: no output when only the rules,
   `allowCommandLineAccess` and `markNewRulesAsUnapproved` differ, or a number is written
-  differently (`1.000` against `1`, as Python's rewrite does); output when any other key does. At
-  the first periodic review the agent confirms from the backup's top-level key names that the
-  rule-group subscriptions, the DNS servers and the operating mode sit outside `.rules`; one that
-  does not is named in §6 as resting on the builder, like the rules.
+  differently (`1.000` against `1`, as Python's rewrite does); output when any other key does.
+  Where those settings sit in a real backup is checked at the next review (§5, step 2).
 - The checklist and README changes get no new test: they are the order and wording of manual
   steps, and no suite pins either.
 - Before the PR: `./tests/run.sh --changed`.
