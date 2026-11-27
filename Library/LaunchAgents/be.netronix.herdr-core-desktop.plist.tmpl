@@ -15,7 +15,9 @@
   the desktop login; WatchPaths on core.lock (rewritten at every core start) catches SSH-side
   restarts such as `hc machine update`. AbandonProcessGroup keeps a core that herdr-core falls
   back to starting as a direct child alive. After a failed move the job unloads itself until the
-  next desktop login. Where the core already runs in the desktop login it finds nothing to do.
+  next desktop login. A core already in the desktop login (fenrir's, from Herdr.app) is never
+  restarted; when no core runs, the check starts one, so after `hc server stop` a new core starts
+  within seconds: boot this job out first to keep it stopped.
   Design: docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md.
 
   The script keeps launchd's environment, which `--fresh` passes on to new terminals, and logs to

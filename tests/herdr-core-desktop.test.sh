@@ -6,7 +6,8 @@
 # Bugs caught: a usable core being restarted; a failed move restarting again or never unloading
 # the job; the job unloading itself before the failure is logged (launchd would kill the script
 # first); a check run before the wait for herdr's own stop and start; a changed environment
-# reaching `server restart --fresh`; a herdr-core call outside timeout; a stop, kill or rm; a path
+# reaching `server restart --fresh`; a herdr-core call outside timeout; a herdr-core `server stop`,
+# `kill` or `rm`; a path
 # with a space splitting; a fresh machine without ~/.local/state; a plist that restarts the job
 # in a loop or runs it outside the desktop login.
 #

@@ -6,7 +6,8 @@
 guess", and Q1 answered: `~/.claude/.credentials.json` exists on hercules (700 bytes, mode 600,
 written 2026-11-27 06:28).
 **Amended:** 2026-11-27, at planning: no new checklist row; the existing `launchagents` row checks
-that the job is loaded.
+that the job is loaded. After the final review: the job's effect on fenrir (it starts the core when
+none runs) and the desktop-logout warning, in Design, Behaviour, D3 and row `filevault-on`.
 **Branch:** `feat/hercules-herdr-desktop-session`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-hercules-herdr-desktop-session`
 **Source:** Michael, 2026-11-27, relayed by line `chore/hercules-filevault-on` and briefed by the
@@ -69,8 +70,9 @@ another login without ending their programs. Viewing a healthy SSH core does not
 `~/.local/state/herdr-core/default/core.lock` (every core start), `AbandonProcessGroup` (herdr-core
 falls back to a direct child when its launchd start fails), no `KeepAlive` and no
 `EnvironmentVariables`: its environment is launchd's, the one fenrir's core has (M7). It deploys on
-every machine and is loaded by `.scripts/load-launchagents.sh` like the others; on fenrir the core is
-already in the desktop login, so the job finds nothing to do.
+every machine and is loaded by `.scripts/load-launchagents.sh` like the others. On fenrir the core
+Herdr.app starts is already in the desktop login, so the job never restarts it there; its check does
+start fenrir's core at the desktop login when Herdr.app has not yet, and after `hc server stop` (D3).
 
 **The script**, bash 3.2. It never changes its environment, because `--fresh` hands it to new
 terminals; it calls tools by absolute path and every `herdr-core` call under `/usr/bin/timeout`.
@@ -103,8 +105,9 @@ plain-text login (Q1) shows up as a step to do on any machine.
 | Desktop login, core started earlier over SSH | moved; new panes in the desktop login; panes from before keep the SSH login (D2) |
 | Desktop login, no core running | started in the desktop login; fenrir attaches to it |
 | `hc machine update hercules`, or any SSH-side restart | moved back within seconds (M5) |
-| `hc server stop` | a new desktop core within seconds (D3) |
+| `hc server stop`, on any machine | a new desktop core within seconds (D3) |
 | A move that fails | logged; the job unloads itself until the next desktop login |
+| Desktop logout on hercules (inferred, not measured) | the core now lives in the desktop login, so a logout may end it and every pane; end Screen Sharing by disconnecting, not by logging out |
 
 ## What changes for an attacker or a runaway agent
 
@@ -126,7 +129,8 @@ core by itself; the manual and M3 to M5 say programs keep running through a rest
   as is gh's keyring, and a `/login` there would write the plain-text file again (which `claude-login`
   then flags). Recommended: accept. A fenrir-side gate (`hc machine add --via`) could keep
   hercules unreached until the desktop login; it is left out until reopening panes proves annoying.
-- **D3.** `hc server stop` on hercules is followed by a new desktop core within seconds; to keep it
+- **D3.** `hc server stop` on hercules (and, the job deploying everywhere, on fenrir too) is
+  followed by a new desktop core within seconds; to keep it
   stopped, boot the job out first. Recommended: accept.
 - **Q1.** In a hercules terminal: `ls -la ~/.claude/.credentials.json`. Answered: it exists, so
   Claude Code on hercules runs on a plain-text login, which the brief rejects. It is readable by any
