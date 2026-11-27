@@ -143,7 +143,7 @@ core by itself; the manual and M3 to M5 say programs keep running through a rest
 1. On hercules, in a desktop terminal: `git -C ~/.local/share/chezmoi pull --ff-only`, then
    `chezmoi apply`. The job loads and moves the running core (its panes keep running);
    `~/.local/state/herdr-core-desktop.log` shows the move. On fenrir, `chezmoi apply` loads the job,
-   which does nothing.
+   which leaves a running core alone and starts one if none runs.
 2. From fenrir, open a new hercules pane: `launchctl managername` prints `Aqua` and `gh auth status`
    is logged in. Reopen the hercules panes from before step 1 when convenient.
 3. Undo check: `~/.local/bin/herdr-core server restart` in an SSH shell on hercules (or `hc machine
