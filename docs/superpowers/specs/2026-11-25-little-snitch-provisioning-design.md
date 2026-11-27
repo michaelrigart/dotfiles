@@ -18,7 +18,9 @@ rebuild measured. A review script in the repository, widened to match, did not c
 cold review rounds; Michael dropped it ("Drop the script"): the periodic review in §5 is now an
 agent-run private builder, with what it aims at written down, and the alerts that remain are
 accepted ("Accept both"). §5's 1Password clause gives the read-back to Michael, because the
-agents' permission check refuses `op document get`; §8 records the rebuild.
+agents' permission check refuses `op document get`; §8 records the rebuild. Later that evening the
+plan review found that neither of Michael's checks before a periodic restore sees a setting other
+than Terminal access; he added a settings `diff` to §5's step 3 ("Add the diff").
 **Source:** Michael, 2026-11-25: "Can you work on Little Snitch for me? I would like you to review
 my current rules and optimize everything. At the same time, I would also want to know, once we have
 a good rule set, if we could include it in our privisioning scripts." Relayed in the driver's brief
@@ -206,7 +208,11 @@ two, and after a burst of alerts:
    (hercules at its first review); a lost builder is rebuilt from the aims below.
 3. Michael copies the output to `/tmp/little-snitch.lsbackup` (deleting a leftover first; sandboxed
    agents cannot write `/tmp` itself), runs the README's `jq` check on that copy himself
-   (`[0,[<id -u>]]`), restores that copy and deletes it. He restores only if he has answered no
+   (`[0,[<id -u>]]`) and the README's settings `diff` between his backup from step 1 and that copy,
+   reads the log, restores that copy and deletes it. The `diff` leaves out only the rules and the
+   two settings the builder changes (`allowCommandLineAccess` and `markNewRulesAsUnapproved`), so
+   it prints nothing; any output (a rule-group subscription, a DNS server, the operating mode) means
+   no restore. He restores only if he has answered no
    alert since step 1; otherwise the agent rebuilds the output from a fresh backup, because a
    restore discards every rule made since its source backup.
 4. He saves a fresh backup into the folder and names its path; the agent stores it under the clause
@@ -234,7 +240,8 @@ specifically for tracking and such"):
   Michael's own products report to (error or performance monitoring) is blocked per program, never
   for every program, so his development tools keep reaching it.
 - *Housekeeping:* rules of programs gone or of an app's old code identity removed, unused and
-  redundant rules removed, rules added for a root daemon owned by the system, Terminal access off.
+  redundant rules removed, rules added for a root daemon owned by the system, Terminal access off,
+  new rules no longer marked unapproved.
   Little Snitch's own entries (protected, factory, rule-group, hidden, OS-update) pass through
   unchanged.
 
@@ -257,8 +264,10 @@ through that tool alerts until it is answered once at the machine.
   Michael's request, and only his own unchanged backup (§5).
 - The periodic review's output is a file Michael restores by hand. Any agent session can write
   `~/Code/.metrics/little-snitch/`, because `~/Code` is in the sandbox's write scope, so the output
-  is only as trustworthy as those sessions: Michael's own `jq` check on the copy he restores keeps
-  Terminal access off, and the log lists every rule the review adds or removes for him to read.
+  is only as trustworthy as those sessions. Michael's own checks on the copy he restores are the
+  guard: the `jq` check keeps Terminal access off, the settings `diff` against his own backup shows
+  any other setting changed, and the log lists every rule the review adds or removes for him to
+  read. The log is the agent's, so the rules themselves rest on trusting the builder (approach A).
 - The stored backup is made with Terminal access off and checked (`jq`) before it is stored and
   before it is restored, so a restore turns Terminal access off rather than on.
 - The plain-text backup exists outside 1Password only in `/tmp`, for the minutes a backup or
@@ -276,6 +285,8 @@ through that tool alerts until it is answered once at the machine.
   encoding (run on 2026-11-27: first value `0`; that backup, made with the filter on, also lists
   root, so the check leaves uid `0` out); if its first value is anything but `0`, the README's expectation is corrected before
   the backup is stored.
+- The README's settings `diff`, on stubs: no output when only the rules,
+  `allowCommandLineAccess` and `markNewRulesAsUnapproved` differ; output when any other key does.
 - The checklist and README changes get no new test: they are the order and wording of manual
   steps, and no suite pins either.
 - Before the PR: `./tests/run.sh --changed`.

@@ -48,7 +48,8 @@ periodic review's builder stays private (spec §5).
 - The README's `jq` check is exactly the spec's: `[true,[501]]` on a stub with Terminal access on,
   `[0,[501]]` on one without the key, root's uid `0` left out of both (Task 2, Step 2).
 - The *Periodic review* part leaves every Little Snitch and 1Password check with Michael: he copies
-  the agent's output to `/tmp` himself, runs the `jq` check on that copy, reads the log, restores
+  the agent's output to `/tmp` himself, runs the `jq` check and the settings `diff` on that copy,
+  reads the log, restores
   only if he has answered no alert since his backup, and compares both hashes himself (Task 2,
   Step 1).
 
@@ -120,6 +121,7 @@ periodic review's builder stays private (spec §5).
   op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup <machine>" --vault Private
   rm /tmp/little-snitch.lsbackup
   cp <the review's output> /tmp/little-snitch.lsbackup
+  diff <(jq -S 'del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved)' <the backup you saved for the review>) <(jq -S 'del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved)' /tmp/little-snitch.lsbackup)
   shasum -a 256 <the backup you saved>
   op document get "Little Snitch backup <machine>" --vault Private | shasum -a 256
   ```
@@ -134,7 +136,9 @@ periodic review's builder stays private (spec §5).
   Michael's side of spec §5's four steps, in order: save a backup into
   `~/Code/.metrics/little-snitch/` (directory 700) and name its path to an agent; when the agent
   hands over its output and log, delete any leftover `/tmp/little-snitch.lsbackup`, copy the output
-  there, run the `jq` check on the copy, read the log and go on only if he accepts every rule it
+  there, run the `jq` check on the copy, run the settings `diff` (no output; any output means no
+  restore, because only the rules and the two settings it leaves out may change), read the log and
+  go on only if he accepts every rule it
   adds or widens, restore the copy only if no alert was answered since the backup (else ask for a
   rebuild from a fresh backup), delete the copy; save a fresh backup into the folder and
   name its path; once the agent has stored it, run the two `shasum` lines and compare, and tell the
@@ -146,6 +150,15 @@ periodic review's builder stays private (spec §5).
     gives `[0,[501]]`.
   - `rg -F -c "jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]'" README.md`:
     at least 1, so the README carries the exact check.
+  - The settings filter on stubs: a base
+    `{"rules":[{"action":"allow"}],"globalDefaults":{"allowCommandLineAccess":1,"x":1},"users":[{"uid":0},{"uid":501,"defaults":{"markNewRulesAsUnapproved":1}}]}`,
+    a copy with the rules, `allowCommandLineAccess` and `markNewRulesAsUnapproved` changed, and a
+    copy that also changes `x`. Write each through the README's `jq -S` filter to a file in
+    `$TMPDIR` and `diff` the base's against each (the sandbox denies `/dev/fd`, which `<(…)` needs,
+    so the agent's check uses files; the README keeps `<(…)`): the first prints nothing and exits 0,
+    the second prints the `x` line and exits 1. Run on 2026-11-27: both hold.
+  - `rg -F -c "del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved)" README.md`:
+    at least 1 line (the `diff` line carries the filter twice).
   - `rg -n 'preserve-terminal-access' README.md`: one line, the "never".
   - ``rg -o '/tmp/[^[:space:]`"),;]+' README.md | sed 's/\.$//' | sort -u``: only
     `/tmp/little-snitch.lsbackup` (the class stops only at delimiters, so a misspelt path shows up).
