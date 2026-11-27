@@ -44,7 +44,7 @@ periodic review's builder stays private (spec §5).
   Little Snitch rows (Task 1, Step 3).
 - README commands are pasteable as written: the CLI path is quoted (it has spaces), `$(id -u)` sits
   inside double quotes, every command uses `/tmp/little-snitch.lsbackup`, and
-  `--preserve-terminal-access` appears only as "never pass it" (Task 2, Step 2).
+  `--preserve-terminal-access` appears only as "never pass it" (Task 2, Steps 1 and 2).
 - The README's `jq` check is exactly the spec's: `[true,[501]]` on a stub with Terminal access on,
   `[0,[501]]` on one without the key, root's uid `0` left out of both (Task 2, Step 2).
 - The *Periodic review* part leaves every Little Snitch and 1Password check with Michael: he copies
@@ -150,11 +150,13 @@ periodic review's builder stays private (spec §5).
   files. It points to spec §5 for what the review aims at and
   names no rule, host or builder.
 - [ ] **Step 2: Check.**
+  - Every command, verbatim: write the block above, without its two-space indent, to
+    `$TMPDIR/ls-commands.txt`; then
+    `while IFS= read -r l; do rg -F -q -e "$l" README.md || printf 'missing: %s\n' "$l"; done < "$TMPDIR/ls-commands.txt"`
+    prints nothing.
   - In `$TMPDIR`, a stub `{"globalDefaults":{"allowCommandLineAccess":true},"users":[{"uid":0},{"uid":501}]}`
     gives `[true,[501]]` under the README's `jq` line, and `{"globalDefaults":{},"users":[{"uid":0},{"uid":501}]}`
     gives `[0,[501]]`.
-  - `rg -F -c "jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]'" README.md`:
-    at least 1, so the README carries the exact check.
   - The settings filter on stubs: a base
     `{"rules":[{"action":"allow"}],"globalDefaults":{"allowCommandLineAccess":1,"x":1},"users":[{"uid":0},{"uid":501,"defaults":{"markNewRulesAsUnapproved":1}}]}`,
     a copy with the rules, `allowCommandLineAccess` and `markNewRulesAsUnapproved` changed and `x`
@@ -163,18 +165,11 @@ periodic review's builder stays private (spec §5).
     each (the sandbox denies `/dev/fd`, which `<(…)` needs, so the agent's check uses files; the
     README keeps `<(…)`): the first prints nothing and exits 0, the second prints the `x` line and
     exits 1.
-  - `rg -F -c` with each of the two `ls_settings` and `diff` lines above, as written: 1 each, so
-    the README carries the exact filter and both sides use it.
-  - `rg -n 'preserve-terminal-access' README.md`: one line, the "never".
   - ``rg -o '/tmp/[^[:space:]`"),;]+' README.md | sed 's/\.$//' | sort -u``: only
-    `/tmp/little-snitch.lsbackup` (the class stops only at delimiters, so a misspelt path shows up).
-  - `rg -F -c 'shasum -a 256 <the backup you saved for the review>' README.md` and
-    `rg -F -c 'shasum -a 256 <the fresh backup you saved>' README.md`: at least 1 each.
-  - After `git add`, `git diff --cached | rg '^\+' | rg -v '^\+\+\+ ' | rg -o '[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+' | sort -u`
-    prints a subset of `little-snitch.lsbackup`, `Snitch.app` (the CLI path),
-    `globalDefaults.allowCommandLineAccess`, `defaults.markNewRulesAsUnapproved` and
-    `2026-11-25-little-snitch-provisioning-design.md`. Any other token:
-    stop and report it instead of committing.
+    `/tmp/little-snitch.lsbackup` (the class stops only at delimiters, so a misspelt path in the
+    prose shows up).
+  - After `git add`, read `git diff --cached` once: it names no server, rule or file from
+    `~/Code/.metrics/little-snitch/` beyond the folder itself. The final review reads it again.
 - [ ] **Step 3: Commit.** "Document restoring and refreshing the Little Snitch backup".
 
 Task 3 (a review script) was dropped on 2026-11-27 with the spec change Michael signed that day:
