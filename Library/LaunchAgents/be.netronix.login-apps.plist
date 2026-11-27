@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Open the login apps at each login.
+
+  Managed by chezmoi (source: Library/LaunchAgents/be.netronix.login-apps.plist).
+  Loaded by .scripts/load-launchagents.sh (run by configure.sh, and by the chezmoi apply hook
+  when this plist changes); load by hand with:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.login-apps.plist
+
+  The script opens each app in the list below, in the background, when it is installed; an app the
+  machine lacks is skipped (Elgato Control Center's cask is fenrir's only), so the list is the same
+  on both machines and this is a plain plist, not a template. A running app is left alone. Each
+  load of the job also opens the listed apps. Design:
+  docs/superpowers/specs/2026-11-25-script-provisioning-rows-design.md, section 5, and ruling 3 of
+  its plan.
+
+  There is no KeepAlive: the job runs once per load and exits 0, whatever the apps do.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>be.netronix.login-apps</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-fc</string>
+        <string>for a; do [ -d "/Applications/$a.app" ] &amp;&amp; /usr/bin/open -g -a "$a"; done; exit 0</string>
+        <string>login-apps</string>
+        <string>Syncthing</string>
+        <string>Vorta</string>
+        <string>Alfred 5</string>
+        <string>1Password</string>
+        <string>Linger</string>
+        <string>Tafl</string>
+        <string>Micro Snitch</string>
+        <string>Proton Drive</string>
+        <string>Elgato Control Center</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

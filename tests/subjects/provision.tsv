@@ -6,3 +6,4 @@
 .scripts/provision.sh	zsh	own
 dot_config/homebrew/Brewfile.tmpl	data	own
 Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	-
+Library/LaunchAgents/be.netronix.login-apps.plist	data	-

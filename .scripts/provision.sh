@@ -21,6 +21,18 @@ warn() { WARNINGS+=("$1"); log_warn "$1"; }
 
 # Overridden only by tests/provision.test.sh; nothing else sets these.
 BREW_BIN="${PROVISION_BREW_BIN:-/opt/homebrew/bin/brew}"
+# PROVISION_OP_VAULT is the vault the setup items are read from (a VM run uses a test vault).
+OP_VAULT="${PROVISION_OP_VAULT:-Private}"
+# PROVISION_APPLICATIONS is where the casks put their apps.
+APPS="${PROVISION_APPLICATIONS:-/Applications}"
+ST_BIN="${APPS}/Syncthing.app/Contents/Resources/syncthing/syncthing"
+ST_HOME="${HOME}/Library/Application Support/Syncthing"
+VORTA_DB="${HOME}/Library/Application Support/Vorta/settings.db"
+VORTA_INIT="${HOME}/.vorta-init.json"
+# The setup secrets (step 5c): never exported, so a caller that exports the same names cannot make
+# them reach a child's environment.
+typeset +x PV_NETBIRD_KEY PV_ST_USER PV_ST_PASSWORD PV_VORTA_EXPORT
+PV_NETBIRD_KEY=""; PV_ST_USER=""; PV_ST_PASSWORD=""; PV_VORTA_EXPORT=""
 
 # Set temporary XDG variables for bootstrap (will be properly set by chezmoi later)
 export XDG_CACHE_HOME="${HOME}/.cache"
@@ -38,6 +50,10 @@ export OP_BIOMETRIC_UNLOCK_ENABLED=true
 PROVISION_REF="${PROVISION_REF:-main}"
 if [ "$PROVISION_REF" != "main" ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" != "1" ]; then
   log_error "PROVISION_REF=${PROVISION_REF} is refused outside a VM: provisioning a real Mac deploys main only."
+  exit 1
+fi
+if [ "$OP_VAULT" != "Private" ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" != "1" ]; then
+  log_error "PROVISION_OP_VAULT=${OP_VAULT} is refused outside a VM: provisioning a real Mac reads the Private vault."
   exit 1
 fi
 
@@ -238,11 +254,96 @@ while [ -z "$MACHINE_NAME" ]; do
   [ -z "$MACHINE_NAME" ] && log_warn "Unknown machine '${REPLY_NAME}' — add it to .chezmoidata/machines.toml first"
 done
 
-# 5c. sudo was acquired in step 0, which had to precede Homebrew. Refresh it here in
+# 5c. The setup secrets. 1Password authorizes a terminal session for 10 minutes of idleness and
+# the Brewfile alone runs longer, so a read after it would prompt in the middle of the unattended
+# run: every item is read here, and only for a step that is not done (a re-run reads nothing).
+# A value goes into its unexported variable through $(...), never onto a command line, and no log
+# line names one: items are named, values never.
+# NetBird is done when its status reads, names a daemonStatus and is not NeedsLogin or LoginFailed.
+netbird_state() {
+  local json state
+  json=$(netbird status --json 2>/dev/null </dev/null) || return 1
+  state=$(print -r -- "$json" | jq -r '.daemonStatus // empty' 2>/dev/null) || return 1
+  [ -n "$state" ] || return 1
+  print -r -- "$state"
+}
+# Vorta: absent (no settings.db), none (no profile has a repository), configured, or unreadable.
+# Its start-up import overwrites a profile of the same name, so only a query that succeeds and
+# counts none makes the step due; anything else fails closed.
+vorta_state() {
+  local count
+  [ -e "$VORTA_DB" ] || { print -r -- absent; return 0; }
+  if count=$(sqlite3 -readonly "$VORTA_DB" 'select count(*) from backupprofilemodel where repo_id is not null' 2>/dev/null </dev/null) \
+     && [[ "$count" == <-> ]]; then
+    if (( count == 0 )); then print -r -- none; else print -r -- configured; fi
+  else
+    print -r -- unreadable
+  fi
+}
+# A read that fails (no such item, a locked app, a dismissed prompt) or gives a value that is empty
+# once its whitespace is removed leaves the item unread.
+pv_blank() { [[ -z "${1//[[:space:]]/}" ]]; }
+# pv_unread <item> <what is skipped> <checklist row>
+pv_unread() {
+  UNREAD_ITEMS+=("$1")
+  PREFLIGHT_WARNS+=("1Password item '$1' could not be read from ${OP_VAULT}: $2 skipped — see the $3 row")
+}
+typeset -a READ_ITEMS=() UNREAD_ITEMS=() PREFLIGHT_WARNS=()
+NEED_NETBIRD=0; NEED_SYNCTHING=0; NEED_VORTA=0
+if ! NETBIRD_DAEMON_STATE=$(netbird_state); then
+  NEED_NETBIRD=1
+else
+  case "$NETBIRD_DAEMON_STATE" in NeedsLogin|LoginFailed) NEED_NETBIRD=1 ;; esac
+fi
+[ -e "${ST_HOME}/config.xml" ] || NEED_SYNCTHING=1
+# A file a first run left for Vorta's import (macOS asks before a quarantined app's first start) is
+# waiting, not undone: the export is not read again, and the closing list says what is left.
+VORTA_WAITING="${VORTA_INIT} is waiting for Vorta — open Vorta and answer macOS's prompt; if Vorta reports \"Failed to import profile\", delete the file and set Vorta up by hand (vorta row)"
+VORTA_STATE=$(vorta_state)
+case "$VORTA_STATE" in
+  absent|none)
+    if [ -e "$VORTA_INIT" ] || [ -L "$VORTA_INIT" ]; then
+      PREFLIGHT_WARNS+=("$VORTA_WAITING")
+    else
+      NEED_VORTA=1
+    fi ;;
+  unreadable) PREFLIGHT_WARNS+=("Vorta's settings could not be read: no profile imported — see the vorta row") ;;
+esac
+
+if (( NEED_NETBIRD )); then
+  PV_NETBIRD_KEY=$(op read "op://${OP_VAULT}/NetBird setup key/credential" </dev/null 2>/dev/null) || PV_NETBIRD_KEY=""
+  if pv_blank "$PV_NETBIRD_KEY"; then
+    PV_NETBIRD_KEY=""
+    pv_unread "NetBird setup key" "NetBird's join" "netbird-up"
+  else
+    READ_ITEMS+=("NetBird setup key")
+  fi
+fi
+if (( NEED_SYNCTHING )); then
+  PV_ST_USER=$(op read "op://${OP_VAULT}/Syncthing GUI/username" </dev/null 2>/dev/null) || PV_ST_USER=""
+  PV_ST_PASSWORD=$(op read "op://${OP_VAULT}/Syncthing GUI/password" </dev/null 2>/dev/null) || PV_ST_PASSWORD=""
+  if pv_blank "$PV_ST_USER" || pv_blank "$PV_ST_PASSWORD"; then
+    PV_ST_USER=""; PV_ST_PASSWORD=""
+    pv_unread "Syncthing GUI" "Syncthing's GUI login" "syncthing-settings"
+  else
+    READ_ITEMS+=("Syncthing GUI")
+  fi
+fi
+if (( NEED_VORTA )); then
+  PV_VORTA_EXPORT=$(op document get "BorgBase ${MACHINE_NAME}" --vault "${OP_VAULT}" </dev/null 2>/dev/null) || PV_VORTA_EXPORT=""
+  if pv_blank "$PV_VORTA_EXPORT"; then
+    PV_VORTA_EXPORT=""
+    pv_unread "BorgBase ${MACHINE_NAME}" "Vorta's profile import" "vorta"
+  else
+    READ_ITEMS+=("BorgBase ${MACHINE_NAME}")
+  fi
+fi
+
+# 5d. sudo was acquired in step 0, which had to precede Homebrew. Refresh it here in
 # case the Xcode CLT download ran long.
 sudo -v
 
-# 5d. One confirmation. Nothing machine-specific has changed yet, so declining here
+# 5e. One confirmation. Nothing machine-specific has changed yet, so declining here
 # leaves the machine's identity and configuration exactly as they were found.
 echo ""
 echo "══ Provision: ${MACHINE_NAME} ═══════════════════"
@@ -258,6 +359,23 @@ if [ "$PROVISION_REF" != "main" ]; then
   fi
 fi
 echo "  1Password .......... authenticated"
+if [ -n "${PROVISION_OP_VAULT:-}" ]; then
+  echo "  1Password vault .... ${OP_VAULT}"
+fi
+if (( NEED_NETBIRD + NEED_SYNCTHING + NEED_VORTA == 0 )); then
+  echo "  Setup secrets ...... none needed"
+elif (( ${#READ_ITEMS} == 0 )); then
+  echo "  Setup secrets ...... none read"
+else
+  echo "  Setup secrets ...... read: ${(j:, :)READ_ITEMS}"
+fi
+if (( ${#UNREAD_ITEMS} > 0 )); then
+  st_note=""
+  if (( ${UNREAD_ITEMS[(Ie)Syncthing GUI]} )); then
+    st_note=" (Syncthing's GUI login then stays a manual step)"
+  fi
+  echo "  Not read ........... ${(j:, :)UNREAD_ITEMS} — answer n, add or unlock them in 1Password (${OP_VAULT}) and run again; y skips their steps${st_note}"
+fi
 echo "─────────────────────────────────────────────────"
 echo -n "  Proceed? [y/N] "
 read -r REPLY_GO
@@ -265,8 +383,9 @@ case "$REPLY_GO" in
   y|Y) ;;
   *) log_warn "Aborted. Nothing machine-specific was changed."; exit 1 ;;
 esac
+for w in "${PREFLIGHT_WARNS[@]}"; do warn "$w"; done
 
-# 5e. Apply the identity, then read it back. All three fields matter: ComputerName is
+# 5f. Apply the identity, then read it back. All three fields matter: ComputerName is
 # what chezmoi records, and HostName is what `hostname` — and therefore Borg's archive
 # naming — resolves to. LocalHostName tolerates the numeric suffix macOS appends by
 # itself when the Bonjour name collides on the network.
@@ -371,6 +490,79 @@ else
   { sudo netbird service install && sudo netbird service start; } </dev/null \
     || warn "NetBird daemon not installed or started — run: sudo netbird service install && sudo netbird service start"
 fi
+
+# ============================================================================
+# 8c. NetBird joins with the setup key
+# ============================================================================
+# Only when the preflight read the key (NetBird was not joined), so at this point Idle and Connecting
+# mean a daemon 8b just started has not settled, not that it joined. Poll up to 30 s while the
+# status is unreadable, Idle or Connecting. Only NeedsLogin and LoginFailed join; Connected is joined
+# already, SessionExpired is an SSO login's to renew, so it warns, and any other state is logged. The
+# key goes in on a pipe, as Michael (not sudo, which would leave root-owned files in his home), and
+# `up` on a peer the management server knows ignores it. A join that fails or a status that never
+# settles leaves the SSO login.
+if [ -n "$PV_NETBIRD_KEY" ]; then
+  nb_fallback="run: netbird up (SSO login); on hercules then turn Session Expiration off (netbird-session-expiry row)"
+  nb_waited=0
+  while true; do
+    nb_state=$(netbird_state) || nb_state=""
+    case "$nb_state" in
+      ""|Idle|Connecting) ;;
+      *) break ;;
+    esac
+    (( nb_waited < 30 )) || break
+    sleep 2; nb_waited=$(( nb_waited + 2 ))
+  done
+  case "$nb_state" in
+    NeedsLogin|LoginFailed)
+      log_info "Joining NetBird with the setup key..."
+      print -r -- "$PV_NETBIRD_KEY" | /usr/bin/timeout -k 5 120 netbird up --no-browser --setup-key-file /dev/stdin \
+        || warn "NetBird did not join with the setup key — $nb_fallback" ;;
+    "") warn "NetBird did not join with the setup key — $nb_fallback" ;;
+    Idle|Connecting) warn "NetBird is still $nb_state after 30 s — check netbird status, and if it needs a login run: netbird up (SSO login)" ;;
+    SessionExpired) warn "NetBird is SessionExpired, so it was not joined with the setup key — $nb_fallback" ;;
+    Connected) log_info "✓ NetBird is Connected — not joining with the setup key" ;;
+    *) log_info "NetBird is $nb_state — not joining with the setup key" ;;
+  esac
+  unset PV_NETBIRD_KEY
+fi
+
+# ============================================================================
+# 8d. Syncthing's config, generated before its first start
+# ============================================================================
+# Only when the preflight read the GUI login (Syncthing had no config.xml). Generating the config
+# first gives the GUI its login, so it never serves an open one, and fixes the discovery options in
+# the file before the app starts (section 8 E1). The password goes in on a pipe: --gui-password=-
+# reads it from stdin. A failed generate leaves the by-hand fallback, section 8 E1.
+if (( NEED_SYNCTHING )) && [ -n "$PV_ST_USER" ] && [ -n "$PV_ST_PASSWORD" ]; then
+  if [ -e "${ST_HOME}/config.xml" ]; then
+    warn "Syncthing already has a config.xml (it started during this run) — set its GUI login and options by hand: see the syncthing-settings row"
+  elif [ ! -x "$ST_BIN" ]; then
+    warn "Syncthing.app is not installed — its config was not generated; see the syncthing-settings row"
+  else
+    log_info "Generating Syncthing's config with its GUI login..."
+    mkdir -p -m 700 "$ST_HOME"
+    # A generate that exits 0 without writing config.xml counts as failed: there is nothing to edit, and
+    # under set -e a failed sed would end the run.
+    if print -r -- "$PV_ST_PASSWORD" | /usr/bin/timeout -k 5 60 "$ST_BIN" generate --home "$ST_HOME" --gui-user "$PV_ST_USER" --gui-password=- \
+       && [ -f "${ST_HOME}/config.xml" ]; then
+      # A sed that fails leaves its option on, which the check below reports.
+      for st_opt in globalAnnounceEnabled relaysEnabled natEnabled; do
+        /usr/bin/sed -i '' "s|<${st_opt}>true</${st_opt}>|<${st_opt}>false</${st_opt}>|" "${ST_HOME}/config.xml" </dev/null || true
+      done
+      st_bad=""
+      for st_opt in globalAnnounceEnabled relaysEnabled natEnabled localAnnounceEnabled; do
+        st_want=false; [ "$st_opt" = localAnnounceEnabled ] && st_want=true
+        [ "$(/usr/bin/xmllint --xpath "string(//options/${st_opt})" "${ST_HOME}/config.xml" </dev/null 2>/dev/null)" = "$st_want" ] \
+          || st_bad="${st_bad:+$st_bad, }${st_opt}"
+      done
+      [ -z "$st_bad" ] || warn "Syncthing's options ${st_bad} are not as section 8 E1 wants — set them in Syncthing's GUI"
+    else
+      warn "Syncthing's config was not generated — see the syncthing-settings row"
+    fi
+  fi
+fi
+unset PV_ST_USER PV_ST_PASSWORD
 
 # ============================================================================
 # 9. Reconcile AI agent plugins (Claude Code + Codex)
@@ -479,6 +671,48 @@ rm -f "${HOME}/.shell.pre-oh-my-zsh"
 # ============================================================================
 log_info "Cleaning up Homebrew..."
 brew cleanup
+
+# ============================================================================
+# 15b. Vorta imports its own export
+# ============================================================================
+# Only when the preflight read the export (no profile had a repository). Vorta reads
+# ~/.vorta-init.json at its start and deletes it only after a successful import, so nothing is written
+# unless Vorta.app is installed (else no start could remove the secret), Vorta is not running, the
+# path is free (a dangling symlink counts: it would be followed) and the export has the shape Vorta
+# imports. The check's output goes to /dev/null: jq's errors quote the input. The file is mode 600 and
+# never replaces another. A file Vorta has not imported after 2 minutes stays (spec section 4's
+# ruling): macOS asks before a quarantined app's first start, and deleting would throw the import away.
+if (( NEED_VORTA )) && [ -n "$PV_VORTA_EXPORT" ]; then
+  case "$(vorta_state)" in
+    absent|none)
+      if [ ! -d "$APPS/Vorta.app" ]; then
+        warn "Vorta.app is not installed — its profile was not handed over; see the vorta row"
+      elif pgrep -x vorta-darwin </dev/null >/dev/null 2>&1; then
+        warn "Vorta is running and has no profile — quit Vorta, then run provision.sh again; see the vorta row"
+      elif [ -e "$VORTA_INIT" ] || [ -L "$VORTA_INIT" ]; then
+        warn "$VORTA_WAITING"
+      elif ! print -r -- "$PV_VORTA_EXPORT" | jq -e 'type == "object" and (.id|type) == "number" and (.name|type) == "string" and (.SchemaVersion.version|type) == "number" and (.repo.url|type) == "string" and (.password|type) == "string" and (.password|length) > 0' >/dev/null 2>&1; then
+        warn "1Password's 'BorgBase ${MACHINE_NAME}' is not a profile Vorta can import — nothing written; see the vorta row"
+      elif ! ( umask 077; set -o noclobber; print -r -- "$PV_VORTA_EXPORT" > "$VORTA_INIT" ); then
+        warn "${VORTA_INIT} could not be written — Vorta's profile was not handed over; see the vorta row"
+      else
+        log_info "Starting Vorta so it imports its profile..."
+        /usr/bin/timeout -k 5 60 open -g -a Vorta </dev/null || log_warn "open -a Vorta did not return cleanly"
+        vorta_waited=0
+        while [ -e "$VORTA_INIT" ] && (( vorta_waited < 120 )); do
+          sleep 5; vorta_waited=$(( vorta_waited + 5 ))
+        done
+        if [ -e "$VORTA_INIT" ]; then
+          warn "Vorta has not imported ${VORTA_INIT} yet — answer macOS's prompt to open Vorta; if Vorta reports \"Failed to import profile\", delete the file and set Vorta up by hand (vorta row)"
+        else
+          log_info "✓ Vorta imported its profile"
+        fi
+      fi ;;
+    configured) log_info "Vorta already has a profile — nothing imported" ;;
+    *) warn "Vorta's settings could not be read: no profile imported — see the vorta row" ;;
+  esac
+fi
+unset PV_VORTA_EXPORT
 
 # ============================================================================
 # 16. Run macOS configuration

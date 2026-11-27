@@ -63,7 +63,7 @@ SU
 # fail-brew-bundle fails `brew bundle`; its check then names a missed item on stderr, as Homebrew 7 does.
 # outdated-brew-bundle: everything is installed but glab has a newer release, so only a check
 # without --no-upgrade fails. With both markers, the install fails on that upgrade.
-printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
+printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";;\n  bundle) [ -e "$SBX_ROOT/st-appears" ] && : > "$HOME/Library/Application Support/Syncthing/config.xml"; [ -e "$SBX_ROOT/vi-appears" ] && echo keep-me > "$HOME/.vorta-init.json"; [ -e "$SBX_ROOT/vi-appears-link" ] && ln -s "$SBX_ROOT/elsewhere" "$HOME/.vorta-init.json"; if [ -e "$SBX_ROOT/outdated-brew-bundle" ] && [ "$2" = check ]; then case " $* " in *" --no-upgrade "*) exit 0;; esac; echo "→ Formula glab needs to be installed or updated." >&2; exit 1; fi; [ -e "$SBX_ROOT/fail-brew-bundle" ] || exit 0; [ "$2" = check ] && echo "→ Cask microsoft-office needs to be installed." >&2; exit 1;; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
 # Homebrew's zsh, which step 10 makes the login shell only when it is installed.
 printf '#!/bin/sh\nexec /bin/zsh "$@"\n' > "$T/brew/bin/zsh"
@@ -80,7 +80,31 @@ done
 # osascript and pgrep answer from the environment, so a case can make the Apple Event fail
 # ($OSA_RC) or Alfred look running ($PGREP_RC=0; the default is not running).
 printf '#!/usr/bin/env bash\necho "osascript $*" >> "$CALLS"\nexit "${OSA_RC:-0}"\n' > "$T/bin/osascript"
-printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"\nexit "${PGREP_RC:-1}"\n' > "$T/bin/pgrep"
+# $T/vorta-running makes `pgrep -x vorta-darwin` (Vorta.app's process) succeed; read-stdin-pgrep makes any
+# pgrep that gets a line on stdin succeed too, so a step that left its stdin open reads Vorta as running.
+cat > "$T/bin/pgrep" <<'PG'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$CALLS"
+[ -e "$SBX_ROOT/read-stdin-pgrep" ] && { read -r _ && exit 0; }
+case "$*" in *"-x vorta-darwin"*) [ -e "$SBX_ROOT/vorta-running" ] && exit 0 ;; esac
+exit "${PGREP_RC:-1}"
+PG
+# open logs its arguments. With $T/vorta-imports it plays Vorta's start: it copies ~/.vorta-init.json to
+# $T/vorta-init-seen, its mode to $T/vorta-init-mode, and deletes it, as Vorta does after an import.
+# read-stdin-open makes it read one line of stdin and fail on EOF, before importing.
+cat > "$T/bin/open" <<'OP'
+#!/usr/bin/env bash
+echo "open $*" >> "$CALLS"
+[ -e "$SBX_ROOT/read-stdin-open" ] && { read -r _ || exit 1; }
+f="$HOME/.vorta-init.json"
+if [ -e "$SBX_ROOT/vorta-imports" ] && [ -f "$f" ]; then
+  cp "$f" "$SBX_ROOT/vorta-init-seen"; stat -f %Lp "$f" > "$SBX_ROOT/vorta-init-mode"; /bin/rm -f "$f"
+fi
+exit 0
+OP
+# Vorta imports by default, so a run that reaches step 15b does not wait out its 2 minutes; section X
+# removes the marker for the case where it never does.
+: > "$T/vorta-imports"
 # REUSABLE launchctl stub (the loader and any later case read it): a file of loaded labels
 # ($LAUNCHCTL_LOADED, one per line). `print` exits 0 iff the label is listed, `bootstrap` adds
 # it unless $LAUNCHCTL_FAIL names it, `bootout` removes it, and every call is logged to
@@ -109,6 +133,8 @@ L
 # whoami fails until `op signin` has run ($T/op-authorized), or, with $T/op-manual (an account
 # added without the app integration), until the session variable signin prints is exported.
 # `account list` gives as many empty answers as $T/op-no-account counts; fail-op-signin fails.
+# `read` and `document get` answer from the files $T/op-items/<vault>/<item>/<field> (a Document's
+# content in .../document) and exit 1 when the file is absent. Their log line names items only.
 cat > "$T/bin/op" <<'O'
 #!/usr/bin/env bash
 echo "op $*" >> "$CALLS"
@@ -123,6 +149,14 @@ case "$1" in
            echo '[{"account_uuid":"A","email":"tester@example.com","url":"my.1password.com","user_uuid":"U"}]' ;;
   signin)  [ -e "$SBX_ROOT/fail-op-signin" ] && exit 1
            if [ -e "$SBX_ROOT/op-manual" ]; then echo 'export OP_SESSION_test="tok"'; else : > "$SBX_ROOT/op-authorized"; fi ;;
+  read)    [ -e "$SBX_ROOT/read-stdin-op" ] && { read -r _ || exit 1; }
+           f="$SBX_ROOT/op-items/${2#op://}"
+           [ -f "$f" ] || { echo "[ERROR] \"$2\" isn't an item in any vault" >&2; exit 1; }
+           cat "$f" ;;
+  document) [ -e "$SBX_ROOT/read-stdin-op" ] && { read -r _ || exit 1; }
+           f="$SBX_ROOT/op-items/$5/$3/document"
+           [ -f "$f" ] || { echo "[ERROR] \"$3\" isn't an item in the vault $5" >&2; exit 1; }
+           cat "$f" ;;
 esac
 exit 0
 O
@@ -142,9 +176,78 @@ G
 # make a step fail without a new env var; the stubs read $SBX_ROOT, which every run passes. A file
 # named read-stdin-<tool> makes the stub read one line of stdin and fail on EOF: the run feeds
 # spare lines, so a step that does not close its stdin gets one and succeeds.
-for t in netbird; do
-  printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -e "$SBX_ROOT/read-stdin-%s" ] && { read -r _ || exit 1; }\n[ -e "$SBX_ROOT/fail-%s" ] && exit 1\nexit 0\n' "$t" "$t" "$t" > "$T/bin/$t"
-done
+# netbird logs its whole environment, and `status --json` prints $T/netbird-status (absent: connected);
+# after the first status call, $T/netbird-status-later when it exists (the preflight reads the first,
+# step 8c the later ones): its line k answers the k-th later call, its last line every call after, and
+# an empty line is a status that cannot be read. `up` writes its stdin to $T/netbird-up-stdin;
+# fail-netbird-up fails only `up`.
+cat > "$T/bin/netbird" <<'NB'
+#!/usr/bin/env bash
+echo "netbird $*" >> "$CALLS"
+/usr/bin/env | sed 's/^/netbird-env /' >> "$CALLS"
+if [ "$1" = up ]; then
+  cat > "$SBX_ROOT/netbird-up-stdin"
+  [ -e "$SBX_ROOT/fail-netbird-up" ] || [ -e "$SBX_ROOT/fail-netbird" ] && exit 1
+  exit 0
+fi
+[ -e "$SBX_ROOT/read-stdin-netbird" ] && { read -r _ || exit 1; }
+[ -e "$SBX_ROOT/fail-netbird" ] && exit 1
+if [ "$1 $2" = "status --json" ]; then
+  n=$(cat "$SBX_ROOT/netbird-status-n" 2>/dev/null || echo 0); echo $((n + 1)) > "$SBX_ROOT/netbird-status-n"
+  f="$SBX_ROOT/netbird-status"
+  [ "$n" -gt 0 ] && [ -e "$SBX_ROOT/netbird-status-later" ] && f="$SBX_ROOT/netbird-status-later"
+  if [ "$n" -gt 0 ] && [ "$f" = "$SBX_ROOT/netbird-status-later" ]; then
+    total=$(wc -l < "$f" | tr -d ' '); k=$n; [ "$k" -gt "$total" ] && k=$total
+    sed -n "${k}p" "$f"
+  elif [ -e "$f" ]; then cat "$f"
+  else echo '{"daemonStatus":"Connected","management":{"connected":true}}'; fi
+fi
+exit 0
+NB
+# Syncthing's bundled binary, found through PROVISION_APPLICATIONS. It logs its arguments and
+# environment, writes its stdin to $T/syncthing-stdin, and `generate --home <dir>` writes
+# <dir>/config.xml (mode 600) in the shape the real one wrote: a <gui> with a user and a bcrypt
+# password, and the four <options> elements each on its own line (the only ones step 8d and the
+# syncthing-settings verify read). $T/st-no-relays leaves <relaysEnabled> out; fail-syncthing exits
+# 1 writing nothing, $T/st-no-config exits 0 writing nothing.
+ST_STUB="$T/apps/Syncthing.app/Contents/Resources/syncthing/syncthing"
+mkdir -p "${ST_STUB%/*}"
+cat > "$ST_STUB" <<'SY'
+#!/usr/bin/env bash
+echo "syncthing $*" >> "$CALLS"
+/usr/bin/env | sed 's/^/syncthing-env /' >> "$CALLS"
+cat > "$SBX_ROOT/syncthing-stdin"
+[ -e "$SBX_ROOT/fail-syncthing" ] && exit 1
+[ "$1" = generate ] || exit 0
+[ -e "$SBX_ROOT/st-no-config" ] && exit 0
+home=""; user=""
+while [ $# -gt 0 ]; do case "$1" in --home) home=$2; shift;; --gui-user) user=$2; shift;; esac; shift; done
+mkdir -p "$home"
+{
+  echo '<configuration version="52">'
+  echo '    <gui enabled="true" tls="false" sendBasicAuthPrompt="false">'
+  echo "        <user>$user</user>"
+  echo '        <password>$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234</password>'
+  echo '    </gui>'
+  echo '    <options>'
+  echo '        <globalAnnounceEnabled>true</globalAnnounceEnabled>'
+  echo '        <localAnnounceEnabled>true</localAnnounceEnabled>'
+  [ -e "$SBX_ROOT/st-no-relays" ] || echo '        <relaysEnabled>true</relaysEnabled>'
+  echo '        <natEnabled>true</natEnabled>'
+  echo '    </options>'
+  echo '</configuration>'
+} > "$home/config.xml"
+/bin/chmod 600 "$home/config.xml"
+exit 0
+SY
+# jq logs its arguments and environment, then runs the system jq on the same arguments and stdin: a
+# secret on its command line or in its environment shows in $CALLS (netbird_state and step 15b's check use it).
+cat > "$T/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+echo "jq $*" >> "$CALLS"
+/usr/bin/env | sed 's/^/jq-env /' >> "$CALLS"
+exec /usr/bin/jq "$@"
+JQ
 # nvim also records the first entry of its PATH: Mason's Ruby tools need mise's Ruby.
 cat > "$T/bin/nvim" <<'NV'
 #!/usr/bin/env bash
@@ -203,6 +306,7 @@ cat > "$T/src/.scripts/machine-check.sh" <<'MC'
 #!/usr/bin/env bash
 echo "machine-check.sh $*" >> "$CALLS"
 echo "machine-check-from $(cd "$(dirname "$0")/.." && pwd)" >> "$CALLS"
+/usr/bin/env | sed 's/^/machine-check-fullenv /' >> "$CALLS"
 if [ -e "$SBX_ROOT/read-stdin-machine-check" ]; then
   if read -r _; then echo "machine-check-stdin got-input" >> "$CALLS"; else echo "machine-check-stdin eof" >> "$CALLS"; fi
 fi
@@ -216,6 +320,7 @@ cat > "$T/src/.scripts/configure.sh" <<'C'
 echo "configure.sh $*" >> "$CALLS"
 echo "configure-from $(cd "$(dirname "$0")/.." && pwd)" >> "$CALLS"
 echo "configure-env DOTFILES_PROVISIONING=${DOTFILES_PROVISIONING:-unset}" >> "$CALLS"
+/usr/bin/env | sed 's/^/configure-fullenv /' >> "$CALLS"
 if [ ! -e "$SBX_ROOT/no-daemon-package" ]; then
   mkdir -p "$HOME/.codex/packages/app-server-daemon"
   ln -sfn local-created "$HOME/.codex/packages/app-server-daemon/current"
@@ -239,7 +344,7 @@ chmod +x "$T/bin/_mut"
 for t in rm chmod find mv; do
   printf '#!/usr/bin/env bash\nexec "%s/bin/_mut" %s "$@"\n' "$T" "$t" > "$T/bin/$t"
 done
-chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/brew/bin/zsh "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex"
+chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/brew/bin/zsh "$T"/src/.scripts/* "$T/home/.local/bin/codex-daemon" "$T/codexbin/codex" "$ST_STUB"
 
 # Guard the harness against itself. Verifying that a containment assertion CAN fail
 # must never be done by pointing an override at the real binary -- that executes it.
@@ -250,19 +355,40 @@ assert_inside(){ local r; r=$(canon "$2")
 
 # A run starts on a machine chezmoi has configured (its config exists) and a terminal 1Password
 # has not authorized yet; section B2b removes the config.
-reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
-  mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"; }
+# It is also a machine whose setup is done: netbird is connected, Syncthing has its config.xml and
+# Vorta's settings.db holds a profile with a repository, so no step reads a 1Password item.
+ST_DIR="$T/home/Library/Application Support/Syncthing"; VORTA_DIR="$T/home/Library/Application Support/Vorta"
+VI="$T/home/.vorta-init.json"; mkdir -p "$T/apps/Vorta.app"
+nowrite(){ not_called "open -g -a Vorta" "$1: Vorta is not started"
+  [ -e "$VI" ] || [ -L "$VI" ] && _fail "$1: no file is written" || _pass "$1: no file is written"; }
+reset(){ rm -f "$VI" "$T/vorta-init-seen" "$T/vorta-init-mode"; : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"
+  mkdir -p "$T/home/.config/chezmoi"; : > "$T/home/.config/chezmoi/chezmoi.toml"; rm -f "$T/op-authorized"
+  rm -rf "$T/op-items" "$ST_DIR" "$VORTA_DIR"; rm -f "$T/netbird-status" "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/st-no-relays" "$T/fail-syncthing" "$T/st-no-config" "$T/st-appears" "$T/vi-appears" "$T/vi-appears-link" "$T/elsewhere"; mkdir -p "$ST_DIR" "$VORTA_DIR"; : > "$ST_DIR/config.xml"
+  /usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('p', 1);"; }
+# The secrets are the suite's markers; nothing here is a real value. items_all takes the vault.
+MK_NB='MARK-NB-KEY-7f3a'; MK_ST='MARK-ST-PW-91c2'; MK_VORTA='MARK-VORTA-PW-d4e8'
+VORTA_EXPORT='{"id":1,"name":"Default","SchemaVersion":{"version":23},"repo":{"url":"ssh://nobody@127.0.0.1:9/./repo"},"password":"'"$MK_VORTA"'"}'
+put_item(){ mkdir -p "$T/op-items/$1/$2"; printf '%s\n' "$4" > "$T/op-items/$1/$2/$3"; }
+items_all(){ local v=${1:-Private}
+  put_item "$v" "NetBird setup key" credential "$MK_NB"
+  put_item "$v" "Syncthing GUI" username st-user; put_item "$v" "Syncthing GUI" password "$MK_ST"
+  put_item "$v" "BorgBase hercules" document "$VORTA_EXPORT"; }
+# A machine on which all three steps are not done.
+fresh_steps(){ rm -f "$ST_DIR/config.xml" "$VORTA_DIR/settings.db"; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; }
 SBX_SRC="$T/src"; SBX_BREW="$T/brew/bin/brew"
 run(){ local ans=$1; shift
   assert_inside PROVISION_BREW_BIN "$SBX_BREW"
   assert_inside PROVISION_SRC_OVERRIDE "$SBX_SRC"
+  assert_inside PROVISION_APPLICATIONS "${PROVISION_APPLICATIONS:-$T/apps}"
   OUT=$(cd "$T" && printf '%b' "$ans" | env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester SHELL=/bin/zsh \
     XDG_CACHE_HOME="$T/home/.cache" XDG_CONFIG_HOME="$T/home/.config" \
     XDG_DATA_HOME="$T/home/.local/share" XDG_STATE_HOME="$T/home/.local/state" \
     XDG_BIN_HOME="$T/home/.local/bin" CALLS="$CALLS" IDDB="$IDDB" \
     MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
     LAUNCHCTL_LOADED="$LAUNCHCTL_LOADED" LAUNCHCTL_FAIL="${LAUNCHCTL_FAIL:-}" \
-    PROVISION_REF="${PROVISION_REF:-}" HV="${HV:-0}" HERDR_PANE_ID=pane-test HERDR_SOCKET_PATH="$T/herdr.sock" TMPDIR="$T/caller-tmp" \
+    PROVISION_REF="${PROVISION_REF:-}" HV="${HV:-0}" PROVISION_OP_VAULT="${PROVISION_OP_VAULT:-}" \
+    PROVISION_APPLICATIONS="${PROVISION_APPLICATIONS:-$T/apps}" PV_NETBIRD_KEY="${PV_NETBIRD_KEY:-}" PV_ST_USER="${PV_ST_USER:-}" \
+    PV_ST_PASSWORD="${PV_ST_PASSWORD:-}" PV_VORTA_EXPORT="${PV_VORTA_EXPORT:-}" HERDR_PANE_ID=pane-test HERDR_SOCKET_PATH="$T/herdr.sock" TMPDIR="$T/caller-tmp" \
     PROVISION_SRC_OVERRIDE="$SBX_SRC" PROVISION_BREW_BIN="$SBX_BREW" \
     zsh "$SRC/.scripts/provision.sh" "$@" 2>&1); RC=$?; }
 
@@ -848,6 +974,30 @@ has "codex-daemon real-bin found no codex" "codex-daemon real-bin reads /dev/nul
 has "NetBird daemon installed but not started" "the NetBird start reads /dev/null"
 for t in herdr-list codex-daemon netbird; do rm -f "$T/read-stdin-$t"; done
 rm -f "$T/lc-stopped"; lc_reset; rm -rf "$CFG/herdr" "$T/herdr-list" "$T/home/.codex"
+# The preflight's reads: a read that left stdin open would take a spare line and find its item.
+: > "$T/read-stdin-op"
+reset; fresh_steps; items_all; run "$SPARE"
+rm -f "$T/read-stdin-op"
+rc_is 0 "a preflight whose reads fail does not end the run"
+has "Not read ........... NetBird setup key, Syncthing GUI, BorgBase hercules" "op read and op document get read /dev/null"
+: > "$T/read-stdin-netbird"; : > "$T/fast-sleep"
+reset; items_all; run "$SPARE"
+rm -f "$T/read-stdin-netbird" "$T/fast-sleep"
+has "read: NetBird setup key" "the preflight's netbird status --json reads /dev/null (a status it cannot read means the key is read)"
+has "NetBird did not join with the setup key" "and step 8c's reads /dev/null too: it warns instead of joining on a spare line's status"
+not_called "netbird up" "and runs no up"
+# Vorta's step: pgrep and open read /dev/null. A leaked line makes pgrep report Vorta running, or open import.
+mkdir -p "$T/apps/Vorta.app"; : > "$T/fast-sleep"
+: > "$T/read-stdin-pgrep"
+reset; fresh_steps; items_all; run "$SPARE"
+rm -f "$T/read-stdin-pgrep"
+hasnt "quit Vorta, then run provision.sh again" "pgrep -x vorta-darwin reads /dev/null"
+called "open -g -a Vorta" "and Vorta is started"
+: > "$T/read-stdin-open"
+reset; fresh_steps; items_all; run "$SPARE"
+rm -f "$T/read-stdin-open" "$T/fast-sleep"
+[ -e "$VI" ] && _pass "open reads /dev/null: it fails before importing" || _fail "open reads /dev/null: it fails before importing"
+has "answer macOS's prompt to open Vorta" "and the file's warning stands"
 
 echo "S. the end of the run points at the checklist"
 reset; run 'hercules\ny\n'
@@ -861,6 +1011,434 @@ hasnt "herdr-app/bin/respaces" "the hard-coded Herdr step is gone"
 has "Restart your terminal" "the restart line stays"
 has "exec $T/brew/bin/zsh" "with the exec hint while Homebrew's zsh exists"
 has "logout/restart" "and the logout line"
+
+echo "U. the preflight reads only what a step needs"
+SCUTIL_LINE(){ grep -n 'scutil --set ComputerName' "$CALLS" | head -1 | cut -d: -f1; }
+reset; fresh_steps; items_all; run 'hercules\ny\n'
+rc_is 0 "a machine with nothing set up finishes"
+called "op read op://Private/NetBird setup key/credential" "the NetBird key is read"
+called "op read op://Private/Syncthing GUI/username" "the Syncthing user is read"
+called "op read op://Private/Syncthing GUI/password" "the Syncthing password is read"
+called "op document get BorgBase hercules --vault Private" "Vorta's export is read, for the machine just named"
+sl=$(SCUTIL_LINE); last=$(grep -nE '^op (read|document) ' "$CALLS" | tail -1 | cut -d: -f1)
+{ [ -n "$sl" ] && [ -n "$last" ] && [ "$last" -lt "$sl" ]; } && _pass "every read comes before the machine's identity is set" || _fail "every read comes before the machine's identity is set"
+has "Setup secrets ...... read: NetBird setup key, Syncthing GUI, BorgBase hercules" "the summary names what was read"
+for m in "$MK_NB" "$MK_ST" "$MK_VORTA"; do hasnt "$m" "no secret is printed by the run"; done
+reset; run 'hercules\ny\n'
+not_called "op read" "a machine that is set up reads no item"
+not_called "op document" "and no document"
+has "Setup secrets ...... none needed" "and the summary says so"
+hasnt "Not read ..........." "with nothing unread"
+# One step at a time.
+reset; rm -f "$ST_DIR/config.xml"; items_all; run 'hercules\ny\n'
+called "op read op://Private/Syncthing GUI/password" "without config.xml, Syncthing's login is read"
+not_called "op read op://Private/NetBird" "and NetBird's key is not"
+not_called "op document" "nor Vorta's export"
+reset; rm -f "$VORTA_DIR/settings.db"; items_all; run 'hercules\ny\n'
+called "op document get BorgBase hercules --vault Private" "without settings.db, Vorta's export is read"
+not_called "op read" "and nothing else"
+reset; items_all; rm -f "$VORTA_DIR/settings.db"
+/usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name) values('p');"
+run 'hercules\ny\n'
+called "op document get BorgBase hercules --vault Private" "a settings.db whose profile has no repository: Vorta's export is read"
+# Missing items: the step is skipped and the run goes on.
+for it in "NetBird setup key" "Syncthing GUI" "BorgBase hercules"; do
+  reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/$it"; run 'hercules\ny\n'
+  rc_is 0 "$it missing: the run finishes"
+  has "Not read ........... $it" "$it missing: the summary names it before Proceed"
+  has "y skips their steps" "$it missing: and says what y does"
+  if [ "$it" = "Syncthing GUI" ]; then
+    has "manual step" "$it missing: and that Syncthing's login then stays manual"
+  else
+    hasnt "manual step" "$it missing: Syncthing's login is not named"
+  fi
+  has "⚠ 1Password item '$it' could not be read from Private:" "$it missing: the closing list names it"
+done
+reset; fresh_steps; items_all; rm -f "$T/op-items/Private/Syncthing GUI/password"; run 'hercules\ny\n'
+has "Not read ........... Syncthing GUI" "an item with one field missing is missing"
+reset; fresh_steps; items_all; printf '  \n' > "$T/op-items/Private/NetBird setup key/credential"; run 'hercules\ny\n'
+rc_is 0 "a value of only whitespace: the run finishes"
+has "Not read ........... NetBird setup key" "and counts as unread"
+reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/NetBird setup key" "$T/op-items/Private/Syncthing GUI" "$T/op-items/Private/BorgBase hercules"; run 'hercules\ny\n'
+has "Setup secrets ...... none read" "with every item missing, the summary reads none"
+hasnt "is not a profile Vorta can import" "and step 15b has no export to check"
+nowrite "every item missing"
+# NetBird's done test.
+: > "$T/fail-netbird"; : > "$T/fast-sleep"; reset; items_all; run 'hercules\ny\n'; rm -f "$T/fail-netbird" "$T/fast-sleep"
+called "op read op://Private/NetBird setup key/credential" "a status netbird cannot give: the key is read"
+for st in '{"version":"0.20"}' 'not json' '{"daemonStatus":"LoginFailed"}' '{"daemonStatus":"NeedsLogin"}'; do
+  : > "$T/fast-sleep"; reset; items_all; printf '%s\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'; rm -f "$T/fast-sleep"
+  called "op read op://Private/NetBird setup key/credential" "status $st: the key is read"
+  case "$st" in '{"version"'*|'not json')
+    has "NetBird did not join" "status $st: step 8c warns, a status that names no daemonStatus is unreadable"
+    not_called "netbird up" "status $st: and runs no up" ;;
+  esac
+done
+for st in Connected SessionExpired Idle Connecting; do
+  reset; items_all; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'
+  not_called "op read" "status $st: no key is read"
+  not_called "netbird up" "status $st: no join"
+done
+called "netbird status --json" "the state is read from netbird status --json"
+# Vorta's done test fails closed: a settings.db that cannot be read counts as done.
+reset; items_all; printf 'not a database' > "$VORTA_DIR/settings.db"; run 'hercules\ny\n'
+rc_is 0 "an unreadable settings.db: the run finishes"
+not_called "op document get" "Vorta's export is not read"
+has "⚠ Vorta's settings could not be read: no profile imported — see the vorta row" "and the closing list says so"
+# The vault knob.
+reset; fresh_steps; items_all Test; PROVISION_OP_VAULT=Test HV=1 run 'hercules\ny\n'
+rc_is 0 "PROVISION_OP_VAULT inside a VM provisions"
+called "op read op://Test/NetBird setup key/credential" "the reads use that vault"
+called "op document get BorgBase hercules --vault Test" "the document too"
+not_called "op://Private" "and none uses Private"
+has "1Password vault .... Test" "the summary shows the vault"
+reset; fresh_steps; items_all Test; PROVISION_OP_VAULT=Test HV=0 run 'hercules\ny\n'
+rc_is 1 "PROVISION_OP_VAULT outside a VM is refused"
+not_called "sudo -v" "before sudo is asked"
+not_called "op read" "and nothing is read"
+has "PROVISION_OP_VAULT" "and the refusal names the variable"
+reset; fresh_steps; items_all; PROVISION_OP_VAULT= HV=0 run 'hercules\ny\n'
+rc_is 0 "an empty PROVISION_OP_VAULT is unset"
+called "op read op://Private/NetBird setup key/credential" "and the reads use Private"
+hasnt "1Password vault" "with no vault line in the summary"
+# A caller that already exports a secret's variable name: no child's environment carries it.
+reset; fresh_steps; items_all; PV_NETBIRD_KEY=decoy1 PV_ST_USER=decoy2 PV_ST_PASSWORD=decoy3 PV_VORTA_EXPORT=decoy4 run 'hercules\ny\n'
+rc_is 0 "a caller exporting all four secret variables: the run finishes"
+called "op read op://Private/NetBird setup key/credential" "the key is still read"
+called "configure-fullenv HOME=" "and configure.sh, a child started after the reads, ran"
+not_called "configure-fullenv PV_" "no child started after the reads carries a PV_ variable"
+not_called "netbird-env PV_" "nor does netbird"
+for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy1 decoy2 decoy3 decoy4; do not_called "$m" "no log line carries $m"; done
+for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy1 decoy2 decoy3 decoy4; do hasnt "$m" "the run prints no $m"; done
+
+echo "V. NetBird joins with the setup key"
+UP="netbird up --no-browser --setup-key-file /dev/stdin"
+for st in NeedsLogin LoginFailed; do
+  reset; items_all; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status"; run 'hercules\ny\n'
+  rc_is 0 "$st: the run finishes"
+  called "$UP" "$st: NetBird joins with the setup key on stdin"
+  not_called "sudo netbird up" "$st: without sudo"
+  [ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "$MK_NB" ] && _pass "$st: stdin is exactly the key" || _fail "$st: stdin is exactly the key"
+  not_called "netbird-env PV_" "$st: the key is in no netbird environment"
+  not_called "$MK_NB" "$st: no log line carries the key"
+  hasnt "$MK_NB" "$st: the run prints no key"
+  hasnt "NetBird did not join" "$st: no warning"
+done
+# A key with shell-special content arrives byte for byte and nothing in it runs.
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"
+printf '%s\n' "-n \$(touch $T/pwned) \\x " > "$T/op-items/Private/NetBird setup key/credential"
+run 'hercules\ny\n'
+rc_is 0 "a key with shell-special content: the run finishes"
+[ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "-n \$(touch $T/pwned) \\x " ] && _pass "it reaches stdin byte for byte" || _fail "it reaches stdin byte for byte"
+[ -e "$T/pwned" ] && _fail "and nothing in it ran" || _pass "and nothing in it ran"
+# Any other state after the preflight read the key: joined or an SSO login's to renew, so no join.
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; echo '{"daemonStatus":"Connected"}' > "$T/netbird-status-later"
+run 'hercules\ny\n'
+rc_is 0 "Connected at step 8c: the run finishes"
+not_called "netbird up" "Connected at step 8c: no join"
+has "✓ NetBird is Connected" "Connected at step 8c: logged as joined"
+hasnt "⚠ NetBird" "Connected at step 8c: no warning"
+# SessionExpired is not joined: the closing list says so, with the SSO fallback.
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; echo '{"daemonStatus":"SessionExpired"}' > "$T/netbird-status-later"
+run 'hercules\ny\n'
+rc_is 0 "SessionExpired at step 8c: the run finishes"
+not_called "netbird up" "SessionExpired at step 8c: no join"
+hasnt "✓ NetBird is SessionExpired" "SessionExpired at step 8c: does not read as joined"
+has "⚠ NetBird is SessionExpired" "SessionExpired at step 8c: the closing list names the state"
+has "netbird up (SSO login)" "SessionExpired at step 8c: and the SSO fallback"
+has "netbird-session-expiry" "SessionExpired at step 8c: and the session-expiry row"
+# A daemon 8b just started that has not settled (Idle, Connecting) is polled for 30 s, then warned about.
+for st in Idle Connecting; do
+  reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; printf '{"daemonStatus":"%s"}\n' "$st" > "$T/netbird-status-later"
+  : > "$T/fast-sleep"; run 'hercules\ny\n'; rm -f "$T/fast-sleep"
+  rc_is 0 "$st at step 8c: the run finishes"
+  not_called "netbird up" "$st at step 8c: no join"
+  has "NetBird is still $st after 30 s — check netbird status" "$st at step 8c: the warning says it is still $st"
+  hasnt "✓ NetBird is $st" "$st at step 8c: and does not read as joined"
+  [ "$(grep -c '^sleep 2$' "$CALLS")" -eq 15 ] && _pass "$st at step 8c: polled for 15 steps, 30 s" || _fail "$st at step 8c: polled for 15 steps, 30 s ($(grep -c '^sleep 2$' "$CALLS"))"
+done
+# A daemon that settles on NeedsLogin after the poll started (unreadable, Idle, Connecting first): joined, in time.
+NL='{"daemonStatus":"NeedsLogin"}'; ID='{"daemonStatus":"Idle"}'; CO='{"daemonStatus":"Connecting"}'
+settle(){ local label=$1; shift
+  reset; items_all; echo "$NL" > "$T/netbird-status"; printf '%s\n' "$@" > "$T/netbird-status-later"
+  : > "$T/fast-sleep"; run 'hercules\ny\n'; rm -f "$T/fast-sleep"
+  rc_is 0 "$label then NeedsLogin: the run finishes"
+  called "$UP" "$label then NeedsLogin: NetBird joins"
+  [ "$(cat "$T/netbird-up-stdin" 2>/dev/null)" = "$MK_NB" ] && _pass "$label then NeedsLogin: stdin is exactly the key" || _fail "$label then NeedsLogin: stdin is exactly the key"
+  hasnt "⚠ NetBird" "$label then NeedsLogin: no NetBird warning"
+  [ "$(grep -c '^sleep 2$' "$CALLS")" -lt 15 ] && _pass "$label then NeedsLogin: the wait ends on the settled state" || _fail "$label then NeedsLogin: the wait ends on the settled state ($(grep -c '^sleep 2$' "$CALLS") sleeps)"; }
+settle "Idle" "$ID" "$NL"
+settle "Idle, Connecting" "$ID" "$CO" "$NL"
+settle "unreadable" "" "$NL"
+settle "unreadable, Idle" "" "$ID" "$NL"
+reset; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; run 'hercules\ny\n'
+not_called "netbird up" "no key read: no join"
+hasnt "NetBird did not join" "and no second warning (the preflight's already names the item)"
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; : > "$T/fail-netbird-up"; run 'hercules\ny\n'
+rm -f "$T/fail-netbird-up"
+rc_is 0 "a join that fails: the run finishes"
+has "netbird up (SSO login)" "and the warning names the SSO fallback"
+has "netbird-session-expiry" "and the session-expiry row"
+hasnt "$MK_NB" "and prints no key"
+# A status that never reads at step 8c: the 30 s wait runs, then the SSO fallback, never a join.
+reset; items_all; echo '{"daemonStatus":"NeedsLogin"}' > "$T/netbird-status"; : > "$T/fast-sleep"; : > "$T/fail-netbird"; run 'hercules\ny\n'
+rm -f "$T/fast-sleep" "$T/fail-netbird"
+rc_is 0 "a status that cannot be read: the run finishes"
+not_called "netbird up" "no join without a state"
+has "netbird up (SSO login)" "and a warning names the SSO fallback"
+called "sleep 2" "after waiting in 2 s steps"
+[ "$(grep -c '^sleep 2$' "$CALLS")" -eq 15 ] && _pass "for 15 steps, 30 s" || _fail "for 15 steps, 30 s ($(grep -c '^sleep 2$' "$CALLS"))"
+
+echo "W. Syncthing's config before its first start"
+ST_GEN="syncthing generate --home $ST_DIR --gui-user st-user --gui-password=-"
+xp(){ xmllint --xpath "string(//options/$1)" "$ST_DIR/config.xml" 2>/dev/null; }
+OLD_UMASK=$(umask); umask 022
+reset; fresh_steps; items_all; rmdir "$ST_DIR"; run 'hercules\ny\n'
+rc_is 0 "a fresh machine: the run finishes"
+called "$ST_GEN" "generate runs with the login's user and the password read from stdin"
+# print -r -- sends the password and one newline.
+[ "$(od -An -c "$T/syncthing-stdin" | tr -d ' \n')" = 'MARK-ST-PW-91c2\n' ] && _pass "stdin is exactly the password and one newline" || _fail "stdin is exactly the password and one newline"
+not_called "syncthing-env PV_" "no secret variable is in Syncthing's environment"
+not_called "$MK_ST" "no log line carries the password"
+hasnt "$MK_ST" "the run prints no password"
+[ "$(xp globalAnnounceEnabled)" = false ] && _pass "Global Discovery is off" || _fail "Global Discovery is off"
+[ "$(xp relaysEnabled)" = false ] && _pass "Relaying is off" || _fail "Relaying is off"
+[ "$(xp natEnabled)" = false ] && _pass "NAT traversal is off" || _fail "NAT traversal is off"
+[ "$(xp localAnnounceEnabled)" = true ] && _pass "Local Discovery stays on" || _fail "Local Discovery stays on"
+[ "$(xmllint --xpath 'string(//gui/user)' "$ST_DIR/config.xml")" = st-user ] && _pass "the GUI user is in the file" || _fail "the GUI user is in the file"
+[ "$(stat -f %Lp "$ST_DIR/config.xml")" = 600 ] && _pass "config.xml is mode 600 under umask 022" || _fail "config.xml is mode 600 under umask 022"
+[ "$(stat -f %Lp "$ST_DIR")" = 700 ] && _pass "the Syncthing folder is mode 700" || _fail "the Syncthing folder is mode 700"
+hasnt "Syncthing's config was not generated" "and no warning"
+hasnt "are not as section 8 E1 wants" "and none about the options"
+# A password with shell-special content arrives byte for byte and nothing in it runs.
+reset; fresh_steps; items_all
+printf '%s\n' "-n \$(touch $T/pwned) \\x " > "$T/op-items/Private/Syncthing GUI/password"
+run 'hercules\ny\n'
+rc_is 0 "a password with shell-special content: the run finishes"
+[ "$(cat "$T/syncthing-stdin" 2>/dev/null)" = "-n \$(touch $T/pwned) \\x " ] && _pass "it reaches stdin byte for byte" || _fail "it reaches stdin byte for byte"
+[ -e "$T/pwned" ] && _fail "and nothing in it ran" || _pass "and nothing in it ran"
+# A machine whose Syncthing has a config.xml is left alone.
+reset; items_all; printf '<configuration version="52">kept</configuration>\n' > "$ST_DIR/config.xml"; cp "$ST_DIR/config.xml" "$T/config.before"
+run 'hercules\ny\n'
+not_called "syncthing generate" "an existing config.xml: nothing is generated"
+cmp -s "$ST_DIR/config.xml" "$T/config.before" && _pass "and the file is byte-identical" || _fail "and the file is byte-identical"
+# Syncthing started during the run (the Brewfile step), after the preflight read the login: warn, do not generate.
+mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"
+reset; fresh_steps; items_all; : > "$T/st-appears"; run 'hercules\ny\n'; rm -rf "$T/home/.config/homebrew"
+rc_is 0 "a config.xml that appears after the preflight: the run finishes"
+has "Syncthing already has a config.xml (it started during this run) — set its GUI login and options by hand: see the syncthing-settings row" "the warning says so"
+not_called "syncthing generate" "and nothing is generated"
+# A generate that fails.
+reset; fresh_steps; items_all; : > "$T/fail-syncthing"; run 'hercules\ny\n'
+rc_is 0 "a failing generate: the run finishes"
+has "Syncthing's config was not generated — see the syncthing-settings row" "and the warning names the row"
+[ -e "$ST_DIR/config.xml" ] && _fail "and no config.xml is left" || _pass "and no config.xml is left"
+# A generate that exits 0 without writing config.xml (another version's layout): a warning, and the run goes on.
+reset; fresh_steps; items_all; : > "$T/st-no-config"; run 'hercules\ny\n'; rm -f "$T/st-no-config"
+rc_is 0 "a generate that writes no config.xml: the run finishes"
+has "⚠ Syncthing's config was not generated" "and the closing list names it"
+has "syncthing-settings" "and the row"
+hasnt "are not as section 8 E1 wants" "and no options warning"
+called "reconcile-agents.sh" "and the steps after it still run"
+called "machine-check.sh --todo" "and the closing checklist runs"
+# Syncthing.app missing (its cask failed): a warning, no generate.
+reset; fresh_steps; items_all; mv "$T/apps/Syncthing.app" "$T/Syncthing.app.away"; run 'hercules\ny\n'; mv "$T/Syncthing.app.away" "$T/apps/Syncthing.app"
+rc_is 0 "no Syncthing.app: the run finishes"
+has "Syncthing.app is not installed" "and the warning says so"
+not_called "syncthing generate" "and nothing is generated"
+[ -e "$ST_DIR/config.xml" ] && _fail "and no config.xml is written" || _pass "and no config.xml is written"
+# A generated file whose options cannot be turned off.
+reset; fresh_steps; items_all; : > "$T/st-no-relays"; run 'hercules\ny\n'; rm -f "$T/st-no-relays"
+rc_is 0 "a config without <relaysEnabled>: the run finishes"
+has "Syncthing's options relaysEnabled are not as section 8 E1 wants — set them in Syncthing's GUI" "and the warning names the option"
+hasnt "Syncthing's options globalAnnounceEnabled" "and only that one"
+# Without the login (item unread), nothing is generated.
+reset; fresh_steps; items_all; rm -rf "$T/op-items/Private/Syncthing GUI"; run 'hercules\ny\n'
+not_called "syncthing generate" "no login read: nothing is generated"
+umask "$OLD_UMASK"
+
+echo "X. Vorta imports its own export"
+OLD_UMASK=$(umask); umask 022
+mkdir -p "$T/apps/Vorta.app"; : > "$T/vorta-imports"; : > "$T/fast-sleep"
+reset; fresh_steps; items_all; run 'hercules\ny\n'
+rc_is 0 "a fresh machine: the run finishes"
+called "open -g -a Vorta" "Vorta is started in the background"
+[ "$(cat "$T/vorta-init-mode" 2>/dev/null)" = 600 ] && _pass "the file is mode 600 under umask 022" || _fail "the file is mode 600 under umask 022"
+printf '%s\n' "$VORTA_EXPORT" | cmp -s - "$T/vorta-init-seen" && _pass "Vorta sees the export byte for byte" || _fail "Vorta sees the export byte for byte"
+[ -e "$VI" ] && _fail "the file is gone after the import" || _pass "the file is gone after the import"
+ol=$(grep -n '^open -g -a Vorta' "$CALLS" | head -1 | cut -d: -f1); cl=$(grep -n 'configure.sh --hostname' "$CALLS" | head -1 | cut -d: -f1)
+{ [ -n "$ol" ] && [ -n "$cl" ] && [ "$ol" -lt "$cl" ]; } && _pass "Vorta starts before configure.sh" || _fail "Vorta starts before configure.sh"
+not_called "$MK_VORTA" "no log line carries the password"
+hasnt "$MK_VORTA" "the run prints no password"
+# Vorta never imports (macOS's first-open prompt, say): the file stays and the warning says what is left.
+rm -f "$T/vorta-imports"
+reset; fresh_steps; items_all; run 'hercules\ny\n'
+rc_is 0 "no import: the run finishes"
+[ -f "$VI" ] && _pass "the file stays" || _fail "the file stays"
+has "answer macOS's prompt to open Vorta" "and the warning says what is left"
+has "$VI" "and names the file"
+hasnt "$MK_VORTA" "and prints no password"
+[ "$(grep -c '^sleep 5$' "$CALLS")" -eq 24 ] && _pass "the wait is 24 steps of 5 s, 120 s" || _fail "the wait is 24 steps of 5 s, 120 s ($(grep -c '^sleep 5$' "$CALLS"))"
+: > "$T/vorta-imports"
+# A profile with a repository, or a settings.db that cannot be read: the export is not even read.
+reset; items_all; run 'hercules\ny\n'
+nowrite "a configured profile"
+reset; items_all; printf 'not a database' > "$VORTA_DIR/settings.db"; run 'hercules\ny\n'
+nowrite "a settings.db that is not a database"
+# Vorta running.
+: > "$T/vorta-running"
+reset; fresh_steps; items_all; run 'hercules\ny\n'; rm -f "$T/vorta-running"
+rc_is 0 "Vorta running: the run finishes"
+nowrite "Vorta running"
+has "quit Vorta, then run provision.sh again" "and the warning says what to do"
+called "pgrep -x vorta-darwin" "and the process asked about is Vorta's"
+# A file a first run left waiting for Vorta (macOS's first-open prompt): the re-run reads nothing, writes
+# nothing, starts nothing, and says what is left.
+reset; fresh_steps; items_all; printf 'keep me\n' > "$VI"; run 'hercules\ny\n'
+rc_is 0 "a pending file: the run finishes"
+not_called "op document" "a pending file: the export is not read"
+called "op read op://Private/NetBird setup key/credential" "a pending file: the other steps still read their items"
+not_called "open -g -a Vorta" "a pending file: Vorta is not started"
+[ "$(cat "$VI")" = "keep me" ] && _pass "a pending file: its content is unchanged" || _fail "a pending file: its content is unchanged"
+has "⚠ $VI is waiting for Vorta" "a pending file: the closing list names it"
+has "Failed to import profile" "a pending file: and what to do if the import fails"
+has "vorta row" "a pending file: and the row"
+hasnt "BorgBase" "a pending file: no item is named, read or unread"
+# A dangling symlink is pending too: not followed, not read.
+reset; fresh_steps; items_all; ln -s "$T/elsewhere" "$VI"; run 'hercules\ny\n'
+rc_is 0 "a dangling symlink: the run finishes"
+not_called "op document" "a dangling symlink: the export is not read"
+not_called "open -g -a Vorta" "a dangling symlink: Vorta is not started"
+[ -e "$T/elsewhere" ] && _fail "nothing is written through the symlink" || _pass "nothing is written through the symlink"
+[ -L "$VI" ] && _pass "and the symlink is left" || _fail "and the symlink is left"
+has "⚠ $VI is waiting for Vorta" "a dangling symlink: the closing list names the path"
+# A configured machine has nothing to wait for, whatever file is there.
+reset; items_all; printf 'old\n' > "$VI"; run 'hercules\ny\n'
+not_called "op document" "a configured profile and a file: nothing is read"
+hasnt "waiting for Vorta" "and nothing is said"
+# The file appears after the preflight (a start of Vorta during the Brewfile step): 15b leaves it, same words.
+mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"
+reset; fresh_steps; items_all; : > "$T/vi-appears"; run 'hercules\ny\n'
+rc_is 0 "a file that appears mid-run: the run finishes"
+called "op document get BorgBase hercules --vault Private" "a file that appears mid-run: the export was read at the preflight"
+not_called "open -g -a Vorta" "a file that appears mid-run: Vorta is not started"
+[ "$(cat "$VI")" = "keep-me" ] && _pass "a file that appears mid-run: its content is unchanged" || _fail "a file that appears mid-run: its content is unchanged"
+has "⚠ $VI is waiting for Vorta" "a file that appears mid-run: the closing list says it is waiting"
+reset; fresh_steps; items_all; : > "$T/vi-appears-link"; run 'hercules\ny\n'
+not_called "open -g -a Vorta" "a symlink that appears mid-run: Vorta is not started"
+[ -e "$T/elsewhere" ] && _fail "a symlink that appears mid-run: nothing is written through it" || _pass "a symlink that appears mid-run: nothing is written through it"
+has "⚠ $VI is waiting for Vorta" "a symlink that appears mid-run: the closing list says it is waiting"
+rm -rf "$T/home/.config/homebrew"
+# Vorta.app missing (its cask failed): a warning, nothing written.
+reset; fresh_steps; items_all; mv "$T/apps/Vorta.app" "$T/Vorta.app.away"; run 'hercules\ny\n'; mv "$T/Vorta.app.away" "$T/apps/Vorta.app"
+rc_is 0 "no Vorta.app: the run finishes"
+nowrite "no Vorta.app"
+has "Vorta.app is not installed" "and the warning says so"
+# An export Vorta could not import is never written; no export text reaches the output.
+for bad in '[]' "not json $MK_VORTA {" \
+  '{"id":"1","name":"'"$MK_VORTA"'","SchemaVersion":{"version":23},"repo":{"url":"u"},"password":"x"}' \
+  '{"id":1,"name":"'"$MK_VORTA"'","SchemaVersion":{"version":23},"repo":{"url":"u"},"password":""}' \
+  '{"id":1,"name":"'"$MK_VORTA"'","SchemaVersion":{"version":23},"repo":{"url":"u"}}'; do
+  reset; fresh_steps; items_all; put_item Private "BorgBase hercules" document "$bad"; run 'hercules\ny\n'
+  rc_is 0 "an export that fails the check: the run finishes"
+  nowrite "an export that fails the check"
+  has "is not a profile Vorta can import" "and the warning says so"
+  hasnt "$MK_VORTA" "and no marker reaches the output"
+  not_called "$MK_VORTA" "nor the log"
+done
+rm -f "$T/fast-sleep"
+umask "$OLD_UMASK"
+
+echo "Y. the login apps' LaunchAgent"
+# Spec 2026-11-25-script-provisioning-rows section 5 (ruling 3): one plain plist, whose job opens each
+# listed app that is installed. The job's script runs here against $T/apps and the open stub, never
+# the real /Applications or /usr/bin/open.
+LAP="$SRC/Library/LaunchAgents/be.netronix.login-apps.plist"
+if [ ! -f "$LAP" ]; then
+  _fail "the LaunchAgent plist exists"
+else
+  plutil -lint "$LAP" >/dev/null 2>&1 && _pass "the plist is valid" || _fail "the plist is valid"
+  [ "$(plutil -extract Label raw -o - "$LAP" 2>/dev/null)" = be.netronix.login-apps ] && _pass "its label is be.netronix.login-apps" || _fail "its label is be.netronix.login-apps"
+  [ "$(plutil -extract RunAtLoad raw -o - "$LAP" 2>/dev/null)" = true ] && _pass "it runs at load" || _fail "it runs at load"
+  plutil -extract KeepAlive raw -o - "$LAP" >/dev/null 2>&1 && _fail "it has no KeepAlive" || _pass "it has no KeepAlive"
+  want_apps="Syncthing|Vorta|Alfred 5|1Password|Linger|Tafl|Micro Snitch|Proton Drive|Elgato Control Center"
+  got_apps=""; n=$(plutil -extract ProgramArguments raw -o - "$LAP" 2>/dev/null); i=4
+  while [ "$i" -lt "${n:-0}" ]; do
+    a=$(plutil -extract "ProgramArguments.$i" raw -o - "$LAP" 2>/dev/null); got_apps="${got_apps:+$got_apps|}$a"; i=$((i+1))
+  done
+  [ "$got_apps" = "$want_apps" ] && _pass "the apps are the nine, in order" || _fail "the apps are the nine, in order (got: $got_apps)"
+  [ "$(plutil -extract ProgramArguments.0 raw -o - "$LAP" 2>/dev/null)|$(plutil -extract ProgramArguments.1 raw -o - "$LAP" 2>/dev/null)|$(plutil -extract ProgramArguments.3 raw -o - "$LAP" 2>/dev/null)" = "/bin/zsh|-fc|login-apps" ] \
+    && _pass "it runs /bin/zsh -fc with login-apps as the script's name" || _fail "it runs /bin/zsh -fc with login-apps as the script's name"
+  script=$(plutil -extract ProgramArguments.2 raw -o - "$LAP" 2>/dev/null)
+  script=${script//\/usr\/bin\/open/$T/bin/open}; script=${script//\/Applications/$T/apps}
+  case "$script" in *"$T/bin/open"*"$T/apps"*|*"$T/apps"*"$T/bin/open"*) _pass "the script names /Applications and /usr/bin/open (both swapped for the stubs)" ;; *) _fail "the script names /Applications and /usr/bin/open (both swapped for the stubs)" ;; esac
+  rm -rf "$T/apps/Alfred 5.app"; mkdir -p "$T/apps/Syncthing.app" "$T/apps/Vorta.app" "$T/apps/Alfred 5.app"
+  rm -rf "$T/apps/Elgato Control Center.app"
+  : > "$CALLS"
+  OUT=$(CALLS="$CALLS" SBX_ROOT="$SBX_ROOT" HOME="$T/home" /bin/zsh -fc "$script" login-apps Syncthing Vorta "Alfred 5" 1Password "Elgato Control Center" </dev/null 2>&1); RC=$?
+  rc_is 0 "the job exits 0 though the last app is not installed"
+  called "open -g -a Syncthing" "an installed Syncthing is opened in the background"
+  called "open -g -a Vorta" "an installed Vorta is opened in the background"
+  called "open -g -a Alfred 5" "an app whose name has a space is opened whole"
+  not_called "open -g -a 1Password" "an app that is not installed (1Password) is not opened"
+  not_called "open -g -a Elgato Control Center" "Elgato Control Center is not opened when absent"
+  rm -rf "$T/apps/Alfred 5.app"
+fi
+
+echo "Z. no secret leaves its stdin or its file, and a second run changes nothing"
+# One run of a machine with every step undone, whose caller already exports two secret variables
+# (the same names as the run's own), then a second run on the machine the first left.
+: > "$T/vorta-imports"; : > "$T/fast-sleep"
+reset; fresh_steps; items_all
+PV_NETBIRD_KEY=decoy PV_ST_PASSWORD=decoy run 'hercules\ny\n'
+rc_is 0 "a fresh machine with all three items: the run finishes"
+called "netbird up --no-browser --setup-key-file /dev/stdin" "NetBird joined"
+called "syncthing generate" "Syncthing's config was generated"
+called "open -g -a Vorta" "Vorta was started"
+called "netbird-env HOME=" "netbird's environment is logged"
+called "syncthing-env HOME=" "syncthing's environment is logged"
+called "configure-fullenv HOME=" "configure.sh's environment is logged"
+called "machine-check-fullenv HOME=" "machine-check.sh's environment is logged"
+called "jq-env HOME=" "jq's environment is logged"
+warns1=$(printf '%s\n' "$OUT" | grep '⚠' | sed 's/^[[:space:]]*//')
+printf '%s\n' "$warns1" | grep -qiE 'netbird|syncthing|vorta|1password' && _fail "the first run warns of no new step (got: $warns1)" || _pass "the first run warns of no new step"
+for m in "$MK_NB" "$MK_ST" "$MK_VORTA" decoy; do
+  not_called "$m" "no stub's arguments or environment carry $m"
+  hasnt "$m" "the run prints no $m"
+done
+not_called "PV_" "no logged argument or environment names a secret variable"
+# Each marker is on disk in one place only (the 1Password stub's own items aside).
+only_in(){ local m=$1 want=$2 got
+  got=$(grep -rlF -- "$m" "$T" 2>/dev/null | grep -vF "$T/op-items/" | LC_ALL=C sort | tr '\n' ' ')
+  [ "$got" = "$want " ] && _pass "$m is found only in ${want##*/}" || _fail "$m is found only in ${want##*/} (found: ${got:-nowhere})"; }
+only_in "$MK_NB" "$T/netbird-up-stdin"
+only_in "$MK_ST" "$T/syncthing-stdin"
+only_in "$MK_VORTA" "$T/vorta-init-seen"
+[ "$(cat "$T/netbird-up-stdin")" = "$MK_NB" ] && _pass "NetBird's stdin is exactly the key" || _fail "NetBird's stdin is exactly the key"
+[ "$(cat "$T/syncthing-stdin")" = "$MK_ST" ] && _pass "Syncthing's stdin is exactly the password" || _fail "Syncthing's stdin is exactly the password"
+printf '%s\n' "$VORTA_EXPORT" | cmp -s - "$T/vorta-init-seen" && _pass "Vorta saw exactly the export" || _fail "Vorta saw exactly the export"
+[ -e "$VI" ] || [ -L "$VI" ] && _fail "the file is gone after the import" || _pass "the file is gone after the import"
+# The machine the first run left, as a real Mac would: connected, the generated config.xml kept, and
+# settings.db holding the profile Vorta's import made.
+[ -f "$ST_DIR/config.xml" ] && _pass "the first run left Syncthing's config.xml" || _fail "the first run left Syncthing's config.xml"
+cp "$ST_DIR/config.xml" "$T/config.z"
+echo '{"daemonStatus":"Connected"}' > "$T/netbird-status"; rm -f "$T/netbird-status-later" "$T/netbird-status-n" "$T/netbird-up-stdin" "$T/syncthing-stdin" "$T/vorta-init-seen" "$T/vorta-init-mode"
+/usr/bin/sqlite3 "$VORTA_DIR/settings.db" "create table backupprofilemodel(id integer primary key, name text, repo_id integer); insert into backupprofilemodel(name, repo_id) values('Default', 1);"
+: > "$CALLS"; : > "$MUTLOG"
+run 'hercules\ny\n'
+rc_is 0 "the second run finishes"
+not_called "op read" "the second run reads no item"
+not_called "op document" "and no document"
+not_called "netbird up" "runs no netbird up"
+not_called "generate" "generates no Syncthing config"
+not_called "open -g -a Vorta" "does not start Vorta"
+[ -e "$VI" ] || [ -L "$VI" ] && _fail "and writes no Vorta file" || _pass "and writes no Vorta file"
+cmp -s "$ST_DIR/config.xml" "$T/config.z" && _pass "config.xml is byte for byte as it was" || _fail "config.xml is byte for byte as it was"
+[ -s "$T/syncthing-stdin" ] || [ -s "$T/netbird-up-stdin" ] && _fail "no secret reached any stdin" || _pass "no secret reached any stdin"
+has "Setup secrets ...... none needed" "the summary says nothing was needed"
+warns=$(printf '%s\n' "$OUT" | grep '⚠' | sed 's/^[[:space:]]*//')
+[ "$warns" = "$warns1" ] && _pass "the second run adds no warning" || _fail "the second run adds no warning (got: $warns)"
+rm -f "$T/fast-sleep" "$T/config.z"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -7,15 +7,15 @@ every agent: Claude Code and Codex both load it natively.
 ## Rules
 
 - **Never commit a secret.** Every secret is a template —
-  `{{ onepasswordRead "op://Private/Item/field" }}` (SSH keys: `…?ssh-format=openssh`).
-  SSH keys live in `private_dot_ssh/`, tokens in `dot_config/bundler/private_config.tmpl`,
-  `dot_config/private_ha-mcp/private_env.tmpl` and `dot_config/private_ha-mcp/private_env-remote.tmpl`.
-  Before committing under those paths: `git diff --cached`, and
-  `grep -L onepassword private_dot_ssh/private_*.tmpl` must print nothing.
-  The agent forge tokens are the exception to "a template": `dot_claude/modify_private_settings.json`
-  reads them from 1Password at apply and they live only in the deployed `~/.claude/settings.json`.
-  Preview that target through `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`, never whole; a
-  dry-run diff of it can print the token lines as context, so filter that output too.
+  `{{ onepasswordRead "op://Private/Item/field" }}` (SSH keys: `…?ssh-format=openssh`). SSH keys
+  live in `private_dot_ssh/`, tokens in `dot_config/bundler/private_config.tmpl` and
+  `dot_config/private_ha-mcp/private_env{,-remote}.tmpl`. Before committing there:
+  `git diff --cached`, and `grep -L onepassword private_dot_ssh/private_*.tmpl` must print nothing.
+  Two exceptions: the forge tokens, read at apply by `dot_claude/modify_private_settings.json`, live
+  only in the deployed `~/.claude/settings.json` (preview it through
+  `jq 'del(.env.GH_TOKEN, .env.GITLAB_TOKEN)'`, never whole, and filter any `apply --dry-run` diff of it, which can show the tokens); and the setup
+  items, read by `provision.sh`'s preflight with `op`, passed on stdin or to Vorta in
+  `~/.vorta-init.json` (600) until its import (spec 2026-11-25-script-provisioning-rows §1).
 - `.chezmoiignore` is an **allowlist** for `~/.claude`, `~/.codex`, `~/.config/herdr-app` and
   Alfred: ignore the directory contents, then re-include one file at a time, one level at a time — a
   re-include cannot reach inside an ignored directory. A new managed file under those trees needs
