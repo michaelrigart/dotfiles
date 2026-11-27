@@ -23,7 +23,8 @@ Read its Design, Behaviour and Tests sections before any task.
 - Tools by absolute path: `/usr/bin/timeout`, `/bin/sleep`, `/bin/launchctl`, `/usr/bin/id`,
   `/bin/date`, `/bin/mkdir`; the check runs `/usr/bin/security`. Suite-only seam: when `HCD_TOOLS`
   is set, `timeout`, `sleep` and `launchctl` come from that directory instead.
-- Every `herdr-core` call is `<timeout> 60 "$HOME/.local/bin/herdr-core" …`.
+- Every `herdr-core` call is `<timeout> -f 60 "$HOME/.local/bin/herdr-core" …` (`-f`: a timeout
+  signals herdr-core alone, never a core it started as its child; fix round 1).
 - The script never calls `herdr-core server stop`, `kill` or `rm`.
 - Fixed names: label `be.netronix.herdr-core-desktop`; log `$HOME/.local/state/herdr-core-desktop.log`
   (one line per event: `<UTC ISO-8601> <message>`, as `ssh-agent-run` writes); keychain
@@ -131,29 +132,30 @@ delimited (`printf ' [%s]' "$@"`):
   SecKeychainCopySettings …: User interaction is not allowed.` to stderr and exits 36. `server
   restart --fresh` writes `env | /usr/bin/grep -v '^STUB_VIA_TIMEOUT='` to `restart.env` and, per
   `move` (`now`, `late`, `never`), sets `ctx` to `ok` at once, after the next check, or never.
-- `$HCD_TOOLS/timeout`: logs `timeout` and its arguments, exports `STUB_VIA_TIMEOUT=1`, drops its
-  first argument (the seconds) and execs the rest.
+- `$HCD_TOOLS/timeout`: logs `timeout` and its arguments, exports `STUB_VIA_TIMEOUT=1`, drops a
+  leading `-f` and then the seconds, and execs the rest.
 - `$HCD_TOOLS/sleep`: logs `sleep` and its arguments, returns at once.
 - `$HCD_TOOLS/launchctl`: logs `launchctl` and its arguments, and `log-had-failure=yes|no` (whether
   the log file already holds the failure line).
 
 Run the script as `env -i HOME="$HOME" PATH=/opt/x:/usr/bin:/bin HCD_TOOLS=… MARKER=kept
 /bin/bash <script>`. Cases and assertions:
-- **A. usable core:** rc 0; `CALLS` is exactly `sleep [5]`, then `timeout [60] [<hc path>] [exec]
+- **A. usable core:** rc 0; `CALLS` is exactly `sleep [5]`, then `timeout [-f] [60] [<hc path>] [exec]
   [/usr/bin/security] [show-keychain-info] [<HOME>/Library/Keychains/login.keychain-db]` and the
   matching `hc` line; no restart; no log file.
 - **B. unusable, moves at once:** rc 0; exactly one `hc [server] [restart] [--fresh]`; the log
   exists with exactly one line, containing `moved`; no `launchctl` call.
 - **C. unusable, moves only after the re-check** (`move=late`): rc 0; one restart; three checks;
-  `sleep [5]` twice (before the first check, before the re-check); one `moved` line.
+  `sleep [5]` twice (before the first check, before the re-check); from the restart on, the order
+  is restart, check, sleep, check; one `moved` line.
 - **D. never moves:** rc 1; exactly one restart; the log's one line contains `could not move`;
   `launchctl [bootout] [gui/<uid>/be.netronix.herdr-core-desktop]` called once, with
   `log-had-failure=yes`.
 - **E. herdr-core missing:** rc 0; `CALLS` empty; no log file.
 - **F. environment:** in case B's `restart.env`, `PATH=/opt/x:/usr/bin:/bin` and `MARKER=kept`, and
   no variable names besides those given plus `SHLVL`, `_`, `PWD` and `OLDPWD`.
-- **G. timeouts and forbidden calls, over every case:** no `hc-direct` line; no `hc [server]
-  [stop]`, `hc [kill]` or `hc [rm]` line.
+- **G. timeouts and forbidden calls, over every case:** no `hc-direct` line; every `timeout` line
+  starts `timeout [-f] [60]`; no `hc [server] [stop]`, `hc [kill]` or `hc [rm]` line.
 - **H. plist:** render with `sed "s|{{ .chezmoi.homeDir }}|$H|g"` as `tests/ssh-agent-run.test.sh`
   does; `plutil -lint` passes; `Label` is `be.netronix.herdr-core-desktop`; `ProgramArguments.0` is
   `$H/.local/bin/herdr-core-desktop`; `RunAtLoad` and `AbandonProcessGroup` are `true`;
