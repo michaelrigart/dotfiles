@@ -25,12 +25,12 @@ logline() {
   printf '%s %s\n' "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$log"
 }
 
-usable() { "$timeout" 60 "$hc" exec /usr/bin/security show-keychain-info "$keychain" >/dev/null 2>&1; }
+usable() { "$timeout" -f 60 "$hc" exec /usr/bin/security show-keychain-info "$keychain" >/dev/null 2>&1; }
 
 "$sleep" 5
 usable && exit 0
 
-"$timeout" 60 "$hc" server restart --fresh >/dev/null 2>&1
+"$timeout" -f 60 "$hc" server restart --fresh >/dev/null 2>&1
 if usable || { "$sleep" 5; usable; }; then
   logline "moved Herdr's core into the desktop login"
   exit 0

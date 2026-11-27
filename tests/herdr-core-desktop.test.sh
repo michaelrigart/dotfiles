@@ -74,7 +74,7 @@ STUB
 #!/bin/bash
 { printf 'timeout'; printf ' [%s]' "\$@"; printf '\n'; } >>"$CALLS"
 export STUB_VIA_TIMEOUT=1
-shift
+if [ "\$1" = -f ]; then shift; fi; shift
 exec "\$@"
 STUB
   cat >"$TOOLS/sleep" <<STUB
@@ -109,7 +109,7 @@ KC="$H/Library/Keychains/login.keychain-db"
 check "A usable core: rc" "$RC" "0"
 check "A usable core: sleep, then one check through timeout, nothing else" \
   "$(tr '\n' '|' <"$CALLS")" \
-  "sleep [5]|timeout [60] [$HC]$CHECK_ARGS [$KC]|hc$CHECK_ARGS [$KC]|"
+  "sleep [5]|timeout [-f] [60] [$HC]$CHECK_ARGS [$KC]|hc$CHECK_ARGS [$KC]|"
 check "A usable core: no log file" "$(loglines)" "none"
 
 fresh now
@@ -126,6 +126,9 @@ runit
 check "C moves only after the re-check: rc" "$RC" "0"
 check "C one restart" "$(count 'hc [server] [restart] [--fresh]')" "1"
 check "C three checks" "$(grep -c '^hc \[exec\]' "$CALLS")" "3"
+check "C from the restart: check, sleep, check (timeout lines left out)" \
+  "$(sed -n '/^hc \[server\] \[restart\] \[--fresh\]$/,$p' "$CALLS" | grep -E '^(hc|sleep)' | sed 's/^hc \[exec\].*/check/; s/^hc \[server\].*/restart/; s/^sleep.*/sleep/' | tr '\n' ' ')" \
+  "restart check sleep check "
 check "C sleeps before the first check and before the re-check" "$(count 'sleep [5]')" "2"
 check "C one log line" "$(loglines)" "1"
 if grep -q 'moved' "$LOGF" 2>/dev/null; then _pass "C log line says moved"; else _fail "C log line says moved" "$(cat "$LOGF" 2>/dev/null)"; fi
@@ -152,6 +155,7 @@ check "F no other variable reaches --fresh" \
   "$(echo "$BENV" | cut -d= -f1 | grep -vxE 'HOME|PATH|HCD_TOOLS|MARKER|SHLVL|_|PWD|OLDPWD' | tr '\n' ' ')" ""
 
 check "G every herdr-core call went through timeout" "$(grep -c '^hc-direct' "$ALL")" "0"
+check "G every timeout signals only herdr-core, after 60 s" "$(grep '^timeout' "$ALL" | grep -vc '^timeout \[-f\] \[60\] ')" "0"
 check "G no server stop, kill or rm" "$(grep -cE '^hc \[(server\] \[stop|kill|rm)\]' "$ALL")" "0"
 
 H="$T/plist home"; mkdir "$H"
