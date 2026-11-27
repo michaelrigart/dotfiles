@@ -11,16 +11,22 @@ review rounds (sp-architect, then sp-reviewer: approve) are folded in; Codex rev
 its usage limit resets (2026-11-28 09:29), and any change it brings returns to Michael. Later the
 same day, in the pane, Michael added the periodic review (§5, *Periodic review*): "lets go with A.
 But I want you to review everything by the end of the week and put it in 1Password for me please".
+**Change, 2026-11-27** (signed off by Michael that evening in the pane, "Sign off"): Michael widened the review in the pane: "create the
+rules properly and allow what is need (what not) so I don't get always prompted by Little Snitch.
+But you can block rules that are specifically for tracking and such." §3 gains what the fenrir
+rebuild measured. A review script in the repository, widened to match, did not converge in three
+cold review rounds; Michael dropped it ("Drop the script"): the periodic review in §5 is now an
+agent-run private builder, with what it aims at written down, and the alerts that remain are
+accepted ("Accept both"). §5's 1Password clause gives the read-back to Michael, because the
+agents' permission check refuses `op document get`; §8 records the rebuild.
 **Source:** Michael, 2026-11-25: "Can you work on Little Snitch for me? I would like you to review
 my current rules and optimize everything. At the same time, I would also want to know, once we have
 a good rule set, if we could include it in our privisioning scripts." Relayed in the driver's brief
 (chezmoi-94) of the same day. Approach A picked by Michael in the line's pane: "lets go with A then".
-**Size:** about 310 lines of non-test code: about 6 in `.scripts/machine-checklist.tsv` (the two
-Little Snitch rows move up and `little-snitch-rules` gets a new step) and about 300 for
-`.scripts/little-snitch-review.py` plus its ad-hoc entry, estimated from the private builder it
-generalises (about 330 lines, its machine-specific decisions moving to a private file, plus
-decision validation and the invariants). A README section of about
-45 lines (docs, not counted). One increment.
+**Size:** about 6 lines of non-test code, in `.scripts/machine-checklist.tsv` (the two Little
+Snitch rows move up and `little-snitch-rules` gets a new step), and a README section of about 60
+lines (docs, not counted). One increment. Until 2026-11-27 it also held a review script of about
+300 lines; dropped (see the change note).
 **Provisioning:** `little-snitch-extension`, `little-snitch-rules`
 
 ## 1. Problem
@@ -35,14 +41,14 @@ install.
 ## 2. Goals, non-goals, anti-goals
 
 - **Goals.** A reinstalled Mac gets its rule set back in one restore, leaving one alert per
-  Homebrew tool whose rule checks its identity (§3). Each machine gets its own rules. The alerts of
+  Homebrew tool whose rule checks its identity (§3) and per mise tool whose version moved. Each machine gets its own rules. The alerts of
   the tools the checklist and the README's first-use step exercise come while Michael is at the
   machine. Nothing private enters this public repository.
 - **Non-goals.** The rules themselves (private: the review and its periodic rerun hand Michael a
   file he restores). Approving the
   network extension without a click (that needs an MDM profile). Keeping fenrir and hercules in sync
   between reinstalls (approach C below; revisit if hercules' alerts become the pain).
-- **Anti-goals.** Any script that writes Little Snitch rules, preferences or rule groups. The
+- **Anti-goals.** Anything that writes Little Snitch's live rules, preferences or rule groups. The
   licence, the rule list or a backup in the repository. "Allow access via Terminal" left on, or
   turned back on by a restore.
 
@@ -91,6 +97,21 @@ Evidence strength in brackets: *app* (read from the installed 6.5 app, from fenr
 - Little Snitch filters incoming connections too: hercules' sshd needs an incoming rule for
   `100.64.0.0/10` (hercules-agent-machine §8 G), which fenrir's backup has no reason to hold.
   [inferred]
+- Precedence: priority first, then how specific the server is, then port, protocol, a named program
+  over any program, a via-construction (program via tool) over a single program, a named owner over
+  a global rule, direction, and deny over allow over ask. Among domains the one with fewer labels
+  ranks higher, so without priority an app's allow for `example.com` outranks a deny for
+  `metrics.example.com`. [docs] A domain rule covers its subdomains; a host rule covers that name
+  only. [docs]
+- A rule belongs to a user (`uid`), to the system (`owner: system`, no `uid`: a program that runs
+  as root) or, among Little Snitch's factory rules, to neither. fenrir's root daemons, NetBird among
+  them, have only system rules. [app] A user's rule does not match a root daemon's connections.
+  [inferred] A restore keeps `priority: high` and `owner: system`: the rebuilt set restored on
+  2026-11-27 came back rule for rule. [app]
+- A command an agent runs outside its sandbox is its own process, not a via of its terminal: on
+  2026-11-27 an unsandboxed `tsh ssh` raised an alert seconds after it ran. [app]
+- A re-signed app changes its code identity and keeps its executable: ChatGPT.app is now signed
+  `com.openai.codex`, and the backup records the executable each identity was last seen at. [app]
 
 ## 4. Approaches
 
@@ -114,10 +135,11 @@ off. Nothing in the repository reads them; the names appear only in the README a
 as instructions to Michael. An agent touches them only on Michael's request in its pane, and then
 only like this: the item `Little Snitch backup <machine>` in Private, through `op document create`
 or `op document edit … --vault Private`; the file is the exact path Michael names, a backup he saved
-through File › Create Backup…, never a file the review script wrote nor a review input; the `jq`
-check prints `[0,[<id -u>]]`; the agent reports the file's SHA-256 and, after reading the document
-back (`op document get … --vault Private` into `/tmp`, deleted afterwards), the read-back's
-SHA-256 and `jq` result. Michael compares them with `shasum -a 256 <his file>`.
+through File › Create Backup…, never a file the review's builder wrote nor a review input; the `jq`
+check prints `[0,[<id -u>]]`; the agent reports the file's SHA-256. The read-back is Michael's,
+because the agents' permission check refuses `op document get`:
+`op document get "Little Snitch backup <machine>" --vault Private | shasum -a 256` prints the same
+hash as `shasum -a 256 <the path he named>`, both run by Michael.
 
 **The checklist rows.** `little-snitch-extension` and `little-snitch-rules` keep their ids, their
 machines (`all`), their `by` (`you`) and their verifies, and move up to sit right after
@@ -155,7 +177,8 @@ change it:
    again, because the backup was made with it off. Never pass `--preserve-terminal-access`.
 2. *Check.* Settings › Registration shows the licence; Settings › Security has Terminal access off;
    the rules list shows the user's rules. Delete the file in `/tmp`.
-3. *First use.* Answer the changed-identity alerts for Homebrew tools as they come; on hercules,
+3. *First use.* Answer the alerts for Homebrew tools (a changed identity) and mise tools whose
+   version moved (a new path) as they come; on hercules,
    before leaving it, check `netbird status`, an ssh login over NetBird, one Vorta backup and one
    agent line, so the tools that later run unattended raise their alerts now.
 4. *Refresh.* After a rule review, and after any rule change worth keeping, removals and
@@ -167,63 +190,64 @@ change it:
 5. *Never restore onto a machine in use* except to roll back or to apply a periodic review (below):
    it discards every rule made since the backup (Little Snitch keeps an automatic copy of what it
    replaced).
+6. *Periodic review:* Michael's side of the steps below, pointing to this spec's §5 for what the
+   review aims at.
 
 **Periodic review** (approach A of 2026-11-25: an agent runs it, Michael restores). Every month or
 two, and after a burst of alerts:
 
 1. Michael saves a backup into `~/Code/.metrics/little-snitch/` (directory 700) and names its path.
-2. An agent runs `.scripts/little-snitch-review.py <backup> <decisions> <out> <log>` and hands him
-   `<out>` and the log.
-3. Michael restores `<out>` only if he has answered no alert since step 1; otherwise back to step 1,
-   because a restore discards every rule made since its source backup.
-4. He saves a fresh backup; it goes to 1Password under the clause above; the review's input,
-   output and log are then deleted.
+2. An agent reviews it with the machine's private builder, kept in that folder (it holds the
+   machine's own decisions, so it never enters the repository), and hands him the output and a log
+   of every rule it adds, removes, narrows or makes permanent. The builder checks its own result
+   before writing (no temporary rule left, each agent workspace with its rules, each block present,
+   Little Snitch's own entries unchanged) and changes nothing when run on its own output; a review
+   that needs a new kind of decision extends it. A machine without a builder starts from fenrir's
+   (hercules at its first review); a lost builder is rebuilt from the aims below.
+3. Michael copies the output to `/tmp/little-snitch.lsbackup` (deleting a leftover first; sandboxed
+   agents cannot write `/tmp` itself), runs the README's `jq` check on that copy himself
+   (`[0,[<id -u>]]`), restores that copy and deletes it. He restores only if he has answered no
+   alert since step 1; otherwise the agent rebuilds the output from a fresh backup, because a
+   restore discards every rule made since its source backup.
+4. He saves a fresh backup into the folder and names its path; the agent stores it under the clause
+   above; once his read-back matches his own `shasum` of it, the review's input, output, log and
+   the fresh backup are deleted.
 
-The script reads and writes files only: no subprocess, no `littlesnitch`, `sudo` or `op`.
+What the review aims at (Michael, 2026-11-27: "create the rules properly and allow what is need
+(what not) so I don't get always prompted by Little Snitch. But you can block rules that are
+specifically for tracking and such"):
 
-- *Passes, generic, in the repository.* Each skips protected, factory, rule-group, hidden and
-  OS-update entries.
-  - Programs gone: a rule whose process or via is a path that no longer exists, or an app bundle
-    found in neither `/Applications` nor `~/Applications` (three levels deep). A signed
-    command-line tool whose recorded path moved is kept.
-  - Unused: last used over 180 days ago, or never used and created over 60 days ago.
-  - Redundant: an allow rule covered by a permanent, enabled allow rule of the same scope (process,
-    via, direction, ports, protocol, owner, user, priority) that allows any server, or a domain
-    containing every host or domain the rule names. Deny and ask rules are never covered.
-  - Expired temporary suggestions are removed.
-  - Temporary rules the decisions keep become permanent; the rest are removed.
-  - The decisions' `narrow` (it may set only the remote, `ports` and `protocol`, and replaces the
-    old remote key) and `remove`.
-  - `approved: false` keys are removed, `markNewRulesAsUnapproved` is set to 0 and Terminal access
-    off; the filter state is left as backed up.
-- *The agents' terminals.* Each terminal in `agent_terminals` (herdr core today) keeps exactly one
-  permanent outgoing allow-any (a temporary one is promoted, duplicates are removed), plus one
-  "via <tool> -> any" for every path-identified tool (a `path.`, script or absolute-path via, never
-  an `identifier.` one) seen under a terminal in `tool_sources` and still on disk, so agent work
-  never stops on an alert (Michael, 2026-11-25: "What I don't want is being asked while my AI agents
-  are working"). Terminals in `keep_any` (Ghostty today) keep their own allow-any. Added rules take
-  the user ID of the backup's single non-root user. The agents' network boundary is their
-  sandboxes.
-- *Decisions, private.* `~/Code/.metrics/little-snitch/decisions-<machine>.json` (mode 600) holds
-  `agent_terminals`, `tool_sources`, `keep_any`, `keep_temporary`, `narrow` and `remove`; a matcher
-  names process, via, direction and remote (a list-valued remote joined with commas). It names
-  hosts, so it never enters the repository. An unknown key or a malformed matcher exits 2. A
-  decision that matches nothing is logged as stale; one an agent terminal's tool rule supersedes is
-  logged as superseded, not as a change.
-- *Log.* The net result per rule (removed, made permanent, narrowed, added), grouped by pass, with
-  before and after counts.
-- *Invariants,* checked before anything is written (exit 1, nothing written): no temporary rule;
-  each agent terminal has exactly one permanent allow-any and one per tool; each `keep_any` terminal
-  has its allow-any; every protected, factory, rule-group, hidden and OS-update entry is in the
-  output unchanged; the top-level keys equal the input's. Exit 2: usage, an unreadable input, bad
-  decisions, more than one non-root user, an output path equal to the input or not writable.
-  Output and log are created with mode 600. Run on its own output, the script changes nothing.
-- *Test seams:* `LS_REVIEW_NOW` (an ISO time) and `LS_REVIEW_APP_ROOTS` (colon-separated) replace
-  the clock and the app folders.
+- *Agent workspaces never alert* (Michael, 2026-11-25: "What I don't want is being asked while my
+  AI agents are working"). The terminals and apps agents work in (herdr core, Ghostty and the Codex
+  app today) keep one permanent allow-any, plus one "via <tool> -> any" for each ad-hoc or unsigned
+  tool seen under them: a rule without a via covers only signed tools. Programs whose servers no
+  list can name (Claude Code and OrbStack among them) keep an allow-any of their own. The agents'
+  network boundary is their sandboxes and Claude Code's permission rules.
+- *Everything else per server,* answered alerts made permanent and narrowed to what the alert
+  named; a vendor's apps share that vendor's servers (the Microsoft 365 apps); servers a program
+  needs for what it already does are allowed before it first reaches them (a tool's downloads, an
+  app's update hosts). No interpreter's own process gets an allow-any, and a shared hosting domain,
+  where anyone can host, is never spread across programs.
+- *Trackers blocked:* ad, analytics and telemetry hosts get high-priority deny rules, because a
+  vendor's broad allow would otherwise outrank them (§3); a block for every program is two rules,
+  one for the user and one with `owner: system`, so root daemons are blocked too. A service
+  Michael's own products report to (error or performance monitoring) is blocked per program, never
+  for every program, so his development tools keep reaching it.
+- *Housekeeping:* rules of programs gone or of an app's old code identity removed, unused and
+  redundant rules removed, rules added for a root daemon owned by the system, Terminal access off.
+  Little Snitch's own entries (protected, factory, rule-group, hidden, OS-update) pass through
+  unchanged.
+
+*The alerts that remain,* accepted by Michael on 2026-11-27: a command an agent runs outside its
+sandbox is its own process (§3), so it alerts on a server its rules do not name (its rules stay per
+server, because an allow-any would cover every use of the tool); and after a `brew upgrade` (an
+ad-hoc tool's identity changes) or a `mise upgrade` (a new versioned path), the first connection
+through that tool alerts until it is answered once at the machine.
 
 ## 6. Security
 
-- No script reads or writes Little Snitch. Every restore is Michael's, by hand, behind an admin
+- Nothing an agent runs reads or writes Little Snitch's live configuration: Terminal access stays
+  off, so its command line is closed, and every restore is Michael's, by hand, behind an admin
   password.
 - The repository gains only an item name per machine and the steps above.
 - Whoever can edit a backup document controls that machine's whole Little Snitch configuration
@@ -231,8 +255,10 @@ The script reads and writes files only: no subprocess, no `littlesnitch`, `sudo`
   servers and the rule-group subscriptions (remote rule sources). That is the Private vault's
   trust boundary, which already guards the SSH keys and forge tokens. An agent writes one only at
   Michael's request, and only his own unchanged backup (§5).
-- The periodic review's output is a file Michael restores by hand; the script cannot reach the
-  live rules, and an injected decision shows in the change log he is handed.
+- The periodic review's output is a file Michael restores by hand. Any agent session can write
+  `~/Code/.metrics/little-snitch/`, because `~/Code` is in the sandbox's write scope, so the output
+  is only as trustworthy as those sessions: Michael's own `jq` check on the copy he restores keeps
+  Terminal access off, and the log lists every rule the review adds or removes for him to read.
 - The stored backup is made with Terminal access off and checked (`jq`) before it is stored and
   before it is restored, so a restore turns Terminal access off rather than on.
 - The plain-text backup exists outside 1Password only in `/tmp`, for the minutes a backup or
@@ -252,10 +278,6 @@ The script reads and writes files only: no subprocess, no `littlesnitch`, `sudo`
   the backup is stored.
 - The checklist and README changes get no new test: they are the order and wording of manual
   steps, and no suite pins either.
-- `tests/little-snitch-review.test.sh`: synthetic backups (no private data), one case per pass,
-  per decision kind and per exit code, the invariant check shown failing on an input that trips it,
-  a rerun on the script's own output, and a check that the script starts no process. Each case is
-  shown able to fail.
 - Before the PR: `./tests/run.sh --changed`.
 
 ## 8. After the merge
@@ -266,7 +288,7 @@ hercules relies on the row's fallback):
 1. Apply the review's changes, including Settings › Security › "Allow access via Terminal" off.
    On fenrir, at Michael's request ("optimizing is something YOU need to do"), the line built an
    optimised copy of a fresh backup (private, outside the repository), and Michael restores it
-   once: the one restore onto a machine in use that §5 allows, made from a backup taken right
+   once: a restore onto a machine in use, as §5 allows, made from a backup taken right
    before it so no rule is lost. The stored backup is this reviewed rule set; the backup taken for
    the review (before its changes, with Terminal access on) is never stored.
 2. Store the backup as the README's *Refresh* step says, creating the item with
@@ -275,8 +297,16 @@ hercules relies on the row's fallback):
    2026-11-23, after one more review of the alerts answered since the restore: outside the plan,
    possibly before the merge, under §5's clause.
 
+Done for fenrir on 2026-11-27. At Michael's request that day the review was widened to the rules
+his apps need and to blocking trackers (§5, *What the review aims at*); the rebuilt set,
+built from a backup taken right before, was restored, and the backup made after the restore is
+stored as `Little Snitch backup fenrir`. Michael compared its read-back hash with his own `shasum`
+of the local file the same evening, and they matched (the agent's `op document get` had been
+refused by its permission check). The plain-text backups and built files left in
+`~/Code/.metrics/little-snitch/` are deleted with Michael's go-ahead (§5, step 4); the builder and
+the review notes stay.
+
 ## 9. Left to the builder
 
 The exact wording of the row and the README section, within the content above; the README
-section's place in the Security part; the decisions file's JSON layout and the script's internal
-structure, within §5's passes and invariants.
+section's place in the Security part.
