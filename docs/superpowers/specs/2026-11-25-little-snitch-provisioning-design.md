@@ -303,8 +303,8 @@ built from a backup taken right before, was restored, and the backup made after 
 stored as `Little Snitch backup fenrir`. Michael compared its read-back hash with his own `shasum`
 of the local file the same evening, and they matched (the agent's `op document get` had been
 refused by its permission check). The plain-text backups and built files left in
-`~/Code/.metrics/little-snitch/` are deleted with Michael's go-ahead (§5, step 4); the builder and
-the review notes stay.
+`~/Code/.metrics/little-snitch/` were deleted that evening at Michael's go-ahead (§5, step 4); the
+builder and the review notes stay.
 
 ## 9. Left to the builder
 
