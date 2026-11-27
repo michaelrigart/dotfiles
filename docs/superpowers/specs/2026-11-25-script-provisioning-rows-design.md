@@ -294,6 +294,14 @@ no script ever set it. `hercules-power` (`autorestart`) and `filevault-off` stay
 sshd start before anyone logs in, so a remote power-on still reaches hercules. The #46 spec keeps
 its row table as it was, with a dated note pointing here.
 
+**Update 2026-11-26:** FileVault is on on every machine (Michael's decision, PR #53, measured on
+hercules the same day): `filevault-off` is gone, `filevault-on` covers every machine, and
+`hercules-power` stays. A remote power-on no longer reaches hercules by NetBird: after a restart it
+waits at FileVault's pre-boot unlock, which only an SSH from the home LAN to its LAN address with
+the account password opens (NetBird is not up before the unlock). After the unlock, NetBird's daemon
+and sshd run with nobody logged in; the LaunchAgents and login items (the Codex daemon, Vorta,
+Syncthing) start only after a desktop login (Screen Sharing).
+
 ## Decisions (Michael, 2026-11-25: "signed off, I follow your recommendations")
 
 **D1. Login items: a LaunchAgent** (§5), because only it gives the row a check and runs
@@ -338,9 +346,10 @@ in this plan", and the final review's fixes) apply.
   off for fenrir, the account's expiry on at 24 hours. Its ✗ side (an SSO peer with expiry on
   reporting the field) has not been observed.
 - §8: the VM run ends with a restart left at the login screen; the VM's peer must then show as
-  connected from fenrir. hercules has no automatic login (§9, Michael: "auto-login is not safe"), so
-  a restarted hercules is reached only if NetBird connects before anyone logs in, which no run has
-  measured for a peer joined by setup key as the console user.
+  connected from fenrir. hercules has no automatic login (§9, Michael: "auto-login is not safe"), and
+  after its FileVault unlock (§9's update) nobody is logged in, so NetBird connecting at the login
+  window is how an unlocked hercules is reached away from home. The VM, which has no FileVault,
+  measures that state after the unlock, for a peer joined by setup key as the console user.
 
 ## Michael's steps after merge
 

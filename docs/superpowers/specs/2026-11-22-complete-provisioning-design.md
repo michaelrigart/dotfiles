@@ -194,8 +194,10 @@ holds them in full):
 | `acceptance` | all | you | in a fresh Claude Code session `./tests/run.sh live-agent-signing live-credential-boundary live-agent-auth`; start `codex` once in a Herdr pane and clear its first-run screens, then, unsandboxed, `./tests/run.sh live-codex-daemon`; with Remote Login on, `ssh -o PubkeyAuthentication=no <this Mac>` from the other Mac is refused | `-` |
 
 **Update 2026-11-25:** `hercules-autologin` has left the checklist: Michael decided hercules needs no
-automatic login, since NetBird and sshd start before it. Recorded in
-`2026-11-25-script-provisioning-rows-design.md` §9.
+automatic login. **Update 2026-11-26:** FileVault is on on every machine (PR #53), so `filevault-on`
+covers hercules too and `filevault-off` is gone; after a restart hercules waits at the pre-boot
+unlock, opened over SSH from the home LAN, and then NetBird and sshd run before anyone logs in. Both
+are recorded in `2026-11-25-script-provisioning-rows-design.md` §9.
 
 ### 2. `.scripts/machine-check.sh`
 

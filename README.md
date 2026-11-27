@@ -262,8 +262,8 @@ three throwaway values may appear in NetBird's logs and config (`/var/log/netbir
 `settings.db` and log. Last, before `tart delete`: turn off the image's automatic login (`sudo
 sysadminctl -autologin off`), restart the VM from its Apple menu and leave it at the login screen.
 Within a few minutes the VM's peer must show as connected on the dashboard's Peers page: hercules
-has no automatic login, so NetBird connecting before anyone logs in is how a restarted hercules is
-reached.
+has no automatic login, and after its FileVault unlock nobody is logged in, so NetBird connecting at
+the login window is how an unlocked hercules is reached away from home.
 
 Then remove the VM's device from 1Password. Run the VM only with that test vault, never with
 Michael's own items, and still never pair Syncthing or start a backup there.
