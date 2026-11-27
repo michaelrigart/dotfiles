@@ -1,0 +1,41 @@
+#!/bin/bash
+# Moves Herdr's core into the desktop login when its programs cannot use the login keychain, for
+# the be.netronix.herdr-core-desktop LaunchAgent (spec 2026-11-27-hercules-herdr-desktop-session).
+# Exits 0 when the core is or was moved, or herdr-core is missing; 1 after a failed move, which
+# also unloads the job. It never changes its environment (`server restart --fresh` hands it to
+# new terminals), never stops a core or ends a terminal, and logs one line per move to
+# ~/.local/state/herdr-core-desktop.log. HCD_TOOLS is for the suite only. Bash 3.2 compatible.
+set -u
+
+hc="$HOME/.local/bin/herdr-core"
+log="$HOME/.local/state/herdr-core-desktop.log"
+keychain="$HOME/Library/Keychains/login.keychain-db"
+label=be.netronix.herdr-core-desktop
+
+[ -x "$hc" ] || exit 0
+
+if [ -n "${HCD_TOOLS:-}" ]; then
+  timeout="$HCD_TOOLS/timeout"; sleep="$HCD_TOOLS/sleep"; launchctl="$HCD_TOOLS/launchctl"
+else
+  timeout=/usr/bin/timeout; sleep=/bin/sleep; launchctl=/bin/launchctl
+fi
+
+logline() {
+  /bin/mkdir -p "$HOME/.local/state"
+  printf '%s %s\n' "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$log"
+}
+
+usable() { "$timeout" -f 60 "$hc" exec /usr/bin/security show-keychain-info "$keychain" >/dev/null 2>&1; }
+
+"$sleep" 5
+usable && exit 0
+
+"$timeout" -f 60 "$hc" server restart --fresh >/dev/null 2>&1
+if usable || { "$sleep" 5; usable; }; then
+  logline "moved Herdr's core into the desktop login"
+  exit 0
+fi
+
+logline "could not move Herdr's core into the desktop login; unloading $label until the next desktop login (reload: launchctl bootstrap gui/$(/usr/bin/id -u) ~/Library/LaunchAgents/$label.plist)"
+"$launchctl" bootout "gui/$(/usr/bin/id -u)/$label"
+exit 1
