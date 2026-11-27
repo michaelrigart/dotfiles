@@ -1,6 +1,7 @@
 # Check 5's group read keeps its own `ps` out of the group it reads
 
-**Status:** Approved
+**Status:** In progress (branch `fix/checkout-spaces-own-group`; plan
+`docs/superpowers/plans/2026-11-27-checkout-spaces-own-group.md`; PR to follow)
 **Date:** 2026-11-27
 **Sign-off:** Michael, 2026-11-27, in the line's own pane: "D1. ok / D2. skip codex" (the design
 as written; no Codex review at any checkpoint of this line).
