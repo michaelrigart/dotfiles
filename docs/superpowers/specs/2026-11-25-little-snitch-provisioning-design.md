@@ -143,7 +143,7 @@ change it:
    `op document get "Little Snitch backup <machine>" --out-file /tmp/little-snitch.lsbackup`
    (mode 0600; `/tmp` is outside the home folder and cleared at restart; the command refuses an
    existing file, so delete a leftover first). Check it with
-   `jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid]]'`: expect `[0,[<id -u>]]`;
+   `jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]'`: expect `[0,[<id -u>]]` (root, uid `0`, is in a backup made once the filter has run, and maps to itself);
    a first value of `1` or `true` means the backup turns Terminal access on, so do not restore it.
    Then File › Restore from Backup… › Browse… (⇧⌘G `/tmp`). From another machine's backup, delete
    that machine's own rules afterwards (hercules' incoming sshd rule) and, on hercules, add §8 G's.
@@ -247,7 +247,8 @@ The script reads and writes files only: no subprocess, no `littlesnitch`, `sudo`
 - The README's `jq` check, run on 2026-11-25: `[1,[501]]` on fenrir's current backup (Terminal
   access on), and on stubs `[0,[501]]` for the key absent, `0` or `false`, `[true,[501]]` for
   `true`. It is run again on the first backup made with Terminal access off (§8), which settles the
-  encoding; if its first value is anything but `0`, the README's expectation is corrected before
+  encoding (run on 2026-11-27: first value `0`; that backup, made with the filter on, also lists
+  root, so the check leaves uid `0` out); if its first value is anything but `0`, the README's expectation is corrected before
   the backup is stored.
 - The checklist and README changes get no new test: they are the order and wording of manual
   steps, and no suite pins either.

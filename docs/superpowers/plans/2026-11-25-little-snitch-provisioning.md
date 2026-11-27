@@ -118,7 +118,7 @@ a README section holds the procedure. No script touches Little Snitch or 1Passwo
 
   ```
   op document get "Little Snitch backup <machine>" --vault Private --out-file /tmp/little-snitch.lsbackup
-  jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid]]' /tmp/little-snitch.lsbackup
+  jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model -l /tmp/little-snitch.lsbackup
   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model --map-users "0 > 0, <backup uid> > $(id -u)" /tmp/little-snitch.lsbackup
   op document edit "Little Snitch backup <machine>" --vault Private /tmp/little-snitch.lsbackup
@@ -135,9 +135,9 @@ a README section holds the procedure. No script touches Little Snitch or 1Passwo
   `~/Code/.metrics/little-snitch/`, ask an agent to run the review, restore its file, save a fresh
   backup for 1Password.
 - [ ] **Step 2: Check.**
-  - `jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid]]' ~/Code/.metrics/little-snitch/fenrir-2026-11-25.lsbackup`
+  - `jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' ~/Code/.metrics/little-snitch/fenrir-2026-11-25.lsbackup`
     prints `[1,[501]]`.
-  - `rg -F -c "jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid]]'" README.md`:
+  - `rg -F -c "jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]'" README.md`:
     at least 1, so the README carries the exact check.
   - `rg -n 'preserve-terminal-access' README.md`: one line, the "never".
   - `rg -o '/tmp/[a-z.-]+' README.md | sort -u`: only `/tmp/little-snitch.lsbackup`.
