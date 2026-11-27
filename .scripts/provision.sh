@@ -437,6 +437,14 @@ if ssh -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | grep -q "suc
 else
   warn "SSH to GitHub not confirmed — check ~/.ssh/michael"
 fi
+# The same for gitlab.com: a machine that never accepted its host key fails every agent's GitLab
+# push and the sandboxed live-agent-auth with "Host key verification failed".
+log_info "Testing SSH connection to GitLab..."
+if ssh -o StrictHostKeyChecking=accept-new -T git@gitlab.com 2>&1 | grep -q "Welcome to GitLab, @"; then
+  log_info "✓ SSH connection to GitLab successful"
+else
+  warn "SSH to GitLab not confirmed — run ssh -T git@gitlab.com: check gitlab.com's host key, then that the agent holds a key GitLab accepts"
+fi
 
 # ============================================================================
 # 8. Install Homebrew packages from Brewfile

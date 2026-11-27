@@ -74,9 +74,21 @@ printf '#!/bin/sh\nexec /bin/zsh "$@"\n' > "$T/brew/bin/zsh"
 printf '#!/usr/bin/env bash\necho "fdesetup $*" >> "$CALLS"\necho "FileVault is ${FV:-Off}."\n' > "$T/bin/fdesetup"
 printf '#!/usr/bin/env bash\necho "pmset $*" >> "$CALLS"\nexit "${PMSET_RC:-0}"\n' > "$T/bin/pmset"
 printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/csrutil"
-for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall tee; do
+for t in op chezmoi git xcode-select mise chsh open curl defaults killall tee; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
 done
+# ssh fails the way a machine without the forge's host key does, until $T/ssh-greets exists: then
+# it greets on stderr as GitHub (exit 1) and GitLab do when the key authenticates.
+cat > "$T/bin/ssh" <<'SH'
+#!/usr/bin/env bash
+echo "ssh $*" >> "$CALLS"
+[ -e "$SBX_ROOT/ssh-greets" ] || { echo "Host key verification failed." >&2; exit 255; }
+case "$*" in
+  *git@github.com*) echo "Hi tester! You've successfully authenticated, but GitHub does not provide shell access." >&2; exit 1 ;;
+  *git@gitlab.com*) echo "Welcome to GitLab, @tester!" >&2 ;;
+esac
+exit 0
+SH
 # osascript and pgrep answer from the environment, so a case can make the Apple Event fail
 # ($OSA_RC) or Alfred look running ($PGREP_RC=0; the default is not running).
 printf '#!/usr/bin/env bash\necho "osascript $*" >> "$CALLS"\nexit "${OSA_RC:-0}"\n' > "$T/bin/osascript"
@@ -569,9 +581,18 @@ called "sudo chsh" "chsh goes through the cached sudo credential"
 n_chsh=$(grep -c '^chsh ' "$CALLS" || true); n_sudo_chsh=$(grep -c '^sudo chsh ' "$CALLS" || true)
 [ "$n_chsh" = "$n_sudo_chsh" ] && _pass "no chsh call bypasses sudo" \
   || _fail "no chsh call bypasses sudo (chsh=$n_chsh via-sudo=$n_sudo_chsh)"
-called "StrictHostKeyChecking=accept-new" "the SSH check cannot block on a host key"
+called "ssh -o StrictHostKeyChecking=accept-new -T git@github.com" "the GitHub SSH check cannot block on a host key"
+# hercules had no gitlab.com host key (2026-11-27), so the sandboxed live-agent-auth failed.
+called "ssh -o StrictHostKeyChecking=accept-new -T git@gitlab.com" "nor can GitLab's, which records gitlab.com's host key"
+has "⚠ SSH to GitLab not confirmed" "an unconfirmed GitLab is in the closing list"
 called "configure.sh --hostname hercules" "configure.sh is told the identity, not asked"
 has "⚠ Brewfile not found" "a missing Brewfile is in the closing list"
+: > "$T/ssh-greets"
+reset; run 'hercules\ny\n'
+has "✓ SSH connection to GitLab successful" "GitLab's greeting confirms it"
+hasnt "SSH to GitLab not confirmed" "and leaves it out of the closing list"
+has "✓ SSH connection to GitHub successful" "GitHub's greeting confirms GitHub"
+rm -f "$T/ssh-greets"
 # The second VM run's closing list said only "brew bundle did not complete": Homebrew 7 writes the
 # items `brew bundle check` misses to stderr, which the run threw away.
 mkdir -p "$T/home/.config/homebrew"; : > "$T/home/.config/homebrew/Brewfile"; : > "$T/fail-brew-bundle"
