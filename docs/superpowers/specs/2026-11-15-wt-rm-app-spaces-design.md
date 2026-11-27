@@ -10,8 +10,9 @@
 approved (round 2; round 1's three findings fixed).
 **Amended:** 2026-11-15, after PR #22's acceptance: check 5 reads the foreground job's folders
 (`ps`, `lsof`) of a terminal that answers without a folder, instead of refusing it at once. See
-"Amendment (2026-11-15)" below; §2 says so where check 5 stands. 2026-11-27, check 5's uid snapshot runs in a
-process group of its own, see `docs/superpowers/specs/2026-11-27-checkout-spaces-own-group-design.md`.
+"Amendment (2026-11-15)" below; §2 says so where check 5 stands. 2026-11-27, check 5's uid
+snapshot runs in a process group of its own, see
+`docs/superpowers/specs/2026-11-27-checkout-spaces-own-group-design.md`.
 
 Builds on `docs/superpowers/specs/2026-11-14-herdr-app-native-tools-design.md` (its §5.1 rule and
 its non-goal "wt-rm closing app spaces"), which stays as written; this spec replaces those two

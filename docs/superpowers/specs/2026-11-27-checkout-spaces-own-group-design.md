@@ -118,7 +118,7 @@ branch's file):
 
 ```zsh
 for h in ~/.config/herdr-app/bin/checkout-spaces ~/.local/share/chezmoi-fix-checkout-spaces-own-group/dot_config/herdr-app/bin/executable_checkout-spaces; do
-  for i in {1..10}; do $h check /nonexistent/checkout 2>&1 | grep -c "$HC_TERMINAL_ID" ; done | sort | uniq -c; done
+  for i in {1..10}; do $h check /nonexistent/checkout 2>&1 | grep -cF "terminal $HC_TERMINAL_ID (" ; done | sort | uniq -c; done
 ```
 
 The deployed helper names this terminal in some runs (about 7 in 10); the branch's in none. After

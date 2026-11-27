@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. In this repository the controller loads the `plan-run` skill first; it overrides superpowers.
 
-**Status:** Completed 2026-11-27 (branch `fix/checkout-spaces-own-group`, its PR against `main`).
+**Status:** Implemented (completed 2026-11-27; branch `fix/checkout-spaces-own-group`, its PR
+against `main`).
 Do not run it again; its execution notes bind that run only. Task 1 as written; the controller's
 measurement on the final code: today's helper refused 10 in 10, the branch's passed 10 in 10 and
 refused 3 in 3 with a setuid `top` in the group.
