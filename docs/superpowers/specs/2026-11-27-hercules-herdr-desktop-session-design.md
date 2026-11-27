@@ -5,6 +5,8 @@
 **Sign-off:** Michael, 2026-11-27, in the line's own pane: "D1. yes / D2. ok I guess / D3. ok I
 guess", and Q1 answered: `~/.claude/.credentials.json` exists on hercules (700 bytes, mode 600,
 written 2026-11-27 06:28).
+**Amended:** 2026-11-27, at planning: no new checklist row; the existing `launchagents` row checks
+that the job is loaded.
 **Branch:** `feat/hercules-herdr-desktop-session`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-hercules-herdr-desktop-session`
 **Source:** Michael, 2026-11-27, relayed by line `chore/hercules-filevault-on` and briefed by the
@@ -17,9 +19,9 @@ asked whether this was overcomplex, the spec was cut to one job: its fenrir-side
 role key and failure counter are gone (Rulings).
 **Size:** about 90 lines of non-test code: the LaunchAgent plist about 50 (mostly its header
 comment, like the other `be.netronix.*` plists), `dot_local/bin/executable_herdr-core-desktop` about
-35, one new and two edited checklist rows. Comparable: `be.netronix.ssh-agent` (plist plus script,
-PR #40). No increments.
-**Provisioning:** `herdr-core-desktop`, `filevault-on`, `claude-login`
+35, two edited checklist rows. Comparable: `be.netronix.ssh-agent` (plist plus script, PR #40).
+No increments.
+**Provisioning:** `launchagents`, `filevault-on`, `claude-login`
 
 ## Why
 
@@ -87,8 +89,8 @@ terminals; it calls tools by absolute path and every `herdr-core` call under `/u
 
 It never stops a core or ends a terminal.
 
-**Provisioning.** A checklist row `herdr-core-desktop` (all machines, by `script`; configure.sh
-loads it): verify `launchctl print gui/$(id -u)/be.netronix.herdr-core-desktop >/dev/null`. Row
+**Provisioning.** configure.sh loads the job with the other LaunchAgents. The existing
+`launchagents` row checks that the job is loaded (it fails after the job unloads itself). Row
 `filevault-on` gains: the desktop login also moves Herdr's core on hercules; panes opened before it
 stay in the SSH login, so reopen them. Row `claude-login`: sign in from a desktop-login terminal or
 pane, and its verify also requires that `~/.claude/.credentials.json` does not exist, so a
