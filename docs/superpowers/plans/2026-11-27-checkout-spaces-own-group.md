@@ -113,7 +113,7 @@ git commit -m "Run check 5's uid snapshot outside the group it reads"
 ## Controller, after Task 1
 
 - Rerun the spec's measurement on the final commit, unsandboxed (it needs a pty), with the harness `.superpowers/sdd/2026-11-27-checkout-spaces-own-group/semilive.zsh` (git-ignored run state; it stubs `herdr-app` and `hc` and keeps the real `ps` and `lsof`). Today's helper is `git show main:dot_config/herdr-app/bin/executable_checkout-spaces`, saved to a scratch file with mode 755:
-  - `zsh semilive.zsh <today's helper> 10`: refuses 10 in 10;
-  - `zsh semilive.zsh <branch helper> 10`: passes 10 in 10;
-  - `SEMILIVE_TOP=1 zsh semilive.zsh <branch helper> 3`: refuses 3 in 3.
+  - `zsh .superpowers/sdd/2026-11-27-checkout-spaces-own-group/semilive.zsh <today's helper> 10`: refuses 10 in 10;
+  - `zsh .superpowers/sdd/2026-11-27-checkout-spaces-own-group/semilive.zsh <branch helper> 10`: passes 10 in 10;
+  - `SEMILIVE_TOP=1 zsh .superpowers/sdd/2026-11-27-checkout-spaces-own-group/semilive.zsh <branch helper> 3`: refuses 3 in 3.
 - `./tests/run.sh --changed`, then the pre-merge review (a cold Claude review in place of Codex, per the sign-off).
