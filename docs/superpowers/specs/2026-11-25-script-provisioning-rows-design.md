@@ -1,6 +1,6 @@
 # Script provisioning's NetBird, Syncthing, Vorta and login-item rows
 
-**Status:** In progress (signed off by Michael on 2026-11-25, with D1–D4 as recommended)
+**Status:** Implemented (PR #54; signed off by Michael on 2026-11-25, with D1–D4 as recommended)
 **Date:** 2026-11-25
 **Branch:** `feat/script-provisioning-rows`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-script-provisioning-rows`

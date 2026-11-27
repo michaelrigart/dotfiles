@@ -3,8 +3,9 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: the `plan-run` skill (it overrides
 > superpowers:subagent-driven-development). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress. Michael chose on 2026-11-25 to execute Tasks 2–7 before Codex's reviews
-(its usage limit resets on 2026-11-28 09:29); those reviews and Task 1 follow them.
+**Status:** Completed (PR #54); do not run it again. Michael chose on 2026-11-25 to execute Tasks
+2–7 before Codex's reviews, then on 2026-11-27 to skip Codex's reviews, and so Task 1, for a full
+review later.
 
 **Goal:** A reinstalled fenrir or hercules ends `provision.sh` with NetBird joined by setup key,
 Syncthing configured before its first start, Vorta holding its profile, and the login apps started
