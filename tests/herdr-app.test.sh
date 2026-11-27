@@ -199,27 +199,38 @@ check "...and is named" grep -q 'tNEW1.*gave no folder' $world/out
 # A terminal that answers without a folder is judged by its foreground group: ps gives the group
 # in its root's terminal, lsof each member's folder. The caller's own terminal is the one seen
 # (wt-rm runs the helper from it, and hc often cannot name that foreground).
-newworld group; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 777 > $STUB_DIR/tpgid-4242
-print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
-print -l / $main > $STUB_DIR/lsof-777
+newworld group; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 100777 > $STUB_DIR/tpgid-4242
+print -l "$UID 100777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
+print -l / $main > $STUB_DIR/lsof-100777
 cs check $wt >$world/out 2>&1; rc=$?
 check "a terminal without a folder passes when its foreground group is outside the checkout" test $rc -eq 0
-print -l / $wt/src > $STUB_DIR/lsof-777
+print -l / $wt/src > $STUB_DIR/lsof-100777
 cs check $wt >$world/out 2>&1; rc=$?
 check "...refuses when one process of that group is inside" test $rc -eq 1
 check "...and names the terminal and the folder" grep -qF -- "t9 (proj / retire) is in $wt/src" $world/out
 # lsof cannot read another user's process, so a listing that looks clean proves nothing then.
-print -l / $main > $STUB_DIR/lsof-777; print "0 777" >> $STUB_DIR/uid-pgid
+print -l / $main > $STUB_DIR/lsof-100777; print "0 100777" >> $STUB_DIR/uid-pgid
 cs check $wt >$world/out 2>&1; rc=$?
 check "...and refuses when another user's process is in the group, whatever lsof listed" test $rc -eq 1
-print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
-rm $STUB_DIR/lsof-777
+print -l "$UID 100777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
+rm $STUB_DIR/lsof-100777
 cs check $wt >$world/out 2>&1; rc=$?
 check "...and refuses when the group cannot be read" test $rc -eq 1
+# The real ps is setuid root, so it lists itself as uid 0. Read from the caller's own terminal,
+# the group is the helper's own (here the suite's, which the helper inherits), and the snapshot
+# must not count itself.
+newworld own-group; g=$(/usr/bin/perl -e 'print getpgrp')
+print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print $g > $STUB_DIR/tpgid-4242
+print -l "$UID $g" "-2 1" > $STUB_DIR/uid-pgid; print -l / $main > $STUB_DIR/lsof-$g
+cs check $wt >$world/out 2>&1; rc=$?
+check "the helper's own foreground group passes, though ps lists itself there as uid 0" test $rc -eq 0
+print "0 $g" >> $STUB_DIR/uid-pgid
+cs check $wt >$world/out 2>&1; rc=$?
+check "...and refuses when another user's process is in that group" test $rc -eq 1
 # lsof escapes bytes outside printable ASCII, so such a checkout path cannot be matched against its answer.
-newworld group-café; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 777 > $STUB_DIR/tpgid-4242
-print -l "$UID 777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
-print -l / $main > $STUB_DIR/lsof-777
+newworld group-café; print '{"state":"live","pid":4242}' > $STUB_DIR/get-t9.json; print 100777 > $STUB_DIR/tpgid-4242
+print -l "$UID 100777" "0 1" "-2 1" > $STUB_DIR/uid-pgid
+print -l / $main > $STUB_DIR/lsof-100777
 cs check $wt >$world/out 2>&1; rc=$?
 check "a checkout path lsof would escape refuses the group read" test $rc -eq 1
 # A terminal of the set whose answer shows nothing about its foreground is not vouched for.
