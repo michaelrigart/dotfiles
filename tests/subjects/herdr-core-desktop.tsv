@@ -1,0 +1,2 @@
+dot_local/bin/executable_herdr-core-desktop	bash	own,guard
+Library/LaunchAgents/be.netronix.herdr-core-desktop.plist.tmpl	data	own,guard

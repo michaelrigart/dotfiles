@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keep Herdr's core in the desktop login, so the programs it runs can use the login keychain.
+
+  Managed by chezmoi (source: Library/LaunchAgents/be.netronix.herdr-core-desktop.plist.tmpl).
+  Loaded by .scripts/load-launchagents.sh (run by configure.sh, and by the chezmoi apply hook
+  when this plist changes); load by hand with:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.herdr-core-desktop.plist
+  and unload with:
+    launchctl bootout gui/$(id -u)/be.netronix.herdr-core-desktop
+
+  A core started over SSH stays in the SSH login, where its programs cannot use the login
+  keychain, and a desktop login does not move it. herdr-core-desktop checks that, and when it
+  fails restarts the core from here with `herdr-core server restart --fresh`. RunAtLoad covers
+  the desktop login; WatchPaths on core.lock (rewritten at every core start) catches SSH-side
+  restarts such as `hc machine update`. AbandonProcessGroup keeps a core that herdr-core falls
+  back to starting as a direct child alive. After a failed move the job unloads itself until the
+  next desktop login. Where the core already runs in the desktop login it finds nothing to do.
+  Design: docs/superpowers/specs/2026-11-27-hercules-herdr-desktop-session-design.md.
+
+  The script keeps launchd's environment, which `--fresh` passes on to new terminals, and logs to
+  ~/.local/state/herdr-core-desktop.log, so launchd's output goes nowhere.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>be.netronix.herdr-core-desktop</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ .chezmoi.homeDir }}/.local/bin/herdr-core-desktop</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>WatchPaths</key>
+    <array>
+        <string>{{ .chezmoi.homeDir }}/.local/state/herdr-core/default/core.lock</string>
+    </array>
+
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>AbandonProcessGroup</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

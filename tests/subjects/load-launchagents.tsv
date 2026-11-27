@@ -1,6 +1,7 @@
 .scripts/load-launchagents.sh	bash	own,guard
 Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl	data	-
 Library/LaunchAgents/be.netronix.codex-memory-share.plist.tmpl	data	-
+Library/LaunchAgents/be.netronix.herdr-core-desktop.plist.tmpl	data	-
 Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl	data	-
 Library/LaunchAgents/be.netronix.login-apps.plist	data	-
 Library/LaunchAgents/be.netronix.ssh-agent.plist.tmpl	data	-
