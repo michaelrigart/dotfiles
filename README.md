@@ -380,10 +380,13 @@ from=<the machine whose backup you restore: this one, or the closest>
 
    Expect `[0,[<the output of id -u>]]`. A first value of `1` or `true` means the backup turns
    Terminal access on: neither restore it nor store it. No output means there is nothing to
-   restore. Then use File › Restore from Backup… › Browse… (⇧⌘G `/tmp`).
+   restore.
 
-   If the user ID differs, turn Terminal access on first. List the backup's users, then set
-   `backup_uid` to the one that belongs to you and restore with the users mapped.
+   If the user ID in the result is the output of `id -u`, restore with File › Restore from
+   Backup… › Browse… (⇧⌘G `/tmp`), and skip the three commands below.
+
+   If it differs, do not restore from the menu. Turn Terminal access on first, list the backup's
+   users, set `backup_uid` to the one that belongs to you and restore with the users mapped.
 
    ```bash
    sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model -l /tmp/little-snitch.lsbackup
@@ -399,6 +402,10 @@ from=<the machine whose backup you restore: this one, or the closest>
 
    That restore turns Terminal access off again. If it fails or you abandon it, turn Terminal
    access off by hand. Never pass `--preserve-terminal-access`.
+
+   When you restored from another machine's backup, delete that machine's own rules afterwards
+   (hercules' incoming sshd rule) and, on hercules, add the rules of section 8 G of
+   `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
 
 2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
    off, and the rules list shows your rules. Terminal access is checked always, whether the
@@ -428,7 +435,9 @@ from=<the machine whose backup you restore: this one, or the closest>
    chmod 600 /tmp/little-snitch.lsbackup
    ```
 
-   Run the check and read its result: it must be `[0,[<the output of id -u>]]`.
+   Run the check and read its result: it must be `[0,[<the output of id -u>]]`. Anything else, or
+   no output, means do not store it. For a first value of `1` or `true`, turn Terminal access off
+   and start Refresh again.
 
    ```bash
    jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
@@ -486,15 +495,17 @@ from=<the machine whose backup you restore: this one, or the closest>
    (umask 077; jq --slurpfile r ~/Code/.metrics/little-snitch/review-rules.json '.rules = ($r | if length == 1 then .[0] else empty end | arrays)' /tmp/little-snitch-base.lsbackup > /tmp/little-snitch.lsbackup)
    ```
 
-   Run the check on it and read its result: it must be `[0,[<the output of id -u>]]`. An empty
-   file prints nothing: do not restore it.
+   Run the check on it and read its result: it must be `[0,[<the output of id -u>]]`. Anything
+   else, or no output (an empty file), means do not restore it. For a first value of `1` or
+   `true`, turn Terminal access off and start the review again.
 
    ```bash
    jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
    ```
 
    Read `review-log.md` and go on only if you accept every change it lists. Restore the file with
-   File › Restore from Backup… › Browse… (⇧⌘G `/tmp`), and only if nothing changed in Little Snitch
+   File › Restore from Backup… › Browse… (⇧⌘G `/tmp`), choosing `little-snitch.lsbackup` and not
+   the base file, and only if nothing changed in Little Snitch
    since your base backup: no alert answered, no rule or setting changed by hand. If something did,
    start again, because a restore discards every change made since its source backup. Then delete
    both files.
