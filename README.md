@@ -410,7 +410,8 @@ from=<the machine whose backup you restore: this one, or the closest>
 
 2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
    off, and the rules list shows your rules. Terminal access is checked always, whether the
-   restore worked or not. Then delete the file.
+   restore worked or not. If the rules list does not show your rules, the restore was cancelled or
+   failed: restore again from step 1's file before you go on. Then delete the file.
 
    ```bash
    rm /tmp/little-snitch.lsbackup
@@ -486,11 +487,15 @@ from=<the machine whose backup you restore: this one, or the closest>
 
    Ask an agent for the review. A restart clears `/tmp`: if that happens, start again here.
 
+   Whenever you stop this review before its end, delete what is left in `/tmp` (the base alone with
+   this part's first command, both files with its closing `rm`) and tell the agent, which deletes
+   its two files. To start again, deleting the `/tmp` files is enough: the agent's next files
+   replace its old ones.
+
    When the agent has written `review-rules.json` and `review-log.md` in
    `~/Code/.metrics/little-snitch/`, read `review-log.md` and go on only if you accept every change
-   it lists. If you do not, delete your base backup with the first command of this part, `rm -f
-   /tmp/little-snitch-base.lsbackup`, tell the agent, which deletes its two files, and stop.
-   Otherwise delete a leftover file.
+   it lists. If you do not, stop: delete your base backup with the first command of this part,
+   `rm -f /tmp/little-snitch-base.lsbackup`, and tell the agent. Otherwise delete a leftover file.
 
    ```bash
    rm -f /tmp/little-snitch.lsbackup
@@ -505,8 +510,8 @@ from=<the machine whose backup you restore: this one, or the closest>
 
    Run the check on it and read its result: it must be `[0,[<the output of id -u>]]`. Anything
    else, or no output (an empty file), means do not restore it: delete both files with the `rm`
-   command that closes this part before you stop or start again. For a first value of `1` or
-   `true`, turn Terminal access off and start the review again.
+   command that closes this part, then stop (and tell the agent) or start again. For a first value
+   of `1` or `true`, turn Terminal access off and start the review again.
 
    ```bash
    jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
@@ -516,15 +521,16 @@ from=<the machine whose backup you restore: this one, or the closest>
    `little-snitch.lsbackup` and not the base file, and only if nothing changed in Little Snitch
    since your base backup: no alert answered, no rule or setting changed by hand. If something did,
    do not restore: delete both files with the `rm` below and start again, because a restore
-   discards every change made since its source backup. Otherwise, after the restore, delete both
-   files.
+   discards every change made since its source backup. If the restore is cancelled or fails, try
+   it again, or stop as above. Once it has worked (the rules list shows a change the log names),
+   delete both files.
 
    ```bash
    rm /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
    ```
 
-   Store a fresh backup with step 4, *Refresh*, then tell the agent, which deletes
-   `review-rules.json` and `review-log.md`.
+   Then, and only after a restore that worked, store a fresh backup with step 4, *Refresh*, and
+   tell the agent, which deletes `review-rules.json` and `review-log.md`.
 
 ---
 

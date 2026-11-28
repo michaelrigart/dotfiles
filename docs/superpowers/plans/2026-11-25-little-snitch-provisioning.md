@@ -180,7 +180,7 @@ periodic review's builder stays private (spec §5).
   turn Terminal access off by hand, and *Check* always looks; never pass
   `--preserve-terminal-access`. After either restore from another machine's backup: delete that
   machine's own rules (hercules' incoming sshd rule), on hercules add hercules-agent-machine
-  section 8 G's. *Check* ends with the plain `rm`. *First use* names both alert kinds: Homebrew
+  section 8 G's. *Check* sends a restore that did not show his rules back to step 1's file, then ends with the plain `rm`. *First use* names both alert kinds: Homebrew
   tools (a changed identity) and mise tools whose version moved (a new path); it ends with a
   machine restored from another machine's backup storing its own with *Refresh* (`create`), after
   *Check* (on hercules, after the first-use checks), so the stored set is the checked one.
@@ -198,7 +198,7 @@ periodic review's builder stays private (spec §5).
   empty file for anything but exactly one array), run the `jq` check on it and restore right after,
   only if nothing changed in Little Snitch since his backup (no alert answered, no rule or setting
   changed by hand; else delete both files and start again), delete both files; then store a fresh backup with *Refresh*
-  and tell the agent, which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
+  and tell the agent, which deletes its two files; a cancelled or failed restore is retried or stops, and *Refresh* follows only a restore that worked. Every stop deletes the `/tmp` files and tells the agent, which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
   host or builder.
 - [ ] **Step 2: Check.**
   - The commands, in order: write the block above, without its two-space indent, to
