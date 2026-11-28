@@ -61,8 +61,8 @@ periodic review's builder stays private (spec §5).
   backup with the assembly line, which takes only `.rules` from the agent's file and gives an empty
   result for anything but exactly one array; he runs the `jq` check and restores right after, only
   if nothing changed in Little Snitch since his backup (no alert answered, no rule or setting
-  changed by hand), and stores the fresh backup himself with *Refresh*. Every stop deletes the
-  `/tmp` files (Task 2, Step 1).
+  changed by hand), and stores the fresh backup himself with *Refresh*. Every stop follows the
+  section's one *Stopping* rule (Task 2, Step 1).
 
 ---
 
@@ -136,11 +136,13 @@ periodic review's builder stays private (spec §5).
   in a fenced code block of its own, one line, no comment, so a paste runs one command and Michael
   reads each result (the `jq` check) or picks one of two (`edit` or `create`) before the next. The
   section's code blocks hold exactly these lines, in this order, and nothing else; the blank lines
-  below separate the intro, Restore, Check, Refresh and Periodic review:
+  below separate the intro, the stop command, Restore, Check, Refresh and Periodic review:
 
   ```
   machine=<the machine name, as in machines.toml>
   from=<the machine whose backup you restore: this one, or the closest>
+
+  rm -f /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
 
   rm -f /tmp/little-snitch.lsbackup
   op document get "Little Snitch backup ${from:?}" --vault Private --out-file /tmp/little-snitch.lsbackup
@@ -168,38 +170,42 @@ periodic review's builder stays private (spec §5).
 
   The intro sets `machine` (this machine) and `from` (the machine whose backup is restored: the
   same, or the closest machine's name for a machine without its own backup); `scutil --get
-  LocalHostName` is not used, because a machine set up before provisioning set it can differ.
-  *Restore*: delete a leftover, fetch, run the `jq` check, then File › Restore from Backup… ›
-  Browse… (⇧⌘G `/tmp`). The `jq` expectation: a first value of `0` and exactly one user ID,
-  `[0,[<a user ID>]]`; a first value of `1` or `true` means the backup turns Terminal access on:
-  neither restore nor store it; that, any other result (not exactly one user ID) or no output means
-  no restore, and each such stop deletes the file with *Check*'s `rm`. The menu restore is for a
-  user ID equal to `id -u`; the two
-  `restore-model` lines are only for a user-ID mismatch (`-l` lists the backup's users), instead of
-  the menu restore, with Terminal access turned on first; if that restore fails or is abandoned,
-  turn Terminal access off by hand, and *Check* always looks; never pass
-  `--preserve-terminal-access`. After either restore from another machine's backup: delete that
-  machine's own rules (hercules' incoming sshd rule), on hercules add hercules-agent-machine
-  section 8 G's. *Check* sends a restore that did not show his rules back to step 1's file, then ends with the plain `rm`. *First use* names both alert kinds: Homebrew
+  LocalHostName` is not used, because a machine set up before provisioning set it can differ. Then
+  one *Stopping* rule, before the parts, as bullets: wherever a step says *stop*, and whenever
+  Michael stops for any other reason, he turns Terminal access off if Settings › Security shows it
+  on, runs the stop command (the second group above), and during a periodic review tells the agent,
+  which deletes its two files; to try again, he starts the part from its first step. The parts say
+  only "stop" where they stop, with no cleanup of their own (Michael, 2026-11-28, "One stop rule").
+  *Restore*: delete a leftover, fetch, run the `jq` check. The expectation: a first value of `0`
+  and exactly one user ID, `[0,[<a user ID>]]`; anything else or no output means stop (a first
+  value of `1` or `true` turns Terminal access on: never restore or store it). A user ID equal to
+  `id -u`: File › Restore from Backup… › Browse… (⇧⌘G `/tmp`); a different one: no menu restore,
+  but Terminal access on and the two `restore-model` lines (`-l` lists the backup's users), which
+  turn it off again; a failed one means stop; never pass `--preserve-terminal-access`. After either
+  restore from another machine's backup: delete that machine's own rules (hercules' incoming sshd
+  rule), on hercules add hercules-agent-machine section 8 G's. *Check*: licence, Terminal access
+  off, the rules list shows his rules; if not, the restore did not work: stop and start step 1
+  again from the vault; otherwise the plain `rm`. *First use* names both alert kinds: Homebrew
   tools (a changed identity) and mise tools whose version moved (a new path); it ends with a
   machine restored from another machine's backup storing its own with *Refresh* (`create`), after
   *Check* (on hercules, after the first-use checks), so the stored set is the checked one.
   *Refresh*: delete a leftover; File › Create Backup… to `/tmp`, named `little-snitch.lsbackup` in
-  the save dialog; `chmod 600`; the `jq` check; `op document edit`, or `create` for a machine with
-  no item yet; the plain `rm`, and Refresh again if `op` failed. `--vault Private` on `get` and `edit` is the plan's tightening of the
-  spec's commands (§6 names Private as the trust boundary). *Periodic review* gives when (every
-  month or two, and after a burst of alerts) and Michael's side of spec §5's four steps, in order:
-  with Terminal access off, delete a leftover, File › Create Backup… to `/tmp`, named
-  `little-snitch-base.lsbackup`, `chmod 600`, and ask an agent for the review (a restart clears
-  `/tmp`: start again); when the agent has written `review-rules.json` and `review-log.md`, read
-  the log and go on only if he accepts every change it lists (if not, delete his base backup with
-  the part's first command, `rm -f /tmp/little-snitch-base.lsbackup`, tell the agent, which deletes its two files, and stop), delete a leftover, build the file with the assembly line (it
-  keeps every setting of his backup and takes only `.rules` from the agent's file, and gives an
-  empty file for anything but exactly one array), run the `jq` check on it and restore right after,
-  only if nothing changed in Little Snitch since his backup (no alert answered, no rule or setting
-  changed by hand; else delete both files and start again), delete both files; then store a fresh backup with *Refresh*
-  and tell the agent, which deletes its two files; a cancelled or failed restore is retried or stops, and *Refresh* follows only a restore that worked. Every stop deletes the `/tmp` files and tells the agent, which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
-  host or builder.
+  the save dialog; `chmod 600`; the `jq` check (anything but `[0,[<id -u>]]` means stop); `op
+  document edit`, or `create` for a machine with no item yet (a failed `op` means stop); the plain
+  `rm`. `--vault Private` on `get` and `edit` is the plan's tightening of the spec's commands (§6
+  names Private as the trust boundary). *Periodic review* gives when (every month or two, and after
+  a burst of alerts) and Michael's side of spec §5's four steps, in order: with Terminal access off,
+  delete a leftover, File › Create Backup… to `/tmp`, named `little-snitch-base.lsbackup`, `chmod
+  600`, and ask an agent for the review (a restart clears `/tmp`: start again); when the agent has
+  written `review-rules.json` and `review-log.md`, read the log: no change listed, or one he does
+  not accept, means stop; delete a leftover, build the file with the assembly line (it keeps every
+  setting of his backup and takes only `.rules` from the agent's file, and gives an empty file for
+  anything but exactly one array), run the `jq` check on it (anything but `[0,[<id -u>]]` means
+  stop) and restore right after, only if nothing changed in Little Snitch since his backup (no
+  alert answered, no rule or setting changed by hand; else stop); a cancelled or failed restore
+  means stop; once it worked (the rules list shows a change the log names), delete both files;
+  then store a fresh backup with *Refresh* and tell the agent, which deletes its two files. It
+  points to spec §5 for what the review aims at and names no rule, host or builder.
 - [ ] **Step 2: Check.**
   - The commands, in order: write the block above, without its two-space indent, to
     `$TMPDIR/ls-commands.txt`, and this to `$TMPDIR/ls-check.sh`; run
