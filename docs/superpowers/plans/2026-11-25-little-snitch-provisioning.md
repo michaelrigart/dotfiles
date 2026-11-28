@@ -184,8 +184,8 @@ periodic review's builder stays private (spec §5).
   turn it off again; a failed one means stop; never pass `--preserve-terminal-access`. After either
   restore from another machine's backup: delete that machine's own rules (hercules' incoming sshd
   rule), on hercules add hercules-agent-machine section 8 G's. *Check*: licence, Terminal access
-  off, the rules list shows his rules; if not, the restore did not work: stop and start step 1
-  again from the vault; otherwise the plain `rm`. *First use* names both alert kinds: Homebrew
+  off, the rules list shows his rules; any of the three not so means stop, then the licence entered
+  or, for missing rules, step 1 again from the vault; otherwise the plain `rm`. *First use* names both alert kinds: Homebrew
   tools (a changed identity) and mise tools whose version moved (a new path); it ends with a
   machine restored from another machine's backup storing its own with *Refresh* (`create`), after
   *Check* (on hercules, after the first-use checks), so the stored set is the checked one.
@@ -197,8 +197,8 @@ periodic review's builder stays private (spec §5).
   a burst of alerts) and Michael's side of spec §5's four steps, in order: with Terminal access off,
   delete a leftover, File › Create Backup… to `/tmp`, named `little-snitch-base.lsbackup`, `chmod
   600`, and ask an agent for the review (a restart clears `/tmp`: start again); when the agent has
-  written `review-rules.json` and `review-log.md`, read the log: no change listed, or one he does
-  not accept, means stop; delete a leftover, build the file with the assembly line (it keeps every
+  written `review-rules.json` and `review-log.md`, read the log: no change listed means stop and
+  *Refresh* all the same, one he does not accept means stop; delete a leftover, build the file with the assembly line (it keeps every
   setting of his backup and takes only `.rules` from the agent's file, and gives an empty file for
   anything but exactly one array), run the `jq` check on it (anything but `[0,[<id -u>]]` means
   stop) and restore right after, only if nothing changed in Little Snitch since his backup (no

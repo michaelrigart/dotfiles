@@ -422,9 +422,9 @@ To try again, start the part again from its first step.
    8 G of `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
 
 2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
-   off, and the rules list shows your rules. If the rules list does not show your rules, the
-   restore was cancelled or failed: stop, and start step 1 again from the vault. Otherwise delete
-   the file.
+   off, and the rules list shows your rules. If any of the three is not so, stop; then enter the
+   licence if it is missing, and start step 1 again from the vault if your rules are missing (the
+   restore was cancelled or failed). Otherwise delete the file.
 
    ```bash
    rm /tmp/little-snitch.lsbackup
@@ -500,8 +500,8 @@ To try again, start the part again from its first step.
 
    When the agent has written `review-rules.json` and `review-log.md` in
    `~/Code/.metrics/little-snitch/`, read `review-log.md`. If it lists no change, there is nothing
-   to restore: stop. If you do not accept every change it lists, stop. Otherwise delete a leftover
-   file.
+   to restore: stop, then store a fresh backup with step 4, *Refresh*, all the same. If you do not
+   accept every change it lists, stop. Otherwise delete a leftover file.
 
    ```bash
    rm -f /tmp/little-snitch.lsbackup
