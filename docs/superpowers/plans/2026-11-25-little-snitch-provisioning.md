@@ -5,7 +5,7 @@
 > but it changes how a security control is restored, so it keeps its spec and plan.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `feat/little-snitch-rules`)
+**Status:** Implemented — PR #59; do not run this plan again
 
 **Goal:** A reinstalled Mac restores its Little Snitch rules from its own 1Password backup, before
 the first login, by a checklist step that points at one README procedure, which also gives

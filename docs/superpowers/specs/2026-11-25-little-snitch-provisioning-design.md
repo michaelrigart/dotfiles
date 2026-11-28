@@ -1,6 +1,6 @@
 # Little Snitch rules on a reinstalled Mac: a per-machine backup in 1Password
 
-**Status:** In progress (branch `feat/little-snitch-rules`)
+**Status:** Implemented — PR #59
 **Date:** 2026-11-25
 **Branch:** `feat/little-snitch-rules`, in the `wt` checkout
 `~/.local/share/chezmoi-feat-little-snitch-rules`
