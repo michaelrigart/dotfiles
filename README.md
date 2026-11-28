@@ -341,6 +341,200 @@ The [configure.sh](.scripts/configure.sh) script:
 - Installs the Claude Code managed policy that limits mods to the organization's (`allowManagedModsOnly`) via [install-claude-managed-settings.sh](.scripts/install-claude-managed-settings.sh), refusing a different existing policy unless run with `--replace`; to uninstall: `sudo rm "/Library/Application Support/ClaudeCode/managed-settings.json"`
 - Applies secure Finder and system defaults
 
+### Little Snitch
+
+Each machine's Little Snitch configuration is backed up in the 1Password Document `Little Snitch
+backup <machine>` in the Private vault. Make the backup with Settings › Security › "Allow access
+via Terminal" off. The backup is plain text, so outside 1Password it exists only in `/tmp`: for the
+minutes a backup or restore takes, and for the length of a periodic review. No script touches
+Little Snitch; this section is the whole procedure. Reasons and design:
+`docs/superpowers/specs/2026-11-25-little-snitch-provisioning-design.md`.
+
+Set `machine` to this machine's name as in `machines.toml`. Set `from` to the machine whose backup
+you restore: this one, or the closest one for a machine without a backup of its own. Do not use
+`scutil --get LocalHostName`: a machine set up before provisioning set it can have another name.
+
+```bash
+machine=<the machine name, as in machines.toml>
+```
+
+```bash
+from=<the machine whose backup you restore: this one, or the closest>
+```
+
+**Stopping.** Wherever a step below says *stop*, and whenever you stop for any other reason:
+
+- If Settings › Security shows Terminal access on, turn it off.
+- Delete both temporary files:
+
+  ```bash
+  rm -f /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
+  ```
+
+- During a periodic review, tell the agent, which deletes `review-rules.json` and
+  `review-log.md`.
+
+To try again, start the part again from its first step.
+
+1. **Restore, on a fresh install only.** Delete a leftover file, then fetch the backup.
+
+   ```bash
+   rm -f /tmp/little-snitch.lsbackup
+   ```
+
+   ```bash
+   op document get "Little Snitch backup ${from:?}" --vault Private --out-file /tmp/little-snitch.lsbackup
+   ```
+
+   Run the check and read its result before you go on.
+
+   ```bash
+   jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
+   ```
+
+   Expect a first value of `0` and exactly one user ID: `[0,[<a user ID>]]`. Anything else, or no
+   output, means stop. (A first value of `1` or `true` means the backup turns Terminal access on:
+   it must never be restored or stored.)
+
+   If that user ID is the output of `id -u`, restore with File › Restore from Backup… › Browse…
+   (⇧⌘G `/tmp`), and skip the three commands below.
+
+   If it differs, do not restore from the menu. Turn Terminal access on first, list the backup's
+   users, set `backup_uid` to the one that belongs to you and restore with the users mapped.
+
+   ```bash
+   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model -l /tmp/little-snitch.lsbackup
+   ```
+
+   ```bash
+   backup_uid=<the user ID that restore-model -l lists>
+   ```
+
+   ```bash
+   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model --map-users "0 > 0, ${backup_uid:?} > $(id -u)" /tmp/little-snitch.lsbackup
+   ```
+
+   That restore turns Terminal access off again; if it fails, stop. Never pass
+   `--preserve-terminal-access`.
+
+   Whichever way you restored, when it was from another machine's backup, delete that machine's
+   own rules afterwards (hercules' incoming sshd rule) and, on hercules, add the rules of section
+   8 G of `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
+
+2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
+   off, and the rules list shows your rules. If any of the three is not so, stop; then enter the
+   licence if it is missing, and start step 1 again from the vault if your rules are missing (the
+   restore was cancelled or failed). Otherwise delete the file.
+
+   ```bash
+   rm /tmp/little-snitch.lsbackup
+   ```
+
+3. **First use.** Answer the alerts as they come: Homebrew tools (a changed identity) and mise
+   tools whose version moved (a new path). On hercules, before you leave it, check `netbird
+   status`, an ssh login over NetBird, one Vorta backup and one agent line, so the tools that later
+   run unattended raise their alerts now. A machine restored from another machine's backup then
+   stores its own, after *Check* (on hercules, after these checks), with step 4, *Refresh*
+   (`create`).
+
+4. **Refresh.** Do this after a rule review, and after any rule change worth keeping, removals and
+   narrowings included: a stale backup brings a removed allow rule back without an alert. Delete a
+   leftover file.
+
+   ```bash
+   rm -f /tmp/little-snitch.lsbackup
+   ```
+
+   With Terminal access off, use File › Create Backup… and save it to `/tmp`, named
+   `little-snitch.lsbackup` in the save dialog. Then make it private.
+
+   ```bash
+   chmod 600 /tmp/little-snitch.lsbackup
+   ```
+
+   Run the check and read its result: it must be `[0,[<the output of id -u>]]`. Anything else, or
+   no output, means stop.
+
+   ```bash
+   jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
+   ```
+
+   Store it. Run `edit` when the machine has an item, or `create` when it has none yet; never both.
+
+   ```bash
+   op document edit "Little Snitch backup ${machine:?}" --vault Private /tmp/little-snitch.lsbackup
+   ```
+
+   ```bash
+   op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup ${machine:?}" --vault Private
+   ```
+
+   If that `op` command failed (a locked vault, say), the backup is not stored: stop. Otherwise
+   delete the file.
+
+   ```bash
+   rm /tmp/little-snitch.lsbackup
+   ```
+
+5. **Never restore onto a machine in use,** except to roll back or to apply a periodic review
+   (below). A restore discards every rule made since the backup; Little Snitch keeps an automatic
+   copy of what it replaced.
+
+6. **Periodic review.** Do this every month or two, and after a burst of alerts. An agent reviews
+   your rules; you restore them. The review's aims are in the spec's section 5.
+
+   With Terminal access off, delete a leftover base file.
+
+   ```bash
+   rm -f /tmp/little-snitch-base.lsbackup
+   ```
+
+   Use File › Create Backup… and save it to `/tmp`, named `little-snitch-base.lsbackup` in the save
+   dialog. Then make it private.
+
+   ```bash
+   chmod 600 /tmp/little-snitch-base.lsbackup
+   ```
+
+   Ask an agent for the review. A restart clears `/tmp`: if that happens, start again here.
+
+   When the agent has written `review-rules.json` and `review-log.md` in
+   `~/Code/.metrics/little-snitch/`, read `review-log.md`. If it lists no change, there is nothing
+   to restore: stop, then store a fresh backup with step 4, *Refresh*, all the same. If you do not
+   accept every change it lists, stop. Otherwise delete a leftover file.
+
+   ```bash
+   rm -f /tmp/little-snitch.lsbackup
+   ```
+
+   Build the file to restore. This line keeps every setting of your own backup and takes only
+   `.rules` from the agent's file. It gives an empty file for anything but exactly one array.
+
+   ```bash
+   (umask 077; jq --slurpfile r ~/Code/.metrics/little-snitch/review-rules.json '.rules = ($r | if length == 1 then .[0] else empty end | arrays)' /tmp/little-snitch-base.lsbackup > /tmp/little-snitch.lsbackup)
+   ```
+
+   Run the check on it and read its result: it must be `[0,[<the output of id -u>]]`. Anything
+   else, or no output (an empty file), means stop.
+
+   ```bash
+   jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
+   ```
+
+   Restore right after, with File › Restore from Backup… › Browse… (⇧⌘G `/tmp`), choosing
+   `little-snitch.lsbackup` and not the base file, and only if nothing changed in Little Snitch
+   since your base backup: no alert answered, no rule or setting changed by hand. If something did,
+   stop, because a restore discards every change made since its source backup. If the restore is
+   cancelled or fails, stop. Once it has worked (the rules list shows a change the log names),
+   delete both files.
+
+   ```bash
+   rm /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
+   ```
+
+   Then store a fresh backup with step 4, *Refresh*, and tell the agent, which deletes
+   `review-rules.json` and `review-log.md`.
+
 ---
 
 ## 🛠️ Maintenance
