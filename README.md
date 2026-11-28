@@ -369,7 +369,7 @@ from=<the machine whose backup you restore: this one, or the closest>
    ```
 
    ```bash
-   op document get "Little Snitch backup $from" --vault Private --out-file /tmp/little-snitch.lsbackup
+   op document get "Little Snitch backup ${from:?}" --vault Private --out-file /tmp/little-snitch.lsbackup
    ```
 
    Run the check and read its result before you go on.
@@ -378,9 +378,9 @@ from=<the machine whose backup you restore: this one, or the closest>
    jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
    ```
 
-   Expect `[0,[<the output of id -u>]]`. A first value of `1` or `true` means the backup turns
-   Terminal access on: neither restore it nor store it. No output means there is nothing to
-   restore.
+   Expect `[0,[<the output of id -u>]]`. Anything else, or no output, means do not restore it:
+   delete the file with the `rm` command in step 2, *Check*, before you stop. A first value of `1`
+   or `true` means the backup turns Terminal access on: neither restore it nor store it.
 
    If the user ID in the result is the output of `id -u`, restore with File › Restore from
    Backup… › Browse… (⇧⌘G `/tmp`), and skip the three commands below.
@@ -397,7 +397,7 @@ from=<the machine whose backup you restore: this one, or the closest>
    ```
 
    ```bash
-   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model --map-users "0 > 0, $backup_uid > $(id -u)" /tmp/little-snitch.lsbackup
+   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model --map-users "0 > 0, ${backup_uid:?} > $(id -u)" /tmp/little-snitch.lsbackup
    ```
 
    That restore turns Terminal access off again. If it fails or you abandon it, turn Terminal
@@ -405,7 +405,8 @@ from=<the machine whose backup you restore: this one, or the closest>
 
    Whichever way you restored, when it was from another machine's backup, delete that machine's
    own rules afterwards (hercules' incoming sshd rule) and, on hercules, add the rules of section
-   8 G of `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
+   8 G of `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`. Then store this
+   machine's own backup with step 4, *Refresh* (`create`).
 
 2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
    off, and the rules list shows your rules. Terminal access is checked always, whether the
@@ -447,11 +448,11 @@ from=<the machine whose backup you restore: this one, or the closest>
    Store it. Run `edit` when the machine has an item, or `create` when it has none yet; never both.
 
    ```bash
-   op document edit "Little Snitch backup $machine" --vault Private /tmp/little-snitch.lsbackup
+   op document edit "Little Snitch backup ${machine:?}" --vault Private /tmp/little-snitch.lsbackup
    ```
 
    ```bash
-   op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup $machine" --vault Private
+   op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup ${machine:?}" --vault Private
    ```
 
    Then delete the file.
@@ -483,7 +484,9 @@ from=<the machine whose backup you restore: this one, or the closest>
    Ask an agent for the review. A restart clears `/tmp`: if that happens, start again here.
 
    When the agent has written `review-rules.json` and `review-log.md` in
-   `~/Code/.metrics/little-snitch/`, delete a leftover file.
+   `~/Code/.metrics/little-snitch/`, read `review-log.md` and go on only if you accept every change
+   it lists. If you do not, delete your base backup with the first command of this part, `rm -f
+   /tmp/little-snitch-base.lsbackup`, and stop. Otherwise delete a leftover file.
 
    ```bash
    rm -f /tmp/little-snitch.lsbackup
@@ -505,9 +508,8 @@ from=<the machine whose backup you restore: this one, or the closest>
    jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
    ```
 
-   Read `review-log.md` and go on only if you accept every change it lists. Restore the file with
-   File › Restore from Backup… › Browse… (⇧⌘G `/tmp`), choosing `little-snitch.lsbackup` and not
-   the base file, and only if nothing changed in Little Snitch
+   Restore right after, with File › Restore from Backup… › Browse… (⇧⌘G `/tmp`), choosing
+   `little-snitch.lsbackup` and not the base file, and only if nothing changed in Little Snitch
    since your base backup: no alert answered, no rule or setting changed by hand. If something did,
    start again, because a restore discards every change made since its source backup. Then delete
    both files.
