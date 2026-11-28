@@ -46,7 +46,8 @@ periodic review's builder stays private (spec §5).
   `netbird-old-peer`, `syncthing-old-device` and `syncthing-folders` stay after the Little Snitch
   rows (Task 1, Step 3).
 - README commands paste as written once each placeholder is filled. The only placeholders are the
-  right sides of `machine=<…>` and `backup_uid=<…>`, which Michael types himself; no command takes a
+  right sides of `machine=<…>`, `from=<…>` and `backup_uid=<…>`, which Michael types himself; no
+  command takes a
   path an agent names. The backup is fetched from `$from` and stored under `$machine`, so a machine
   restored from another one's backup saves its own. The CLI path is quoted (it has spaces),
   `$(id -u)` sits inside double quotes, and `--preserve-terminal-access` appears only in prose, as
@@ -56,8 +57,9 @@ periodic review's builder stays private (spec §5).
 - The *Periodic review* part leaves every Little Snitch and 1Password step with Michael, and every
   setting his: his backup goes straight to `/tmp`; he builds the restored file from it with the
   assembly line, which takes only `.rules` from the agent's file and gives an empty result for
-  anything but one array; he runs the `jq` check, reads the log, restores only if he has answered
-  no alert since his backup, and stores the fresh backup himself with *Refresh* (Task 2, Step 1).
+  anything but exactly one array; he runs the `jq` check, reads the log, restores only if nothing
+  changed in Little Snitch since his backup (no alert answered, no rule or setting changed by
+  hand), and stores the fresh backup himself with *Refresh* (Task 2, Step 1).
 
 ---
 
@@ -135,7 +137,7 @@ periodic review's builder stays private (spec §5).
 
   ```
   machine=<the machine name, as in machines.toml>
-  from=$machine
+  from=<the machine whose backup you restore: this one, or the closest>
 
   rm -f /tmp/little-snitch.lsbackup
   op document get "Little Snitch backup $from" --vault Private --out-file /tmp/little-snitch.lsbackup
@@ -156,7 +158,7 @@ periodic review's builder stays private (spec §5).
   rm -f /tmp/little-snitch-base.lsbackup
   chmod 600 /tmp/little-snitch-base.lsbackup
   rm -f /tmp/little-snitch.lsbackup
-  (umask 077; jq --slurpfile r ~/Code/.metrics/little-snitch/review-rules.json '.rules = ($r[0] | arrays)' /tmp/little-snitch-base.lsbackup > /tmp/little-snitch.lsbackup)
+  (umask 077; jq --slurpfile r ~/Code/.metrics/little-snitch/review-rules.json '.rules = ($r | if length == 1 then .[0] else empty end | arrays)' /tmp/little-snitch-base.lsbackup > /tmp/little-snitch.lsbackup)
   jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
   rm /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
   ```
@@ -181,9 +183,10 @@ periodic review's builder stays private (spec §5).
   `little-snitch-base.lsbackup`, `chmod 600`, and ask an agent for the review (a restart clears
   `/tmp`: start again); when the agent has written `review-rules.json` and `review-log.md`, delete a
   leftover, build the file with the assembly line (it keeps every setting of his backup and takes
-  only `.rules` from the agent's file), run the `jq` check on it, read the log and go on only if he
-  accepts every change it lists, restore it only if no alert was answered since his backup (else
-  start again), delete both files; then store a fresh backup with *Refresh* and tell the agent,
+  only `.rules` from the agent's file, and gives an empty file for anything but exactly one array),
+  run the `jq` check on it, read the log and go on only if he accepts every change it lists,
+  restore it only if nothing changed in Little Snitch since his backup (no alert answered, no rule
+  or setting changed by hand; else start again), delete both files; then store a fresh backup with *Refresh* and tell the agent,
   which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
   host or builder.
 - [ ] **Step 2: Check.**
@@ -206,8 +209,8 @@ periodic review's builder stays private (spec §5).
     `{"globalDefaults":{"allowCommandLineAccess":0,"t":1.000,"big":9007199254740993},"rules":[{"action":"allow"}],"users":[{"uid":0},{"uid":501}]}`
     and a rules file `[{"action":"deny","x":2.50}]` give a mode-600 file whose `jq -c 'del(.rules)'`
     is byte-identical to the base's (`1.000` and the big integer kept) and whose `.rules` is
-    `[{"action":"deny","x":2.50}]`; a rules file `{"action":"deny"}` gives an empty file (checked
-    2026-11-28).
+    `[{"action":"deny","x":2.50}]`; a rules file `{"action":"deny"}`, and one holding two arrays
+    (`[{"action":"deny"}] [{"action":"allow"}]`), each give an empty file (checked 2026-11-28).
   - ``rg -o '/tmp/[^[:space:]`"),;]+' README.md | sed 's/\.$//' | sort -u``: only
     `/tmp/little-snitch-base.lsbackup` and `/tmp/little-snitch.lsbackup` (the class stops only at
     delimiters, so a misspelt path in the prose shows up).

@@ -33,7 +33,9 @@ Codex's second round found the same gap at step 1 (his backup was hashed only on
 folder) and problems in the first round's fixes; Michael replaced the checks ("Assemble it"): his
 backup stays in `/tmp`, which sandboxed agents cannot write, the agent writes only a rules array,
 and he builds the file he restores from his own backup with one `jq` line, so every setting is his
-by construction. The hash, the settings `diff` and its number handling are gone.
+by construction. The hash, the settings `diff` and its number handling are gone. Its third round
+found that a rule or setting Michael changes by hand during the review is lost just as an answered
+alert is, so step 3's condition names both (signed off by Michael in the pane, "Sign off").
 **Source:** Michael, 2026-11-25: "Can you work on Little Snitch for me? I would like you to review
 my current rules and optimize everything. At the same time, I would also want to know, once we have
 a good rule set, if we could include it in our privisioning scripts." Relayed in the driver's brief
@@ -231,12 +233,13 @@ two, and after a burst of alerts:
 3. Michael builds the file he restores himself: the README's assembly line writes his backup from
    step 1, with only `.rules` replaced by the array in `review-rules.json`, to
    `/tmp/little-snitch.lsbackup`, readable only by him (deleting a leftover first); a rules file
-   that is not one array gives an empty result, which is not restored. Every setting therefore
+   that holds anything but exactly one array gives an empty result, which is not restored. Every setting therefore
    comes from his own backup, number for number. He runs the README's `jq` check on it
    (`[0,[<id -u>]]`), reads the log and goes on only if he accepts every change it lists, then
-   restores the file and deletes both files in `/tmp`. He restores only if he has answered no alert
-   since step 1; otherwise the review starts again from step 1, because a restore discards every
-   rule made since its source backup.
+   restores the file and deletes both files in `/tmp`. He restores only if Little Snitch's
+   configuration has not changed since step 1 (no alert answered, no rule or setting changed by
+   hand); otherwise the review starts again from step 1, because a restore discards every change
+   made since its source backup.
 4. He stores a fresh backup himself with the README's *Refresh* step; the agent then deletes
    `review-rules.json` and `review-log.md`.
 
