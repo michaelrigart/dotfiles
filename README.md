@@ -378,12 +378,13 @@ from=<the machine whose backup you restore: this one, or the closest>
    jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
    ```
 
-   Expect `[0,[<the output of id -u>]]`. Anything else, or no output, means do not restore it:
-   delete the file with the `rm` command in step 2, *Check*, before you stop. A first value of `1`
-   or `true` means the backup turns Terminal access on: neither restore it nor store it.
+   Expect a first value of `0` and exactly one user ID: `[0,[<a user ID>]]`. A first value of `1`
+   or `true` means the backup turns Terminal access on: neither restore it nor store it. That, any
+   other result, or no output means do not restore it: delete the file with the `rm` command in
+   step 2, *Check*, before you stop.
 
-   If the user ID in the result is the output of `id -u`, restore with File › Restore from
-   Backup… › Browse… (⇧⌘G `/tmp`), and skip the three commands below.
+   If that user ID is the output of `id -u`, restore with File › Restore from Backup… › Browse…
+   (⇧⌘G `/tmp`), and skip the three commands below.
 
    If it differs, do not restore from the menu. Turn Terminal access on first, list the backup's
    users, set `backup_uid` to the one that belongs to you and restore with the users mapped.
@@ -405,8 +406,7 @@ from=<the machine whose backup you restore: this one, or the closest>
 
    Whichever way you restored, when it was from another machine's backup, delete that machine's
    own rules afterwards (hercules' incoming sshd rule) and, on hercules, add the rules of section
-   8 G of `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`. Then store this
-   machine's own backup with step 4, *Refresh* (`create`).
+   8 G of `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
 
 2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
    off, and the rules list shows your rules. Terminal access is checked always, whether the
@@ -419,7 +419,9 @@ from=<the machine whose backup you restore: this one, or the closest>
 3. **First use.** Answer the alerts as they come: Homebrew tools (a changed identity) and mise
    tools whose version moved (a new path). On hercules, before you leave it, check `netbird
    status`, an ssh login over NetBird, one Vorta backup and one agent line, so the tools that later
-   run unattended raise their alerts now.
+   run unattended raise their alerts now. A machine restored from another machine's backup then
+   stores its own, after *Check* (on hercules, after these checks), with step 4, *Refresh*
+   (`create`).
 
 4. **Refresh.** Do this after a rule review, and after any rule change worth keeping, removals and
    narrowings included: a stale backup brings a removed allow rule back without an alert. Delete a

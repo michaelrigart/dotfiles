@@ -170,17 +170,20 @@ periodic review's builder stays private (spec §5).
   same, or the closest machine's name for a machine without its own backup); `scutil --get
   LocalHostName` is not used, because a machine set up before provisioning set it can differ.
   *Restore*: delete a leftover, fetch, run the `jq` check, then File › Restore from Backup… ›
-  Browse… (⇧⌘G `/tmp`). The `jq` expectation: `[0,[<the output of id -u>]]`; a first value of `1`
-  or `true` means the backup turns Terminal access on: neither restore nor store it; anything else
-  or no output means no restore; each of these stops deletes the file with *Check*'s `rm`. The two
+  Browse… (⇧⌘G `/tmp`). The `jq` expectation: a first value of `0` and exactly one user ID,
+  `[0,[<a user ID>]]`; a first value of `1` or `true` means the backup turns Terminal access on:
+  neither restore nor store it; that, any other result (not exactly one user ID) or no output means
+  no restore, and each such stop deletes the file with *Check*'s `rm`. The menu restore is for a
+  user ID equal to `id -u`; the two
   `restore-model` lines are only for a user-ID mismatch (`-l` lists the backup's users), instead of
   the menu restore, with Terminal access turned on first; if that restore fails or is abandoned,
   turn Terminal access off by hand, and *Check* always looks; never pass
   `--preserve-terminal-access`. After either restore from another machine's backup: delete that
   machine's own rules (hercules' incoming sshd rule), on hercules add hercules-agent-machine
-  section 8 G's, then store this machine's own backup with *Refresh* (`create`). *Check* ends with
-  the plain `rm`. *First use* names both alert
-  kinds: Homebrew tools (a changed identity) and mise tools whose version moved (a new path).
+  section 8 G's. *Check* ends with the plain `rm`. *First use* names both alert kinds: Homebrew
+  tools (a changed identity) and mise tools whose version moved (a new path); it ends with a
+  machine restored from another machine's backup storing its own with *Refresh* (`create`), after
+  *Check* (on hercules, after the first-use checks), so the stored set is the checked one.
   *Refresh*: delete a leftover; File › Create Backup… to `/tmp`, named `little-snitch.lsbackup` in
   the save dialog; `chmod 600`; the `jq` check; `op document edit`, or `create` for a machine with
   no item yet; the plain `rm`. `--vault Private` on `get` and `edit` is the plan's tightening of the
