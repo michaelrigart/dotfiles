@@ -45,7 +45,7 @@ periodic review's builder stays private (spec §5).
   `claude-login`. `netbird-up` and `syncthing-settings` are `script` rows above every `you` row;
   `netbird-old-peer`, `syncthing-old-device` and `syncthing-folders` stay after the Little Snitch
   rows (Task 1, Step 3).
-- README commands paste as written once each placeholder is filled. The only placeholders are the
+- README commands paste as written, one per block, once each placeholder is filled. The only placeholders are the
   right sides of `machine=<…>`, `from=<…>` and `backup_uid=<…>`, which Michael types himself; no
   command takes a
   path an agent names. The backup is fetched from `$from` and stored under `$machine`, so a machine
@@ -130,10 +130,10 @@ periodic review's builder stays private (spec §5).
   minutes a backup or restore takes and for a periodic review's length; no script touches Little
   Snitch; link the spec. Then the six numbered parts of spec §5 (Restore, Check, First use,
   Refresh, Never restore onto a machine in use, Periodic review), no subheadings. Every command sits
-  in a fenced code block, one command per line, no comments or blank lines inside. The section's
-  code blocks hold exactly these lines, in this order, and nothing else; the blank lines below
-  separate the intro, Restore, Check, Refresh and Periodic review, and each group is one or more
-  blocks of its part:
+  in a fenced code block of its own, one line, no comment, so a paste runs one command and Michael
+  reads each result (the `jq` check) or picks one of two (`edit` or `create`) before the next. The
+  section's code blocks hold exactly these lines, in this order, and nothing else; the blank lines
+  below separate the intro, Restore, Check, Refresh and Periodic review:
 
   ```
   machine=<the machine name, as in machines.toml>
@@ -193,12 +193,12 @@ periodic review's builder stays private (spec §5).
   - The commands, in order: write the block above, without its two-space indent, to
     `$TMPDIR/ls-commands.txt`, and this to `$TMPDIR/ls-check.sh`; run
     `bash "$TMPDIR/ls-check.sh" README.md "$TMPDIR"`. Expected: no output, exit 0. Tested
-    2026-11-28 on a stub section: the `jq` check dropped before the periodic restore only, or
-    `--preserve-terminal-access` appended to a command, prints the difference and exits 1. (Files
-    throughout: the sandbox denies `/dev/fd` and `diff -`.)
+    2026-11-28 on a stub section: the `jq` check dropped before the periodic restore only,
+    `--preserve-terminal-access` appended to a command, or two commands in one block, prints the
+    difference and exits 1. (Files throughout: the sandbox denies `/dev/fd` and `diff -`.)
 
     ```bash
-    awk '/^### Little Snitch$/ { s = 1; next } s && /^(#|##|###) / { exit } s && /^[[:space:]]*```/ { f = !f; next } s && f && NF { sub(/^[[:space:]]+/, ""); print }' "$1" > "$2/ls-readme.txt"
+    awk '/^### Little Snitch$/ { s = 1; next } s && /^(#|##|###) / { exit } s && /^[[:space:]]*```/ { f = !f; k = 0; next } s && f && NF { sub(/^[[:space:]]+/, ""); print (k++ ? "second command in a block: " : "") $0 }' "$1" > "$2/ls-readme.txt"
     awk 'NF' "$2/ls-commands.txt" > "$2/ls-expected.txt"
     diff "$2/ls-expected.txt" "$2/ls-readme.txt"
     ```
