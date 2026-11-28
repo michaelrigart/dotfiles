@@ -403,8 +403,8 @@ from=<the machine whose backup you restore: this one, or the closest>
    That restore turns Terminal access off again. If it fails or you abandon it, turn Terminal
    access off by hand. Never pass `--preserve-terminal-access`.
 
-   When you restored from another machine's backup, delete that machine's own rules afterwards
-   (hercules' incoming sshd rule) and, on hercules, add the rules of section 8 G of
+   Either way, when you restored from another machine's backup, delete that machine's own rules
+   afterwards (hercules' incoming sshd rule) and, on hercules, add the rules of section 8 G of
    `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
 
 2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
