@@ -49,17 +49,20 @@ periodic review's builder stays private (spec §5).
   right sides of `machine=<…>`, `from=<…>` and `backup_uid=<…>`, which Michael types himself; no
   command takes a
   path an agent names. The backup is fetched from `$from` and stored under `$machine`, so a machine
-  restored from another one's backup saves its own. The CLI path is quoted (it has spaces),
+  restored from another one's backup saves its own; each use is written `${name:?}`, so a new shell
+  with the variable unset refuses the command instead of naming an item `Little Snitch backup `.
+  The CLI path is quoted (it has spaces),
   `$(id -u)` sits inside double quotes, and `--preserve-terminal-access` appears only in prose, as
   "never pass it" (Task 2, Steps 1 and 2).
 - The README's `jq` check is exactly the spec's: `[true,[501]]` on a stub with Terminal access on,
   `[0,[501]]` on one without the key, root's uid `0` left out of both (Task 2, Step 2).
-- The *Periodic review* part leaves every Little Snitch and 1Password step with Michael, and every
-  setting his: his backup goes straight to `/tmp`; he builds the restored file from it with the
-  assembly line, which takes only `.rules` from the agent's file and gives an empty result for
-  anything but exactly one array; he runs the `jq` check, reads the log, restores only if nothing
-  changed in Little Snitch since his backup (no alert answered, no rule or setting changed by
-  hand), and stores the fresh backup himself with *Refresh* (Task 2, Step 1).
+- The *Periodic review* part leaves every Little Snitch and 1Password step with Michael: his
+  backup goes straight to `/tmp`; he reads the log first, then builds the restored file from his
+  backup with the assembly line, which takes only `.rules` from the agent's file and gives an empty
+  result for anything but exactly one array; he runs the `jq` check and restores right after, only
+  if nothing changed in Little Snitch since his backup (no alert answered, no rule or setting
+  changed by hand), and stores the fresh backup himself with *Refresh*. Every stop deletes the
+  `/tmp` files (Task 2, Step 1).
 
 ---
 
@@ -140,19 +143,19 @@ periodic review's builder stays private (spec §5).
   from=<the machine whose backup you restore: this one, or the closest>
 
   rm -f /tmp/little-snitch.lsbackup
-  op document get "Little Snitch backup $from" --vault Private --out-file /tmp/little-snitch.lsbackup
+  op document get "Little Snitch backup ${from:?}" --vault Private --out-file /tmp/little-snitch.lsbackup
   jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model -l /tmp/little-snitch.lsbackup
   backup_uid=<the user ID that restore-model -l lists>
-  sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model --map-users "0 > 0, $backup_uid > $(id -u)" /tmp/little-snitch.lsbackup
+  sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model --map-users "0 > 0, ${backup_uid:?} > $(id -u)" /tmp/little-snitch.lsbackup
 
   rm /tmp/little-snitch.lsbackup
 
   rm -f /tmp/little-snitch.lsbackup
   chmod 600 /tmp/little-snitch.lsbackup
   jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
-  op document edit "Little Snitch backup $machine" --vault Private /tmp/little-snitch.lsbackup
-  op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup $machine" --vault Private
+  op document edit "Little Snitch backup ${machine:?}" --vault Private /tmp/little-snitch.lsbackup
+  op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup ${machine:?}" --vault Private
   rm /tmp/little-snitch.lsbackup
 
   rm -f /tmp/little-snitch-base.lsbackup
@@ -168,11 +171,15 @@ periodic review's builder stays private (spec §5).
   LocalHostName` is not used, because a machine set up before provisioning set it can differ.
   *Restore*: delete a leftover, fetch, run the `jq` check, then File › Restore from Backup… ›
   Browse… (⇧⌘G `/tmp`). The `jq` expectation: `[0,[<the output of id -u>]]`; a first value of `1`
-  or `true` means the backup turns Terminal access on: neither restore nor store it; no output
-  means no restore. The two `restore-model` lines are only for a user-ID mismatch (`-l` lists the
-  backup's users), with Terminal access turned on first; if that restore fails or is abandoned,
+  or `true` means the backup turns Terminal access on: neither restore nor store it; anything else
+  or no output means no restore; each of these stops deletes the file with *Check*'s `rm`. The two
+  `restore-model` lines are only for a user-ID mismatch (`-l` lists the backup's users), instead of
+  the menu restore, with Terminal access turned on first; if that restore fails or is abandoned,
   turn Terminal access off by hand, and *Check* always looks; never pass
-  `--preserve-terminal-access`. *Check* ends with the plain `rm`. *First use* names both alert
+  `--preserve-terminal-access`. After either restore from another machine's backup: delete that
+  machine's own rules (hercules' incoming sshd rule), on hercules add hercules-agent-machine
+  section 8 G's, then store this machine's own backup with *Refresh* (`create`). *Check* ends with
+  the plain `rm`. *First use* names both alert
   kinds: Homebrew tools (a changed identity) and mise tools whose version moved (a new path).
   *Refresh*: delete a leftover; File › Create Backup… to `/tmp`, named `little-snitch.lsbackup` in
   the save dialog; `chmod 600`; the `jq` check; `op document edit`, or `create` for a machine with
@@ -181,13 +188,14 @@ periodic review's builder stays private (spec §5).
   month or two, and after a burst of alerts) and Michael's side of spec §5's four steps, in order:
   with Terminal access off, delete a leftover, File › Create Backup… to `/tmp`, named
   `little-snitch-base.lsbackup`, `chmod 600`, and ask an agent for the review (a restart clears
-  `/tmp`: start again); when the agent has written `review-rules.json` and `review-log.md`, delete a
-  leftover, build the file with the assembly line (it keeps every setting of his backup and takes
-  only `.rules` from the agent's file, and gives an empty file for anything but exactly one array),
-  run the `jq` check on it, read the log and go on only if he accepts every change it lists,
-  restore it only if nothing changed in Little Snitch since his backup (no alert answered, no rule
-  or setting changed by hand; else start again), delete both files; then store a fresh backup with *Refresh* and tell the agent,
-  which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
+  `/tmp`: start again); when the agent has written `review-rules.json` and `review-log.md`, read
+  the log and go on only if he accepts every change it lists (if not, delete his base backup with
+  the part's first command, `rm -f /tmp/little-snitch-base.lsbackup`, and stop), delete a leftover, build the file with the assembly line (it
+  keeps every setting of his backup and takes only `.rules` from the agent's file, and gives an
+  empty file for anything but exactly one array), run the `jq` check on it and restore right after,
+  only if nothing changed in Little Snitch since his backup (no alert answered, no rule or setting
+  changed by hand; else start again), delete both files; then store a fresh backup with *Refresh*
+  and tell the agent, which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
   host or builder.
 - [ ] **Step 2: Check.**
   - The commands, in order: write the block above, without its two-space indent, to

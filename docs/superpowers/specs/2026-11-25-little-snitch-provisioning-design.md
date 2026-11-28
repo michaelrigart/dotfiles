@@ -35,14 +35,19 @@ backup stays in `/tmp`, which sandboxed agents cannot write, the agent writes on
 and he builds the file he restores from his own backup with one `jq` line, so every setting is his
 by construction. The hash, the settings `diff` and its number handling are gone. Its third round
 found that a rule or setting Michael changes by hand during the review is lost just as an answered
-alert is, so step 3's condition names both (signed off by Michael in the pane, "Sign off").
+alert is, so step 3's condition names both (signed off by Michael in the pane, "Sign off"). The
+final whole-branch review then found that `/tmp` keeps out sandboxed Bash only, not Claude Code's
+Edit and Write tools nor a Codex session in workspace-write; Michael had §5 and §6 corrected
+("Correct only"): the settings in his backup rest on those sessions for a review's hours, as the
+rules do, step 3 reads the log before building the file so the `jq` check comes right before the
+restore, and §8 has him store fenrir's backup again himself.
 **Source:** Michael, 2026-11-25: "Can you work on Little Snitch for me? I would like you to review
 my current rules and optimize everything. At the same time, I would also want to know, once we have
 a good rule set, if we could include it in our privisioning scripts." Relayed in the driver's brief
 (chezmoi-94) of the same day. Approach A picked by Michael in the line's pane: "lets go with A then".
 **Size:** about 6 lines of non-test code, in `.scripts/machine-checklist.tsv` (the two Little
 Snitch rows move up and `little-snitch-rules` gets a new step), and a README section of about 60
-lines (docs, not counted). One increment. Until 2026-11-27 it also held a review script of about
+lines (docs, not counted; it came to about 180, with one command per block). One increment. Until 2026-11-27 it also held a review script of about
 300 lines; dropped (see the change note).
 **Provisioning:** `little-snitch-extension`, `little-snitch-rules`
 
@@ -224,8 +229,9 @@ two, and after a burst of alerts:
 
 1. With Terminal access off, Michael saves a backup to `/tmp/little-snitch-base.lsbackup`
    (File › Create Backup…, deleting a leftover first), runs `chmod 600` on it and asks an agent for
-   the review. Sandboxed agents can read `/tmp` but not write it, so the file stays his; a restart
-   clears it, and the review then starts again here.
+   the review. Sandboxed Bash can read `/tmp` but not write it; Claude Code's Edit and Write tools
+   (bound by permission rules, not the sandbox) and a Codex session in workspace-write can, as they
+   can write `$HOME` (§6). A restart clears it, and the review then starts again here.
 2. The agent reviews it with the machine's private builder, kept in `~/Code/.metrics/little-snitch/`
    (directory 700; it holds the machine's own decisions, so it never enters the repository), and
    writes there the reviewed rules as one JSON array, `review-rules.json`, and `review-log.md`, a
@@ -238,13 +244,13 @@ two, and after a burst of alerts:
    names (`jq -r 'keys[]'`) and whether the rule-group subscriptions, the DNS servers and the
    operating mode sit outside `.rules`, where step 3 keeps them from Michael's backup; one inside is
    reported to Michael as resting on the builder, like the rules.
-3. Michael builds the file he restores himself: the README's assembly line writes his backup from
-   step 1, with only `.rules` replaced by the array in `review-rules.json`, to
-   `/tmp/little-snitch.lsbackup`, readable only by him (deleting a leftover first); a rules file
-   that holds anything but exactly one array gives an empty result, which is not restored. Every setting therefore
-   comes from his own backup, number for number. He runs the README's `jq` check on it
-   (`[0,[<id -u>]]`), reads the log and goes on only if he accepts every change it lists, then
-   restores the file and deletes both files in `/tmp`. He restores only if Little Snitch's
+3. Michael reads the log and goes on only if he accepts every change it lists. He then builds the
+   file he restores himself: the README's assembly line writes his backup from step 1, with only
+   `.rules` replaced by the array in `review-rules.json`, to `/tmp/little-snitch.lsbackup`,
+   readable only by him (deleting a leftover first); a rules file that holds anything but exactly
+   one array gives an empty result, which is not restored. Every setting therefore comes from his
+   backup, number for number. He runs the README's `jq` check on it (`[0,[<id -u>]]`), restores
+   the file right after, and deletes both files in `/tmp`. He restores only if Little Snitch's
    configuration has not changed since step 1 (no alert answered, no rule or setting changed by
    hand); otherwise the review starts again from step 1, because a restore discards every change
    made since its source backup.
@@ -296,10 +302,14 @@ through that tool alerts until it is answered once at the machine.
   Michael's request, and only his own unchanged backup (§5).
 - The periodic review's rules are a file any agent session can write, because `~/Code` is in the
   sandbox's write scope, so they are only as trustworthy as those sessions. Michael's backup stays
-  in `/tmp`, which sandboxed agents cannot write, and he builds the file he restores from it with
-  his own `jq` line, so every setting outside `.rules` is his own; the `jq` check confirms Terminal
-  access off, and the log lists every rule the review adds or removes for him to read. The log is
-  the agent's, so the rules themselves rest on trusting the builder (approach A).
+  in `/tmp`, out of reach of sandboxed Bash, and he builds the file he restores from it with his
+  own `jq` line, so no file or path an agent names enters it and the review's output can change
+  only `.rules`. `/tmp` does not keep out Claude Code's Edit and Write tools (permission rules, in
+  auto mode the classifier) or a Codex session in workspace-write, which can write `$HOME` as well;
+  so for a review's hours the settings in his backup rest on those sessions, as the rules do. The
+  `jq` check, run right before the restore, confirms Terminal access off, and the log lists every
+  rule the review adds or removes for him to read. The log is the agent's, so the rules themselves
+  rest on trusting the builder (approach A).
 - The stored backup is made with Terminal access off and checked (`jq`) before it is stored and
   before it is restored, so a restore turns Terminal access off rather than on.
 - The plain-text backup exists outside 1Password only in `/tmp`: for the minutes a backup or
@@ -350,6 +360,12 @@ of the local file the same evening, and they matched (the agent's `op document g
 refused by its permission check). The plain-text backups and built files left in
 `~/Code/.metrics/little-snitch/` were deleted that evening at Michael's go-ahead (§5, step 4); the
 builder and the review notes stay.
+
+That stored backup passed through `~/Code/.metrics/little-snitch/`, which agents can write, before
+an agent stored it, so Michael's matching hash shows only that 1Password holds what sat there.
+Michael stores fenrir's backup again himself with the README's *Refresh* step, at the latest at
+fenrir's next periodic review; until then a restore from it (a fenrir reinstall, or a new machine
+restored from the closest machine's) rests on those sessions.
 
 ## 9. Left to the builder
 
