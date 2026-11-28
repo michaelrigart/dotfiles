@@ -403,9 +403,9 @@ from=<the machine whose backup you restore: this one, or the closest>
    That restore turns Terminal access off again. If it fails or you abandon it, turn Terminal
    access off by hand. Never pass `--preserve-terminal-access`.
 
-   Either way, when you restored from another machine's backup, delete that machine's own rules
-   afterwards (hercules' incoming sshd rule) and, on hercules, add the rules of section 8 G of
-   `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
+   Whichever way you restored, when it was from another machine's backup, delete that machine's
+   own rules afterwards (hercules' incoming sshd rule) and, on hercules, add the rules of section
+   8 G of `docs/superpowers/specs/2026-11-15-hercules-agent-machine-design.md`.
 
 2. **Check.** Settings › Registration shows the licence, Settings › Security has Terminal access
    off, and the rules list shows your rules. Terminal access is checked always, whether the
@@ -436,8 +436,9 @@ from=<the machine whose backup you restore: this one, or the closest>
    ```
 
    Run the check and read its result: it must be `[0,[<the output of id -u>]]`. Anything else, or
-   no output, means do not store it. For a first value of `1` or `true`, turn Terminal access off
-   and start Refresh again.
+   no output, means do not store it: delete the file with the `rm` command at the end of this
+   step before you stop or start again. For a first value of `1` or `true`, turn Terminal access
+   off and start Refresh again.
 
    ```bash
    jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
@@ -496,7 +497,8 @@ from=<the machine whose backup you restore: this one, or the closest>
    ```
 
    Run the check on it and read its result: it must be `[0,[<the output of id -u>]]`. Anything
-   else, or no output (an empty file), means do not restore it. For a first value of `1` or
+   else, or no output (an empty file), means do not restore it: delete both files with the `rm`
+   command that closes this part before you stop or start again. For a first value of `1` or
    `true`, turn Terminal access off and start the review again.
 
    ```bash
