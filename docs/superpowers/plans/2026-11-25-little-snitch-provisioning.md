@@ -28,8 +28,9 @@ periodic review's builder stays private (spec §5).
 - Touch `.scripts/machine-checklist.tsv`, `README.md`, the spec's rebase note (Task 1, Step 4) and,
   at the finish, the spec's and this plan's Status lines. Nothing else in the repository.
 - Public repository: nothing from the private review, its builder or a backup. The only names are
-  the item names `Little Snitch backup <machine>`, the folder `~/Code/.metrics/little-snitch/`, and
-  what the spec already states (hercules' incoming sshd rule, hercules-agent-machine section 8 G).
+  the item names `Little Snitch backup <machine>`, the folder `~/Code/.metrics/little-snitch/` and
+  its two file names `review-rules.json` and `review-log.md`, and what the spec already states
+  (hercules' incoming sshd rule, hercules-agent-machine section 8 G).
 - Never run `op`, `sudo` or `littlesnitch`, and never change Little Snitch. Storing a backup in
   1Password is outside this plan: only on Michael's request in the pane, under spec §5's clause.
 - Two temporary paths, no others: `/tmp/little-snitch.lsbackup` and, during a periodic review only,
@@ -44,17 +45,19 @@ periodic review's builder stays private (spec §5).
   `claude-login`. `netbird-up` and `syncthing-settings` are `script` rows above every `you` row;
   `netbird-old-peer`, `syncthing-old-device` and `syncthing-folders` stay after the Little Snitch
   rows (Task 1, Step 3).
-- README commands paste as written once each placeholder is filled: a placeholder appears only as
-  the right side of an assignment (`name=<…>`), holds no quote character, and is used afterwards
-  as `"$name"`; the CLI path is quoted (it has spaces); `$(id -u)` sits inside double quotes;
-  `--preserve-terminal-access` appears only in prose, as "never pass it" (Task 2, Steps 1 and 2).
+- README commands paste as written once each placeholder is filled. The only placeholders are the
+  right sides of `machine=<…>` and `backup_uid=<…>`, which Michael types himself; no command takes a
+  path an agent names. The backup is fetched from `$from` and stored under `$machine`, so a machine
+  restored from another one's backup saves its own. The CLI path is quoted (it has spaces),
+  `$(id -u)` sits inside double quotes, and `--preserve-terminal-access` appears only in prose, as
+  "never pass it" (Task 2, Steps 1 and 2).
 - The README's `jq` check is exactly the spec's: `[true,[501]]` on a stub with Terminal access on,
   `[0,[501]]` on one without the key, root's uid `0` left out of both (Task 2, Step 2).
-- The *Periodic review* part leaves every Little Snitch and 1Password step with Michael: he copies
-  his own backup and the agent's output into `/tmp` himself, readable only by him, checks the hash
-  on the copy of his backup, runs the `jq` check and the settings `diff` on the copies, reads the
-  log, restores only if he has answered no alert since his backup, and stores the fresh backup
-  himself with *Refresh* (Task 2, Step 1).
+- The *Periodic review* part leaves every Little Snitch and 1Password step with Michael, and every
+  setting his: his backup goes straight to `/tmp`; he builds the restored file from it with the
+  assembly line, which takes only `.rules` from the agent's file and gives an empty result for
+  anything but one array; he runs the `jq` check, reads the log, restores only if he has answered
+  no alert since his backup, and stores the fresh backup himself with *Refresh* (Task 2, Step 1).
 
 ---
 
@@ -121,91 +124,96 @@ periodic review's builder stays private (spec §5).
 
 - [ ] **Step 1: Write the section.** A short intro: each machine's backup is the 1Password Document
   `Little Snitch backup <machine>` in Private; it is made with Settings › Security › "Allow access
-  via Terminal" off; it is plain text, so it exists outside 1Password only in `/tmp` for the
-  minutes a backup or restore takes, and during a periodic review in `~/Code/.metrics/little-snitch/`;
-  no script touches Little Snitch; link the spec. Then the six numbered parts of spec §5 (Restore,
-  Check, First use, Refresh, Never restore onto a machine in use, Periodic review), no subheadings.
-  Every command sits in a fenced code block, one command per line, no comments or blank lines
-  inside; the section's code blocks hold exactly these lines, each at least once, and nothing else:
+  via Terminal" off; it is plain text, so it exists outside 1Password only in `/tmp`, for the
+  minutes a backup or restore takes and for a periodic review's length; no script touches Little
+  Snitch; link the spec. Then the six numbered parts of spec §5 (Restore, Check, First use,
+  Refresh, Never restore onto a machine in use, Periodic review), no subheadings. Every command sits
+  in a fenced code block, one command per line, no comments or blank lines inside. The section's
+  code blocks hold exactly these lines, in this order, and nothing else; the blank lines below
+  separate the intro, Restore, Check, Refresh and Periodic review, and each group is one or more
+  blocks of its part:
 
   ```
   machine=<the machine name, as in machines.toml>
+  from=$machine
+
   rm -f /tmp/little-snitch.lsbackup
-  op document get "Little Snitch backup $machine" --vault Private --out-file /tmp/little-snitch.lsbackup
+  op document get "Little Snitch backup $from" --vault Private --out-file /tmp/little-snitch.lsbackup
   jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model -l /tmp/little-snitch.lsbackup
   backup_uid=<the user ID that restore-model -l lists>
   sudo "/Applications/Little Snitch.app/Contents/Components/littlesnitch" restore-model --map-users "0 > 0, $backup_uid > $(id -u)" /tmp/little-snitch.lsbackup
+
   rm /tmp/little-snitch.lsbackup
+
+  rm -f /tmp/little-snitch.lsbackup
   chmod 600 /tmp/little-snitch.lsbackup
+  jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
   op document edit "Little Snitch backup $machine" --vault Private /tmp/little-snitch.lsbackup
   op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup $machine" --vault Private
-  base=<the backup you saved for the review>
-  shasum -a 256 "$base"
-  out=<the output the agent names>
-  rm -f /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
-  (umask 077; cp "$base" /tmp/little-snitch-base.lsbackup && cp "$out" /tmp/little-snitch.lsbackup)
-  shasum -a 256 /tmp/little-snitch-base.lsbackup
-  ls_settings='del(.rules, .globalDefaults.allowCommandLineAccess, .users[].defaults.markNewRulesAsUnapproved) | walk(if type == "number" and fabs < 9007199254740992 then . + 0 else . end)'
-  diff <(jq -S "$ls_settings" /tmp/little-snitch-base.lsbackup) <(jq -S "$ls_settings" /tmp/little-snitch.lsbackup)
+  rm /tmp/little-snitch.lsbackup
+
+  rm -f /tmp/little-snitch-base.lsbackup
+  chmod 600 /tmp/little-snitch-base.lsbackup
+  rm -f /tmp/little-snitch.lsbackup
+  (umask 077; jq --slurpfile r ~/Code/.metrics/little-snitch/review-rules.json '.rules = ($r[0] | arrays)' /tmp/little-snitch-base.lsbackup > /tmp/little-snitch.lsbackup)
+  jq -c '[.globalDefaults.allowCommandLineAccess // 0, [.users[].uid | select(. != 0)]]' /tmp/little-snitch.lsbackup
   rm /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
   ```
 
-  `machine=` is set once at the top of the section (another machine's name when restoring its
-  backup); `scutil --get LocalHostName` is not used, because a machine set up before provisioning
-  set it can differ. *Restore* deletes a leftover, fetches, runs the `jq` check, then File ›
-  Restore from Backup… › Browse… (⇧⌘G `/tmp`). The `jq` expectation: `[0,[<the output of id -u>]]`;
-  a first value of `1` or `true` means the backup turns Terminal access on: neither restore nor
-  store it. The two `restore-model` lines are only for a user-ID mismatch (`-l` lists the backup's
-  users), with Terminal access turned on first; if that restore fails or is abandoned, turn
-  Terminal access off by hand, and *Check* always looks; never pass `--preserve-terminal-access`.
-  *Check* ends with the plain `rm`. *First use* names both alert kinds: Homebrew tools (a changed
-  identity) and mise tools whose version moved (a new path). *Refresh*: File › Create Backup… to
-  `/tmp`, named `little-snitch.lsbackup` in the save dialog, then `chmod 600`, the `jq` check,
-  `op document edit` (or `create` for a new machine), the plain `rm`. `--vault Private` on `get`
-  and `edit` is the plan's tightening of the spec's commands (§6 names Private as the trust
-  boundary). *Periodic review* gives when (every month or two, and after a burst of alerts) and
-  Michael's side of spec §5's four steps, in order: save a backup into
-  `~/Code/.metrics/little-snitch/` (directory 700), set `base`, note `shasum -a 256 "$base"` and name
-  the path to an agent; when the agent hands over its output and log, set `base` again if the
-  shell is new and `out`, delete leftovers, make both private copies, check that the copy of his
-  backup has the noted hash (agents can write the folder), run the `jq` check on the output's copy,
-  set `ls_settings` and run the settings `diff` (no output; a changed hash or any output means no
-  restore, because only the rules and the two settings the filter leaves out may change; it
-  compares numbers by value where a double holds them exactly and by their text beyond 2^53),
-  read the log and go on only if he accepts every change it lists, restore the output's copy only
-  if no alert was answered since the backup (else ask for a rebuild from a fresh backup), delete
-  both copies; then store a fresh backup with *Refresh* and tell the agent, which deletes the
-  review's input, output and log. It points to spec §5 for what the review aims at and names no
-  rule, host or builder.
+  The intro sets `machine` (this machine) and `from` (the machine whose backup is restored: the
+  same, or the closest machine's name for a machine without its own backup); `scutil --get
+  LocalHostName` is not used, because a machine set up before provisioning set it can differ.
+  *Restore*: delete a leftover, fetch, run the `jq` check, then File › Restore from Backup… ›
+  Browse… (⇧⌘G `/tmp`). The `jq` expectation: `[0,[<the output of id -u>]]`; a first value of `1`
+  or `true` means the backup turns Terminal access on: neither restore nor store it; no output
+  means no restore. The two `restore-model` lines are only for a user-ID mismatch (`-l` lists the
+  backup's users), with Terminal access turned on first; if that restore fails or is abandoned,
+  turn Terminal access off by hand, and *Check* always looks; never pass
+  `--preserve-terminal-access`. *Check* ends with the plain `rm`. *First use* names both alert
+  kinds: Homebrew tools (a changed identity) and mise tools whose version moved (a new path).
+  *Refresh*: delete a leftover; File › Create Backup… to `/tmp`, named `little-snitch.lsbackup` in
+  the save dialog; `chmod 600`; the `jq` check; `op document edit`, or `create` for a machine with
+  no item yet; the plain `rm`. `--vault Private` on `get` and `edit` is the plan's tightening of the
+  spec's commands (§6 names Private as the trust boundary). *Periodic review* gives when (every
+  month or two, and after a burst of alerts) and Michael's side of spec §5's four steps, in order:
+  with Terminal access off, delete a leftover, File › Create Backup… to `/tmp`, named
+  `little-snitch-base.lsbackup`, `chmod 600`, and ask an agent for the review (a restart clears
+  `/tmp`: start again); when the agent has written `review-rules.json` and `review-log.md`, delete a
+  leftover, build the file with the assembly line (it keeps every setting of his backup and takes
+  only `.rules` from the agent's file), run the `jq` check on it, read the log and go on only if he
+  accepts every change it lists, restore it only if no alert was answered since his backup (else
+  start again), delete both files; then store a fresh backup with *Refresh* and tell the agent,
+  which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
+  host or builder.
 - [ ] **Step 2: Check.**
-  - The commands, as a set: write the block above, without its two-space indent, to
+  - The commands, in order: write the block above, without its two-space indent, to
     `$TMPDIR/ls-commands.txt`, and this to `$TMPDIR/ls-check.sh`; run
     `bash "$TMPDIR/ls-check.sh" README.md "$TMPDIR"`. Expected: no output, exit 0. Tested
-    2026-11-28 on a stub section: a command with `--preserve-terminal-access` appended, or a
-    missing command, prints the line and exits 1. (Files throughout: the sandbox denies `/dev/fd`
-    and `diff -`.)
+    2026-11-28 on a stub section: the `jq` check dropped before the periodic restore only, or
+    `--preserve-terminal-access` appended to a command, prints the difference and exits 1. (Files
+    throughout: the sandbox denies `/dev/fd` and `diff -`.)
 
     ```bash
-    awk '/^### Little Snitch$/ { s = 1; next } s && /^(#|##|###) / { exit } s && /^[[:space:]]*```/ { f = !f; next } s && f && NF { sub(/^[[:space:]]+/, ""); print }' "$1" | sort -u > "$2/ls-readme.txt"
-    sort -u "$2/ls-commands.txt" > "$2/ls-expected.txt"
+    awk '/^### Little Snitch$/ { s = 1; next } s && /^(#|##|###) / { exit } s && /^[[:space:]]*```/ { f = !f; next } s && f && NF { sub(/^[[:space:]]+/, ""); print }' "$1" > "$2/ls-readme.txt"
+    awk 'NF' "$2/ls-commands.txt" > "$2/ls-expected.txt"
     diff "$2/ls-expected.txt" "$2/ls-readme.txt"
     ```
   - In `$TMPDIR`, a stub `{"globalDefaults":{"allowCommandLineAccess":true},"users":[{"uid":0},{"uid":501}]}`
     gives `[true,[501]]` under the README's `jq` line, and `{"globalDefaults":{},"users":[{"uid":0},{"uid":501}]}`
     gives `[0,[501]]`.
-  - The settings filter on stubs: a base
-    `{"rules":[{"action":"allow"}],"globalDefaults":{"allowCommandLineAccess":1,"x":1,"big":9007199254740993},"users":[{"uid":0},{"uid":501,"defaults":{"markNewRulesAsUnapproved":1}}]}`;
-    a copy with the rules, `allowCommandLineAccess` and `markNewRulesAsUnapproved` changed and `x`
-    written as `1.000`; a copy of that with `x` set to `2`; and one with `big` set to
-    `9007199254740992`. Write each through `jq -S "$ls_settings"` (the README's value) to a file in
-    `$TMPDIR` and `diff` the base's against each: the first exits 0 with no output, the other two
-    exit 1 (checked 2026-11-28; without the `fabs` guard the last one exits 0).
+  - The assembly line, with its paths pointed at `$TMPDIR` stubs: a base
+    `{"globalDefaults":{"allowCommandLineAccess":0,"t":1.000,"big":9007199254740993},"rules":[{"action":"allow"}],"users":[{"uid":0},{"uid":501}]}`
+    and a rules file `[{"action":"deny","x":2.50}]` give a mode-600 file whose `jq -c 'del(.rules)'`
+    is byte-identical to the base's (`1.000` and the big integer kept) and whose `.rules` is
+    `[{"action":"deny","x":2.50}]`; a rules file `{"action":"deny"}` gives an empty file (checked
+    2026-11-28).
   - ``rg -o '/tmp/[^[:space:]`"),;]+' README.md | sed 's/\.$//' | sort -u``: only
     `/tmp/little-snitch-base.lsbackup` and `/tmp/little-snitch.lsbackup` (the class stops only at
     delimiters, so a misspelt path in the prose shows up).
   - After `git add`, read `git diff --cached` once: it names no server, rule or file from
-    `~/Code/.metrics/little-snitch/` beyond the folder itself. The final review reads it again.
+    `~/Code/.metrics/little-snitch/` beyond the folder and its two file names. The final review
+    reads it again.
 - [ ] **Step 3: Commit.** "Document restoring and refreshing the Little Snitch backup".
 
 Task 3 (a review script) was dropped on 2026-11-27 with the spec change Michael signed that day:
@@ -221,6 +229,6 @@ In this order:
    with the `--vault Private` tightening and the rebase note under Rulings.
 3. The final pre-merge commit: the spec's Status `Implemented` with the PR, and this plan's Status
    `Implemented` with "do not run this plan again".
-4. A fresh full-range Codex pre-merge round on that commit; push; update the PR's merge state for
-   the new head.
+4. On that commit, `./tests/run.sh --changed` again and a fresh full-range Codex pre-merge round;
+   push; update the PR's merge state for the new head.
 5. The final report to the driver (chezmoi-94).

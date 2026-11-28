@@ -29,6 +29,11 @@ and compares the copy. Step 4's fresh backup passed through the folder agents ca
 was stored, so Michael now stores it himself with the README's *Refresh* step, and no read-back is
 needed. The `diff` compares a number beyond 2^53 by its text, since a double cannot hold it. A
 restore that fails after Terminal access was turned on for it is followed by turning it off.
+Codex's second round found the same gap at step 1 (his backup was hashed only once it sat in that
+folder) and problems in the first round's fixes; Michael replaced the checks ("Assemble it"): his
+backup stays in `/tmp`, which sandboxed agents cannot write, the agent writes only a rules array,
+and he builds the file he restores from his own backup with one `jq` line, so every setting is his
+by construction. The hash, the settings `diff` and its number handling are gone.
 **Source:** Michael, 2026-11-25: "Can you work on Little Snitch for me? I would like you to review
 my current rules and optimize everything. At the same time, I would also want to know, once we have
 a good rule set, if we could include it in our privisioning scripts." Relayed in the driver's brief
@@ -207,34 +212,33 @@ change it:
 **Periodic review** (approach A of 2026-11-25: an agent runs it, Michael restores). Every month or
 two, and after a burst of alerts:
 
-1. Michael saves a backup into `~/Code/.metrics/little-snitch/` (directory 700), notes its
-   `shasum -a 256` and names its path.
-2. An agent reviews it with the machine's private builder, kept in that folder (it holds the
-   machine's own decisions, so it never enters the repository), and hands him the output and a log
-   of every rule it adds, removes, narrows or makes permanent. The builder checks its own result
+1. With Terminal access off, Michael saves a backup to `/tmp/little-snitch-base.lsbackup`
+   (File › Create Backup…, deleting a leftover first), runs `chmod 600` on it and asks an agent for
+   the review. Sandboxed agents can read `/tmp` but not write it, so the file stays his; a restart
+   clears it, and the review then starts again here.
+2. The agent reviews it with the machine's private builder, kept in `~/Code/.metrics/little-snitch/`
+   (directory 700; it holds the machine's own decisions, so it never enters the repository), and
+   writes there the reviewed rules as one JSON array, `review-rules.json`, and `review-log.md`, a
+   log of every rule it adds, removes, narrows or makes permanent. The builder checks its own result
    before writing (no temporary rule left, each agent workspace with its rules, each block present,
    Little Snitch's own entries unchanged) and changes nothing when run on its own output; a review
    that needs a new kind of decision extends it. A machine without a builder starts from fenrir's
    (hercules at its first review); a lost builder is rebuilt from the aims below. At each machine's
    next review (fenrir's next, hercules' first) the agent also reports the backup's top-level key
    names (`jq -r 'keys[]'`) and whether the rule-group subscriptions, the DNS servers and the
-   operating mode sit outside `.rules`, where step 3's `diff` sees them; one inside is reported to
-   Michael as resting on the builder, like the rules.
-3. Michael copies his backup from step 1 to `/tmp/little-snitch-base.lsbackup` and the output to
-   `/tmp/little-snitch.lsbackup`, both readable only by him (deleting leftovers first; sandboxed
-   agents cannot write `/tmp` itself). On those copies, himself: the copy of his backup has the hash
-   he noted (agents can write the folder); the README's `jq` check on the output's copy prints
-   `[0,[<id -u>]]`; the README's settings `diff` between the two copies prints nothing. He then
-   reads the log and goes on only if he accepts every change it lists, restores the output's copy,
-   and deletes both copies. The `diff` leaves out only the rules and the two settings the builder
-   changes (`allowCommandLineAccess` and `markNewRulesAsUnapproved`) and compares numbers by value
-   (the builder rewrites the file) where a double holds them exactly, and beyond 2^53 by their
-   text; a changed hash or any `diff` output (a changed setting, such as the DNS servers or the
-   operating mode) means no restore. He restores only if he has answered no alert since step 1;
-   otherwise the agent rebuilds the output from a fresh backup, because a restore discards every
+   operating mode sit outside `.rules`, where step 3 keeps them from Michael's backup; one inside is
+   reported to Michael as resting on the builder, like the rules.
+3. Michael builds the file he restores himself: the README's assembly line writes his backup from
+   step 1, with only `.rules` replaced by the array in `review-rules.json`, to
+   `/tmp/little-snitch.lsbackup`, readable only by him (deleting a leftover first); a rules file
+   that is not one array gives an empty result, which is not restored. Every setting therefore
+   comes from his own backup, number for number. He runs the README's `jq` check on it
+   (`[0,[<id -u>]]`), reads the log and goes on only if he accepts every change it lists, then
+   restores the file and deletes both files in `/tmp`. He restores only if he has answered no alert
+   since step 1; otherwise the review starts again from step 1, because a restore discards every
    rule made since its source backup.
-4. He stores a fresh backup himself with the README's *Refresh* step, which never passes through
-   the folder; the agent then deletes the review's input, output and log.
+4. He stores a fresh backup himself with the README's *Refresh* step; the agent then deletes
+   `review-rules.json` and `review-log.md`.
 
 What the review aims at (Michael, 2026-11-27: "create the rules properly and allow what is need
 (what not) so I don't get always prompted by Little Snitch. But you can block rules that are
@@ -257,9 +261,9 @@ specifically for tracking and such"):
   Michael's own products report to (error or performance monitoring) is blocked per program, never
   for every program, so his development tools keep reaching it.
 - *Housekeeping:* rules of programs gone or of an app's old code identity removed, unused and
-  redundant rules removed, rules added for a root daemon owned by the system, Terminal access off,
-  new rules no longer marked unapproved.
-  Little Snitch's own entries (protected, factory, rule-group, hidden, OS-update) pass through
+  redundant rules removed, rules added for a root daemon owned by the system. Settings are not the
+  review's: Terminal access is off in Michael's backup, and "mark new rules as unapproved" is his
+  own setting. Little Snitch's own entries (protected, factory, rule-group, hidden, OS-update) pass through
   unchanged.
 
 *The alerts that remain,* accepted by Michael on 2026-11-27: a command an agent runs outside its
@@ -279,20 +283,18 @@ through that tool alerts until it is answered once at the machine.
   servers and the rule-group subscriptions (remote rule sources). That is the Private vault's
   trust boundary, which already guards the SSH keys and forge tokens. An agent writes one only at
   Michael's request, and only his own unchanged backup (§5).
-- The periodic review's output is a file Michael restores by hand. Any agent session can write
-  `~/Code/.metrics/little-snitch/`, because `~/Code` is in the sandbox's write scope, so the output
-  is only as trustworthy as those sessions. Michael's own checks on the copy he restores are the
-  guard: the `jq` check keeps Terminal access off, the settings `diff` against his private copy of
-  his own backup (whose hash he noted when he saved it, and checks on that copy) shows any other
-  setting changed, and the log lists every
-  rule the review adds or removes for him to read. The log is the agent's, so the rules themselves
-  rest on trusting the builder (approach A).
+- The periodic review's rules are a file any agent session can write, because `~/Code` is in the
+  sandbox's write scope, so they are only as trustworthy as those sessions. Michael's backup stays
+  in `/tmp`, which sandboxed agents cannot write, and he builds the file he restores from it with
+  his own `jq` line, so every setting outside `.rules` is his own; the `jq` check confirms Terminal
+  access off, and the log lists every rule the review adds or removes for him to read. The log is
+  the agent's, so the rules themselves rest on trusting the builder (approach A).
 - The stored backup is made with Terminal access off and checked (`jq`) before it is stored and
   before it is restored, so a restore turns Terminal access off rather than on.
-- The plain-text backup exists outside 1Password only in `/tmp`, for the minutes a backup or
-  restore takes, and, during a periodic review, in `~/Code/.metrics/little-snitch/` (directory
-  700, files 600) until the review's files are deleted. Spotlight indexes that folder, so the Restore
-  dialog lists its files; the deletion in step 4 keeps that list short.
+- The plain-text backup exists outside 1Password only in `/tmp`: for the minutes a backup or
+  restore takes, and from step 1 to step 3 of a periodic review. The review's rules and log, which
+  name every rule's hosts as the backup does, sit in `~/Code/.metrics/little-snitch/` (directory
+  700, files 600) until step 4 deletes them.
 
 ## 7. Checks
 
@@ -304,11 +306,10 @@ through that tool alerts until it is answered once at the machine.
   encoding (run on 2026-11-27: first value `0`; that backup, made with the filter on, also lists
   root, so the check leaves uid `0` out); if its first value is anything but `0`, the README's expectation is corrected before
   the backup is stored.
-- The README's settings `diff`, on stubs: no output when only the rules,
-  `allowCommandLineAccess` and `markNewRulesAsUnapproved` differ, or a number is written
-  differently (`1.000` against `1`, as Python's rewrite does); output when any other key does,
-  including an integer beyond 2^53 that differs only past a double's precision.
-  Where those settings sit in a real backup is checked at the next review (§5, step 2).
+- The README's assembly line, on stubs: the result equals the base except `.rules`, with each
+  number's text kept (`1.000`, an integer beyond 2^53); a rules file holding an object instead of
+  an array gives an empty result. Where the settings sit in a real backup is checked at the next
+  review (§5, step 2).
 - The checklist and README changes get no new test: they are the order and wording of manual
   steps, and no suite pins either.
 - Before the PR: `./tests/run.sh --changed`.
