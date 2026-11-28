@@ -175,6 +175,14 @@ step of `little-snitch-rules` becomes, in substance:
 - The pointer to §8 G stays only for a machine without its own backup: once hercules' backup
   exists it carries those rules.
 
+**Rebase note.** `feat/script-provisioning-rows` made `netbird-up`, `syncthing-settings` and `vorta`
+`script` rows that run before any `you` row, so NetBird and Syncthing first connect during
+`provision.sh`, before the filter is on; they meet the restored rules once it is, while Michael is
+still at the machine. `provision.sh` starts Vorta only to import its profile; Vorta reaches its
+repository at its first backup (its schedule, or the one *First use* runs on hercules). The
+sentence "The rows stay before `netbird-up` and the Syncthing rows" now holds for
+`netbird-old-peer` and the Syncthing pairing rows only. No design change.
+
 **The README section** (`### Little Snitch`, under Security) holds the procedure, the one place to
 change it:
 
