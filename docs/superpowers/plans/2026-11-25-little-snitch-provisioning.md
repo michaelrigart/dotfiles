@@ -186,18 +186,18 @@ periodic review's builder stays private (spec §5).
   *Check* (on hercules, after the first-use checks), so the stored set is the checked one.
   *Refresh*: delete a leftover; File › Create Backup… to `/tmp`, named `little-snitch.lsbackup` in
   the save dialog; `chmod 600`; the `jq` check; `op document edit`, or `create` for a machine with
-  no item yet; the plain `rm`. `--vault Private` on `get` and `edit` is the plan's tightening of the
+  no item yet; the plain `rm`, and Refresh again if `op` failed. `--vault Private` on `get` and `edit` is the plan's tightening of the
   spec's commands (§6 names Private as the trust boundary). *Periodic review* gives when (every
   month or two, and after a burst of alerts) and Michael's side of spec §5's four steps, in order:
   with Terminal access off, delete a leftover, File › Create Backup… to `/tmp`, named
   `little-snitch-base.lsbackup`, `chmod 600`, and ask an agent for the review (a restart clears
   `/tmp`: start again); when the agent has written `review-rules.json` and `review-log.md`, read
   the log and go on only if he accepts every change it lists (if not, delete his base backup with
-  the part's first command, `rm -f /tmp/little-snitch-base.lsbackup`, and stop), delete a leftover, build the file with the assembly line (it
+  the part's first command, `rm -f /tmp/little-snitch-base.lsbackup`, tell the agent, which deletes its two files, and stop), delete a leftover, build the file with the assembly line (it
   keeps every setting of his backup and takes only `.rules` from the agent's file, and gives an
   empty file for anything but exactly one array), run the `jq` check on it and restore right after,
   only if nothing changed in Little Snitch since his backup (no alert answered, no rule or setting
-  changed by hand; else start again), delete both files; then store a fresh backup with *Refresh*
+  changed by hand; else delete both files and start again), delete both files; then store a fresh backup with *Refresh*
   and tell the agent, which deletes its two files. It points to spec §5 for what the review aims at and names no rule,
   host or builder.
 - [ ] **Step 2: Check.**

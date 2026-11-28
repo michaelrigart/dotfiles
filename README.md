@@ -457,7 +457,8 @@ from=<the machine whose backup you restore: this one, or the closest>
    op document create /tmp/little-snitch.lsbackup --title "Little Snitch backup ${machine:?}" --vault Private
    ```
 
-   Then delete the file.
+   Then delete the file. The backup is stored only if that `op` command succeeded; if it failed
+   (a locked vault, say), delete the file all the same and do Refresh again.
 
    ```bash
    rm /tmp/little-snitch.lsbackup
@@ -488,7 +489,8 @@ from=<the machine whose backup you restore: this one, or the closest>
    When the agent has written `review-rules.json` and `review-log.md` in
    `~/Code/.metrics/little-snitch/`, read `review-log.md` and go on only if you accept every change
    it lists. If you do not, delete your base backup with the first command of this part, `rm -f
-   /tmp/little-snitch-base.lsbackup`, and stop. Otherwise delete a leftover file.
+   /tmp/little-snitch-base.lsbackup`, tell the agent, which deletes its two files, and stop.
+   Otherwise delete a leftover file.
 
    ```bash
    rm -f /tmp/little-snitch.lsbackup
@@ -513,8 +515,9 @@ from=<the machine whose backup you restore: this one, or the closest>
    Restore right after, with File › Restore from Backup… › Browse… (⇧⌘G `/tmp`), choosing
    `little-snitch.lsbackup` and not the base file, and only if nothing changed in Little Snitch
    since your base backup: no alert answered, no rule or setting changed by hand. If something did,
-   start again, because a restore discards every change made since its source backup. Then delete
-   both files.
+   do not restore: delete both files with the `rm` below and start again, because a restore
+   discards every change made since its source backup. Otherwise, after the restore, delete both
+   files.
 
    ```bash
    rm /tmp/little-snitch.lsbackup /tmp/little-snitch-base.lsbackup
